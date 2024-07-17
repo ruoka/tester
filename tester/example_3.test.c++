@@ -1,4 +1,3 @@
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 import tester;
 
 using namespace tester::bdd;

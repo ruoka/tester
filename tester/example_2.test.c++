@@ -1,5 +1,4 @@
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-#include<compare>
 #include <iostream>
 import tester;
 

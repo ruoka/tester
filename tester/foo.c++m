@@ -1,9 +1,8 @@
 export module foo;
 export import :bar;
 
-namespace foo {
-
-export auto x = 1;
-auto y = 2;
-
+namespace foo
+{
+    export auto x = 1;
+    auto y = 2;
 }

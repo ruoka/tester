@@ -1,8 +1,7 @@
 export module foo:bar;
 
-namespace foo::bar {
-
-export auto x = 1.1;
-auto y = 2.2;
-
+namespace foo::bar
+{
+    export auto x = 1.1;
+    auto y = 2.2;
 }

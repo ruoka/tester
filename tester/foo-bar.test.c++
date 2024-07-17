@@ -8,7 +8,8 @@ namespace foo::bar {
 
 auto test_set()
 {
-    using namespace tester::basic;
+    using tester::basic::test_case;
+    using tester::basic::section;
     using namespace tester::assertions;
 
     test_case("Module partition foo:bar's unit tests") = []

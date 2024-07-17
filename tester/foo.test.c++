@@ -5,7 +5,7 @@ namespace foo {
 
 auto test_set()
 {
-    using namespace tester::basic;
+    using tester::basic::test_case;
     using namespace tester::assertions;
 
     test_case("Module foo's unit tests") = []

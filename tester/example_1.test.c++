@@ -1,5 +1,4 @@
-#include<compare>
-#include <iostream>
+#include <stdexcept>
 import tester;
 
 namespace example_1 {
