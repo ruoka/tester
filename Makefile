@@ -2,6 +2,8 @@
 .SUFFIXES: .c++ .c++m .impl.c++ .test.c++ .pcm .o .impl.o .test.o
 .DEFAULT_GOAL = all
 
+ifeq ($(MAKELEVEL),0)
+
 ifndef OS
 OS = $(shell uname -s)
 endif
@@ -33,8 +35,8 @@ CXXFLAGS += -I$(sourcedir) -I$(includedir)
 LDFLAGS += -fuse-ld=lld
 
 PCMFLAGS += -fno-implicit-modules -fno-implicit-module-maps
-PCMFLAGS += -fmodule-file=std=./pcm/std.pcm -fmodule-file=net=./pcm/net.pcm -fmodule-file=xson=./pcm/xson.pcm
-PCMFLAGS += $(foreach P, $(foreach M, $(modules), $(basename $(notdir $(M)))), -fmodule-file=$(subst -,:,$(P))=./pcm/$(P).pcm)
+PCMFLAGS += -fmodule-file=std=$(moduledir)/std.pcm
+PCMFLAGS += $(foreach P, $(foreach M, $(modules), $(basename $(notdir $(M)))), -fmodule-file=$(subst -,:,$(P))=$(moduledir)/$(P).pcm)
 CXXFLAGS += $(PCMFLAGS)
 
 export CC
@@ -42,20 +44,27 @@ export CXX
 export CXXFLAGS
 export LDFLAGS
 
+endif # ($(MAKELEVEL),0)
+
+PREFIX = .
 sourcedir = tester
-includedir = include
-objectdir = obj
-librarydir = lib
-binarydir = bin
-moduledir = pcm
+moduledir = $(PREFIX)/pcm
+includedir = $(PREFIX)/include
+objectdir = $(PREFIX)/obj
+librarydir = $(PREFIX)/lib
+binarydir = $(PREFIX)/bin
 
 test-program = tester_runner
 test-target = $(test-program:%=$(binarydir)/%)
 test-sources = $(wildcard $(sourcedir)/*test.c++)
 test-objects = $(test-sources:$(sourcedir)%.c++=$(objectdir)%.o) $(test-program:%=$(objectdir)/%.o)
 
+project = $(lastword $(notdir $(CURDIR)))
+library = $(addprefix $(librarydir)/, lib$(project).a)
+
 programs = application
-libraries = # $(addprefix $(librarydir)/, libnet.a libjson.a libstd.a)
+
+libraries = # $(addprefix $(librarydir)/, libxxx.a)
 targets = $(programs:%=$(binarydir)/%)
 sources = $(filter-out $(programs:%=$(sourcedir)/%.c++) $(test-program:%=$(sourcedir)/%.c++) $(test-sources), $(wildcard $(sourcedir)/*.c++))
 modules = $(wildcard $(sourcedir)/*.c++m)
@@ -97,6 +106,10 @@ $(librarydir)/%.a:
 #	git submodule update --init --depth 10
 	$(MAKE) -C $(subst lib,,$(basename $(@F))) module PREFIX=..
 
+$(library) : $(objects)
+	@mkdir -p $(@D)
+	$(AR) $(ARFLAGS) $@ $^
+
 $(dependencies):
 	@mkdir -p $(@D)
 #c++m module wrapping headers etc.
@@ -115,11 +128,14 @@ $(dependencies):
 .PHONY: all
 all: $(libraries) $(dependencies) $(targets)
 
-.PHONY: test
-test: $(libraries) $(dependencies) $(test-target)
+.PHONY: lib
+lib: $(library)
 
 .PHONY: tests
-tests: test
+tests: $(libraries) $(dependencies) $(test-target)
+
+.PHONY: run_tests
+run_tests: tests
 	$(test-target)
 
 .PHONY: clean
