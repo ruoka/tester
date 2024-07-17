@@ -1,0 +1,7 @@
+export module foo:bar;
+
+namespace foo::bar {
+
+export auto y = 2;
+
+}

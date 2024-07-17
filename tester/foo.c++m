@@ -1,0 +1,8 @@
+export module foo;
+export import :bar;
+
+namespace foo {
+
+export auto x = 1;
+
+}

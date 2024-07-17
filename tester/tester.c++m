@@ -1,0 +1,348 @@
+module;
+#include <source_location>
+#include <functional>
+#include <iostream>
+#include <sstream>
+#include <list>
+#include <cstdlib>
+export module tester;
+
+namespace tester
+{
+using namespace std::literals;
+
+namespace color
+{
+    constinit auto reset   = "\033[0m";
+
+    namespace text
+    {
+        constinit auto black   = "\033[30m"; // black
+        constinit auto red     = "\033[31m"; // red
+        constinit auto green   = "\033[32m"; // green
+        constinit auto yellow  = "\033[33m"; // yellow
+        constinit auto blue    = "\033[34m"; // blue
+        constinit auto magenta = "\033[35m"; // magenta
+        constinit auto cyan    = "\033[36m"; // cyan
+        constinit auto white   = "\033[37m"; // white
+    }
+
+    namespace background
+    {
+        constinit auto black   = "\033[40m"; // black
+        constinit auto red     = "\033[41m"; // red
+        constinit auto green   = "\033[42m"; // green
+        constinit auto yellow  = "\033[43m"; // yellow
+        constinit auto blue    = "\033[44m"; // blue
+        constinit auto magenta = "\033[45m"; // magenta
+        constinit auto cyan    = "\033[46m"; // cyan
+        constinit auto white   = "\033[47m"; // white
+    }
+}
+
+using test = std::function<void(void)>;
+//using test = std::move_only_function<void(void)>;
+
+struct test_case
+{
+    const std::string name;
+    const std::string_view file_name;
+    const std::uint_least32_t line;
+    const std::uint_least32_t column;
+    const std::string_view function_name;
+    test run;
+};
+
+auto test_cases = std::list<test_case>{};
+
+struct test_result : public test_case
+{
+    bool success;
+    std::string output;
+};
+
+auto test_results = std::list<test_result>{};
+
+struct test_statistics
+{
+    std::size_t successful_tests;
+    std::size_t total_tests;
+    std::size_t successful_assertions;
+    std::size_t total_assertions;
+};
+
+auto statistics = test_statistics{0,0,0,0};
+
+export struct test_runner
+{
+    test_runner()
+    {
+        test_cases.reverse();
+    }
+
+    auto print_test_cases()
+    {
+        for(auto t : test_cases)
+        {
+            std::clog << color::text::yellow
+                      << t.name
+                      << " (" << t.file_name << " " << t.line << ':' << t.column << ")"
+                      << color::reset << std::endl;
+        }
+    }
+
+    auto run_tests()
+    {
+        while(not test_cases.empty())
+        {
+            auto tc = test_cases.begin();
+            auto ts = test_result{*tc,true,""s};
+
+            try
+            {
+                std::clog << color::text::blue
+                          << tc->name << " "
+                          << "(" << tc->file_name << " " <<  tc->line << ":" <<  tc->column << ")"
+                          << color::reset << std::endl;
+
+                ++statistics.total_tests;
+                tc->run();
+                ++statistics.successful_tests;
+            }
+            catch(const std::exception& e)
+            {
+                auto ss = std::ostringstream{};
+                ss << color::background::red
+                   << e.what()
+                   << " " << tc->name << " "
+                   << "(" << tc->file_name << " " <<  tc->line << ":" <<  tc->column << ")"
+                   << color::reset << std::endl;
+
+                   ts.success = false;
+                   ts.output = ss.view();
+                   std::clog << ss.view();
+            }
+            test_cases.erase(tc);
+            test_results.push_back(ts);
+        }
+    }
+
+    auto print_test_results()
+    {
+        std::clog << color::text::yellow
+                  << "Test results" << '\n';
+        for(auto result : test_results)
+        {
+            if(not result.success)
+                std::clog << result.output;
+        }
+    }
+
+    auto print_test_statistics()
+    {
+        std::clog << color::text::yellow
+                  << "Test statistics" << '\n'
+                  << "total tests: "<< statistics.total_tests << '\n'
+                  << "successful tests: "<< statistics.successful_tests << '\n'
+                  << "total assertions: "<< statistics.total_assertions << '\n'
+                  << "successful assertions: "<< statistics.successful_assertions
+                  << color::reset << std::endl;
+    }
+
+};
+
+inline auto& make_test_case(std::string_view text, const std::source_location location1, const std::source_location location2 = std::source_location::current()) noexcept
+{
+    auto bdd = std::string_view{location2.function_name()};
+    
+    if(bdd.contains("behavior_driven_development::"))
+        bdd.remove_prefix(bdd.find("behavior_driven_development::") + "behavior_driven_development::"s.length());
+    else
+        bdd.remove_prefix(bdd.find("basic::") + "basic::"s.length());        
+
+    bdd.remove_suffix(bdd.length() - bdd.find_first_of("("));
+
+    auto name = std::string{bdd} + " -> "s + std::string{text};
+
+    test_cases.push_front({name,location1.file_name(),location1.line(),location1.column(),location2.function_name(),test{}});
+    return test_cases.front().run;
+}
+
+namespace basic
+{
+    export auto& test_case(std::string_view name, const std::source_location location = std::source_location::current()) noexcept
+    {
+        return make_test_case(name, location);
+    }
+
+    export auto& section(std::string_view name, const std::source_location location = std::source_location::current()) noexcept
+    {
+        return make_test_case(name, location);
+    }
+}
+
+namespace behavior_driven_development
+{
+    export auto& scenario(std::string_view text, const std::source_location location = std::source_location::current()) noexcept
+    {
+        return make_test_case(text, location);
+    }
+
+    export auto& given(std::string_view text, const std::source_location location = std::source_location::current()) noexcept
+    {
+        return make_test_case(text, location);
+    }
+
+    export auto& when(std::string_view text, const std::source_location location = std::source_location::current()) noexcept
+    {
+        return make_test_case(text, location);
+    }
+
+    export auto& and_when(std::string_view text, const std::source_location location = std::source_location::current()) noexcept
+    {
+        return make_test_case(text, location);
+    }
+
+    export auto& then(std::string_view text, const std::source_location location = std::source_location::current()) noexcept
+    {
+        return make_test_case(text, location);
+    }
+
+    export auto& and_then(std::string_view text, const std::source_location location = std::source_location::current()) noexcept
+    {
+        return make_test_case(text, location);
+    }
+}
+
+auto function_name(const std::source_location sl = std::source_location::current())
+{
+    auto function_name = std::string_view{sl.function_name()};
+    function_name.remove_prefix(function_name.find("assertions::") + "assertions::"s.length());
+    auto name = function_name.substr(0,function_name.find_first_of("("));
+    auto parameters = function_name.contains("[") ? function_name.substr(function_name.find_first_of("[")) : ""sv;
+    return std::string{name} + " -> "s + std::string{parameters};
+}
+
+template<typename A,typename E>
+auto print(const bool ok, const A& actual, const E& expected, const std::source_location location1 = std::source_location::current(), const std::source_location location2 = std::source_location::current())
+{
+        if(ok)
+            std::clog << color::text::green;
+        else
+            std::clog << color::text::red;
+
+        std::clog << function_name(location2);
+        
+        std::clog << " actual: ";
+
+        if constexpr (std::is_pointer_v<A>)
+            std::clog << (actual != nullptr ? actual : "nullptr");
+        else
+            std::clog << std::boolalpha << actual;
+
+        std::clog << " expected: ";
+
+        if constexpr (std::is_pointer_v<E>)
+            std::clog << (expected != nullptr ? expected : "nullptr");
+        else
+            std::clog << std::boolalpha << expected;
+
+        std::clog << " ";
+
+        std::clog << "(" << location1.file_name() << " " << location1.line() << ":" << location1.column() << ")"
+                  << color::reset << std::endl;
+}
+
+namespace assertions
+{
+    export template<template <typename> class M, typename A, typename E>
+    auto require(M<std::common_type_t<A,E>> match, A actual, E expected, const std::source_location location = std::source_location::current())
+    {
+        ++statistics.total_assertions;
+        const auto ok = match(actual,expected);
+        statistics.successful_assertions += ok;
+        print(ok,actual,expected,location);
+        return ok;
+    };
+
+    export template<typename A, typename E>
+    auto require_eq(A actual, E expected, const std::source_location location = std::source_location::current())
+    {
+        return require(std::equal_to<std::common_type_t<A,E>>{},actual,expected,location);
+    };
+
+    export template<typename A, typename E>
+    auto require_neq(A actual, E expected, const std::source_location location = std::source_location::current())
+    {
+        return require(std::not_equal_to<std::common_type_t<A,E>>{},actual,expected,location);
+    };
+
+    export template<typename A, typename E>
+    auto require_lt(A actual, E expected, const std::source_location location = std::source_location::current())
+    {
+        return require(std::less<std::common_type_t<A,E>>{},actual,expected,location);
+    };
+
+    export template<typename A, typename E>
+    auto require_lteq(A actual, E expected, const std::source_location location = std::source_location::current())
+    {
+        return require(std::less_equal<std::common_type_t<A,E>>{},actual,expected,location);
+    };
+
+    export template<typename A, typename E>
+    auto require_gt(A actual, E expected, const std::source_location location = std::source_location::current())
+    {
+        return require(std::greater<std::common_type_t<A,E>>{},actual,expected,location);
+    };
+
+    export template<typename A, typename E>
+    auto require_gteq(A actual, E expected, const std::source_location location = std::source_location::current())
+    {
+        return require(std::greater_equal<std::common_type_t<A,E>>{},actual,expected,location);
+    };
+
+    export auto require_true(bool actual, const std::source_location location = std::source_location::current())
+    {
+        return require(std::equal_to<bool>{},actual,true,location);
+    };
+
+    export auto require_false(bool actual, const std::source_location location = std::source_location::current())
+    {
+        return require(std::equal_to<bool>{},actual,false,location);
+    };
+
+    export auto require_nothrow(test t, const std::source_location location = std::source_location::current())
+    {
+        auto ok = true;
+        try
+        {
+            ++statistics.total_assertions;
+            t();
+        }
+        catch(...)
+        {
+            ok = not ok;
+        }
+        statistics.successful_assertions += ok;
+        print(ok,ok,true,location);
+    }
+
+    export auto require_throw(test t, const std::source_location location = std::source_location::current())
+    {
+        auto ok = true;
+        try
+        {
+            ++statistics.total_assertions;
+            t();
+            ok = not ok;
+        }
+        catch(...)
+        {}
+        statistics.successful_assertions += ok;
+        print(ok,ok,true,location);
+    }
+}
+
+export namespace bdd = behavior_driven_development;
+
+}
