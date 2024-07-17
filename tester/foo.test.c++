@@ -8,9 +8,10 @@ auto test_set()
     using namespace tester::basic;
     using namespace tester::assertions;
 
-    test_case("nodule foo's unit tests") = []
+    test_case("Module foo's unit tests") = []
     {
-        require_eq(foo::x, 1);
+        require_eq(foo::x, 1); // exported form the module foo
+        require_eq(foo::y, 2); // internal to the module foo
     };
 
     return 0;

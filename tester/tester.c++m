@@ -41,7 +41,6 @@ namespace color
 }
 
 using test = std::function<void(void)>;
-//using test = std::move_only_function<void(void)>;
 
 struct test_case
 {
@@ -224,7 +223,7 @@ auto function_name(const std::source_location sl = std::source_location::current
 }
 
 template<typename A,typename E>
-auto print(const bool ok, const A& actual, const E& expected, const std::source_location location1 = std::source_location::current(), const std::source_location location2 = std::source_location::current())
+auto print(const bool ok, const A& actual, const E& expected, const std::source_location location1, const std::source_location location2 = std::source_location::current())
 {
         if(ok)
             std::clog << color::text::green;

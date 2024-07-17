@@ -4,5 +4,6 @@ export import :bar;
 namespace foo {
 
 export auto x = 1;
+auto y = 2;
 
 }

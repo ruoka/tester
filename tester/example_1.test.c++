@@ -15,16 +15,18 @@ auto test_set()
         {
             when("customers goes to a restaurant") = []
             {
-                // throw std::runtime_error{"TestException!"};
-
                 then("customer makes an order") = []
                 {
                     and_then("food and drinks are delivered to the customer") = []
                     {
-                        std::clog << std::boolalpha << require_eq(123.34,456.876) << std::endl;
-                        std::clog << std::boolalpha << require_eq(123.34,123.34) << std::endl;
-                        std::clog << std::boolalpha << require_neq(123.34,456.876) << std::endl;
-                        std::clog << std::boolalpha << require_neq(123.34,123.34) << std::endl;
+                        require_eq(123.45, 123.45);
+                        require_neq(123.34, 456.876);
+                        require_lt(123.34, 234.56);
+                        require_lteq(123.34, 234.56);
+                        require_gt(123.45, 123.4);
+                        require_gteq(123.45, 123.4);
+                        require_true(123.45 != 123.4);
+                        require_false(123.45 == 123.4);
                     };
                 };
             };
@@ -33,12 +35,12 @@ auto test_set()
             {
                 and_when("WOLT driver is available") = []
                 {
-                    // throw std::runtime_error{"TestException!"};
-
                     then("food and drinks are delievred to his home door") = []
                     {
                         require_false(true);
                         require_true(false);
+                        require_nothrow([]{});
+                        require_throw([]{throw 1;});
                     };
                 };
             };

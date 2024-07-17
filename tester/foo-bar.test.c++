@@ -11,17 +11,21 @@ auto test_set()
     using namespace tester::basic;
     using namespace tester::assertions;
 
-    test_case("Sub-module foo:bar's unit tests") = []
+    test_case("Module partition foo:bar's unit tests") = []
     {
-        require_eq(foo::bar::y, 2);
+        require_eq(foo::bar::x, 1.1); // exported form the module foo:bar
+        require_eq(foo::bar::y, 2.2); // internal to the module foo:bar
+        require_eq(foo::x, 1); // exported form the module foo
+        require_eq(foo::y, 2); // internal to the module foo
 
-        section("Sub-test") = []
+        section("foo:bar's test section") = []
         {
             char* prt = nullptr;
             require_eq(prt, nullptr);
+            require_neq(prt, "blah");
         };
 
-        section("Test no throw") = []
+        section("est nothrow") = []
         {
             require_nothrow([]{});
             require_nothrow([]{throw std::exception{};});

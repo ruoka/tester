@@ -35,8 +35,6 @@ auto test_set()
             {
                 and_when("WOLT driver is available") = []
                 {
-                    // throw std::runtime_error{"TestException!"};
-
                     then("food and drinks are delievred to his home door") = []
                     {
                         require_eq(1.23,1.23);
