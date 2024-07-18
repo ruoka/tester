@@ -1,4 +1,5 @@
 module foo;
+import :bar;
 import tester;
 
 namespace foo {
