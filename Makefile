@@ -3,7 +3,7 @@
 
 .SUFFIXES:
 .SUFFIXES: .c++ .c++m .impl.c++ .test.c++ .pcm .o .impl.o .test.o
-.DEFAULT_GOAL = run_example
+.DEFAULT_GOAL = run_examples
 
 ifeq ($(MAKELEVEL),0)
 
