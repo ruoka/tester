@@ -1,6 +1,6 @@
 .SUFFIXES:
 .SUFFIXES: .c++ .c++m .impl.c++ .test.c++ .pcm .o .impl.o .test.o
-.DEFAULT_GOAL = all
+.DEFAULT_GOAL = run_example
 
 ifeq ($(MAKELEVEL),0)
 
@@ -176,9 +176,9 @@ tests: $(libraries) $(dependencies) $(test-target)
 .PHONY: examples
 examples: $(libraries) $(dependencies) $(example-targets)
 
-.PHONY: run_tests
-run_tests: tests
-	$(test-target)
+.PHONY: run_example
+run_example: examples
+	$(example-targets)
 
 .PHONY: clean
 clean: mostlyclean
