@@ -139,28 +139,20 @@ $(binarydir)/%: $(exampledir)/%.c++ $(example-objects) $(library)
 
 $(dependencies):
 	@mkdir -p $(@D)
-#c++m module wrapping headers etc.
-	grep -HE '^[ ]*export[ ]+module' $(sourcedir)/*.c++m | sed -E 's/.+\/([a-z_0-9\-]+)\.c\+\+m.+/$(objectdir)\/\1.o: $(moduledir)\/\1.pcm/' > $(dependencies)
-#c++m module interface unit
-	grep -HE '^[ ]*import[ ]+([a-z_0-9]+)' $(sourcedir)/*.c++m | sed -E 's/.+\/([a-z_0-9\-]+)\.c\+\+m:[ ]*import[ ]+([a-z_0-9]+)[ ]*;/$(moduledir)\/\1.pcm: $(moduledir)\/\2.pcm/' >> $(dependencies)
-#c++m module partition unit
-	grep -HE '^[ ]*import[ ]+:([a-z_0-9]+)' $(sourcedir)/*.c++m | sed -E 's/.+\/([a-z_0-9]+)(\-*)([a-z_0-9]*)\.c\+\+m:.*import[ ]+:([a-z_0-9]+)[ ]*;/$(moduledir)\/\1\2\3.pcm: $(moduledir)\/\1\-\4.pcm/' >> $(dependencies)
-	grep -HE '^[ ]*import[ ]+:([a-z_0-9]+)' $(sourcedir)/*.c++ | sed -E 's/.+\/([a-z_0-9]+)(\-*)([a-z_0-9\.]*)\.c\+\+:.*import[ ]+:([a-z_0-9]+)[ ]*;/$(objectdir)\/\1\2\3.o: $(moduledir)\/\1\-\4.pcm/' >> $(dependencies)
-#c++m module impl unit
-	grep -HE '^[ ]*module[ ]+([a-z_0-9]+)' $(sourcedir)/*.c++ | sed -E 's/.+\/([a-z_0-9\.\-]+)\.c\+\+:[ ]*module[ ]+([a-z_0-9]+)[ ]*;/$(objectdir)\/\1.o: $(moduledir)\/\2.pcm/' >> $(dependencies)
-#c++ source code
-	grep -HE '^[ ]*import[ ]+([a-z_0-9]+)' $(sourcedir)/*.c++ | sed -E 's/.+\/([a-z_0-9\.\-]+)\.c\+\+:[ ]*import[ ]+([a-z_0-9]+)[ ]*;/$(objectdir)\/\1.o: $(moduledir)\/\2.pcm/' >> $(dependencies)
-#c++m module wrapping headers etc.
-	grep -HE '^[ ]*export[ ]+module' $(exampledir)/*.c++m | sed -E 's/.+\/([a-z_0-9\-]+)\.c\+\+m.+/$(objectdir)\/\1.o: $(moduledir)\/\1.pcm/' > $(dependencies)
-#c++m module interface unit
-	grep -HE '^[ ]*import[ ]+([a-z_0-9]+)' $(exampledir)/*.c++m | sed -E 's/.+\/([a-z_0-9\-]+)\.c\+\+m:[ ]*import[ ]+([a-z_0-9]+)[ ]*;/$(moduledir)\/\1.pcm: $(moduledir)\/\2.pcm/' >> $(dependencies)
-#c++m module partition unit
-	grep -HE '^[ ]*import[ ]+:([a-z_0-9]+)' $(exampledir)/*.c++m | sed -E 's/.+\/([a-z_0-9]+)(\-*)([a-z_0-9]*)\.c\+\+m:.*import[ ]+:([a-z_0-9]+)[ ]*;/$(moduledir)\/\1\2\3.pcm: $(moduledir)\/\1\-\4.pcm/' >> $(dependencies)
-	grep -HE '^[ ]*import[ ]+:([a-z_0-9]+)' $(exampledir)/*.c++ | sed -E 's/.+\/([a-z_0-9]+)(\-*)([a-z_0-9\.]*)\.c\+\+:.*import[ ]+:([a-z_0-9]+)[ ]*;/$(objectdir)\/\1\2\3.o: $(moduledir)\/\1\-\4.pcm/' >> $(dependencies)
-#c++m module impl unit
-	grep -HE '^[ ]*module[ ]+([a-z_0-9]+)' $(exampledir)/*.c++ | sed -E 's/.+\/([a-z_0-9\.\-]+)\.c\+\+:[ ]*module[ ]+([a-z_0-9]+)[ ]*;/$(objectdir)\/\1.o: $(moduledir)\/\2.pcm/' >> $(dependencies)
-#c++ source code
-	grep -HE '^[ ]*import[ ]+([a-z_0-9]+)' $(exampledir)/*.c++ | sed -E 's/.+\/([a-z_0-9\.\-]+)\.c\+\+:[ ]*import[ ]+([a-z_0-9]+)[ ]*;/$(objectdir)\/\1.o: $(moduledir)\/\2.pcm/' >> $(dependencies)
+	# C++m module wrapping headers
+	$(foreach DIR, $(sourcedir) $(exampledir), $(shell grep -HE '^[ ]*export[ ]+module' $(DIR)/*.c++m | sed -E 's/.+\/([a-z_0-9\-]+)\.c\+\+m.+/$(objectdir)\/\1.o: $(moduledir)\/\1.pcm/' > $(dependencies) ))
+	# C++m module interface units
+	$(foreach DIR, $(sourcedir) $(exampledir), $(shell grep -HE '^[ ]*export[ ]+import[ ]+([a-z_0-9]+)' $(DIR)/*.c++m | sed -E 's/.+\/([a-z_0-9\-]+)\.c\+\+m:[ ]*import[ ]+([a-z_0-9]+)[ ]*;/$(moduledir)\/\1.pcm: $(moduledir)\/\2.pcm/' >> $(dependencies) ))
+	$(foreach DIR, $(sourcedir) $(exampledir), $(shell grep -HE '^[ ]*import[ ]+([a-z_0-9]+)' $(DIR)/*.c++m | sed -E 's/.+\/([a-z_0-9\-]+)\.c\+\+m:[ ]*import[ ]+([a-z_0-9]+)[ ]*;/$(moduledir)\/\1.pcm: $(moduledir)\/\2.pcm/' >> $(dependencies) ))
+	# C++m module partition units
+	$(foreach DIR, $(sourcedir) $(exampledir), $(shell grep -HE '^[ ]*export[ ]+[ ]*import[ ]+:([a-z_0-9]+)' $(DIR)/*.c++m | sed -E 's/.+\/([a-z_0-9]+)(\-*)([a-z_0-9]*)\.c\+\+m:.*import[ ]+:([a-z_0-9]+)[ ]*;/$(moduledir)\/\1\2\3.pcm: $(moduledir)\/\1\-\4.pcm/' >> $(dependencies) ))
+	$(foreach DIR, $(sourcedir) $(exampledir), $(shell grep -HE '^[ ]*import[ ]+:([a-z_0-9]+)' $(DIR)/*.c++m | sed -E 's/.+\/([a-z_0-9]+)(\-*)([a-z_0-9]*)\.c\+\+m:.*import[ ]+:([a-z_0-9]+)[ ]*;/$(moduledir)\/\1\2\3.pcm: $(moduledir)\/\1\-\4.pcm/' >> $(dependencies) ))
+	# C++m module impl unit
+	$(foreach DIR, $(sourcedir) $(exampledir), $(shell grep -HE '^[ ]*module[ ]+([a-z_0-9]+)' $(DIR)/*.c++ | sed -E 's/.+\/([a-z_0-9\.\-]+)\.c\+\+:[ ]*module[ ]+([a-z_0-9]+)[ ]*;/$(objectdir)\/\1.o: $(moduledir)\/\2.pcm/' >> $(dependencies) ))
+	# C++ sources
+	$(foreach DIR, $(sourcedir) $(exampledir), $(shell grep -HE '^[ ]*import[ ]+([a-z_0-9]+)' $(DIR)/*.c++ | sed -E 's/.+\/([a-z_0-9\.\-]+)\.c\+\+:[ ]*import[ ]+([a-z_0-9]+)[ ]*;/$(objectdir)\/\1.o: $(moduledir)\/\2.pcm/' >> $(dependencies) ))
+	# C++ unit test module sources
+	$(foreach DIR, $(sourcedir) $(exampledir), $(shell grep -HE '^[ ]*import[ ]+:([a-z_0-9]+)' $(DIR)/*.c++ | sed -E 's/.+\/([a-z_0-9]+)(\-*)([a-z_0-9\.]*)\.c\+\+:.*import[ ]+:([a-z_0-9]+)[ ]*;/$(objectdir)\/\1\2\3.o: $(moduledir)\/\1\-\4.pcm/' >> $(dependencies) ))
 
 -include $(dependencies)
 
