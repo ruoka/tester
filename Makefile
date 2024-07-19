@@ -1,5 +1,7 @@
 # Inspired by https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1204r0.html
 
+###############################################################################
+
 .SUFFIXES:
 .SUFFIXES: .c++m .c++ .test.c++ .pcm .o .test.o
 .DEFAULT_GOAL = run_examples
@@ -36,16 +38,18 @@ CXXFLAGS += -Wall -Wextra -Wno-reserved-module-identifier -Wno-deprecated-declar
 CXXFLAGS += -I$(sourcedir)
 LDFLAGS += -fuse-ld=lld
 
-PCMFLAGS += -fno-implicit-modules -fno-implicit-module-maps
-PCMFLAGS += $(foreach P, $(foreach M, $(modules) $(example-modules), $(basename $(notdir $(M)))), -fmodule-file=$(subst -,:,$(P))=$(moduledir)/$(P).pcm)
-CXXFLAGS += $(PCMFLAGS)
-
 export CC
 export CXX
 export CXXFLAGS
 export LDFLAGS
 
 endif # ($(MAKELEVEL),0)
+
+PCMFLAGS = -fno-implicit-modules -fno-implicit-module-maps
+PCMFLAGS += $(foreach P, $(foreach M, $(modules) $(example-modules), $(basename $(notdir $(M)))), -fmodule-file=$(subst -,:,$(P))=$(moduledir)/$(P).pcm)
+#PCMFLAGS += -fmodule-file=tester=../pcm/tester.pcm
+
+###############################################################################
 
 project = $(lastword $(notdir $(CURDIR)))
 library = $(addprefix $(librarydir)/, lib$(project).a)
@@ -69,9 +73,11 @@ example-modules = $(wildcard $(exampledir)/*.c++m)
 example-sources = $(filter-out $(example-programs:%=$(exampledir)/%.c++), $(wildcard $(exampledir)/*.c++))
 example-objects = $(example-sources:$(exampledir)%.c++=$(objectdir)%.o) $(example-modules:$(exampledir)%.c++m=$(objectdir)%.o)
 
-dependencies = $(objectdir)/Makefile.deps
+###############################################################################
 
-.PRECIOUS: $(objectdir)/Makefile.deps $(moduledir)/%.pcm
+.PRECIOUS: %.deps $(moduledir)/%.pcm
+
+###############################################################################
 
 $(objectdir)/%.o: $(moduledir)/%.pcm
 	@mkdir -p $(@D)
@@ -79,11 +85,11 @@ $(objectdir)/%.o: $(moduledir)/%.pcm
 
 $(moduledir)/%.pcm: $(sourcedir)/%.c++m
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $< --precompile -c -o $@
+	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $< --precompile -c -o $@
 
 $(objectdir)/%.o: $(sourcedir)/%.c++
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $< -c -o $@
+	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $< -c -o $@
 
 $(library) : $(objects)
 	@mkdir -p $(@D)
@@ -99,19 +105,28 @@ $(objectdir)/%.test.o: $(exampledir)/%.test.c++
 
 $(objectdir)/%.o: $(exampledir)/%.c++
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $< -c -o $@
+	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $< -c -o $@
 
 $(binarydir)/%: $(exampledir)/%.c++ $(example-objects) $(library)
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ -o $@
 
-$(dependencies): $(addprefix dep_,$(sourcedirs))
+###############################################################################
 
-.PHONY: $(addprefix dep_,$(sourcedirs))
+dependencies = ./Makefile.deps
 
-$(addprefix dep_,$(sourcedirs)): dep_%:
+.PHONY: $(temp)
+
+temp = $(addprefix deps_,$(sourcedirs))
+
+.PHONY: deps
+
+deps: $(temp)
+	@cat $(dependencies)
+
+$(temp): deps_%:
 	@mkdir -p $(objectdir)
-	@grep -HE '^[ ]*export[ ]+module' $*/*.c++m | sed -E 's|.+/([a-z_0-9\-]+)\.c\+\+m.+|$(objectdir)/\1.o: $(moduledir)/\1.pcm|' > $(dependencies)
+	@grep -HE '^[ ]*export[ ]+module' $*/*.c++m | sed -E 's|.+/([a-z_0-9\-]+)\.c\+\+m.+|$(objectdir)/\1.o: $(moduledir)/\1.pcm|' >> $(dependencies)
 	@grep -HE '^[ ]*export[ ]+import[ ]+([a-z_0-9]+)' $*/*.c++m | sed -E 's|.+/([a-z_0-9\-]+)\.c\+\+m:[ ]*import[ ]+([a-z_0-9]+)[ ]*;|$(moduledir)/\1.pcm: $(moduledir)/\2.pcm|' >> $(dependencies)
 	@grep -HE '^[ ]*import[ ]+([a-z_0-9]+)' $*/*.c++m | sed -E 's|.+/([a-z_0-9\-]+)\.c\+\+m:[ ]*import[ ]+([a-z_0-9]+)[ ]*;|$(moduledir)/\1.pcm: $(moduledir)/\2.pcm|' >> $(dependencies)
 	@grep -HE '^[ ]*export[ ]+[ ]*import[ ]+:([a-z_0-9]+)' $*/*.c++m | sed -E 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9]*)\.c\+\+m:.*import[ ]+:([a-z_0-9]+)[ ]*;|$(moduledir)/\1\2\3.pcm: $(moduledir)/\1\-\4.pcm|' >> $(dependencies)
@@ -120,11 +135,13 @@ $(addprefix dep_,$(sourcedirs)): dep_%:
 	@grep -HE '^[ ]*import[ ]+([a-z_0-9]+)' $*/*.c++ | sed -E 's|.+/([a-z_0-9\.\-]+)\.c\+\+:[ ]*import[ ]+([a-z_0-9]+)[ ]*;|$(objectdir)/\1.o: $(moduledir)/\2.pcm|' >> $(dependencies)
 	@grep -HE '^[ ]*import[ ]+:([a-z_0-9]+)' $*/*.c++ | sed -E 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9\.]*)\.c\+\+:.*import[ ]+:([a-z_0-9]+)[ ]*;|$(objectdir)/\1\2\3.o: $(moduledir)/\1\-\4.pcm|'|  >> $(dependencies)
 
+###############################################################################
+
 .PHONY: all
 all: module
 
 .PHONY: module
-module: $(dependencies) $(library)
+module: deps $(library)
 
 .PHONY: examples
 examples: all $(example-targets)
@@ -139,11 +156,13 @@ clean: mostlyclean
 
 .PHONY: mostlyclean
 mostlyclean:
-	rm -rf $(objectdir) $(moduledir)
+	rm -rf $(objectdir) $(moduledir) Makefile.deps
 
 .PHONY: dump
 dump:
 	$(foreach v, $(sort $(.VARIABLES)), $(if $(filter file,$(origin $(v))), $(info $(v)=$($(v)))))
 	@echo ''
+
+###############################################################################
 
 -include $(dependencies)
