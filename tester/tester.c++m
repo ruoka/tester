@@ -236,6 +236,8 @@ auto print(const bool ok, const A& actual, const E& expected, const std::source_
 
         if constexpr (std::is_pointer_v<A>)
             std::clog << (actual != nullptr ? actual : "nullptr");
+        else if constexpr (std::is_enum_v<A>)
+            std::clog << std::to_underlying(actual);
         else
             std::clog << std::boolalpha << actual;
 
@@ -243,6 +245,8 @@ auto print(const bool ok, const A& actual, const E& expected, const std::source_
 
         if constexpr (std::is_pointer_v<E>)
             std::clog << (expected != nullptr ? expected : "nullptr");
+        else if constexpr (std::is_enum_v<E>)
+            std::clog << std::to_underlying(expected);
         else
             std::clog << std::boolalpha << expected;
 
