@@ -192,6 +192,11 @@ namespace behavior_driven_development
         return make_test_case(text, location);
     }
 
+    export auto& and_given(std::string_view text, const std::source_location location = std::source_location::current()) noexcept
+    {
+        return make_test_case(text, location);
+    }
+
     export auto& when(std::string_view text, const std::source_location location = std::source_location::current()) noexcept
     {
         return make_test_case(text, location);
