@@ -2,6 +2,10 @@
 
 ###############################################################################
 
+submodules = std
+
+###############################################################################
+
 .SUFFIXES:
 .SUFFIXES: .c++m .c++ .test.c++ .pcm .o .test.o
 .DEFAULT_GOAL = run_examples
@@ -47,7 +51,7 @@ endif # ($(MAKELEVEL),0)
 
 PCMFLAGS = -fno-implicit-modules -fno-implicit-module-maps
 PCMFLAGS += $(foreach P, $(foreach M, $(modules) $(example-modules), $(basename $(notdir $(M)))), -fmodule-file=$(subst -,:,$(P))=$(moduledir)/$(P).pcm)
-#PCMFLAGS += -fmodule-file=tester=../pcm/tester.pcm
+PCMFLAGS += -fmodule-file=std=$(moduledir)/std.pcm
 
 ###############################################################################
 
@@ -76,6 +80,16 @@ example-objects = $(example-sources:$(exampledir)%.c++=$(objectdir)%.o) $(exampl
 ###############################################################################
 
 .PRECIOUS: %.deps $(moduledir)/%.pcm
+
+###############################################################################
+
+$(foreach P, $(submodules), $(moduledir)/$(P).pcm):
+#	git submodule update --init --depth 1
+	$(MAKE) -C $(subst lib,,$(basename $(@F))) module PREFIX=..
+
+$(librarydir)/%.a:
+#	git submodule update --init --depth 1
+	$(MAKE) -C $(subst lib,,$(basename $(@F))) module PREFIX=..
 
 ###############################################################################
 

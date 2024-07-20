@@ -1,11 +1,5 @@
-module;
-#include <source_location>
-#include <functional>
-#include <iostream>
-#include <sstream>
-#include <list>
-#include <cstdlib>
 export module tester;
+import std;
 
 namespace tester
 {
@@ -227,6 +221,19 @@ auto function_name(const std::source_location sl = std::source_location::current
     return std::string{name} + " -> "s + std::string{parameters};
 }
 
+template <typename V>
+auto print(const V& value)
+{
+    if constexpr (std::is_pointer_v<V>)
+        std::clog << (value != nullptr ? value : "nullptr");
+    else if constexpr (std::is_enum_v<V>)
+        std::clog << std::to_underlying(value);
+    else if constexpr (std::chrono::is_clock_v<V>)
+        std::clog << std::format("{0:%F}T{0:%T}", value);
+    else
+        std::clog << std::boolalpha << value;
+}
+
 template<typename A,typename E>
 auto print(const bool ok, const A& actual, const E& expected, const std::source_location location1, const std::source_location location2 = std::source_location::current())
 {
@@ -238,22 +245,10 @@ auto print(const bool ok, const A& actual, const E& expected, const std::source_
         std::clog << function_name(location2);
         
         std::clog << " actual: ";
-
-        if constexpr (std::is_pointer_v<A>)
-            std::clog << (actual != nullptr ? actual : "nullptr");
-        else if constexpr (std::is_enum_v<A>)
-            std::clog << std::to_underlying(actual);
-        else
-            std::clog << std::boolalpha << actual;
+        print(actual);
 
         std::clog << " expected: ";
-
-        if constexpr (std::is_pointer_v<E>)
-            std::clog << (expected != nullptr ? expected : "nullptr");
-        else if constexpr (std::is_enum_v<E>)
-            std::clog << std::to_underlying(expected);
-        else
-            std::clog << std::boolalpha << expected;
+        print(expected);
 
         std::clog << " ";
 
