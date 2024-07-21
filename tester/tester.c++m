@@ -38,7 +38,7 @@ using test = std::function<void(void)>;
 
 struct test_case
 {
-    const std::string name;
+    const std::string test_name;
     const std::string_view file_name;
     const std::uint_least32_t line;
     const std::uint_least32_t column;
@@ -66,19 +66,17 @@ struct test_statistics
 
 auto statistics = test_statistics{0,0,0,0};
 
+auto stream = std::ostringstream{};
+
 export struct test_runner
 {
-    test_runner()
-    {
-        test_cases.reverse();
-    }
 
     auto print_test_cases()
     {
         for(auto t : test_cases)
         {
             std::clog << color::text::yellow
-                      << t.name
+                      << t.test_name
                       << " (" << t.file_name << " " << t.line << ':' << t.column << ")"
                       << color::reset << std::endl;
         }
@@ -89,34 +87,36 @@ export struct test_runner
         while(not test_cases.empty())
         {
             auto tc = test_cases.begin();
-            auto ts = test_result{*tc,true,""s};
+            auto tr = test_result{*tc,true,""s};
+            stream = std::ostringstream{};
 
             try
             {
-                std::clog << color::text::blue
-                          << tc->name << " "
-                          << "(" << tc->file_name << " " <<  tc->line << ":" <<  tc->column << ")"
-                          << color::reset << std::endl;
+                stream << color::text::blue
+                       << tc->test_name << " "
+                       << "(" << tc->file_name << " " <<  tc->line << ":" <<  tc->column << ")"
+                       << color::reset << std::endl;
 
                 ++statistics.total_tests;
                 tc->run();
                 ++statistics.successful_tests;
+                tr.output = stream.view();
             }
             catch(const std::exception& e)
             {
                 auto ss = std::ostringstream{};
                 ss << color::background::red
                    << e.what()
-                   << " " << tc->name << " "
+                   << " " << tc->test_name << " "
                    << "(" << tc->file_name << " " <<  tc->line << ":" <<  tc->column << ")"
                    << color::reset << std::endl;
 
-                   ts.success = false;
-                   ts.output = ss.view();
-                   std::clog << ss.view();
+                   tr.success = false;
+                   tr.output = ss.view();
+                   stream << ss.view();
             }
             test_cases.erase(tc);
-            test_results.push_back(ts);
+            test_results.push_back(tr);
         }
     }
 
@@ -124,6 +124,14 @@ export struct test_runner
     {
         std::clog << color::text::yellow
                   << "Test results" << '\n';
+        for(auto result : test_results)
+            std::clog << result.output;
+    }
+
+    auto print_test_failures()
+    {
+        std::clog << color::text::red
+                  << "Test failures" << '\n';
         for(auto result : test_results)
         {
             if(not result.success)
@@ -144,33 +152,50 @@ export struct test_runner
 
 };
 
-inline auto& make_test_case(std::string_view text, const std::source_location location1, const std::source_location location2 = std::source_location::current()) noexcept
+inline auto& make_test_case(std::string_view description, const std::source_location location1, const std::source_location location2 = std::source_location::current()) noexcept
 {
-    auto bdd = std::string_view{location2.function_name()};
+    auto test_type = std::string_view{location2.function_name()};
     
-    if(bdd.contains("behavior_driven_development::"))
-        bdd.remove_prefix(bdd.find("behavior_driven_development::") + "behavior_driven_development::"s.length());
+    if(test_type.contains("behavior_driven_development::"))
+        test_type.remove_prefix(test_type.find("behavior_driven_development::") + "behavior_driven_development::"s.length());
     else
-        bdd.remove_prefix(bdd.find("basic::") + "basic::"s.length());        
+        test_type.remove_prefix(test_type.find("basic::") + "basic::"s.length());        
 
-    bdd.remove_suffix(bdd.length() - bdd.find_first_of("("));
+    test_type.remove_suffix(test_type.length() - test_type.find_first_of("("));
 
-    auto name = std::string{bdd} + " -> "s + std::string{text};
+    auto test_name = std::string{test_type} + " -> "s + std::string{description};
+    auto test_case = tester::test_case{test_name,location1.file_name(),location1.line(),location1.column(),location2.function_name(),test{}};
 
-    test_cases.push_front({name,location1.file_name(),location1.line(),location1.column(),location2.function_name(),test{}});
-    return test_cases.front().run;
+    if(test_type.contains("scenario") or test_type.contains("test_case"))
+    {
+        test_cases.push_back(test_case);
+        return test_cases.back().run;
+    }
+    else
+    {
+        auto itr = test_cases.begin();
+        while(itr->test_name.starts_with(test_type)) // give, and_give, when, and_when, then, and_then, section
+           ++itr;
+        if(test_type.starts_with("and_"))
+        {
+            test_type.remove_prefix(4); // and_*
+            while(itr->test_name.starts_with(test_type)) // give, when, then
+               ++itr;
+        }
+        return test_cases.insert(itr,test_case)->run;
+    }
 }
 
 namespace basic
 {
-    export auto& test_case(std::string_view name, const std::source_location location = std::source_location::current()) noexcept
+    export auto& test_case(std::string_view test_name, const std::source_location location = std::source_location::current()) noexcept
     {
-        return make_test_case(name, location);
+        return make_test_case(test_name, location);
     }
 
-    export auto& section(std::string_view name, const std::source_location location = std::source_location::current()) noexcept
+    export auto& section(std::string_view test_name, const std::source_location location = std::source_location::current()) noexcept
     {
-        return make_test_case(name, location);
+        return make_test_case(test_name, location);
     }
 }
 
@@ -216,43 +241,43 @@ auto function_name(const std::source_location sl = std::source_location::current
 {
     auto function_name = std::string_view{sl.function_name()};
     function_name.remove_prefix(function_name.find("assertions::") + "assertions::"s.length());
-    auto name = function_name.substr(0,function_name.find_first_of("("));
+    auto test_name = function_name.substr(0,function_name.find_first_of("("));
     auto parameters = function_name.contains("[") ? function_name.substr(function_name.find_first_of("[")) : ""sv;
-    return std::string{name} + " -> "s + std::string{parameters};
+    return std::string{test_name} + " -> "s + std::string{parameters};
 }
 
 template <typename V>
 auto print(const V& value)
 {
     if constexpr (std::is_pointer_v<V>)
-        std::clog << (value != nullptr ? value : "nullptr");
+        stream << (value != nullptr ? value : "nullptr");
     else if constexpr (std::is_enum_v<V>)
-        std::clog << std::to_underlying(value);
+        stream << std::to_underlying(value);
     else if constexpr (std::chrono::is_clock_v<V>)
-        std::clog << std::format("{0:%F}T{0:%T}", value);
+        stream << std::format("{0:%F}T{0:%T}", value);
     else
-        std::clog << std::boolalpha << value;
+        stream << std::boolalpha << value;
 }
 
 template<typename A,typename E>
 auto print(const bool ok, const A& actual, const E& expected, const std::source_location location1, const std::source_location location2 = std::source_location::current())
 {
         if(ok)
-            std::clog << color::text::green;
+            stream << color::text::green;
         else
-            std::clog << color::text::red;
+            stream << color::text::red;
 
-        std::clog << function_name(location2);
+        stream << function_name(location2);
         
-        std::clog << " actual: ";
+        stream << " actual: ";
         print(actual);
 
-        std::clog << " expected: ";
+        stream << " expected: ";
         print(expected);
 
-        std::clog << " ";
+        stream << " ";
 
-        std::clog << "(" << location1.file_name() << " " << location1.line() << ":" << location1.column() << ")"
+        stream << "(" << location1.file_name() << " " << location1.line() << ":" << location1.column() << ")"
                   << color::reset << std::endl;
 }
 
