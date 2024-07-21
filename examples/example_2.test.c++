@@ -22,10 +22,10 @@ auto test_set()
                 {
                     and_then("food and drinks are delivered to the customer") = []
                     {
-                        std::clog << std::boolalpha << require_eq(123.34,456.876) << std::endl;
-                        std::clog << std::boolalpha << require_eq(123.34,123.34) << std::endl;
-                        std::clog << std::boolalpha << require_neq(123.34,456.876) << std::endl;
-                        std::clog << std::boolalpha << require_neq(123.34,123.34) << std::endl;
+                        require_eq(123.34,456.876);
+                        require_eq(123.34,123.34);
+                        require_neq(123.34,456.876);
+                        require_neq(123.34,123.34);
                     };
                 };
             };
