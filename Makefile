@@ -77,6 +77,8 @@ example-modules = $(wildcard $(exampledir)/*.c++m)
 example-sources = $(filter-out $(example-programs:%=$(exampledir)/%.c++), $(wildcard $(exampledir)/*.c++))
 example-objects = $(example-sources:$(exampledir)%.c++=$(objectdir)%.o) $(example-modules:$(exampledir)%.c++m=$(objectdir)%.o)
 
+libraries = $(submodules:%=$(librarydir)/lib%.a)
+
 ###############################################################################
 
 .PRECIOUS: %.deps $(moduledir)/%.pcm
@@ -109,21 +111,23 @@ $(library) : $(objects)
 	@mkdir -p $(@D)
 	$(AR) $(ARFLAGS) $@ $^
 
+###############################################################################
+
 $(moduledir)/%.pcm: $(exampledir)/%.c++m
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $< --precompile -c -o $@
+	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $< --precompile -c -o $@
 
 $(objectdir)/%.test.o: $(exampledir)/%.test.c++
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $< -c -o $@
+	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $< -c -o $@
 
 $(objectdir)/%.o: $(exampledir)/%.c++
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $< -c -o $@
 
-$(binarydir)/%: $(exampledir)/%.c++ $(example-objects) $(library)
+$(binarydir)/%: $(exampledir)/%.c++ $(example-objects) $(library) $(libraries)
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ -o $@
+	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $(LDFLAGS) $^ -o $@
 
 ###############################################################################
 
