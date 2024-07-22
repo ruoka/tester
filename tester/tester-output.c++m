@@ -122,21 +122,19 @@ void print(const bool ok, const A& actual, const E& expected, const std::source_
     stream << "(" << location1.file_name() << " " << location1.line() << ":" << location1.column() << ")"
                   << color::reset << std::endl;
 
-//    std::clog << stream.view();
+    std::clog << stream.view();
 }
 
-void print(const bool ok, std::string_view message, const std::source_location location1, const std::source_location location2 = std::source_location::current())
+void print(const bool ok, auto message, const std::source_location location1, const std::source_location location2 = std::source_location::current())
 {
     if(ok)
         stream << color::text::green;
     else
         stream << color::text::red;
 
-    stream << function_name(location2);
-        
-    stream << message;
+    stream << function_name(location2)
 
-    stream << " ";
+           << " " << message << " ";
 
     stream << "(" << location1.file_name() << " " << location1.line() << ":" << location1.column() << ")"
                   << color::reset << std::endl;
