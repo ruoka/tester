@@ -1,0 +1,112 @@
+export module tester:assertions;
+import :output;
+import :data;
+import std;
+
+namespace tester::assertions
+{
+    using data::test;
+    using data::statistics;
+    using output::print;
+
+    export template<template <typename> class M, typename A, typename E>
+    auto require(M<std::common_type_t<A,E>> match, A actual, E expected, const std::source_location location = std::source_location::current())
+    {
+        ++statistics.total_assertions;
+        const auto ok = match(actual,expected);
+        statistics.successful_assertions += ok;
+        print(ok,actual,expected,location);
+        return ok;
+    };
+
+    export template<typename A, typename E>
+    auto require_eq(A actual, E expected, const std::source_location location = std::source_location::current())
+    {
+        return require(std::equal_to<std::common_type_t<A,E>>{},actual,expected,location);
+    };
+
+    export template<typename A, typename E>
+    auto require_neq(A actual, E expected, const std::source_location location = std::source_location::current())
+    {
+        return require(std::not_equal_to<std::common_type_t<A,E>>{},actual,expected,location);
+    };
+
+    export template<typename A, typename E>
+    auto require_lt(A actual, E expected, const std::source_location location = std::source_location::current())
+    {
+        return require(std::less<std::common_type_t<A,E>>{},actual,expected,location);
+    };
+
+    export template<typename A, typename E>
+    auto require_lteq(A actual, E expected, const std::source_location location = std::source_location::current())
+    {
+        return require(std::less_equal<std::common_type_t<A,E>>{},actual,expected,location);
+    };
+
+    export template<typename A, typename E>
+    auto require_gt(A actual, E expected, const std::source_location location = std::source_location::current())
+    {
+        return require(std::greater<std::common_type_t<A,E>>{},actual,expected,location);
+    };
+
+    export template<typename A, typename E>
+    auto require_gteq(A actual, E expected, const std::source_location location = std::source_location::current())
+    {
+        return require(std::greater_equal<std::common_type_t<A,E>>{},actual,expected,location);
+    };
+
+    export auto require_true(bool actual, const std::source_location location = std::source_location::current())
+    {
+        return require(std::equal_to<bool>{},actual,true,location);
+    };
+
+    export auto require_false(bool actual, const std::source_location location = std::source_location::current())
+    {
+        return require(std::equal_to<bool>{},actual,false,location);
+    };
+
+    export auto require_nothrow(test t, const std::source_location location = std::source_location::current())
+    {
+        auto ok = true;
+        try
+        {
+            ++statistics.total_assertions;
+            t();
+        }
+        catch(...)
+        {
+            ok = not ok;
+        }
+        statistics.successful_assertions += ok;
+        print(ok,ok,true,location);
+    }
+
+    export auto require_throw(test t, const std::source_location location = std::source_location::current())
+    {
+        auto ok = true;
+        try
+        {
+            ++statistics.total_assertions;
+            t();
+            ok = not ok;
+        }
+        catch(...)
+        {}
+        statistics.successful_assertions += ok;
+        print(ok,ok,true,location);
+    }
+
+    export auto succeed(std::string_view message, const std::source_location location = std::source_location::current())
+    {
+        ++statistics.total_assertions;
+        ++statistics.successful_assertions;
+        print(true,message,location);
+    }
+
+    export auto failed(std::string_view message, const std::source_location location = std::source_location::current())
+    {
+        ++statistics.total_assertions;
+        print(false,message,location);
+    }
+
+}

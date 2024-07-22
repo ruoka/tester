@@ -1,0 +1,104 @@
+export module tester:output;
+import std;
+
+namespace tester::output
+{
+
+namespace color
+{
+    constinit auto reset   = "\033[0m";
+
+    namespace text
+    {
+        constinit auto black   = "\033[30m"; // black
+        constinit auto red     = "\033[31m"; // red
+        constinit auto green   = "\033[32m"; // green
+        constinit auto yellow  = "\033[33m"; // yellow
+        constinit auto blue    = "\033[34m"; // blue
+        constinit auto magenta = "\033[35m"; // magenta
+        constinit auto cyan    = "\033[36m"; // cyan
+        constinit auto white   = "\033[37m"; // white
+    }
+
+    namespace background
+    {
+        constinit auto black   = "\033[40m"; // black
+        constinit auto red     = "\033[41m"; // red
+        constinit auto green   = "\033[42m"; // green
+        constinit auto yellow  = "\033[43m"; // yellow
+        constinit auto blue    = "\033[44m"; // blue
+        constinit auto magenta = "\033[45m"; // magenta
+        constinit auto cyan    = "\033[46m"; // cyan
+        constinit auto white   = "\033[47m"; // white
+    }
+}
+
+auto stream = std::ostringstream{};
+
+auto function_name(const std::source_location sl = std::source_location::current())
+{
+    using namespace std::literals;
+    auto function_name = std::string_view{sl.function_name()};
+    function_name.remove_prefix(function_name.find("assertions::") + "assertions::"s.length());
+    auto test_name = function_name.substr(0,function_name.find_first_of("("));
+    auto parameters = function_name.contains("[") ? function_name.substr(function_name.find_first_of("[")) : ""sv;
+    return std::string{test_name} + " -> "s + std::string{parameters};
+}
+
+template <typename V>
+void print(const V& value)
+{
+    if constexpr (std::is_pointer_v<V>)
+        stream << (value != nullptr ? value : "nullptr");
+    else if constexpr (std::is_enum_v<V>)
+        stream << std::to_underlying(value);
+    else if constexpr (std::chrono::is_clock_v<V>)
+        stream << std::format("{0:%F}T{0:%T}", value);
+    else
+        stream << std::boolalpha << value;
+}
+
+template<typename A,typename E>
+void print(const bool ok, const A& actual, const E& expected, const std::source_location location1, const std::source_location location2 = std::source_location::current())
+{
+    if(ok)
+        stream << color::text::green;
+    else
+        stream << color::text::red;
+
+    stream << function_name(location2);
+        
+    stream << " actual: ";
+    print(actual);
+
+    stream << " expected: ";
+    print(expected);
+
+    stream << " ";
+
+    stream << "(" << location1.file_name() << " " << location1.line() << ":" << location1.column() << ")"
+                  << color::reset << std::endl;
+
+//    std::clog << stream.view();
+}
+
+void print(const bool ok, std::string_view message, const std::source_location location1, const std::source_location location2 = std::source_location::current())
+{
+    if(ok)
+        stream << color::text::green;
+    else
+        stream << color::text::red;
+
+    stream << function_name(location2);
+        
+    stream << message;
+
+    stream << " ";
+
+    stream << "(" << location1.file_name() << " " << location1.line() << ":" << location1.column() << ")"
+                  << color::reset << std::endl;
+
+    std::clog << stream.view();
+}
+
+}

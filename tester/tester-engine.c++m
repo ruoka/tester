@@ -1,0 +1,89 @@
+module tester:engine;
+import :output;
+import :data;
+import std;
+
+namespace tester::engine
+{
+using namespace data;
+using namespace std::literals;
+
+auto& make_test_case(std::string_view description, const std::source_location location1, const std::source_location location2 = std::source_location::current()) noexcept
+{
+    auto test_type = std::string_view{location2.function_name()};
+    
+    if(test_type.contains("behavior_driven_development::"))
+        test_type.remove_prefix(test_type.find("behavior_driven_development::") + "behavior_driven_development::"s.length());
+    else
+        test_type.remove_prefix(test_type.find("basic::") + "basic::"s.length());        
+
+    test_type.remove_suffix(test_type.length() - test_type.find_first_of("("));
+
+    auto test_name = std::string{test_type} + " -> "s + std::string{description};
+    auto test_case = data::test_case{test_name,location1.file_name(),location1.line(),location1.column(),location2.function_name(),data::test{}};
+
+    if(test_type.contains("scenario") or test_type.contains("test_case"))
+    {
+        test_cases.push_back(test_case);
+        return test_cases.back().run;
+    }
+    else
+    {
+        auto itr = test_cases.begin();
+        while(itr->test_name.starts_with("then") or
+             itr->test_name.starts_with("and_then") or
+            itr->test_name.starts_with(test_type)) // give, and_give, when, and_when, then, and_then, section
+           ++itr;
+        if(test_type.starts_with("and_"))
+        {
+            test_type.remove_prefix(4); // remove "and_"
+            while(itr->test_name.starts_with(test_type)) // mode and_give, and_when to the end
+               ++itr;
+        }
+        return test_cases.insert(itr,test_case)->run;
+    }
+}
+
+auto run_test_cases(auto filter)
+{
+        while(not test_cases.empty())
+        {
+            auto tc = test_cases.begin();
+            auto tr = test_result{*tc,true,""s};
+            output::stream = std::ostringstream{};
+
+            if(filter(*tc))
+            {
+                test_cases.erase(tc);
+                continue;
+            }
+
+            try
+            {
+                output::stream << output::color::text::blue
+                               << tc->test_name << " "
+                               << "(" << tc->file_name << " " <<  tc->line << ":" <<  tc->column << ")"
+                               << output::color::reset << std::endl;
+
+                ++statistics.total_tests;
+                tc->run();
+                ++statistics.successful_tests;
+            }
+            catch(const std::exception& e)
+            {
+                auto ss = std::ostringstream{};
+                ss << output::color::background::red
+                   << e.what()
+                   << " " << tc->test_name << " "
+                   << "(" << tc->file_name << " " <<  tc->line << ":" <<  tc->column << ")"
+                   << output::color::reset << std::endl;
+
+                   tr.success = false;
+                   output::stream << ss.view();
+            }
+            tr.output = output::stream.view();
+            test_cases.erase(tc);
+            test_results.push_back(tr);
+        }
+    }
+}

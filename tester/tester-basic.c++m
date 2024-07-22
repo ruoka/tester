@@ -1,0 +1,18 @@
+export module tester:basic;
+import :engine;
+import std;
+
+namespace tester::basic
+{
+    using engine::make_test_case;
+
+    export auto& test_case(std::string_view test_name, const std::source_location location = std::source_location::current()) noexcept
+    {
+        return make_test_case(test_name, location);
+    }
+
+    export auto& section(std::string_view test_name, const std::source_location location = std::source_location::current()) noexcept
+    {
+        return make_test_case(test_name, location);
+    }
+}

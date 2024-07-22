@@ -1,0 +1,39 @@
+module tester:data;
+import std;
+
+namespace tester::data
+{
+
+using test = std::function<void(void)>;
+
+struct test_case
+{
+    const std::string test_name;
+    const std::string_view file_name;
+    const std::uint_least32_t line;
+    const std::uint_least32_t column;
+    const std::string_view function_name;
+    test run;
+};
+
+auto test_cases = std::list<test_case>{};
+
+struct test_result : public test_case
+{
+    bool success;
+    std::string output;
+};
+
+auto test_results = std::list<test_result>{};
+
+struct test_statistics
+{
+    std::size_t successful_tests;
+    std::size_t total_tests;
+    std::size_t successful_assertions;
+    std::size_t total_assertions;
+};
+
+auto statistics = test_statistics{0,0,0,0};
+
+}
