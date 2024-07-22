@@ -1,8 +1,10 @@
 export module tester:output;
+import :data;
 import std;
 
 namespace tester::output
 {
+using namespace data;
 
 namespace color
 {
@@ -31,6 +33,47 @@ namespace color
         constinit auto cyan    = "\033[46m"; // cyan
         constinit auto white   = "\033[47m"; // white
     }
+}
+
+auto print_test_cases(auto included)
+{
+    std::clog << "Test cases:\n";
+    for(auto tc : test_cases)
+        if(included(tc))
+            std::clog << color::text::yellow
+                      << tc.test_name
+                      << " (" << tc.file_name << " " << tc.line << ':' << tc.column << ")"
+                      << color::reset << std::endl;
+}
+
+auto print_test_results()
+{
+    std::clog << color::text::yellow
+              << "Test results:"
+              << color::reset << '\n';
+    for(auto result : test_results)
+        std::clog << result.output;
+}
+
+auto print_test_failures()
+{
+    std::clog << color::text::red
+              << "Test failures:"
+              << color::reset << '\n';
+    for(auto result : test_results)
+        if(not result.success)
+            std::clog << result.output;
+}
+
+auto print_test_statistics()
+{
+    std::clog << color::text::yellow
+              << "Test statistics:" << '\n'
+              << "total tests: "<< statistics.total_tests << '\n'
+              << "successful tests: "<< statistics.successful_tests << '\n'
+              << "total assertions: "<< statistics.total_assertions << '\n'
+              << "successful assertions: "<< statistics.successful_assertions
+              << color::reset << std::endl;
 }
 
 auto stream = std::ostringstream{};

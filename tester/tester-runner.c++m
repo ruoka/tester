@@ -1,6 +1,5 @@
 export module tester:runner;
 import: output;
-import: data;
 import: engine;
 import std;
 
@@ -19,13 +18,7 @@ public:
 
     auto print_test_cases()
     {
-        std::clog << "Test cases:\n";
-        for(auto tc : test_cases)
-            if(included(tc))
-                std::clog << output::color::text::yellow
-                          << tc.test_name
-                          << " (" << tc.file_name << " " << tc.line << ':' << tc.column << ")"
-                          << output::color::reset << std::endl;
+        output::print_test_cases([this](const auto& tc){return this->included(tc);});
     }
 
     auto run_tests()
@@ -35,32 +28,17 @@ public:
 
     auto print_test_results()
     {
-        std::clog << output::color::text::yellow
-                  << "Test results:"
-                  << output::color::reset << '\n';
-        for(auto result : test_results)
-            std::clog << result.output;
+        output::print_test_results();
     }
 
     auto print_test_failures()
     {
-        std::clog << output::color::text::red
-                  << "Test failures:"
-                  << output::color::reset << '\n';
-        for(auto result : test_results)
-            if(not result.success)
-                std::clog << result.output;
+        output::print_test_failures();
     }
 
     auto print_test_statistics()
     {
-        std::clog << output::color::text::yellow
-                  << "Test statistics:" << '\n'
-                  << "total tests: "<< statistics.total_tests << '\n'
-                  << "successful tests: "<< statistics.successful_tests << '\n'
-                  << "total assertions: "<< statistics.total_assertions << '\n'
-                  << "successful assertions: "<< statistics.successful_assertions
-                  << output::color::reset << std::endl;
+        output::print_test_statistics();
     }
 
 private:
