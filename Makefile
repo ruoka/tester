@@ -46,12 +46,15 @@ export CC
 export CXX
 export CXXFLAGS
 export LDFLAGS
+export PCMFLAGS
+
+PCMFLAGS = -fno-implicit-modules -fno-implicit-module-maps
 
 endif # ($(MAKELEVEL),0)
 
-PCMFLAGS = -fno-implicit-modules -fno-implicit-module-maps
 PCMFLAGS += $(foreach P, $(foreach M, $(modules) $(example-modules), $(basename $(notdir $(M)))), -fmodule-file=$(subst -,:,$(P))=$(moduledir)/$(P).pcm)
 PCMFLAGS += -fmodule-file=std=$(moduledir)/std.pcm
+PCMFLAGS += -fprebuilt-module-path=$(moduledir)/
 
 ###############################################################################
 
