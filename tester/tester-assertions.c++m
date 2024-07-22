@@ -5,6 +5,7 @@ import std;
 
 namespace tester::assertions
 {
+    using namespace std::literals;
     using data::test;
     using data::statistics;
     using output::print;
@@ -68,32 +69,82 @@ namespace tester::assertions
     export auto require_nothrow(test t, const std::source_location location = std::source_location::current())
     {
         auto ok = true;
+        auto actual = "none"sv;
+        const auto expected = "none"sv;
         try
         {
             ++statistics.total_assertions;
             t();
+            ok = ok;
+        }
+         catch(const std::exception& e)
+        {
+            ok = not ok;
+            actual = typeid(e).name();
         }
         catch(...)
         {
             ok = not ok;
+            actual = "?"sv;
         }
         statistics.successful_assertions += ok;
-        print(ok,ok,true,location);
+        print(ok,actual,expected,location);
     }
 
-    export auto require_throw(test t, const std::source_location location = std::source_location::current())
+    export auto require_throws(test t, const std::source_location location = std::source_location::current())
     {
         auto ok = true;
+        auto actual = "?"sv;
+        const auto expected = "any"sv;
+        try
+        {
+            ++statistics.total_assertions;
+            t();
+            ok = not ok;
+            actual = "none"sv;
+        }
+         catch(const std::exception& e)
+        {
+            ok = ok;
+            actual = typeid(e).name();
+        }
+        catch(...)
+        {
+            ok = ok;
+            actual = "?"sv;
+        }
+        statistics.successful_assertions += ok;
+        print(ok,actual,expected,location);
+    }
+
+    export template<typename E>
+    auto require_throws_as(test t, E exception, const std::source_location location = std::source_location::current())
+    {
+        auto ok = true;
+        auto actual = "?"sv;
+        const auto expected = typeid(E).name();
         try
         {
             ++statistics.total_assertions;
             t();
             ok = not ok;
         }
+        catch(const E&)
+        {
+            ok = ok;
+            actual = typeid(E).name();
+        }
+        catch(const std::exception& e)
+        {
+            ok = not ok;
+            actual = typeid(e).name();
+        }
         catch(...)
-        {}
+        {
+            ok = not ok;
+        }
         statistics.successful_assertions += ok;
-        print(ok,ok,true,location);
+        print(ok,actual,expected,location);
     }
 
     export auto succeed(std::string_view message, const std::source_location location = std::source_location::current())

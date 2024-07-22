@@ -1,8 +1,7 @@
-module;
-#include <exception>
 module foo;
 import :bar;
 import tester;
+import std;
 
 namespace foo::bar {
 
@@ -32,12 +31,17 @@ auto test_set()
             require_nothrow([]{throw std::exception{};});
         };
 
-        section("Test throw") = []
+        section("Test throws") = []
         {
-            require_throw([]{throw std::exception{};});
-            require_throw([]{});
+            require_throws([]{throw std::exception{};});
+            require_throws([]{});
         };
 
+        section("Test throw") = []
+        {
+            require_throws_as([]{throw std::out_of_range{"test"};}, std::out_of_range{"test"});
+            require_throws_as([]{throw std::runtime_error{"test"};}, std::out_of_range{"test"});
+        };
     };
 
     return 0;

@@ -39,7 +39,7 @@ auto test_set()
                         require_false(true);
                         require_true(false);
                         require_nothrow([]{});
-                        require_throw([]{throw 1;});
+                        require_throws([]{throw 1;});
                     };
                 };
             };
