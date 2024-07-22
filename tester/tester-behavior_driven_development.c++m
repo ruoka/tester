@@ -1,0 +1,43 @@
+export module tester:behavior_driven_development;
+import :engine;
+import std;
+
+namespace tester::behavior_driven_development
+{
+    using tester::engine::make_test_case;
+
+    export auto& scenario(std::string_view description, const std::source_location location = std::source_location::current()) noexcept
+    {
+        return make_test_case(description, location);
+    }
+
+    export auto& given(std::string_view description, const std::source_location location = std::source_location::current()) noexcept
+    {
+        return make_test_case(description, location);
+    }
+
+    export auto& and_given(std::string_view description, const std::source_location location = std::source_location::current()) noexcept
+    {
+        return make_test_case(description, location);
+    }
+
+    export auto& when(std::string_view description, const std::source_location location = std::source_location::current()) noexcept
+    {
+        return make_test_case(description, location);
+    }
+
+    export auto& and_when(std::string_view description, const std::source_location location = std::source_location::current()) noexcept
+    {
+        return make_test_case(description, location);
+    }
+
+    export auto& then(std::string_view description, const std::source_location location = std::source_location::current()) noexcept
+    {
+        return make_test_case(description, location);
+    }
+
+    export auto& and_then(std::string_view description, const std::source_location location = std::source_location::current()) noexcept
+    {
+        return make_test_case(description, location);
+    }
+}
