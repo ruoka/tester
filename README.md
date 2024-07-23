@@ -1,5 +1,9 @@
 # C++ module-based testing framework with C++23 features
 
+## Makefile
+
+make clean deps run_examples
+
 ## Simple example
 
 ```c++
@@ -107,15 +111,18 @@ const auto test_registrar = test_set();
 ## Test runner
 
 ```c++
+import std;
 import tester;
 
 int main()
 {
-    tester::test_runner tr;
+    auto tr = tester::runner{tags};
     tr.print_test_cases();
     tr.run_tests();
     tr.print_test_results();
+    tr.print_test_failures();
     tr.print_test_statistics();
     return 0;
+}
 }
 ```
