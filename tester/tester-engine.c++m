@@ -3,8 +3,8 @@ import :output;
 import :data;
 import std;
 
-namespace tester::engine
-{
+namespace tester::engine {
+
 using namespace data;
 using namespace std::literals;
 
@@ -14,13 +14,15 @@ auto& make_test_case(std::string_view description, const std::source_location lo
     
     if(test_type.contains("behavior_driven_development::"))
         test_type.remove_prefix(test_type.find("behavior_driven_development::") + "behavior_driven_development::"s.length());
+    else if (test_type.contains("basic::"))
+        test_type.remove_prefix(test_type.find("basic::") + "basic::"s.length());
     else
-        test_type.remove_prefix(test_type.find("basic::") + "basic::"s.length());        
+        std::terminate();
 
     test_type.remove_suffix(test_type.length() - test_type.find_first_of("("));
 
     auto test_name = std::string{test_type} + " -> "s + std::string{description};
-    auto test_case = data::test_case{test_name,location1.file_name(),location1.line(),location1.column(),location2.function_name(),data::test{}};
+    auto test_case = data::test_case{{test_name,location1.file_name(),location1.line(),location1.column(),location2.function_name()},data::test{}};
 
     if(test_type.contains("scenario") or test_type.contains("test_case"))
     {
@@ -42,49 +44,34 @@ auto& make_test_case(std::string_view description, const std::source_location lo
 
 auto run_test_cases(auto filter)
 {
-        while(not test_cases.empty())
+    while(not test_cases.empty())
+    {
+        auto tc = test_cases.begin();
+
+        if(filter(*tc))
         {
-            auto tc = test_cases.begin();
-//          auto tr = test_result{*tc,true,""s};
-//          tr.run = []{}; // FIXME
-            auto tr = test_result{{tc->test_name,tc->file_name,tc->line,tc->column,tc->function_name,[]{}},true,""s};
-            output::stream = std::ostringstream{};
-
-            if(filter(*tc))
-            {
-                test_cases.erase(tc);
-                continue;
-            }
-
-            try
-            {
-                output::stream << output::color::text::blue
-                               << tc->test_name << " "
-                               << "(" << tc->file_name << " " <<  tc->line << ":" <<  tc->column << ")"
-                               << output::color::reset << '\n';
-
-                ++statistics.total_tests;
-                tc->run();
-                ++statistics.successful_tests;
-            }
-            catch(const std::exception& e)
-            {
-                auto ss = std::ostringstream{};
-                ss << output::color::background::red
-                   << e.what()
-                   << " " << tc->test_name << " "
-                   << "(" << tc->file_name << " " <<  tc->line << ":" <<  tc->column << ")"
-                   << output::color::reset << '\n';
-
-                tr.success = false;
-                output::stream << ss.view();
-
-                std::clog << ss.view() << std::flush;
-            }
             test_cases.erase(tc);
-            tr.output = output::stream.view();
-            test_results.push_back(tr);
+            continue;
         }
-        test_cases.clear();
+
+        output::test_case(*tc);
+
+        auto tr = test_result{*tc};
+        try
+        {
+            ++statistics.total_tests;
+            tc->run();
+            ++statistics.successful_tests;
+        }
+        catch(const std::exception& ex)
+        {
+            tr.success = false;
+            output::exception(*tc,ex);
+        }
+        test_cases.erase(tc);
+        tr.output = output::stream.view();
+        test_results.push_back(tr);
     }
+}
+
 }
