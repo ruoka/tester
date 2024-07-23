@@ -8,7 +8,6 @@ namespace tester::assertions
     using namespace std::literals;
     using data::test;
     using data::statistics;
-    using output::print;
 
     export template<template <typename> class M, typename A, typename E>
     auto require(M<std::common_type_t<A,E>> match, A actual, E expected, const std::source_location location = std::source_location::current())
@@ -16,7 +15,7 @@ namespace tester::assertions
         ++statistics.total_assertions;
         const auto ok = match(actual,expected);
         statistics.successful_assertions += ok;
-        print(ok,actual,expected,location);
+        output::assertion(ok,actual,expected,location);
         return ok;
     };
 
@@ -75,7 +74,7 @@ namespace tester::assertions
         {
             ++statistics.total_assertions;
             t();
-            ok = ok;
+            // ok = ok;
         }
          catch(const std::exception& e)
         {
@@ -88,7 +87,7 @@ namespace tester::assertions
             actual = "?"sv;
         }
         statistics.successful_assertions += ok;
-        print(ok,actual,expected,location);
+        output::assertion(ok,actual,expected,location);
     }
 
     export auto require_throws(test t, const std::source_location location = std::source_location::current())
@@ -105,16 +104,16 @@ namespace tester::assertions
         }
          catch(const std::exception& e)
         {
-            ok = ok;
+            // ok = ok;
             actual = typeid(e).name();
         }
         catch(...)
         {
-            ok = ok;
+            // ok = ok;
             actual = "?"sv;
         }
         statistics.successful_assertions += ok;
-        print(ok,actual,expected,location);
+        output::assertion(ok,actual,expected,location);
     }
 
     export template<typename E>
@@ -131,7 +130,7 @@ namespace tester::assertions
         }
         catch(const E&)
         {
-            ok = ok;
+            // ok = ok;
             actual = typeid(E).name();
         }
         catch(const std::exception& e)
@@ -144,20 +143,25 @@ namespace tester::assertions
             ok = not ok;
         }
         statistics.successful_assertions += ok;
-        print(ok,actual,expected,location);
+        output::assertion(ok,actual,expected,location);
     }
 
-    export auto succeed(std::string_view message, const std::source_location location = std::source_location::current())
+    export auto succeed(auto message, const std::source_location location = std::source_location::current())
     {
         ++statistics.total_assertions;
         ++statistics.successful_assertions;
-        print(true,message,location);
+        output::message(true,message,location);
     }
 
-    export auto failed(std::string_view message, const std::source_location location = std::source_location::current())
+    export auto failed(auto message, const std::source_location location = std::source_location::current())
     {
         ++statistics.total_assertions;
-        print(false,message,location);
+        output::message(false,message,location);
+    }
+
+    export auto warning(auto message, const std::source_location location = std::source_location::current())
+    {
+        output::message(true,message,location);
     }
 
 }
