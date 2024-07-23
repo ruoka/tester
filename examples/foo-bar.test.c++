@@ -25,7 +25,7 @@ auto test_set()
             require_neq(prt, "blah");
         };
 
-        section("est nothrow") = []
+        section("test nothrow") = []
         {
             require_nothrow([]{});
             require_nothrow([]{throw std::exception{};});
