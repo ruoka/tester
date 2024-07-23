@@ -4,7 +4,6 @@ import std;
 
 namespace tester::output
 {
-using namespace data;
 
 namespace color
 {
@@ -35,7 +34,9 @@ namespace color
     }
 }
 
-auto print_test_cases(auto included)
+using namespace data;
+
+void print_test_cases(auto included)
 {
     std::clog << "Test cases:\n";
     for(auto tc : test_cases)
@@ -46,7 +47,7 @@ auto print_test_cases(auto included)
                       << color::reset << std::endl;
 }
 
-auto print_test_results()
+void print_test_results()
 {
     std::clog << color::text::yellow
               << "Test results:"
@@ -55,17 +56,18 @@ auto print_test_results()
         std::clog << result.output;
 }
 
-auto print_test_failures()
+void print_test_failures()
 {
     std::clog << color::text::red
               << "Test failures:"
               << color::reset << '\n';
+
     for(auto result : test_results)
         if(not result.success)
             std::clog << result.output;
 }
 
-auto print_test_statistics()
+void print_test_statistics()
 {
     std::clog << color::text::yellow
               << "Test statistics:" << '\n'
@@ -76,7 +78,32 @@ auto print_test_statistics()
               << color::reset << std::endl;
 }
 
+auto verbose = true;
+
 auto stream = std::ostringstream{};
+
+void reset()
+{
+    output::stream = std::ostringstream{};
+}
+
+void test_case(const auto& tc)
+{
+    reset();
+    stream << output::color::text::blue
+           << tc.test_name << " "
+           << "(" << tc.file_name << " " <<  tc.line << ":" <<  tc.column << ")"
+           << output::color::reset << '\n';
+}
+
+void exception(const auto& tc, const auto& ex)
+{
+    stream << output::color::background::red
+           << ex.what()
+           << " " << tc.test_name << " "
+           << "(" << tc.file_name << " " <<  tc.line << ":" <<  tc.column << ")"
+           << output::color::reset << '\n';
+}
 
 auto function_name(const std::source_location sl = std::source_location::current())
 {
@@ -89,20 +116,20 @@ auto function_name(const std::source_location sl = std::source_location::current
 }
 
 template <typename V>
-void print(const V& value)
+void value(const V& val)
 {
     if constexpr (std::is_pointer_v<V>)
-        stream << (value != nullptr ? value : "nullptr");
+        stream << (val != nullptr ? val : "nullptr");
     else if constexpr (std::is_enum_v<V>)
-        stream << std::to_underlying(value);
+        stream << std::to_underlying(val);
     else if constexpr (std::chrono::is_clock_v<V>)
-        stream << std::format("{0:%F}T{0:%T}", value);
+        stream << std::format("{0:%F}T{0:%T}", val);
     else
-        stream << std::boolalpha << value;
+        stream << std::boolalpha << val;
 }
 
 template<typename A,typename E>
-void print(const bool ok, const A& actual, const E& expected, const std::source_location location1, const std::source_location location2 = std::source_location::current())
+void assertion(const bool ok, const A& actual, const E& expected, const std::source_location location1, const std::source_location location2 = std::source_location::current())
 {
     if(ok)
         stream << color::text::green;
@@ -112,23 +139,23 @@ void print(const bool ok, const A& actual, const E& expected, const std::source_
     stream << function_name(location2);
         
     stream << " actual: ";
-    print(actual);
+    value(actual);
 
     stream << " expected: ";
-    print(expected);
+    value(expected);
 
     stream << " ";
 
     stream << "(" << location1.file_name() << " " << location1.line() << ":" << location1.column() << ")"
                   << color::reset << std::endl;
 
-    std::clog << stream.view();
+    if(verbose) std::clog << stream.view();
 }
 
-void print(const bool ok, auto message, const std::source_location location1, const std::source_location location2 = std::source_location::current())
+void message(const bool ok, auto message, const std::source_location location1, const std::source_location location2 = std::source_location::current())
 {
     if(ok)
-        stream << color::text::green;
+        stream << color::text::yellow;
     else
         stream << color::text::red;
 
@@ -139,7 +166,7 @@ void print(const bool ok, auto message, const std::source_location location1, co
     stream << "(" << location1.file_name() << " " << location1.line() << ":" << location1.column() << ")"
                   << color::reset << std::endl;
 
-    std::clog << stream.view();
+    if(verbose) std::clog << stream.view();
 }
 
 }
