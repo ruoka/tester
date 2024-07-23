@@ -13,7 +13,7 @@ export class runner
 {
 public:
 
-    runner(std::string_view tests = "") : m_tests{tests}
+    runner(std::string_view tags = "") : m_tags{tags}
     {}
 
     auto print_test_cases()
@@ -43,13 +43,13 @@ public:
 
 private:
 
-    std::string_view m_tests;
+    std::string_view m_tags;
 
     bool included(const test_case& tc) const
     {
-        return m_tests.empty() or
+        return m_tags.empty() or
                not (tc.test_name.starts_with("scenario") or tc.test_name.starts_with("test_case")) or
-               tc.test_name.contains(m_tests);
+               tc.test_name.contains(m_tags);
     }
 
     bool excluded(const test_case& tc) const
