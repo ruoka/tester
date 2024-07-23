@@ -30,16 +30,12 @@ auto& make_test_case(std::string_view description, const std::source_location lo
     else
     {
         auto itr = test_cases.begin();
-        while(itr->test_name.starts_with("then") or
-             itr->test_name.starts_with("and_then") or
-            itr->test_name.starts_with(test_type)) // give, and_give, when, and_when, then, and_then, section
-           ++itr;
         if(test_type.starts_with("and_"))
-        {
             test_type.remove_prefix(4); // remove "and_"
-            while(itr->test_name.starts_with(test_type)) // mode and_give, and_when to the end
-               ++itr;
-        }
+        while(itr->test_name.starts_with("then") or
+              itr->test_name.starts_with("and_then") or
+              itr->test_name.contains(test_type)) // given, and_given, when, and_when, section
+           ++itr;
         return test_cases.insert(itr,test_case)->run;
     }
 }
@@ -49,7 +45,9 @@ auto run_test_cases(auto filter)
         while(not test_cases.empty())
         {
             auto tc = test_cases.begin();
-            auto tr = test_result{*tc,true,""s};
+//          auto tr = test_result{*tc,true,""s};
+//          tr.run = []{}; // FIXME
+            auto tr = test_result{{tc->test_name,tc->file_name,tc->line,tc->column,tc->function_name,[]{}},true,""s};
             output::stream = std::ostringstream{};
 
             if(filter(*tc))
@@ -63,7 +61,7 @@ auto run_test_cases(auto filter)
                 output::stream << output::color::text::blue
                                << tc->test_name << " "
                                << "(" << tc->file_name << " " <<  tc->line << ":" <<  tc->column << ")"
-                               << output::color::reset << std::endl;
+                               << output::color::reset << '\n';
 
                 ++statistics.total_tests;
                 tc->run();
@@ -76,14 +74,17 @@ auto run_test_cases(auto filter)
                    << e.what()
                    << " " << tc->test_name << " "
                    << "(" << tc->file_name << " " <<  tc->line << ":" <<  tc->column << ")"
-                   << output::color::reset << std::endl;
+                   << output::color::reset << '\n';
 
-                   tr.success = false;
-                   output::stream << ss.view();
+                tr.success = false;
+                output::stream << ss.view();
+
+                std::clog << ss.view() << std::flush;
             }
-            tr.output = output::stream.view();
             test_cases.erase(tc);
+            tr.output = output::stream.view();
             test_results.push_back(tr);
         }
+        test_cases.clear();
     }
 }
