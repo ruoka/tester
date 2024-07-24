@@ -43,6 +43,7 @@ auto example_3()
                     failed(test);
                 };               
             };
+
             and_when("having another when section") = [=]
             {
                 then("it also works")= [=]

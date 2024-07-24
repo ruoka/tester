@@ -30,7 +30,7 @@ auto test_set()
                 };
             };
 
-            when("customers calls WOLT") = []
+            and_when("customers calls WOLT") = []
             {
                 and_when("WOLT driver is available") = []
                 {
