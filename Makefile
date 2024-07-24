@@ -141,15 +141,15 @@ $(dependencies): $(modules) $(sources)
 
 ###############################################################################
 
-$(foreach M, $(submodules), $(MAKE) -C $(M) deps PREFIX=..):
+$(foreach M, $(submodules), $(MAKE) -C $(M) deps PREFIX=../$(PREFIX)):
 
 $(foreach M, $(submodules), $(moduledir)/$(M).pcm):
 #	git submodule update --init --depth 1
-	$(MAKE) -C $(basename $(@F)) module PREFIX=..
+	$(MAKE) -C $(basename $(@F)) module PREFIX=../$(PREFIX)
 
 $(librarydir)/%.a:
 #	git submodule update --init --depth 1
-	$(MAKE) -C $(subst lib,,$(basename $(@F))) module PREFIX=..
+	$(MAKE) -C $(subst lib,,$(basename $(@F))) module PREFIX==../$(PREFIX)
 
 ###############################################################################
 
