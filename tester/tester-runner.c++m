@@ -1,6 +1,6 @@
 export module tester:runner;
-import: output;
-import: engine;
+import :output;
+import :engine;
 import std;
 
 namespace tester
