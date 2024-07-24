@@ -149,7 +149,7 @@ $(foreach M, $(submodules), $(moduledir)/$(M).pcm):
 
 $(librarydir)/%.a:
 #	git submodule update --init --depth 1
-	$(MAKE) -C $(subst lib,,$(basename $(@F))) module PREFIX==../$(PREFIX)
+	$(MAKE) -C $(subst lib,,$(basename $(@F))) module PREFIX=../$(PREFIX)
 
 ###############################################################################
 
