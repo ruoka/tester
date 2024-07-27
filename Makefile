@@ -1,14 +1,8 @@
 # Inspired by https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1204r0.html
 
-###############################################################################
-
 submodules = std
 
 ###############################################################################
-
-.SUFFIXES:
-.SUFFIXES: .c++m .c++ .test.c++ .pcm .o .test.o
-.DEFAULT_GOAL = run_examples
 
 ifeq ($(MAKELEVEL),0)
 
@@ -46,12 +40,10 @@ export CC
 export CXX
 export CXXFLAGS
 export LDFLAGS
-export PCMFLAGS
-
-PCMFLAGS = -fno-implicit-modules -fno-implicit-module-maps
 
 endif # ($(MAKELEVEL),0)
 
+PCMFLAGS = -fno-implicit-modules -fno-implicit-module-maps
 PCMFLAGS += $(foreach P, $(foreach M, $(modules) $(example-modules), $(basename $(notdir $(M)))), -fmodule-file=$(subst -,:,$(P))=$(moduledir)/$(P).pcm)
 PCMFLAGS += -fmodule-file=std=$(moduledir)/std.pcm
 PCMFLAGS += -fprebuilt-module-path=$(moduledir)/
@@ -80,27 +72,15 @@ example-modules = $(wildcard $(exampledir)/*.c++m)
 example-sources = $(filter-out $(example-programs:%=$(exampledir)/%.c++), $(wildcard $(exampledir)/*.c++))
 example-objects = $(example-sources:$(exampledir)%.c++=$(objectdir)%.o) $(example-modules:$(exampledir)%.c++m=$(objectdir)%.o)
 
+###############################################################################
+
 libraries = $(submodules:%=$(librarydir)/lib%.a)
 
 ###############################################################################
 
-.PRECIOUS: %.deps $(moduledir)/%.pcm
-
-###############################################################################
-
-$(foreach P, $(submodules), $(moduledir)/$(P).pcm):
-#	git submodule update --init --depth 1
-	$(MAKE) -C $(subst lib,,$(basename $(@F))) module PREFIX=..
-
-$(librarydir)/%.a:
-#	git submodule update --init --depth 1
-	$(MAKE) -C $(subst lib,,$(basename $(@F))) module PREFIX=..
-
-###############################################################################
-
-$(objectdir)/%.o: $(moduledir)/%.pcm
-	@mkdir -p $(@D)
-	$(CXX) $(PCMFLAGS) $< -c -o $@
+.SUFFIXES:
+.SUFFIXES: .deps .c++m .c++ .test.c++ .pcm .o .test.o .a
+.PRECIOUS: $(objectdir)/%.deps $(moduledir)/%.pcm
 
 $(moduledir)/%.pcm: $(sourcedir)/%.c++m
 	@mkdir -p $(@D)
@@ -134,35 +114,55 @@ $(binarydir)/%: $(exampledir)/%.c++ $(example-objects) $(library) $(libraries)
 
 ###############################################################################
 
-dependencies = ./Makefile.deps
-
-.PHONY: $(temp)
-
-temp = $(addprefix deps_,$(sourcedirs))
-
-.PHONY: deps
-
-deps: $(temp)
-	@cat $(dependencies)
-
-$(temp): deps_%:
-	@mkdir -p $(objectdir)
-	@grep -HE '^[ ]*export[ ]+module' $*/*.c++m | sed -E 's|.+/([a-z_0-9\-]+)\.c\+\+m.+|$(objectdir)/\1.o: $(moduledir)/\1.pcm|' >> $(dependencies)
-	@grep -HE '^[ ]*export[ ]+import[ ]+([a-z_0-9]+)' $*/*.c++m | sed -E 's|.+/([a-z_0-9\-]+)\.c\+\+m:[ ]*import[ ]+([a-z_0-9]+)[ ]*;|$(moduledir)/\1.pcm: $(moduledir)/\2.pcm|' >> $(dependencies)
-	@grep -HE '^[ ]*import[ ]+([a-z_0-9]+)' $*/*.c++m | sed -E 's|.+/([a-z_0-9\-]+)\.c\+\+m:[ ]*import[ ]+([a-z_0-9]+)[ ]*;|$(moduledir)/\1.pcm: $(moduledir)/\2.pcm|' >> $(dependencies)
-	@grep -HE '^[ ]*export[ ]+[ ]*import[ ]+:([a-z_0-9]+)' $*/*.c++m | sed -E 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9]*)\.c\+\+m:.*import[ ]+:([a-z_0-9]+)[ ]*;|$(moduledir)/\1\2\3.pcm: $(moduledir)/\1\-\4.pcm|' >> $(dependencies)
-	@grep -HE '^[ ]*import[ ]+:([a-z_0-9]+)' $*/*.c++m | sed -E 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9]*)\.c\+\+m:.*import[ ]+:([a-z_0-9]+)[ ]*;|$(moduledir)/\1\2\3.pcm: $(moduledir)/\1\-\4.pcm|' >> $(dependencies)
-	@grep -HE '^[ ]*module[ ]+([a-z_0-9]+)' $*/*.c++ | sed -E 's|.+/([a-z_0-9\.\-]+)\.c\+\+:[ ]*module[ ]+([a-z_0-9]+)[ ]*;|$(objectdir)/\1.o: $(moduledir)/\2.pcm|' >> $(dependencies)
-	@grep -HE '^[ ]*import[ ]+([a-z_0-9]+)' $*/*.c++ | sed -E 's|.+/([a-z_0-9\.\-]+)\.c\+\+:[ ]*import[ ]+([a-z_0-9]+)[ ]*;|$(objectdir)/\1.o: $(moduledir)/\2.pcm|' >> $(dependencies)
-	@grep -HE '^[ ]*import[ ]+:([a-z_0-9]+)' $*/*.c++ | sed -E 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9\.]*)\.c\+\+:.*import[ ]+:([a-z_0-9]+)[ ]*;|$(objectdir)/\1\2\3.o: $(moduledir)/\1\-\4.pcm|'|  >> $(dependencies)
+$(objectdir)/%.o: $(moduledir)/%.pcm
+	@mkdir -p $(@D)
+	$(CXX) $(PCMFLAGS) $< -c -o $@
 
 ###############################################################################
 
-.PHONY: all
-all: module
+dependencies = $(foreach D, $(sourcedirs), $(objectdir)/$(D).deps)
+
+define create_dependency_hierarchy
+	-grep -HE '^[ ]*export[ ]+module' $(1)/*.c++m | sed -E 's|.+/([a-z_0-9\-]+)\.c\+\+m.+|$(objectdir)/\1.o: $(moduledir)/\1.pcm|' >> $(2)
+	-grep -HE '^[ ]*export[ ]+import[ ]+([a-z_0-9]+)' $(1)/*.c++m | sed -E 's|.+/([a-z_0-9\-]+)\.c\+\+m:[ ]*import[ ]+([a-z_0-9]+)[ ]*;|$(moduledir)/\1.pcm: $(moduledir)/\2.pcm|' >> $(2)
+	-grep -HE '^[ ]*import[ ]+([a-z_0-9]+)' $(1)/*.c++m | sed -E 's|.+/([a-z_0-9\-]+)\.c\+\+m:[ ]*import[ ]+([a-z_0-9]+)[ ]*;|$(moduledir)/\1.pcm: $(moduledir)/\2.pcm|' >> $(2)
+	-grep -HE '^[ ]*export[ ]+[ ]*import[ ]+:([a-z_0-9]+)' $(1)/*.c++m | sed -E 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9]*)\.c\+\+m:.*import[ ]+:([a-z_0-9]+)[ ]*;|$(moduledir)/\1\2\3.pcm: $(moduledir)/\1\-\4.pcm|' >> $(2)
+	-grep -HE '^[ ]*import[ ]+:([a-z_0-9]+)' $(1)/*.c++m | sed -E 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9]*)\.c\+\+m:.*import[ ]+:([a-z_0-9]+)[ ]*;|$(moduledir)/\1\2\3.pcm: $(moduledir)/\1\-\4.pcm|' >> $(2)
+	grep -HE '^[ ]*module[ ]+([a-z_0-9]+)' $(1)/*.c++ | sed -E 's|.+/([a-z_0-9\.\-]+)\.c\+\+:[ ]*module[ ]+([a-z_0-9]+)[ ]*;|$(objectdir)/\1.o: $(moduledir)/\2.pcm|' >> $(2)
+	grep -HE '^[ ]*import[ ]+([a-z_0-9]+)' $(1)/*.c++ | sed -E 's|.+/([a-z_0-9\.\-]+)\.c\+\+:[ ]*import[ ]+([a-z_0-9]+)[ ]*;|$(objectdir)/\1.o: $(moduledir)/\2.pcm|' >> $(2)
+	grep -HE '^[ ]*import[ ]+:([a-z_0-9]+)' $(1)/*.c++ | sed -E 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9\.]*)\.c\+\+:.*import[ ]+:([a-z_0-9]+)[ ]*;|$(objectdir)/\1\2\3.o: $(moduledir)/\1\-\4.pcm|'|  >> $(2)
+endef
+
+$(dependencies): $(modules) $(sources)
+	@mkdir -p $(@D)
+	$(call create_dependency_hierarchy, ./$(basename $(@F)), $@)
+
+-include $(dependencies)
+
+###############################################################################
+
+$(foreach M, $(submodules), $(MAKE) -C $(M) deps PREFIX=../$(PREFIX)):
+
+$(foreach M, $(submodules), $(moduledir)/$(M).pcm):
+#	git submodule update --init --depth 1
+	$(MAKE) -C $(basename $(@F)) module PREFIX=../$(PREFIX)
+
+$(librarydir)/%.a:
+#	git submodule update --init --depth 1
+	$(MAKE) -C $(subst lib,,$(basename $(@F))) module PREFIX=../$(PREFIX)
+
+###############################################################################
+
+.DEFAULT_GOAL = run_examples
+
+.PHONY: deps
+deps: $(dependencies)
 
 .PHONY: module
 module: deps $(library)
+
+.PHONY: all
+all: module
 
 .PHONY: examples
 examples: all $(example-targets)
@@ -177,13 +177,9 @@ clean: mostlyclean
 
 .PHONY: mostlyclean
 mostlyclean:
-	rm -rf $(objectdir) $(moduledir) Makefile.deps
+	rm -rf $(objectdir) $(moduledir)
 
 .PHONY: dump
 dump:
 	$(foreach v, $(sort $(.VARIABLES)), $(if $(filter file,$(origin $(v))), $(info $(v)=$($(v)))))
 	@echo ''
-
-###############################################################################
-
--include $(dependencies)
