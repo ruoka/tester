@@ -84,25 +84,31 @@ auto stream = std::ostringstream{};
 
 void reset()
 {
-    output::stream = std::ostringstream{};
+    stream = std::ostringstream{};
 }
 
 void test_case(const auto& tc)
 {
     reset();
-    stream << output::color::text::blue
+
+    if(tc.test_name.starts_with("scenario") or tc.test_name.starts_with("test_case"))
+        stream << color::background::blue
+            << tc.test_set_name
+            << color::reset << '\n';
+
+    stream << color::text::blue
            << tc.test_name << " "
            << "(" << tc.file_name << " " <<  tc.line << ":" <<  tc.column << ")"
-           << output::color::reset << '\n';
+           << color::reset << '\n';
 }
 
 void exception(const auto& tc, const auto& ex)
 {
-    stream << output::color::background::red
+    stream << color::background::red
            << ex.what()
            << " " << tc.test_name << " "
            << "(" << tc.file_name << " " <<  tc.line << ":" <<  tc.column << ")"
-           << output::color::reset << '\n';
+           << color::reset << '\n';
 }
 
 auto function_name(const std::source_location sl = std::source_location::current())

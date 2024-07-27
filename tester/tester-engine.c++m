@@ -22,7 +22,7 @@ auto& make_test_case(std::string_view description, const std::source_location lo
     test_type.remove_suffix(test_type.length() - test_type.find_first_of("("));
 
     auto test_name = std::string{test_type} + " -> "s + std::string{description};
-    auto test_case = data::test_case{{test_name,location1.file_name(),location1.line(),location1.column(),location2.function_name()},data::test{}};
+    auto test_case = data::test_case{{location1.function_name(),test_name,location1.file_name(),location1.line(),location1.column(),location2.function_name()},data::test{}};
 
     if(test_type.contains("scenario") or test_type.contains("test_case"))
     {
