@@ -22,49 +22,22 @@ auto& make_test_case(std::string_view description, const std::source_location lo
     test_type.remove_suffix(test_type.length() - test_type.find_first_of("("));
 
     auto test_name = std::string{test_type} + " -> "s + std::string{description};
-    auto test_case = data::test_case{{test_name,location1.file_name(),location1.line(),location1.column(),location2.function_name()},data::test{}};
+    auto test_case = data::test_case{{location1.function_name(),test_name,location1.file_name(),location1.line(),location1.column(),location2.function_name()},data::test{}};
 
     if(test_type.contains("scenario") or test_type.contains("test_case"))
     {
-        if(not test_cases.empty() and
-           not (test_cases.back().test_name.starts_with("test_case") or
-                test_cases.back().test_name.starts_with("scenario")))       
-            std::terminate();
-
         test_cases.push_back(test_case);
         return test_cases.back().run;
     }
     else
     {
         auto itr = test_cases.begin();
-        auto ptr = itr;
-
-        auto test = test_type;
-
         if(test_type.starts_with("and_"))
             test_type.remove_prefix(4); // remove "and_"
-
         while(itr->test_name.starts_with("then") or
               itr->test_name.starts_with("and_then") or
-              itr->test_name.contains(test_type)) // scenario, given, and_given, when, and_when, test_case, section
-            ptr = itr++;
-
-        if(test_cases.empty()) std::terminate();
-
-        auto parent = test_cases.front().test_name;
-
-        if(test == "section" and not (parent.starts_with("test_case") or parent.starts_with("section"))) std::terminate();
-
-        if(test == "given" and not parent.starts_with("scenario")) std::terminate();
-        if(test == "when" and not (parent.starts_with("given") or parent.starts_with("and_given"))) std::terminate();
-        if(test == "then" and not (parent.starts_with("when") or parent.starts_with("and_when"))) std::terminate();
-
-        parent = ptr->test_name;
-
-        if(test == "and_given" and not (parent.starts_with("given") or parent.starts_with("and_given"))) std::terminate();
-        if(test == "and_when" and not (parent.starts_with("when") or parent.starts_with("and_when"))) std::terminate();
-        if(test == "and_then" and not (parent.starts_with("then") or parent.starts_with("and_then"))) std::terminate();
-
+              itr->test_name.contains(test_type)) // given, and_given, when, and_when, section
+           ++itr;
         return test_cases.insert(itr,test_case)->run;
     }
 }

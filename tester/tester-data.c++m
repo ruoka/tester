@@ -6,6 +6,7 @@ namespace tester::data
 
 struct test_metadata
 {
+    const std::string test_set_name;
     const std::string test_name;
     const std::string_view file_name;
     const std::uint_least32_t line;
