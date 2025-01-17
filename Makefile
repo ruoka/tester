@@ -84,11 +84,11 @@ libraries = $(submodules:%=$(librarydir)/lib%.a)
 
 $(moduledir)/%.pcm: $(sourcedir)/%.c++m
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $< --precompile -c -o $@
+	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $< --precompile -o $@
 
 $(objectdir)/%.o: $(sourcedir)/%.c++
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $< -c -o $@
+	$(CXX) $(CXXFLAGS) $(PCMFLAGS) -c $< -o $@
 
 $(library) : $(objects)
 	@mkdir -p $(@D)
@@ -98,15 +98,15 @@ $(library) : $(objects)
 
 $(moduledir)/%.pcm: $(exampledir)/%.c++m
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $< --precompile -c -o $@
+	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $< --precompile -o $@
 
 $(objectdir)/%.test.o: $(exampledir)/%.test.c++
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $< -c -o $@
+	$(CXX) $(CXXFLAGS) $(PCMFLAGS) -c $< -o $@
 
 $(objectdir)/%.o: $(exampledir)/%.c++
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $< -c -o $@
+	$(CXX) $(CXXFLAGS) $(PCMFLAGS) -c $< -o $@
 
 $(binarydir)/%: $(exampledir)/%.c++ $(example-objects) $(library) $(libraries)
 	@mkdir -p $(@D)
@@ -116,7 +116,7 @@ $(binarydir)/%: $(exampledir)/%.c++ $(example-objects) $(library) $(libraries)
 
 $(objectdir)/%.o: $(moduledir)/%.pcm
 	@mkdir -p $(@D)
-	$(CXX) $(PCMFLAGS) $< -c -o $@
+	$(CXX) $(PCMFLAGS) -c $< -o $@
 
 ###############################################################################
 
