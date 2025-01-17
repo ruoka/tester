@@ -76,7 +76,7 @@ namespace tester::assertions
             t();
             // ok = ok;
         }
-         catch(const std::exception& e)
+        catch(const std::exception& e)
         {
             ok = not ok;
             actual = typeid(e).name();
