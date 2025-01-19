@@ -4,7 +4,7 @@ import tester;
 
 namespace example_2 {
 
-auto test_set()
+auto feature()
 {
     using namespace std::literals;
     using namespace tester::behavior_driven_development;
@@ -67,6 +67,6 @@ auto test_set()
     return 0;
 }
 
-const auto test_registrar = test_set();
+const auto test_registrar = feature();
 
 }

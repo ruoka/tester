@@ -5,7 +5,7 @@ using namespace tester::bdd;
 using namespace tester::assertions;
 using namespace std::literals;
 
-auto example_3()
+auto feature()
 {
     scenario("Test case 3") = []
     {
@@ -66,4 +66,4 @@ auto example_3()
     return true;
 }
 
-const auto test_registrar = example_3();
+const auto test_registrar = feature();

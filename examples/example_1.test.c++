@@ -6,7 +6,7 @@ namespace example_1 {
 using namespace tester::behavior_driven_development;
 using namespace tester::assertions;
 
-auto test_set()
+auto feature()
 {
     scenario("Test case 1a") = []
     {
@@ -69,6 +69,6 @@ auto test_set()
     return 0;
 }
 
-const auto test_registrar = test_set();
+const auto test_registrar = feature();
 
 }

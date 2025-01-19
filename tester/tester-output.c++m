@@ -78,7 +78,7 @@ void print_test_statistics()
               << color::reset << std::endl;
 }
 
-auto verbose = true;
+auto verbose = false;
 
 auto stream = std::ostringstream{};
 
@@ -166,7 +166,6 @@ void message(const bool ok, auto message, const std::source_location location1, 
         stream << color::text::red;
 
     stream << function_name(location2)
-
            << " " << message << " ";
 
     stream << "(" << location1.file_name() << " " << location1.line() << ":" << location1.column() << ")"
