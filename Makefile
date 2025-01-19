@@ -11,17 +11,18 @@ OS = $(shell uname -s)
 endif
 
 ifeq ($(OS),Linux)
-CC = /usr/lib/llvm-18/bin/clang
-CXX = /usr/lib/llvm-18/bin/clang++
-CXXFLAGS = -pthread -I/usr/lib/llvm-18/include/c++/v1
-LDFLAGS = -lc++ -L/usr/lib/llvm-18/lib/c++
+CC = /usr/lib/llvm-19/bin/clang
+CXX = /usr/lib/llvm-19/bin/clang++
+CXXFLAGS = -pthread -I/usr/lib/llvm-19/include/c++/v1
+LDFLAGS = -lc++ -L/usr/lib/llvm-19/lib/c++
+LDFLAGS += -fuse-ld=lld
 endif
 
 ifeq ($(OS),Darwin)
 CC = /opt/homebrew/opt/llvm/bin/clang
 CXX = /opt/homebrew/opt/llvm/bin/clang++
-CXXFLAGS =-I/opt/homebrew/opt/llvm/include/c++/v1 -Ofast
-LDFLAGS = -L/opt/homebrew/opt/llvm/lib/c++ -Wl,-rpath,/opt/homebrew/opt/llvm/lib/c++ -Ofast
+CXXFLAGS =-I/opt/homebrew/opt/llvm/include/c++/v1 -O3
+LDFLAGS = -L/opt/homebrew/opt/llvm/lib/c++ -Wl,-rpath,/opt/homebrew/opt/llvm/lib/c++ -O3
 endif
 
 ifeq ($(OS),Github)
@@ -34,7 +35,6 @@ endif
 CXXFLAGS += -std=c++23 -stdlib=libc++
 CXXFLAGS += -Wall -Wextra -Wno-reserved-module-identifier -Wno-deprecated-declarations
 CXXFLAGS += -I$(sourcedir)
-LDFLAGS += -fuse-ld=lld
 
 export CC
 export CXX

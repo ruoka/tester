@@ -65,7 +65,7 @@ namespace tester::assertions
         return require(std::equal_to<bool>{},actual,false,location);
     };
 
-    export auto require_nothrow(test t, const std::source_location location = std::source_location::current())
+    export auto require_nothrow(auto&& t, const std::source_location location = std::source_location::current())
     {
         auto ok = true;
         auto actual = "none"sv;
@@ -90,7 +90,7 @@ namespace tester::assertions
         output::assertion(ok,actual,expected,location);
     }
 
-    export auto require_throws(test t, const std::source_location location = std::source_location::current())
+    export auto require_throws(auto&& t, const std::source_location location = std::source_location::current())
     {
         auto ok = true;
         auto actual = "?"sv;
@@ -98,11 +98,11 @@ namespace tester::assertions
         try
         {
             ++statistics.total_assertions;
-            t();
+            t(); // FIXME
             ok = not ok;
             actual = "none"sv;
         }
-         catch(const std::exception& e)
+        catch(const std::exception& e)
         {
             // ok = ok;
             actual = typeid(e).name();
@@ -117,7 +117,7 @@ namespace tester::assertions
     }
 
     export template<typename E>
-    auto require_throws_as(test t, E exception, const std::source_location location = std::source_location::current())
+    auto require_throws_as(auto&& t, E exception, const std::source_location location = std::source_location::current())
     {
         auto ok = true;
         auto actual = "?"sv;
@@ -125,7 +125,7 @@ namespace tester::assertions
         try
         {
             ++statistics.total_assertions;
-            t();
+            //t(); FIXME
             ok = not ok;
         }
         catch(const E&)
