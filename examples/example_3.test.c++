@@ -15,14 +15,16 @@ auto feature()
             {
                 then("requiring the values to be equal fails") = []
                 {
-                    require_eq(true,false);
-                    require_eq(false,true);
+                    // This will fail because true is not equal to false
+                    require_eq(true, false);
+                    require_eq(false, true);
                 };
 
                 and_then("requiring the values to be not equal succeeds") = []
                 {
-                    require_neq(true,false);
-                    require_neq(false,true);
+                    // This will succeed because true is not equal to false
+                    require_neq(true, false);
+                    require_neq(false, true);
                 };
             };
         };
@@ -50,7 +52,7 @@ auto feature()
                     succeed(test);
                 };
 
-                and_then("it also wroks")= [=]
+                and_then("it also works")= [=]
                 {
                     failed(test);
                 };
