@@ -1,5 +1,9 @@
 # C++ module-based testing framework with C++23 features
 
+##Introduction
+
+This C++20 module-based testing framework leverages C++23 features for macro-free unit and BDD testing with familiar, easy-to-use assertions, lambdas, and a small footprint, promoting improved maintainability.
+
 ## Makefile
 
 make clean deps run_examples
@@ -41,7 +45,7 @@ namespace example_1 {
 using namespace tester::behavior_driven_development;
 using namespace tester::assertions;
 
-auto test_set()
+auto feature()
 {
     scenario("Test case 1a") = []
     {
@@ -104,7 +108,7 @@ auto test_set()
     return 0;
 }
 
-const auto test_registrar = test_set();
+const auto test_registrar = feature();
 
 }
 ```
