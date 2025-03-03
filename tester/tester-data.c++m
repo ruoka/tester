@@ -1,4 +1,4 @@
-module tester:data;
+export module tester:data;
 import std;
 
 namespace tester::data

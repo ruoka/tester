@@ -125,7 +125,7 @@ namespace tester::assertions
         try
         {
             ++statistics.total_assertions;
-            //t(); FIXME
+            t(); // FIXME?
             ok = not ok;
         }
         catch(const E&)

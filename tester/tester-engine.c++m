@@ -1,4 +1,4 @@
-module tester:engine;
+export module tester:engine;
 import :output;
 import :data;
 import std;
