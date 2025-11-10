@@ -6,13 +6,28 @@ namespace tester::basic
 {
     using engine::make_test_case;
 
-    export auto& test_case(std::string_view test_name, const std::source_location location = std::source_location::current()) noexcept
+    export struct test_order
     {
-        return make_test_case(test_name, location);
+        int priority = 0;
+        std::vector<std::string> depends_on;
+        std::string id;
+    };
+
+    export auto& test_case(std::string_view test_name, const std::source_location location1 = std::source_location::current()) noexcept
+    {
+        const auto location2 = std::source_location::current();
+        return make_test_case(test_name, 0, {}, {}, location1, location2);
     }
 
-    export auto& section(std::string_view test_name, const std::source_location location = std::source_location::current()) noexcept
+    export auto& test_case(std::string_view test_name, const test_order& order, const std::source_location location1 = std::source_location::current()) noexcept
     {
-        return make_test_case(test_name, location);
+        const auto location2 = std::source_location::current();
+        return make_test_case(test_name, order.priority, order.depends_on, order.id, location1, location2);
+    }
+
+    export auto& section(std::string_view test_name, const std::source_location location1 = std::source_location::current()) noexcept
+    {
+        const auto location2 = std::source_location::current();
+        return make_test_case(test_name, 0, {}, {}, location1, location2);
     }
 }

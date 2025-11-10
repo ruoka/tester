@@ -19,6 +19,9 @@ using test = std::function<void(void)>;
 struct test_case : public test_metadata
 {
     test run = []{};
+    int priority = 0;  // Lower numbers run first (default: 0)
+    std::vector<std::string> depends_on;  // Test names this test depends on
+    std::string id;  // Unique identifier for dependency references
 };
 
 auto test_cases = std::list<test_case>{};
