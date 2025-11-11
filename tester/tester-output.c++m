@@ -1,3 +1,11 @@
+module;
+#if defined(__GNUG__) && __has_include(<cxxabi.h>)
+#   include <cxxabi.h>
+#   define TESTER_HAVE_CXXABI 1
+#else
+#   define TESTER_HAVE_CXXABI 0
+#endif
+
 export module tester:output;
 import :data;
 import std;
@@ -111,20 +119,113 @@ void exception(const auto& tc, const auto& ex)
            << color::reset << '\n';
 }
 
+auto demangle(std::string_view name)
+{
+#if TESTER_HAVE_CXXABI
+    int status = 0;
+    auto buffer = std::string{name};
+    auto demangled = abi::__cxa_demangle(buffer.c_str(), nullptr, nullptr, &status);
+    if(demangled != nullptr)
+    {
+        std::string result{demangled};
+        std::free(demangled);
+        return result;
+    }
+#endif
+    return std::string{name};
+}
+
 auto function_name(const std::source_location sl = std::source_location::current())
 {
     using namespace std::literals;
-    auto function_name = std::string_view{sl.function_name()};
-    function_name.remove_prefix(function_name.find("assertions::") + "assertions::"s.length());
-    auto test_name = function_name.substr(0,function_name.find_first_of("("));
-    auto parameters = function_name.contains("[") ? function_name.substr(function_name.find_first_of("[")) : ""sv;
-    return std::string{test_name} + " -> "s + std::string{parameters};
+    auto name = std::string_view{sl.function_name()};
+
+    if(auto assertions_pos = name.find("assertions::"); assertions_pos != std::string_view::npos)
+        name.remove_prefix(assertions_pos + "assertions::"s.length());
+
+    auto base = name.substr(0, name.find_first_of("("));
+    auto display = std::string{base};
+
+    if(auto bracket = name.find('['); bracket != std::string_view::npos)
+    {
+        auto end = name.find(']', bracket);
+        auto parameters = end != std::string_view::npos
+                          ? name.substr(bracket + 1, end - bracket - 1)
+                          : name.substr(bracket + 1);
+
+        auto trim = [](std::string_view sv)
+        {
+            auto start = sv.find_first_not_of(" \t");
+            if(start == std::string_view::npos) return std::string_view{};
+            auto finish = sv.find_last_not_of(" \t");
+            return sv.substr(start, finish - start + 1);
+        };
+
+        auto clean = [](std::string text)
+        {
+            auto replace_all = [](std::string& target, std::string_view from, std::string_view to)
+            {
+                for(auto pos = target.find(from); pos != std::string::npos; pos = target.find(from, pos + to.size()))
+                    target.replace(pos, from.size(), to);
+            };
+
+            replace_all(text, "std::__1::", "std::");
+            replace_all(text, "std::basic_string<char>", "std::string");
+            replace_all(text, "std::basic_string<wchar_t>", "std::wstring");
+            replace_all(text, " >", ">");
+
+            return text;
+        };
+
+        display.push_back(' ');
+        display.push_back('[');
+
+        auto remaining = parameters;
+        auto first = true;
+        while(true)
+        {
+            auto pos = remaining.find(',');
+            auto token = trim(remaining.substr(0, pos));
+            if(not token.empty())
+            {
+                if(not first) display.append(", ");
+                auto eq = token.find('=');
+                if(eq != std::string_view::npos)
+                {
+                    auto key = trim(token.substr(0, eq));
+                    auto value = trim(token.substr(eq + 1));
+                    display.append(std::string{key});
+                    display.append("=");
+                    display.append(demangle(clean(std::string{value})));
+                }
+                else
+                {
+                    display.append(demangle(clean(std::string{token})));
+                }
+                first = false;
+            }
+            if(pos == std::string_view::npos) break;
+            remaining.remove_prefix(pos + 1);
+        }
+
+        display.push_back(']');
+    }
+
+    return display;
 }
 
 template <typename V>
 void value(const V& val)
 {
-    if constexpr (std::is_pointer_v<V>)
+    if constexpr (std::is_same_v<std::remove_cvref_t<V>, std::string>)
+        stream << demangle(val);
+    else if constexpr (std::is_same_v<std::remove_cvref_t<V>, std::string_view>)
+        stream << demangle(std::string{val});
+    else if constexpr (std::is_same_v<std::remove_cvref_t<V>, const char*>)
+        stream << demangle(val != nullptr ? std::string{val} : std::string{"nullptr"});
+    else if constexpr (std::is_same_v<std::remove_cvref_t<V>, char*>)
+        stream << demangle(val != nullptr ? std::string{val} : std::string{"nullptr"});
+    else if constexpr (std::is_pointer_v<V>)
         stream << (val != nullptr ? val : "nullptr");
     else if constexpr (std::is_enum_v<V>)
         stream << std::to_underlying(val);
@@ -142,18 +243,20 @@ void assertion(const bool ok, const A& actual, const E& expected, const std::sou
     else
         stream << color::text::red;
 
-    stream << function_name(location2);
-        
-    stream << " actual: ";
+    stream << function_name(location2) << '\n';
+
+    stream << "  actual:   ";
     value(actual);
+    stream << '\n';
 
-    stream << " expected: ";
+    stream << "  expected: ";
     value(expected);
+    stream << '\n';
 
-    stream << " ";
-
-    stream << "(" << location1.file_name() << " " << location1.line() << ":" << location1.column() << ")"
-                  << color::reset << std::endl;
+    stream << "  location: "
+           << location1.file_name() << " "
+           << location1.line() << ":" << location1.column()
+           << color::reset << '\n';
 
     if(verbose) std::clog << stream.view();
 }
@@ -165,13 +268,16 @@ void message(const bool ok, auto message, const std::source_location location1, 
     else
         stream << color::text::red;
 
-    stream << function_name(location2)
-           << " " << message << " ";
-
-    stream << "(" << location1.file_name() << " " << location1.line() << ":" << location1.column() << ")"
-                  << color::reset << std::endl;
+    stream << function_name(location2) << '\n';
+    stream << "  message:  " << message << '\n';
+    stream << "  location: "
+           << location1.file_name() << " "
+           << location1.line() << ":" << location1.column()
+           << color::reset << '\n';
 
     if(verbose) std::clog << stream.view();
 }
 
 }
+
+#undef TESTER_HAVE_CXXABI
