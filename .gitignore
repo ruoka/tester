@@ -1,5 +1,12 @@
+# Build artifacts
+build/
 obj
 pcm
 lib
 bin
+
+# Dependencies (for standalone builds)
+deps/
+
+# Makefile dependencies
 Makefile.deps
