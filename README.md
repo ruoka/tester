@@ -33,6 +33,7 @@ git submodule update --init --recursive  # pulls deps/std, deps/net, …
 make module                                # builds libtester.a and modules
 make run_examples                          # (optional) compiles & runs demos
 make tests                                 # (optional) builds test_runner
+make tools                                 # (optional) builds utilities in tools/
 ```
 
 Artefacts are emitted under `build/` (`build/pcm` for modules, `build/obj` for objects, `build/lib` for archives, `build/bin` for executables).
@@ -115,11 +116,11 @@ The runner prints results, failures, and aggregate statistics, and returns a non
 
 ## Utilities
 
-`tools/core_pc.c++` is a small utility that dumps register state from a POSIX core file. Build it on demand:
+`tools/core_pc.c++` is a small utility that dumps register state from a POSIX core file. Build it via the new `tools` target:
 
 ```bash
-clang++-19 -std=c++20 tools/core_pc.c++ -o build/bin/core_pc
-build/bin/core_pc /path/to/core
+make tools
+build/bin/tools/core_pc /path/to/core
 ```
 
 ## Make targets summary
@@ -127,6 +128,7 @@ build/bin/core_pc /path/to/core
 - `make module` – build modules and `libtester.a`.
 - `make run_examples` – compile and execute the sample programs in `examples/`.
 - `make tests` – build the standalone `test_runner`.
+- `make tools` – build helper binaries under `build/bin/tools/`.
 - `make clean` – remove the `build/` directory.
 
 ## License
