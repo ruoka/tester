@@ -122,7 +122,7 @@ endif
 
 # Library files
 modules = $(wildcard $(sourcedir)/*.c++m)
-sources = $(filter-out $(sourcedir)/test_runner.c++, $(wildcard $(sourcedir)/*.c++))
+sources = $(wildcard $(sourcedir)/*.c++)
 objects = $(modules:$(sourcedir)%.c++m=$(objectdir)%.o) $(sources:$(sourcedir)%.c++=$(objectdir)%.o)
 
 # Example files
@@ -210,9 +210,9 @@ $(binarydir)/%: $(exampledir)/%.c++ $(example-objects) $(library) $(libraries)
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $(LDFLAGS) $^ -o $@
 
-$(test-target): $(test-object) $(library) $(libraries)
+$(test-target): $(library) $(libraries)
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $(LDFLAGS) $(test-object) $(library) $(libraries) -o $@
+	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $(LDFLAGS) $(library) $(libraries) -o $@
 
 ###############################################################################
 # Dependency Generation
