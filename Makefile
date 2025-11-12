@@ -244,6 +244,8 @@ $(example-dependencies): $(example-modules) $(example-sources)
 
 # Include library dependencies for module target
 -include $(library-dependencies)
+# Include example dependencies so example builds pull in their modules
+-include $(example-dependencies)
 
 ###############################################################################
 # Submodule Rules

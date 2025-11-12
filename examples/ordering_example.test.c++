@@ -10,7 +10,7 @@ auto test_set()
 {
     // Example 1: Priority-based ordering
     // Lower priority numbers run first
-    scenario("High priority test runs first", test_order{.priority = 1, .id = "test1"}) = []
+    scenario("High priority test runs first", test_order{.priority = 1, .depends_on = {}, .id = "test1"}) = []
     {
         then("this runs after priority 0 tests") = []
         {
@@ -18,7 +18,7 @@ auto test_set()
         };
     };
 
-    scenario("Low priority test runs first", test_order{.priority = 0, .id = "test2"}) = []
+    scenario("Low priority test runs first", test_order{.priority = 0, .depends_on = {}, .id = "test2"}) = []
     {
         then("this runs before priority 1 tests") = []
         {
@@ -28,7 +28,7 @@ auto test_set()
 
     // Example 2: Dependency-based ordering
     // test_b depends on test_a, so test_a runs first
-    scenario("Independent test", test_order{.priority = 0, .id = "test_a"}) = []
+    scenario("Independent test", test_order{.priority = 0, .depends_on = {}, .id = "test_a"}) = []
     {
         then("runs first") = []
         {
@@ -36,7 +36,7 @@ auto test_set()
         };
     };
 
-    scenario("Dependent test", test_order{.priority = 0, .id = "test_b", .depends_on = {"test_a"}}) = []
+    scenario("Dependent test", test_order{.priority = 0, .depends_on = {"test_a"}, .id = "test_b"}) = []
     {
         then("runs after test_a") = []
         {
@@ -46,7 +46,7 @@ auto test_set()
 
     // Example 3: Combined priority and dependencies
     // Even though test_d has lower priority, test_c runs first due to dependency
-    scenario("Dependency overrides priority", test_order{.priority = 10, .id = "test_c"}) = []
+    scenario("Dependency overrides priority", test_order{.priority = 10, .depends_on = {}, .id = "test_c"}) = []
     {
         then("runs first despite lower priority") = []
         {
@@ -54,7 +54,7 @@ auto test_set()
         };
     };
 
-    scenario("Depends on test_c", test_order{.priority = 5, .id = "test_d", .depends_on = {"test_c"}}) = []
+    scenario("Depends on test_c", test_order{.priority = 5, .depends_on = {"test_c"}, .id = "test_d"}) = []
     {
         then("runs after test_c even though it has lower priority") = []
         {

@@ -1,3 +1,7 @@
+#include <csignal>
+#include <cstdlib>
+#include <execinfo.h>
+#include <unistd.h>
 import std;
 import tester;
 
@@ -11,6 +15,16 @@ Examples:
 
 int main(int argc, char** argv)
 {
+    auto crash_handler = [](int signal)
+    {
+        void* frames[64];
+        auto count = ::backtrace(frames, 64);
+        ::backtrace_symbols_fd(frames, count, STDERR_FILENO);
+        std::_Exit(signal);
+    };
+    std::signal(SIGSEGV, crash_handler);
+    std::signal(SIGABRT, crash_handler);
+
     auto command_line = std::span(argv, argc);
     auto arguments = command_line.subspan(1);
 

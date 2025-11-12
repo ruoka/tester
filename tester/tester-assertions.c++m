@@ -119,6 +119,7 @@ namespace tester::assertions
     export template<typename E>
     auto require_throws_as(auto&& t, E exception, const std::source_location location = std::source_location::current())
     {
+        static_cast<void>(exception);
         auto ok = true;
         auto actual = "?"sv;
         const auto expected = typeid(E).name();

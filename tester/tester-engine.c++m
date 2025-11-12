@@ -11,18 +11,36 @@ using namespace std::literals;
 auto& make_test_case(std::string_view description, int priority, std::vector<std::string> depends_on, std::string id, const std::source_location location1, const std::source_location location2) noexcept
 {
     auto test_type = std::string_view{location2.function_name()};
-    
-    if(test_type.contains("behavior_driven_development::"))
-        test_type.remove_prefix(test_type.find("behavior_driven_development::") + "behavior_driven_development::"s.length());
-    else if (test_type.contains("basic::"))
-        test_type.remove_prefix(test_type.find("basic::") + "basic::"s.length());
+
+    auto drop_prefix = [&](std::string_view marker)
+    {
+        if(auto pos = test_type.find(marker); pos != std::string_view::npos)
+        {
+            test_type.remove_prefix(pos + marker.size());
+            return true;
+        }
+        return false;
+    };
+
+    if(drop_prefix("behavior_driven_development::"))
+        ;
+    else if(drop_prefix("basic::"))
+        ;
     else
         std::terminate();
 
-    test_type.remove_suffix(test_type.length() - test_type.find_first_of("("));
+    if(const auto paren = test_type.find('('); paren != std::string_view::npos)
+        test_type.remove_suffix(test_type.length() - paren);
 
     auto test_name = std::string{test_type} + " -> "s + std::string{description};
-    auto test_case = data::test_case{{location1.function_name(),test_name,location1.file_name(),location1.line(),location1.column(),location2.function_name()},data::test{},priority,depends_on,id.empty() ? test_name : id};
+    auto assigned_id = id.empty() ? test_name : std::move(id);
+    auto test_case = data::test_case{
+        {location1.function_name(),test_name,location1.file_name(),location1.line(),location1.column(),location2.function_name()},
+        data::test{},
+        priority,
+        std::move(depends_on),
+        std::move(assigned_id)
+    };
 
     if(test_type.contains("scenario") or test_type.contains("test_case"))
     {
@@ -34,9 +52,10 @@ auto& make_test_case(std::string_view description, int priority, std::vector<std
         auto itr = test_cases.begin();
         if(test_type.starts_with("and_"))
             test_type.remove_prefix(4); // remove "and_"
-        while(itr->test_name.starts_with("then") or
-              itr->test_name.starts_with("and_then") or
-              itr->test_name.contains(test_type)) // given, and_given, when, and_when, section
+        while(itr != test_cases.end() and
+              (itr->test_name.starts_with("then") or
+               itr->test_name.starts_with("and_then") or
+               itr->test_name.contains(test_type))) // given, and_given, when, and_when, section
            ++itr;
         return test_cases.insert(itr,test_case)->run;
     }
