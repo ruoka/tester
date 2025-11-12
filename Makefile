@@ -166,6 +166,7 @@ PCMFLAGS = -fno-implicit-modules -fno-implicit-module-maps
 PCMFLAGS += $(foreach P, $(foreach M, $(modules) $(example-modules), $(basename $(notdir $(M)))), -fmodule-file=$(subst -,:,$(P))=$(moduledir)/$(P).pcm)
 PCMFLAGS += -fmodule-file=std=$(STD_MODULE_PATH)
 PCMFLAGS += $(foreach P, $(STD_MODULE_PREBUILT_PATHS), -fprebuilt-module-path=$(P))
+.PRECIOUS: $(STD_MODULE_PATH)
 
 ###############################################################################
 # Build Rules
@@ -263,9 +264,15 @@ $(foreach M, $(submodules), $(moduledir)/$(M).pcm):
 #	git submodule update --init --depth 1
 	$(MAKE) -C $(SUBMODULE_PREFIX)/$(basename $(@F)) module PREFIX=$(SUBMODULE_PREFIX_ARG)
 
+$(SUBMODULE_PREFIX_ARG)/pcm/%.pcm:
+	$(MAKE) -C $(SUBMODULE_PREFIX)/$* module PREFIX=$(SUBMODULE_PREFIX_ARG)
+
 $(librarydir)/%.a:
 #	git submodule update --init --depth 1
 	$(MAKE) -C $(SUBMODULE_PREFIX)/$(subst lib,,$(basename $(@F))) module PREFIX=$(SUBMODULE_PREFIX_ARG)
+
+$(SUBMODULE_PREFIX_ARG)/lib/lib%.a: $(SUBMODULE_PREFIX_ARG)/pcm/%.pcm
+	$(MAKE) -C $(SUBMODULE_PREFIX)/$* module PREFIX=$(SUBMODULE_PREFIX_ARG)
 
 ###############################################################################
 # Phony Targets
