@@ -99,15 +99,15 @@ binarydir = $(PREFIX)/bin
 ifeq ($(STANDALONE),yes)
 # Standalone mode: submodules are in deps/ directory, all use same build/ directory
 SUBMODULE_PREFIX = deps
-SUBMODULE_PREFIX_ARG = $(abspath $(PREFIX))
+SUBMODULE_PREFIX_ARG = $(PREFIX)
 STD_MODULE_PATH = $(moduledir)/std.pcm
 STD_MODULE_PREBUILT_PATHS = $(moduledir)/
 else
 # Parent project mode: submodules are siblings in deps/, use parent's PREFIX
 SUBMODULE_PREFIX = ..
 # PREFIX is already set (either explicitly by parent or defaulted by caller)
-# Use absolute path for submodules to ensure shared outputs
-SUBMODULE_PREFIX_ARG = $(abspath $(PREFIX))
+# Use provided path for submodules to ensure shared outputs
+SUBMODULE_PREFIX_ARG = $(PREFIX)
 # Use the same PREFIX path that submodules use (SUBMODULE_PREFIX_ARG)
 # This ensures std.pcm path matches where it's actually built
 STD_MODULE_PATH = $(SUBMODULE_PREFIX_ARG)/pcm/std.pcm
