@@ -52,7 +52,6 @@ int main(int argc, char** argv)
             offset += align(nhdr->n_descsz);
             if(nhdr->n_type == NT_PRSTATUS)
             {
-                auto qwords = nhdr->n_descsz / sizeof(uint64_t);
                 const uint64_t* gregs = reinterpret_cast<const uint64_t*>(desc + nhdr->n_descsz - 34*sizeof(uint64_t));
                 sp = gregs[31];
                 pc = gregs[32];

@@ -71,10 +71,10 @@ endif # ($(MAKELEVEL),0)
 # Build Configuration
 ###############################################################################
 
-# Detect if we're in deps/ (parent project) or standalone
-# Check if ../../config/compiler.mk exists to determine context
-# This is the ONLY place where standalone detection happens
-STANDALONE := $(shell test -f ../../config/compiler.mk && echo "no" || echo "yes")
+# Detect standalone vs parent usage via MAKELEVEL
+# MAKELEVEL == 0 → invoked directly (standalone)
+# MAKELEVEL  > 0 → invoked by parent make
+STANDALONE := $(if $(filter 0,$(MAKELEVEL)),yes,no)
 
 # Default PREFIX based on context
 # If PREFIX is not set, use appropriate default for the mode
@@ -82,9 +82,6 @@ ifndef PREFIX
 ifeq ($(STANDALONE),yes)
 # Standalone mode: use build/ directory
 PREFIX = build
-else
-# Parent project mode: use parent's default (../build relative to deps/tester)
-PREFIX = ../build
 endif
 endif
 
@@ -92,6 +89,7 @@ endif
 project = $(lastword $(notdir $(CURDIR)))
 sourcedir = ./$(project)
 exampledir = ./examples
+toolsdir = ./tools
 moduledir = $(PREFIX)/pcm
 objectdir = $(PREFIX)/obj
 librarydir = $(PREFIX)/lib
@@ -101,15 +99,15 @@ binarydir = $(PREFIX)/bin
 ifeq ($(STANDALONE),yes)
 # Standalone mode: submodules are in deps/ directory, all use same build/ directory
 SUBMODULE_PREFIX = deps
-SUBMODULE_PREFIX_ARG = $(PREFIX)
+SUBMODULE_PREFIX_ARG = $(abspath $(PREFIX))
 STD_MODULE_PATH = $(moduledir)/std.pcm
 STD_MODULE_PREBUILT_PATHS = $(moduledir)/
 else
 # Parent project mode: submodules are siblings in deps/, use parent's PREFIX
 SUBMODULE_PREFIX = ..
-# PREFIX is already set (either explicitly by parent or defaulted to ../build)
-# Use it directly for submodules
-SUBMODULE_PREFIX_ARG = $(PREFIX)
+# PREFIX is already set (either explicitly by parent or defaulted by caller)
+# Use absolute path for submodules to ensure shared outputs
+SUBMODULE_PREFIX_ARG = $(abspath $(PREFIX))
 # Use the same PREFIX path that submodules use (SUBMODULE_PREFIX_ARG)
 # This ensures std.pcm path matches where it's actually built
 STD_MODULE_PATH = $(SUBMODULE_PREFIX_ARG)/pcm/std.pcm
@@ -131,6 +129,10 @@ example-targets = $(example-programs:%=$(binarydir)/%)
 example-modules = $(wildcard $(exampledir)/*.c++m)
 example-sources = $(filter-out $(example-programs:%=$(exampledir)/%.c++), $(wildcard $(exampledir)/*.c++))
 example-objects = $(example-sources:$(exampledir)%.c++=$(objectdir)%.o) $(example-modules:$(exampledir)%.c++m=$(objectdir)%.o)
+
+# Tool files
+tool-sources = $(wildcard $(toolsdir)/*.c++)
+tool-targets = $(tool-sources:$(toolsdir)/%.c++=$(binarydir)/tools/%)
 
 # Test files
 test-program = test_runner
@@ -210,6 +212,10 @@ $(binarydir)/%: $(exampledir)/%.c++ $(example-objects) $(library) $(libraries)
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $(LDFLAGS) $^ -o $@
 
+$(binarydir)/tools/%: $(toolsdir)/%.c++ $(library) $(libraries)
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $(LDFLAGS) $^ -o $@
+
 $(test-target): $(library) $(libraries)
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $(LDFLAGS) $(library) $(libraries) -o $@
@@ -274,13 +280,19 @@ deps: $(library-dependencies) $(example-dependencies)
 library-deps: $(library-dependencies)
 
 .PHONY: module
-module: library-deps $(library)
+module: $(foreach M,$(submodules),$(moduledir)/$(M).pcm) \
+        $(foreach M,$(submodules),$(SUBMODULE_PREFIX_ARG)/lib/lib$(M).a) \
+        library-deps \
+        $(library)
 
 .PHONY: all
 all: module
 
 .PHONY: examples
 examples: all $(example-dependencies) $(example-targets)
+
+.PHONY: tools
+tools: all $(tool-targets)
 
 .PHONY: run_examples
 run_examples: examples
