@@ -9,7 +9,7 @@ Tester is a lightweight, macro-free testing framework built entirely with C++23 
 - Pure C++23 module interface – no headers to include.
 - Unit (`tester::basic::test_case`) and BDD (`tester::behavior_driven_development::scenario`) styles.
 - Rich assertion set (`require_eq`, `require_nothrow`, `require_throws_as`, etc.).
-- Tag-based filtering through the supplied `test_runner` executable.
+- Tag-based filtering through the supplied `test_runner` executable with regex pattern support.
 - Supports standalone builds as well as embedding in a parent mono-repo.
 
 ## Repository layout
@@ -108,11 +108,14 @@ Build the supplied runner (`make tests`) and drive it with tags:
 ```bash
 build/bin/test_runner                  # run everything
 build/bin/test_runner --list           # list registered cases
-build/bin/test_runner --tags=simulator
-build/bin/test_runner --tags=[acceptor]
+build/bin/test_runner --tags=simulator # simple substring matching
+build/bin/test_runner --tags=[acceptor] # bracket format
+build/bin/test_runner --tags="scenario.*Happy" # regex pattern matching
+build/bin/test_runner --tags="test_case.*CRUD" # regex for test cases
+build/bin/test_runner --tags="^scenario.*path" # regex with anchors
 ```
 
-The runner prints results, failures, and aggregate statistics, and returns a non-zero exit code when any scenario fails.
+The tag selector supports both simple substring matching (for backward compatibility) and regular expression patterns. Invalid regex patterns automatically fall back to substring matching. The runner prints results, failures, and aggregate statistics, and returns a non-zero exit code when any scenario fails.
 
 ## Utilities
 

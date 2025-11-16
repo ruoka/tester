@@ -11,6 +11,11 @@ Examples:
   test_runner
   test_runner --list
   test_runner --tags=scenario("My test")
+  test_runner --tags=[acceptor]
+  test_runner --tags="scenario.*Happy"
+  test_runner --tags="test_case.*CRUD"
+  test_runner --tags="scenario.*path"
+  test_runner --tags="^scenario.*test$"
 )";
 
 int main(int argc, char** argv)

@@ -14,7 +14,21 @@ export class runner
 public:
 
     runner(std::string_view tags = "") : m_tags{tags}
-    {}
+    {
+        if(not m_tags.empty())
+        {
+            try
+            {
+                m_regex = std::regex{m_tags.begin(), m_tags.end()};
+                m_use_regex = true;
+            }
+            catch(const std::regex_error&)
+            {
+                // Invalid regex, fall back to substring matching
+                m_use_regex = false;
+            }
+        }
+    }
 
     auto print_test_cases()
     {
@@ -41,16 +55,47 @@ public:
         output::print_test_statistics();
     }
 
+    bool included(const test_case& tc) const
+    {
+        if(m_tags.empty())
+            return true;
+        
+        if(not (tc.test_name.starts_with("scenario") or tc.test_name.starts_with("test_case")))
+            return true;
+
+        if(m_use_regex)
+        {
+            return std::regex_search(tc.test_name.begin(), tc.test_name.end(), m_regex);
+        }
+        else
+        {
+            return tc.test_name.contains(m_tags);
+        }
+    }
+
+    bool included(std::string_view test_name) const
+    {
+        if(m_tags.empty())
+            return true;
+        
+        if(not (test_name.starts_with("scenario") or test_name.starts_with("test_case")))
+            return true;
+
+        if(m_use_regex)
+        {
+            return std::regex_search(test_name.begin(), test_name.end(), m_regex);
+        }
+        else
+        {
+            return test_name.contains(m_tags);
+        }
+    }
+
 private:
 
     std::string_view m_tags;
-
-    bool included(const test_case& tc) const
-    {
-        return m_tags.empty() or
-               not (tc.test_name.starts_with("scenario") or tc.test_name.starts_with("test_case")) or
-               tc.test_name.contains(m_tags);
-    }
+    std::regex m_regex;
+    bool m_use_regex = false;
 
     bool excluded(const test_case& tc) const
     {
