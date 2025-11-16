@@ -57,20 +57,7 @@ public:
 
     bool included(const test_case& tc) const
     {
-        if(m_tags.empty())
-            return true;
-        
-        if(not (tc.test_name.starts_with("scenario") or tc.test_name.starts_with("test_case")))
-            return true;
-
-        if(m_use_regex)
-        {
-            return std::regex_search(tc.test_name.begin(), tc.test_name.end(), m_regex);
-        }
-        else
-        {
-            return tc.test_name.contains(m_tags);
-        }
+        return included(tc.test_name);
     }
 
     bool included(std::string_view test_name) const
