@@ -1,6 +1,7 @@
 export module tester:engine;
 import :output;
 import :data;
+import :assertions;
 import std;
 
 namespace tester::engine {
@@ -141,10 +142,20 @@ auto run_test_cases(auto filter)
             tc->run();
             ++statistics.successful_tests;
         }
+        catch(const assertions::assertion_failure& ex)
+        {
+            tr.success = false;
+            output::exception(*tc,ex);
+        }
         catch(const std::exception& ex)
         {
             tr.success = false;
             output::exception(*tc,ex);
+        }
+        catch(...)
+        {
+            tr.success = false;
+            output::exception(*tc,std::runtime_error{"Unknown exception"});
         }
         test_cases.erase(tc);
         tr.output = output::stream.view();

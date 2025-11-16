@@ -66,18 +66,36 @@ int main(int argc, char** argv)
         tags = option;
     }
 
-    auto tr = tester::runner{tags};
-
-    if(list_only)
+    try
     {
+        auto tr = tester::runner{tags};
+
+        if(list_only)
+        {
+            tr.print_test_cases();
+            return 0;
+        }
+
         tr.print_test_cases();
+        tr.run_tests();
+        tr.print_test_results();
+        tr.print_test_failures();
+        tr.print_test_statistics();
         return 0;
     }
-
-    tr.print_test_cases();
-    tr.run_tests();
-    tr.print_test_results();
-    tr.print_test_failures();
-    tr.print_test_statistics();
-    return 0;
+    catch(const tester::assertions::assertion_failure& ex)
+    {
+        std::cerr << "Unhandled assertion failure: " << ex.what() << std::endl;
+        return 1;
+    }
+    catch(const std::exception& ex)
+    {
+        std::cerr << "Unhandled exception: " << ex.what() << std::endl;
+        return 1;
+    }
+    catch(...)
+    {
+        std::cerr << "Unknown exception occurred" << std::endl;
+        return 1;
+    }
 }
