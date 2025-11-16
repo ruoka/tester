@@ -53,13 +53,6 @@ CXXFLAGS = $(COMMON_CXXFLAGS) -I$(LLVM_PREFIX)/include/c++/v1 -O3
 LDFLAGS = $(COMMON_LDFLAGS) -L$(LLVM_PREFIX)/lib -L$(LLVM_PREFIX)/lib/c++ -Wl,-rpath,$(LLVM_PREFIX)/lib/c++ -O3
 endif
 
-ifeq ($(OS),Github)
-CC = /usr/local/opt/llvm/bin/clang
-CXX = /usr/local/opt/llvm/bin/clang++
-CXXFLAGS = $(COMMON_CXXFLAGS) -I/usr/local/opt/llvm/include/ -I/usr/local/opt/llvm/include/c++/v1 -O3
-LDFLAGS = $(COMMON_LDFLAGS) -L/usr/local/opt/llvm/lib/c++ -Wl,-rpath,/usr/local/opt/llvm/lib/c++ -O3
-endif
-
 export CC
 export CXX
 export CXXFLAGS
