@@ -99,7 +99,7 @@ binarydir = $(PREFIX)/bin
 ifeq ($(STANDALONE),yes)
 # Standalone mode: submodules are in deps/ directory, all use same build/ directory
 SUBMODULE_PREFIX = deps
-SUBMODULE_PREFIX_ARG = $(PREFIX)
+SUBMODULE_PREFIX_ARG = ../../build
 STD_MODULE_PATH = $(moduledir)/std.pcm
 STD_MODULE_PREBUILT_PATHS = $(moduledir)/
 else
