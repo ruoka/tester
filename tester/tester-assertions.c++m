@@ -9,6 +9,46 @@ namespace tester::assertions
     using data::test;
     using data::statistics;
 
+    // Check if type is a floating-point type
+    template<typename T>
+    constexpr bool is_floating_point_v = std::is_floating_point_v<T>;
+
+    template<typename A, typename E>
+    constexpr bool both_are_floating_point_v = is_floating_point_v<A> and is_floating_point_v<E>;
+
+    // Floating-point comparator with epsilon tolerance
+    template<typename T>
+    requires std::is_floating_point_v<T>
+    struct floating_point_equal
+    {
+        static constexpr T default_epsilon = T{1e-9};
+        
+        explicit floating_point_equal(T epsilon = default_epsilon) : m_epsilon(epsilon) {}
+        
+        bool operator()(T a, T b) const
+        {
+            // Handle infinities and NaNs
+            if(std::isinf(a) or std::isinf(b))
+                return a == b;
+            if(std::isnan(a) or std::isnan(b))
+                return std::isnan(a) and std::isnan(b);
+            
+            // Use relative tolerance for large numbers, absolute for small
+            const auto diff = std::abs(a - b);
+            const auto max_val = std::max(std::abs(a), std::abs(b));
+            
+            // Relative tolerance: compare with scaled epsilon
+            if(max_val > T{1.0})
+                return diff <= max_val * m_epsilon;
+            
+            // Absolute tolerance: for small values, use epsilon directly
+            return diff <= m_epsilon;
+        }
+        
+    private:
+        T m_epsilon;
+    };
+
     export template<template <typename> class M, typename A, typename E>
     auto require(M<std::common_type_t<A,E>> match, A actual, E expected, const std::source_location location = std::source_location::current())
     {
@@ -19,7 +59,19 @@ namespace tester::assertions
         return ok;
     };
 
+    // Specialization for floating-point equality comparison
     export template<typename A, typename E>
+    requires both_are_floating_point_v<A,E>
+    auto require_eq(A actual, E expected, const std::source_location location = std::source_location::current())
+    {
+        using CommonType = std::common_type_t<A,E>;
+        auto comparator = floating_point_equal<CommonType>{};
+        return require(comparator, static_cast<CommonType>(actual), static_cast<CommonType>(expected), location);
+    };
+
+    // General equality comparison (for non-floating-point types)
+    export template<typename A, typename E>
+    requires (not both_are_floating_point_v<A,E>)
     auto require_eq(A actual, E expected, const std::source_location location = std::source_location::current())
     {
         return require(std::equal_to<std::common_type_t<A,E>>{},actual,expected,location);
