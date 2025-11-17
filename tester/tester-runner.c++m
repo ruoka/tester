@@ -13,7 +13,7 @@ export class runner
 {
 public:
 
-    runner(std::string_view tags = "") : m_tags{tags}
+    explicit runner(std::string_view tags = "") : m_tags{tags}
     {
         if(not m_tags.empty())
         {
