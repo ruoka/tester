@@ -10,8 +10,9 @@ submodules = std
 # Compiler Configuration
 ###############################################################################
 
-# Include shared compiler configuration (relative to project root)
-# If used standalone, fall back to inline compiler configuration
+# Include shared compiler configuration
+# Try local config first (standalone mode), then parent config (embedded mode)
+-include config/compiler.mk
 -include ../../config/compiler.mk
 
 # If config/compiler.mk wasn't found (standalone mode), define compiler settings inline
