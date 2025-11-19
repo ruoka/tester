@@ -5,13 +5,9 @@
 ###############################################################################
 
 # Base submodules list
-base_submodules = std
-# If LLVM's libc++ provides the std module, skip building deps/std
-ifeq ($(USE_BUILTIN_STD_MODULE),yes)
-submodules = $(filter-out std,$(base_submodules))
-else
+# Note: std module is always provided by libc++, so we don't build deps/std
+base_submodules =
 submodules = $(base_submodules)
-endif
 
 ###############################################################################
 # Compiler Configuration
@@ -96,30 +92,24 @@ objectdir = $(PREFIX)/obj
 librarydir = $(PREFIX)/lib
 binarydir = $(PREFIX)/bin
 
+dirs = $(moduledir) $(objectdir) $(librarydir) $(binarydir)
+$(dirs):
+	@mkdir -p $@
+
 # Compute all standalone-dependent variables once based on STANDALONE
-# Only set STD_MODULE_PATH if we're building deps/std (not using built-in)
-ifeq ($(USE_BUILTIN_STD_MODULE),yes)
-# Using built-in std module from libc++, no need for std.pcm
+# Always use built-in std module from libc++, no need for std.pcm
 STD_MODULE_PATH =
 STD_MODULE_PREBUILT_PATHS =
-else
 ifeq ($(STANDALONE),yes)
 # Standalone mode: submodules are in deps/ directory, all use same build/ directory
 SUBMODULE_PREFIX = deps
 SUBMODULE_PREFIX_ARG = ../../build
-STD_MODULE_PATH = $(moduledir)/std.pcm
-STD_MODULE_PREBUILT_PATHS = $(moduledir)/
 else
 # Parent project mode: submodules are siblings in deps/, use parent's PREFIX
 SUBMODULE_PREFIX = ..
 # PREFIX is already set (either explicitly by parent or defaulted by caller)
 # Use provided path for submodules to ensure shared outputs
 SUBMODULE_PREFIX_ARG = $(PREFIX)
-# Use the same PREFIX path that submodules use (SUBMODULE_PREFIX_ARG)
-# This ensures std.pcm path matches where it's actually built
-STD_MODULE_PATH = $(SUBMODULE_PREFIX_ARG)/pcm/std.pcm
-STD_MODULE_PREBUILT_PATHS = $(moduledir)/ $(SUBMODULE_PREFIX_ARG)/pcm/
-endif
 endif
 
 ###############################################################################
@@ -170,32 +160,21 @@ sourcedirs = $(library-sourcedirs) $(example-sourcedirs)
 CXXFLAGS += -I$(sourcedir)
 
 # Module compilation flags
-# When using built-in std module, allow implicit modules and module maps so std module can be found
-# Otherwise, disable them to prevent automatic discovery
-ifeq ($(USE_BUILTIN_STD_MODULE),yes)
-PCMFLAGS = -fimplicit-module-maps -fimplicit-modules
+# Always use built-in std module from libc++
 # Add module map file and prebuilt module path if LLVM_PREFIX is available (from parent Makefile or environment)
+PCMFLAGS = -fno-implicit-modules -fno-implicit-module-maps
+PCMFLAGS += -fmodule-file=std=$(moduledir)/std.pcm
+PCMFLAGS += -fprebuilt-module-path=$(moduledir)/
 ifdef LLVM_PREFIX
 PCMFLAGS += -fmodule-map-file=$(LLVM_PREFIX)/include/c++/v1/module.modulemap
-PCMFLAGS += -fprebuilt-module-path=$(LLVM_PREFIX)/include/c++/v1
 else
 # Try to detect LLVM_PREFIX from common locations
 LLVM_PREFIX_DETECTED := $(shell if [ -d /usr/local/llvm/include/c++/v1 ]; then echo "/usr/local/llvm"; elif [ -d /opt/homebrew/opt/llvm@19/include/c++/v1 ]; then echo "/opt/homebrew/opt/llvm@19"; elif [ -d /opt/homebrew/opt/llvm/include/c++/v1 ]; then echo "/opt/homebrew/opt/llvm"; else echo ""; fi)
-ifneq ($(LLVM_PREFIX_DETECTED),)
-PCMFLAGS += -fmodule-map-file=$(LLVM_PREFIX_DETECTED)/include/c++/v1/module.modulemap
-PCMFLAGS += -fprebuilt-module-path=$(LLVM_PREFIX_DETECTED)/include/c++/v1
-endif
-endif
-else
-PCMFLAGS = -fno-implicit-modules -fno-implicit-module-maps
+PCMFLAGS += $(if $(LLVM_PREFIX_DETECTED),-fmodule-map-file=$(LLVM_PREFIX_DETECTED)/include/c++/v1/module.modulemap)
 endif
 PCMFLAGS += $(foreach P, $(foreach M, $(modules) $(example-modules), $(basename $(notdir $(M)))), -fmodule-file=$(subst -,:,$(P))=$(moduledir)/$(P).pcm)
-# Only add std module file if we're building deps/std (not using built-in)
-ifneq ($(USE_BUILTIN_STD_MODULE),yes)
-PCMFLAGS += -fmodule-file=std=$(STD_MODULE_PATH)
-PCMFLAGS += $(foreach P, $(STD_MODULE_PREBUILT_PATHS), -fprebuilt-module-path=$(P))
-.PRECIOUS: $(STD_MODULE_PATH)
-endif
+
+BUILTIN_STD_OBJECT = $(objectdir)/std.o
 
 ###############################################################################
 # Build Rules
@@ -206,11 +185,11 @@ endif
 .PRECIOUS: $(objectdir)/%.deps $(moduledir)/%.pcm
 
 # Module compilation: .c++m -> .pcm
-$(moduledir)/%.pcm: $(sourcedir)/%.c++m
+$(moduledir)/%.pcm: $(sourcedir)/%.c++m $(moduledir)/std.pcm
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $< --precompile -o $@
 
-$(moduledir)/%.pcm: $(exampledir)/%.c++m
+$(moduledir)/%.pcm: $(exampledir)/%.c++m $(moduledir)/std.pcm
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $< --precompile -o $@
 
@@ -219,16 +198,50 @@ $(objectdir)/%.o: $(moduledir)/%.pcm
 	@mkdir -p $(@D)
 	$(CXX) $(PCMFLAGS) -c $< -o $@
 
+# Build std module once for this project
+$(moduledir)/std.pcm: | $(moduledir)
+	@mkdir -p $(moduledir)
+	@if [ -z "$(LLVM_PREFIX)" ]; then \
+		echo "Error: LLVM_PREFIX not set. Please ensure config/compiler.mk is included."; \
+		exit 1; \
+	fi
+	@if [ -f $(LLVM_PREFIX)/share/libc++/v1/std.cppm ]; then \
+		echo "Precompiling std module from $(LLVM_PREFIX)/share/libc++/v1/std.cppm"; \
+		$(CXX) -std=c++23 -stdlib=libc++ -pthread -fPIC -fexperimental-library \
+			-nostdinc++ -isystem $(LLVM_PREFIX)/include/c++/v1 \
+			-fno-implicit-modules -fno-implicit-module-maps \
+			-Wall -Wextra -Wno-reserved-module-identifier -Wno-deprecated-declarations -g -O3 \
+			$(LLVM_PREFIX)/share/libc++/v1/std.cppm --precompile -o $(moduledir)/std.pcm; \
+	elif [ -f /usr/lib/llvm-20/include/c++/v1/std.cppm ]; then \
+		echo "Precompiling std module from /usr/lib/llvm-20/include/c++/v1/std.cppm"; \
+		$(CXX) -std=c++23 -stdlib=libc++ -pthread -fPIC -fexperimental-library \
+			-nostdinc++ -isystem /usr/lib/llvm-20/include/c++/v1 \
+			-fno-implicit-modules -fno-implicit-module-maps \
+			-Wall -Wextra -Wno-reserved-module-identifier -Wno-deprecated-declarations -g -O3 \
+			/usr/lib/llvm-20/include/c++/v1/std.cppm --precompile -o $(moduledir)/std.pcm; \
+	else \
+		echo "Error: std.cppm not found at $(LLVM_PREFIX)/share/libc++/v1/std.cppm or /usr/lib/llvm-20/include/c++/v1/std.cppm"; \
+		echo "Please ensure LLVM with libc++ modules is installed."; \
+		exit 1; \
+	fi
+
+$(objectdir)/std.o: $(moduledir)/std.pcm | $(objectdir)
+	@mkdir -p $(@D)
+	@echo "Compiling std module implementation with initializer"
+	$(CXX) -fPIC -fno-implicit-modules -fno-implicit-module-maps \
+		-fmodule-file=std=$(moduledir)/std.pcm \
+		$(moduledir)/std.pcm -c -o $(objectdir)/std.o
+
 # Object compilation: .c++ -> .o
-$(objectdir)/%.o: $(sourcedir)/%.c++
+$(objectdir)/%.o: $(sourcedir)/%.c++ $(moduledir)/std.pcm
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(PCMFLAGS) -c $< -o $@
 
-$(objectdir)/%.o: $(exampledir)/%.c++
+$(objectdir)/%.o: $(exampledir)/%.c++ $(moduledir)/std.pcm
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(PCMFLAGS) -c $< -o $@
 
-$(objectdir)/%.test.o: $(exampledir)/%.test.c++
+$(objectdir)/%.test.o: $(exampledir)/%.test.c++ $(moduledir)/std.pcm
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(PCMFLAGS) -c $< -o $@
 
@@ -238,17 +251,17 @@ $(library) : $(objects)
 	$(AR) $(ARFLAGS) $@ $^
 
 # Executable linking
-$(binarydir)/%: $(exampledir)/%.c++ $(example-objects) $(library) $(libraries)
+$(binarydir)/%: $(exampledir)/%.c++ $(example-objects) $(library) $(libraries) $(BUILTIN_STD_OBJECT)
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $(LDFLAGS) $^ -o $@
 
-$(binarydir)/tools/%: $(toolsdir)/%.c++ $(library) $(libraries)
+$(binarydir)/tools/%: $(toolsdir)/%.c++ $(library) $(libraries) $(BUILTIN_STD_OBJECT)
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $(LDFLAGS) $^ -o $@
 
-$(test-target): $(library) $(libraries)
+$(test-target): $(library) $(libraries) $(BUILTIN_STD_OBJECT)
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $(LDFLAGS) $(library) $(libraries) -o $@
+	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $(LDFLAGS) $(library) $(libraries) $(BUILTIN_STD_OBJECT) -o $@
 
 ###############################################################################
 # Dependency Generation
@@ -260,27 +273,16 @@ example-dependencies = $(foreach D, $(example-sourcedirs), $(objectdir)/$(D).dep
 dependencies = $(library-dependencies) $(example-dependencies)
 
 # Generate dependencies for modules and sources
-# Filter out std.pcm dependencies when using built-in std module
+# Filter out std.pcm dependencies since we always use built-in std module
 define create_dependency_hierarchy
-	@if [ "$(USE_BUILTIN_STD_MODULE)" = "yes" ]; then \
-		grep -HE '^[ ]*export[ ]+module' $(1)/*.c++m 2>/dev/null | sed -E 's|.+/([a-z_0-9\-]+)\.c\+\+m.+|$(objectdir)/\1.o: $(moduledir)/\1.pcm|' | grep -v 'std\.pcm' >> $(2) || true; \
-		grep -HE '^[ ]*export[ ]+import[ ]+([a-z_0-9]+)' $(1)/*.c++m 2>/dev/null | sed -E 's|.+/([a-z_0-9\-]+)\.c\+\+m:[ ]*import[ ]+([a-z_0-9]+)[ ]*;|$(moduledir)/\1.pcm: $(moduledir)/\2.pcm|' | grep -v ':.*std\.pcm' >> $(2) || true; \
-		grep -HE '^[ ]*import[ ]+([a-z_0-9]+)' $(1)/*.c++m 2>/dev/null | sed -E 's|.+/([a-z_0-9\-]+)\.c\+\+m:[ ]*import[ ]+([a-z_0-9]+)[ ]*;|$(moduledir)/\1.pcm: $(moduledir)/\2.pcm|' | grep -v ':.*std\.pcm' >> $(2) || true; \
-		grep -HE '^[ ]*export[ ]+[ ]*import[ ]+:([a-z_0-9]+)' $(1)/*.c++m 2>/dev/null | sed -E 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9]*)\.c\+\+m:.*import[ ]+:([a-z_0-9]+)[ ]*;|$(moduledir)/\1\2\3.pcm: $(moduledir)/\1\-\4.pcm|' | grep -v ':.*std\.pcm' >> $(2) || true; \
-		grep -HE '^[ ]*import[ ]+:([a-z_0-9]+)' $(1)/*.c++m 2>/dev/null | sed -E 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9]*)\.c\+\+m:.*import[ ]+:([a-z_0-9]+)[ ]*;|$(moduledir)/\1\2\3.pcm: $(moduledir)/\1\-\4.pcm|' | grep -v ':.*std\.pcm' >> $(2) || true; \
-		grep -HE '^[ ]*module[ ]+([a-z_0-9]+)' $(1)/*.c++ 2>/dev/null | sed -E 's|.+/([a-z_0-9\.\-]+)\.c\+\+:[ ]*module[ ]+([a-z_0-9]+)[ ]*;|$(objectdir)/\1.o: $(moduledir)/\2.pcm|' | grep -v 'std\.pcm' >> $(2) || true; \
-		grep -HE '^[ ]*import[ ]+([a-z_0-9]+)' $(1)/*.c++ 2>/dev/null | sed -E 's|.+/([a-z_0-9\.\-]+)\.c\+\+:[ ]*import[ ]+([a-z_0-9]+)[ ]*;|$(objectdir)/\1.o: $(moduledir)/\2.pcm|' | grep -v 'std\.pcm' >> $(2) || true; \
-		grep -HE '^[ ]*import[ ]+:([a-z_0-9]+)' $(1)/*.c++ 2>/dev/null | sed -E 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9\.]*)\.c\+\+:.*import[ ]+:([a-z_0-9]+)[ ]*;|$(objectdir)/\1\2\3.o: $(moduledir)/\1\-\4.pcm|' | grep -v 'std\.pcm' >> $(2) || true; \
-	else \
-		grep -HE '^[ ]*export[ ]+module' $(1)/*.c++m 2>/dev/null | sed -E 's|.+/([a-z_0-9\-]+)\.c\+\+m.+|$(objectdir)/\1.o: $(moduledir)/\1.pcm|' >> $(2) || true; \
-		grep -HE '^[ ]*export[ ]+import[ ]+([a-z_0-9]+)' $(1)/*.c++m 2>/dev/null | sed -E 's|.+/([a-z_0-9\-]+)\.c\+\+m:[ ]*import[ ]+([a-z_0-9]+)[ ]*;|$(moduledir)/\1.pcm: $(moduledir)/\2.pcm|' >> $(2) || true; \
-		grep -HE '^[ ]*import[ ]+([a-z_0-9]+)' $(1)/*.c++m 2>/dev/null | sed -E 's|.+/([a-z_0-9\-]+)\.c\+\+m:[ ]*import[ ]+([a-z_0-9]+)[ ]*;|$(moduledir)/\1.pcm: $(moduledir)/\2.pcm|' >> $(2) || true; \
-		grep -HE '^[ ]*export[ ]+[ ]*import[ ]+:([a-z_0-9]+)' $(1)/*.c++m 2>/dev/null | sed -E 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9]*)\.c\+\+m:.*import[ ]+:([a-z_0-9]+)[ ]*;|$(moduledir)/\1\2\3.pcm: $(moduledir)/\1\-\4.pcm|' >> $(2) || true; \
-		grep -HE '^[ ]*import[ ]+:([a-z_0-9]+)' $(1)/*.c++m 2>/dev/null | sed -E 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9]*)\.c\+\+m:.*import[ ]+:([a-z_0-9]+)[ ]*;|$(moduledir)/\1\2\3.pcm: $(moduledir)/\1\-\4.pcm|' >> $(2) || true; \
-		grep -HE '^[ ]*module[ ]+([a-z_0-9]+)' $(1)/*.c++ 2>/dev/null | sed -E 's|.+/([a-z_0-9\.\-]+)\.c\+\+:[ ]*module[ ]+([a-z_0-9]+)[ ]*;|$(objectdir)/\1.o: $(moduledir)/\2.pcm|' >> $(2) || true; \
-		grep -HE '^[ ]*import[ ]+([a-z_0-9]+)' $(1)/*.c++ 2>/dev/null | sed -E 's|.+/([a-z_0-9\.\-]+)\.c\+\+:[ ]*import[ ]+([a-z_0-9]+)[ ]*;|$(objectdir)/\1.o: $(moduledir)/\2.pcm|' >> $(2) || true; \
-		grep -HE '^[ ]*import[ ]+:([a-z_0-9]+)' $(1)/*.c++ 2>/dev/null | sed -E 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9\.]*)\.c\+\+:.*import[ ]+:([a-z_0-9]+)[ ]*;|$(objectdir)/\1\2\3.o: $(moduledir)/\1\-\4.pcm|' >> $(2) || true; \
-	fi
+	@grep -HE '^[ ]*export[ ]+module' $(1)/*.c++m 2>/dev/null | sed -E 's|.+/([a-z_0-9\-]+)\.c\+\+m.+|$(objectdir)/\1.o: $(moduledir)/\1.pcm|' | grep -v 'std\.pcm' >> $(2) || true; \
+	grep -HE '^[ ]*export[ ]+import[ ]+([a-z_0-9]+)' $(1)/*.c++m 2>/dev/null | sed -E 's|.+/([a-z_0-9\-]+)\.c\+\+m:[ ]*import[ ]+([a-z_0-9]+)[ ]*;|$(moduledir)/\1.pcm: $(moduledir)/\2.pcm|' | grep -v ':.*std\.pcm' >> $(2) || true; \
+	grep -HE '^[ ]*import[ ]+([a-z_0-9]+)' $(1)/*.c++m 2>/dev/null | sed -E 's|.+/([a-z_0-9\-]+)\.c\+\+m:[ ]*import[ ]+([a-z_0-9]+)[ ]*;|$(moduledir)/\1.pcm: $(moduledir)/\2.pcm|' | grep -v ':.*std\.pcm' >> $(2) || true; \
+	grep -HE '^[ ]*export[ ]+[ ]*import[ ]+:([a-z_0-9]+)' $(1)/*.c++m 2>/dev/null | sed -E 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9]*)\.c\+\+m:.*import[ ]+:([a-z_0-9]+)[ ]*;|$(moduledir)/\1\2\3.pcm: $(moduledir)/\1\-\4.pcm|' | grep -v ':.*std\.pcm' >> $(2) || true; \
+	grep -HE '^[ ]*import[ ]+:([a-z_0-9]+)' $(1)/*.c++m 2>/dev/null | sed -E 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9]*)\.c\+\+m:.*import[ ]+:([a-z_0-9]+)[ ]*;|$(moduledir)/\1\2\3.pcm: $(moduledir)/\1\-\4.pcm|' | grep -v ':.*std\.pcm' >> $(2) || true; \
+	grep -HE '^[ ]*module[ ]+([a-z_0-9]+)' $(1)/*.c++ 2>/dev/null | sed -E 's|.+/([a-z_0-9\.\-]+)\.c\+\+:[ ]*module[ ]+([a-z_0-9]+)[ ]*;|$(objectdir)/\1.o: $(moduledir)/\2.pcm|' | grep -v 'std\.pcm' >> $(2) || true; \
+	grep -HE '^[ ]*import[ ]+([a-z_0-9]+)' $(1)/*.c++ 2>/dev/null | sed -E 's|.+/([a-z_0-9\.\-]+)\.c\+\+:[ ]*import[ ]+([a-z_0-9]+)[ ]*;|$(objectdir)/\1.o: $(moduledir)/\2.pcm|' | grep -v 'std\.pcm' >> $(2) || true; \
+	grep -HE '^[ ]*import[ ]+:([a-z_0-9]+)' $(1)/*.c++ 2>/dev/null | sed -E 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9\.]*)\.c\+\+:.*import[ ]+:([a-z_0-9]+)[ ]*;|$(objectdir)/\1\2\3.o: $(moduledir)/\1\-\4.pcm|' | grep -v 'std\.pcm' >> $(2) || true;
 endef
 
 $(library-dependencies): $(modules) $(sources)
@@ -307,7 +309,7 @@ $(foreach M, $(submodules), $(moduledir)/$(M).pcm):
 	$(MAKE) -C $(SUBMODULE_PREFIX)/$(basename $(@F)) module PREFIX=$(SUBMODULE_PREFIX_ARG)
 
 $(SUBMODULE_PREFIX_ARG)/pcm/%.pcm:
-	@if [ "$*" = "std" ] && [ "$(USE_BUILTIN_STD_MODULE)" = "yes" ]; then \
+	@if [ "$*" = "std" ]; then \
 		echo "Skipping deps/std build: using LLVM's built-in std module"; \
 		mkdir -p $(@D); \
 		touch $@; \
@@ -320,7 +322,7 @@ $(librarydir)/%.a:
 	$(MAKE) -C $(SUBMODULE_PREFIX)/$(subst lib,,$(basename $(@F))) module PREFIX=$(SUBMODULE_PREFIX_ARG)
 
 $(SUBMODULE_PREFIX_ARG)/lib/lib%.a: $(SUBMODULE_PREFIX_ARG)/pcm/%.pcm
-	@if [ "$*" = "std" ] && [ "$(USE_BUILTIN_STD_MODULE)" = "yes" ]; then \
+	@if [ "$*" = "std" ]; then \
 		echo "Skipping deps/std build: using LLVM's built-in std module"; \
 		mkdir -p $(@D); \
 		touch $@; \
@@ -341,7 +343,8 @@ deps: $(library-dependencies) $(example-dependencies)
 library-deps: $(library-dependencies)
 
 .PHONY: module
-module: $(foreach M,$(submodules),$(moduledir)/$(M).pcm) \
+module: $(moduledir)/std.pcm $(objectdir)/std.o \
+        $(foreach M,$(submodules),$(moduledir)/$(M).pcm) \
         $(foreach M,$(submodules),$(SUBMODULE_PREFIX_ARG)/lib/lib$(M).a) \
         library-deps \
         $(library)

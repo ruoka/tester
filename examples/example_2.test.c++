@@ -1,5 +1,4 @@
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-#include <iostream>
+import std;
 import tester;
 
 namespace example_2 {

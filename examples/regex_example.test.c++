@@ -1,4 +1,4 @@
-#include <stdexcept>
+import std;
 import tester;
 
 namespace regex_example {

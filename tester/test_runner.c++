@@ -1,5 +1,7 @@
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wincomplete-umbrella"
 #include <csignal>
-#include <cstdlib>
+#pragma clang diagnostic pop
 #include <execinfo.h>
 #include <unistd.h>
 import std;

@@ -18,7 +18,7 @@ Tester is a lightweight, macro-free testing framework built entirely with C++23 
 tester/
 ├── tester/          – framework modules
 ├── examples/        – sample tests & demo programs
-├── deps/            – optional support libraries (std, net, xson)
+├── deps/            – optional support libraries (net, xson)
 └── tools/           – helper utilities (e.g. core_pc.c++)
 ```
 
@@ -29,7 +29,7 @@ tester/
 ```bash
 git clone https://github.com/ruoka/tester.git
 cd tester
-git submodule update --init --recursive  # pulls deps/std, deps/net, …
+git submodule update --init --recursive  # pulls deps/net, …
 make module                                # builds libtester.a and modules
 make run_examples                          # (optional) compiles & runs demos
 make tests                                 # (optional) builds test_runner
