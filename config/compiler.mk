@@ -70,44 +70,6 @@ LDFLAGS ?= $(COMMON_LDFLAGS) -O3
 endif
 endif
 
-# Detect problematic Clang exception handling on macOS ARM (see llvm/llvm-project#92121).
-# Root cause: LLVM's built-in unwinder enabled by default in Homebrew Clang 18+ on macOS ARM
-# causes exceptions thrown from module implementations or constructors in return statements
-# to not be caught properly. This is specific to macOS ARM due to Darwin's exception model
-# and doesn't occur on Linux (which uses libunwind/libgcc instead).
-#
-# The proper fix requires rebuilding LLVM with:
-#   -DLIBCXXABI_USE_LLVM_UNWINDER=OFF -DCOMPILER_RT_USE_LLVM_UNWINDER=OFF
-# Since we're using Homebrew's pre-built LLVM, we work around with:
-# 1. Explicit libc++ linkage (already done above)
-# 2. Conservative optimization when CLANG_EXCEPTIONS_WORKAROUND=1
-CLANG_VERSION_MAJOR := $(shell "$(CXX)" --version 2>/dev/null | sed -nE 's/.*clang version ([0-9]+).*/\1/p' | head -n1)
-ifdef CLANG_EXCEPTIONS_WORKAROUND
-# Mitigation: disable optimization to reduce unwinder-related miscompilation.
-# This workaround applies to all Clang versions when explicitly enabled.
-# NOTE: This is a temporary workaround. The proper fix requires rebuilding LLVM
-# without the built-in unwinder, or waiting for an upstream fix.
-CXXFLAGS := $(filter-out -O3 -O2 -O1 -O0,$(CXXFLAGS)) -O0 -fno-inline-functions -fno-vectorize -fno-slp-vectorize
-CXXFLAGS += -frtti -fexceptions -fcxx-exceptions
-LDFLAGS := $(filter-out -O3 -O2 -O1 -O0,$(LDFLAGS)) -O0
-$(warning Applied exception handling workaround for Clang $(CLANG_VERSION_MAJOR) (llvm/llvm-project#92121) - using -O0)
-else
-# Error out on incompatible Clang versions (18-21) unless workaround is explicitly enabled
-# Note: Clang 22+ has been tested and works correctly, so it's allowed
-ifneq ($(shell test $(CLANG_VERSION_MAJOR) -ge 18 && test $(CLANG_VERSION_MAJOR) -lt 22 && echo yes),)
-$(error \
-    Detected Clang $(CLANG_VERSION_MAJOR) on macOS ARM, which may be incompatible due to LLVM built-in unwinder bug (llvm/llvm-project#92121). \
-    Exceptions may not be caught properly, causing uncaught exception crashes. \
-    \
-    Solutions: \
-    1. Build with workaround: CLANG_EXCEPTIONS_WORKAROUND=1 make \
-    2. Rebuild LLVM without built-in unwinder: \
-       brew install llvm --build-from-source with -DLIBCXXABI_USE_LLVM_UNWINDER=OFF \
-    3. Use Clang 22+ (tested and working) or an older Clang version (< 18) \
-    \
-    See: https://github.com/llvm/llvm-project/issues/92121)
-endif
-endif
 endif
 
 # Debug override
