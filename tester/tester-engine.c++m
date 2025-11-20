@@ -139,6 +139,23 @@ auto run_test_cases(auto filter)
         try
         {
             ++statistics.total_tests;
+            // NOTE: When tc->run() executes a scenario/test_case lambda, it may add nested
+            // test cases (given/when/then) to test_cases. Those nested test cases' lambdas
+            // should capture parent-scope variables BY VALUE, not by reference, because:
+            // 1. The parent lambda's local variables are destroyed when tc->run() returns
+            // 2. The nested test cases are executed later in subsequent loop iterations
+            // 3. If nested lambdas capture by reference ([&var]), they will have dangling
+            //    references when they execute.
+            // Example of CORRECT usage:
+            //   scenario("Test") = [] {
+            //       auto data = std::make_shared<Data>();  // or capture by value
+            //       given("Setup") = [data] { ... };  // capture by value
+            //   };
+            // Example of INCORRECT usage (will cause undefined behavior):
+            //   scenario("Test") = [] {
+            //       auto data = Data{};
+            //       given("Setup") = [&data] { ... };  // BUG: dangling reference
+            //   };
             tc->run();
             ++statistics.successful_tests;
         }
@@ -157,6 +174,11 @@ auto run_test_cases(auto filter)
             tr.success = false;
             output::exception(*tc,std::runtime_error{"Unknown exception"});
         }
+        // Erase the test case after execution. Note that if nested test cases were added
+        // during tc->run(), they are already in test_cases and will be processed in
+        // subsequent loop iterations. The test_case object itself is safe to erase here
+        // because nested test cases store their own copies of the lambda (with captured
+        // values), not references to this test_case object.
         test_cases.erase(tc);
         tr.output = output::stream.view();
         test_results.push_back(tr);

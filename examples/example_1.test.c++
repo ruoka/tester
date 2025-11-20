@@ -1,4 +1,4 @@
-#include <stdexcept>
+import std;
 import tester;
 
 namespace example_1 {

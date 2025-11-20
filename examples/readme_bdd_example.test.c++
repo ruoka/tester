@@ -1,4 +1,4 @@
-#include <stdexcept>
+import std;
 import tester;
 
 using namespace tester::behavior_driven_development;
@@ -16,13 +16,16 @@ auto readme_bdd_feature()
     using ordering::order;
 
     scenario("Customer places an order") = [] {
-        order o{};
-        given("a draft order") = [&] {
-            when("the customer confirms") = [&] {
-                o.submit();
-                then("the order is marked as submitted") = [&] {
-                    require_true(o.submitted);
-                    require_nothrow([&]{ o.submit(); });
+        // Use shared_ptr to safely share state across nested test cases
+        // Nested lambdas (given/when/then) execute later, after the scenario
+        // lambda returns, so they must capture by value, not by reference
+        auto o = std::make_shared<order>();
+        given("a draft order") = [o] {
+            when("the customer confirms") = [o] {
+                o->submit();
+                then("the order is marked as submitted") = [o] {
+                    require_true(o->submitted);
+                    require_nothrow([o]{ o->submit(); });
                 };
             };
         };

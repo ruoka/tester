@@ -12,8 +12,13 @@ submodules = $(base_submodules)
 # Ensure clean targets are serialized
 .NOTPARALLEL: clean mostlyclean
 
+# Detect OS early if not already set (needed for BUILD_DIR)
+ifndef OS
+OS = $(shell uname -s)
+endif
+
 # Normalize OS name for build directory selection
-lowercase_os := $(if $(OS),$(shell echo $(OS) | tr '[:upper:]' '[:lower:]'),unknown)
+lowercase_os := $(shell echo $(OS) | tr '[:upper:]' '[:lower:]')
 BUILD_DIR ?= build-$(lowercase_os)
 export BUILD_DIR
 
