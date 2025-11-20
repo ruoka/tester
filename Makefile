@@ -9,6 +9,14 @@
 base_submodules =
 submodules = $(base_submodules)
 
+# Ensure clean targets are serialized
+.NOTPARALLEL: clean mostlyclean
+
+# Normalize OS name for build directory selection
+lowercase_os := $(if $(OS),$(shell echo $(OS) | tr '[:upper:]' '[:lower:]'),unknown)
+BUILD_DIR ?= build-$(lowercase_os)
+export BUILD_DIR
+
 ###############################################################################
 # Compiler Configuration
 ###############################################################################
@@ -77,8 +85,8 @@ STANDALONE := $(if $(filter 0,$(MAKELEVEL)),yes,no)
 # If PREFIX is not set, use appropriate default for the mode
 ifndef PREFIX
 ifeq ($(STANDALONE),yes)
-# Standalone mode: use build/ directory
-PREFIX = build
+# Standalone mode: use OS-specific build directory
+PREFIX = $(BUILD_DIR)
 endif
 endif
 
@@ -101,9 +109,9 @@ $(dirs):
 STD_MODULE_PATH =
 STD_MODULE_PREBUILT_PATHS =
 ifeq ($(STANDALONE),yes)
-# Standalone mode: submodules are in deps/ directory, all use same build/ directory
+# Standalone mode: submodules are in deps/ directory, all use same build directory
 SUBMODULE_PREFIX = deps
-SUBMODULE_PREFIX_ARG = ../../build
+SUBMODULE_PREFIX_ARG = ../../$(BUILD_DIR)
 else
 # Parent project mode: submodules are siblings in deps/, use parent's PREFIX
 SUBMODULE_PREFIX = ..
@@ -278,21 +286,21 @@ dependencies = $(library-dependencies) $(example-dependencies)
 # Generate dependencies for modules and sources
 # Filter out std.pcm dependencies since we always use built-in std module
 define create_dependency_hierarchy
-	@grep -HE '^[ ]*export[ ]+module' $(1)/*.c++m 2>/dev/null | sed -E 's|.+/([a-z_0-9\-]+)\.c\+\+m.+|$(objectdir)/\1.o: $(moduledir)/\1.pcm|' | grep -v 'std\.pcm' >> $(2) || true; \
-	grep -HE '^[ ]*export[ ]+import[ ]+([a-z_0-9]+)' $(1)/*.c++m 2>/dev/null | sed -E 's|.+/([a-z_0-9\-]+)\.c\+\+m:[ ]*import[ ]+([a-z_0-9]+)[ ]*;|$(moduledir)/\1.pcm: $(moduledir)/\2.pcm|' | grep -v ':.*std\.pcm' >> $(2) || true; \
-	grep -HE '^[ ]*import[ ]+([a-z_0-9]+)' $(1)/*.c++m 2>/dev/null | sed -E 's|.+/([a-z_0-9\-]+)\.c\+\+m:[ ]*import[ ]+([a-z_0-9]+)[ ]*;|$(moduledir)/\1.pcm: $(moduledir)/\2.pcm|' | grep -v ':.*std\.pcm' >> $(2) || true; \
-	grep -HE '^[ ]*export[ ]+[ ]*import[ ]+:([a-z_0-9]+)' $(1)/*.c++m 2>/dev/null | sed -E 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9]*)\.c\+\+m:.*import[ ]+:([a-z_0-9]+)[ ]*;|$(moduledir)/\1\2\3.pcm: $(moduledir)/\1\-\4.pcm|' | grep -v ':.*std\.pcm' >> $(2) || true; \
-	grep -HE '^[ ]*import[ ]+:([a-z_0-9]+)' $(1)/*.c++m 2>/dev/null | sed -E 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9]*)\.c\+\+m:.*import[ ]+:([a-z_0-9]+)[ ]*;|$(moduledir)/\1\2\3.pcm: $(moduledir)/\1\-\4.pcm|' | grep -v ':.*std\.pcm' >> $(2) || true; \
-	grep -HE '^[ ]*module[ ]+([a-z_0-9]+)' $(1)/*.c++ 2>/dev/null | sed -E 's|.+/([a-z_0-9\.\-]+)\.c\+\+:[ ]*module[ ]+([a-z_0-9]+)[ ]*;|$(objectdir)/\1.o: $(moduledir)/\2.pcm|' | grep -v 'std\.pcm' >> $(2) || true; \
-	grep -HE '^[ ]*import[ ]+([a-z_0-9]+)' $(1)/*.c++ 2>/dev/null | sed -E 's|.+/([a-z_0-9\.\-]+)\.c\+\+:[ ]*import[ ]+([a-z_0-9]+)[ ]*;|$(objectdir)/\1.o: $(moduledir)/\2.pcm|' | grep -v 'std\.pcm' >> $(2) || true; \
-	grep -HE '^[ ]*import[ ]+:([a-z_0-9]+)' $(1)/*.c++ 2>/dev/null | sed -E 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9\.]*)\.c\+\+:.*import[ ]+:([a-z_0-9]+)[ ]*;|$(objectdir)/\1\2\3.o: $(moduledir)/\1\-\4.pcm|' | grep -v 'std\.pcm' >> $(2) || true;
+	grep -HE '^[ ]*module[ ]+([a-z_0-9][a-z_0-9:]*)' $(1)/*.c++ 2>/dev/null | sed -nE 's|.+/([a-z_0-9\.\-]+)\.c\+\+:[ ]*module[ ]+([a-z_0-9][a-z_0-9:]*)[ ]*;|$(objectdir)/\1.o: $(moduledir)/\2.pcm|p' >> $(2) || true; \
+	grep -HE '^[ ]*export[ ]+module' $(1)/*.c++m 2>/dev/null | sed -nE 's|.+/([a-z_0-9\-]+)\.c\+\+m.+|$(objectdir)/\1.o: $(moduledir)/\1.pcm|p' >> $(2) || true; \
+	grep -HE '^[ ]*export[ ]+import[ ]+([a-z_0-9][a-z_0-9:]*)' $(1)/*.c++m 2>/dev/null | sed -nE 's|.+/([a-z_0-9\-]+)\.c\+\+m:[ ]*import[ ]+([a-z_0-9][a-z_0-9:]*)[ ]*;|$(moduledir)/\1.pcm: $(moduledir)/\2.pcm|p' | grep -v ':.*std\.pcm' >> $(2) || true; \
+	grep -HE '^[ ]*export[ ]+[ ]*import[ ]+:([a-z_0-9:]+)' $(1)/*.c++m 2>/dev/null | sed -nE 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9]*)\.c\+\+m:.*import[ ]+:([a-z_0-9:]+)[ ]*;|$(moduledir)/\1\2\3.pcm: $(moduledir)/\1\-\4.pcm|p' >> $(2) || true; \
+	grep -HE '^[ ]*import[ ]+([a-z_0-9][a-z_0-9:]*)' $(1)/*.c++m 2>/dev/null | sed -nE 's|.+/([a-z_0-9\-]+)\.c\+\+m:[ ]*import[ ]+([a-z_0-9][a-z_0-9:]*)[ ]*;|$(moduledir)/\1.pcm: $(moduledir)/\2.pcm|p' | grep -v ':.*std\.pcm' >> $(2) || true; \
+	grep -HE '^[ ]*import[ ]+:([a-z_0-9:]+)' $(1)/*.c++m 2>/dev/null | sed -nE 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9]*)\.c\+\+m:.*import[ ]+:([a-z_0-9:]+)[ ]*;|$(moduledir)/\1\2\3.pcm: $(moduledir)/\1\-\4.pcm|p' >> $(2) || true; \
+	grep -HE '^[ ]*import[ ]+([a-z_0-9][a-z_0-9:]*)' $(1)/*.c++ 2>/dev/null | sed -nE 's|.+/([a-z_0-9\.\-]+)\.c\+\+:[ ]*import[ ]+([a-z_0-9][a-z_0-9:]*)[ ]*;|$(objectdir)/\1.o: $(moduledir)/\2.pcm|p' | grep -v 'std\.pcm' >> $(2) || true; \
+	grep -HE '^[ ]*import[ ]+:([a-z_0-9:]+)' $(1)/*.c++ 2>/dev/null | sed -nE 's|.+/([a-z_0-9]+)(\-*)([a-z_0-9\.]*)\.c\+\+:.*import[ ]+:([a-z_0-9:]+)[ ]*;|$(objectdir)/\1\2\3.o: $(moduledir)/\1\-\4.pcm|p' >> $(2) || true;
 endef
 
-$(library-dependencies): $(modules) $(sources)
+$(library-dependencies): $(modules) $(sources) | $(objectdir)
 	@mkdir -p $(@D)
 	$(call create_dependency_hierarchy, ./$(basename $(@F)), $@)
 
-$(example-dependencies): $(example-modules) $(example-sources)
+$(example-dependencies): $(example-modules) $(example-sources) | $(objectdir)
 	@mkdir -p $(@D)
 	$(call create_dependency_hierarchy, ./$(basename $(@F)), $@)
 
@@ -339,46 +347,64 @@ $(SUBMODULE_PREFIX_ARG)/lib/lib%.a: $(SUBMODULE_PREFIX_ARG)/pcm/%.pcm
 
 .DEFAULT_GOAL = run_examples
 
-.PHONY: deps
-deps: $(library-dependencies) $(example-dependencies)
+###############################################################################
+# High-level targets
+###############################################################################
 
-.PHONY: library-deps
-library-deps: $(library-dependencies)
+.PHONY: help module all examples run_examples tools tests run_tests clean mostlyclean
 
-.PHONY: module
+help:
+	@echo "Tester Submodule - Targets"
+	@echo ""
+	@echo "  make help          - Show this help message"
+	@echo "  make module        - Build modules, library, and required submodules"
+	@echo "  make all           - Alias for module"
+	@echo "  make examples      - Build example binaries"
+	@echo "  make run_examples  - Build + run examples"
+	@echo "  make tools         - Build tooling binaries"
+	@echo "  make tests         - Build unit test binary"
+	@echo "  make run_tests     - Build and run unit tests (TEST_TAGS=... supported)"
+	@echo "  make clean         - Remove all build outputs except std.pcm"
+	@echo "  make mostlyclean   - Remove object files only"
+
 module: $(moduledir)/std.pcm $(objectdir)/std.o \
         $(foreach M,$(submodules),$(moduledir)/$(M).pcm) \
         $(foreach M,$(submodules),$(SUBMODULE_PREFIX_ARG)/lib/lib$(M).a) \
         library-deps \
         $(library)
 
-.PHONY: all
 all: module
 
-.PHONY: examples
 examples: all $(example-dependencies) $(example-targets)
 
-.PHONY: tools
-tools: all $(tool-targets)
-
-.PHONY: run_examples
 run_examples: examples
 	$(example-targets)
 
-.PHONY: tests
+tools: all $(tool-targets)
+
 tests: all $(test-target)
 
-.PHONY: run_tests
 run_tests: tests
 	$(test-target) $(TEST_TAGS)
 
-.PHONY: clean
 clean: mostlyclean
 	rm -rf $(binarydir) $(librarydir)
+	@if [ -d $(moduledir) ]; then \
+		find $(moduledir) -mindepth 1 ! -name 'std.pcm' -exec rm -rf {} +; \
+	fi
 
-.PHONY: mostlyclean
 mostlyclean:
-	rm -rf $(objectdir) $(moduledir)
+	rm -rf $(objectdir)
+
+###############################################################################
+# Dependency targets
+###############################################################################
+
+.PHONY: deps library-deps
+
+deps: $(library-dependencies) $(example-dependencies)
+
+library-deps: $(library-dependencies)
 
 .PHONY: dump
 dump:
