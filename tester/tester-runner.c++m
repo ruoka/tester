@@ -17,15 +17,23 @@ public:
     {
         if(not m_tags.empty())
         {
-            try
+            if(auto tag_list = parse_tag_query(m_tags); not tag_list.empty())
             {
-                m_regex = std::regex{m_tags.begin(), m_tags.end()};
-                m_use_regex = true;
+                m_literal_tags = std::move(tag_list);
+                m_use_literal_tags = true;
             }
-            catch(const std::regex_error&)
+            else
             {
-                // Invalid regex, fall back to substring matching
-                m_use_regex = false;
+                try
+                {
+                    m_regex = std::regex{m_tags.begin(), m_tags.end()};
+                    m_use_regex = true;
+                }
+                catch(const std::regex_error&)
+                {
+                    // Invalid regex, fall back to substring matching
+                    m_use_regex = false;
+                }
             }
         }
     }
@@ -68,7 +76,11 @@ public:
         if(not (test_name.starts_with("scenario") or test_name.starts_with("test_case")))
             return true;
 
-        if(m_use_regex)
+        if(m_use_literal_tags)
+        {
+            return match_literal_tags(test_name);
+        }
+        else if(m_use_regex)
         {
             return std::regex_search(test_name.begin(), test_name.end(), m_regex);
         }
@@ -83,6 +95,66 @@ private:
     std::string_view m_tags;
     std::regex m_regex;
     bool m_use_regex = false;
+    bool m_use_literal_tags = false;
+    std::vector<std::string> m_literal_tags;
+
+    static std::vector<std::string> parse_tag_query(std::string_view query)
+    {
+        auto tags = std::vector<std::string>{};
+        auto pos = std::size_t{0};
+
+        while(pos < query.size())
+        {
+            if(query[pos] != '[')
+                return {};
+
+            auto end = query.find(']', pos + 1);
+            if(end == std::string_view::npos)
+                return {};
+
+            tags.emplace_back(query.substr(pos + 1, end - pos - 1));
+            pos = end + 1;
+        }
+
+        return tags;
+    }
+
+    bool match_literal_tags(std::string_view test_name) const
+    {
+        if(m_literal_tags.empty())
+            return true;
+
+        auto test_tags = extract_tags(test_name);
+        if(test_tags.empty())
+            return false;
+
+        for(const auto& required : m_literal_tags)
+        {
+            auto found = std::find(test_tags.begin(), test_tags.end(), required) != test_tags.end();
+            if(not found)
+                return false;
+        }
+
+        return true;
+    }
+
+    static std::vector<std::string> extract_tags(std::string_view test_name)
+    {
+        auto tags = std::vector<std::string>{};
+        auto pos = std::size_t{0};
+
+        while((pos = test_name.find('[', pos)) != std::string_view::npos)
+        {
+            auto end = test_name.find(']', pos + 1);
+            if(end == std::string_view::npos)
+                break;
+
+            tags.emplace_back(test_name.substr(pos + 1, end - pos - 1));
+            pos = end + 1;
+        }
+
+        return tags;
+    }
 
     bool excluded(const test_case& tc) const
     {
