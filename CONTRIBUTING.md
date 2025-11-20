@@ -6,7 +6,7 @@ Thank you for your interest in contributing to Tester! This document provides gu
 
 ### Prerequisites
 
-- **Clang 19+** with C++23 modules support
+- **Clang 20 or higher** with C++23 modules support and built-in std module
 - **Make** build system
 - **Git** for version control
 
