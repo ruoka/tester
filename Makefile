@@ -16,7 +16,7 @@ submodules = $(base_submodules)
 # Include shared compiler configuration
 # Try local config first (standalone mode), then parent config (embedded mode)
 -include config/compiler.mk
-#-include ../../config/compiler.mk
+-include ../../config/compiler.mk
 
 # If config/compiler.mk wasn't found (standalone mode), define compiler settings inline
 ifeq ($(MAKELEVEL),0)
@@ -35,9 +35,9 @@ ARFLAGS = rv
 # Platform-specific compiler configuration
 ifeq ($(OS),Linux)
 # Debian/Ubuntu package installation paths
-CC = clang-19
-CXX = clang++-19
-CXXFLAGS = $(COMMON_CXXFLAGS) -I/usr/include/c++/v1 -O3
+CC = clang-20
+CXX = clang++-20
+CXXFLAGS = $(COMMON_CXXFLAGS) -I/usr/lib/llvm-20/include/c++/v1 -O3
 ARCH = $(shell uname -m)
 LDFLAGS = $(COMMON_LDFLAGS) -L/usr/lib/$(ARCH)-linux-gnu -O3
 endif
@@ -199,29 +199,32 @@ $(objectdir)/%.o: $(moduledir)/%.pcm
 	$(CXX) $(PCMFLAGS) -c $< -o $@
 
 # Build std module once for this project
+# If std.pcm already exists (e.g., from parent build), skip building it
 $(moduledir)/std.pcm: | $(moduledir)
 	@mkdir -p $(moduledir)
-	@if [ -z "$(LLVM_PREFIX)" ]; then \
-		echo "Error: LLVM_PREFIX not set. Please ensure config/compiler.mk is included."; \
-		exit 1; \
-	fi
-	@if [ -f $(LLVM_PREFIX)/share/libc++/v1/std.cppm ]; then \
+	@if [ -f $(moduledir)/std.pcm ]; then \
+		echo "Using existing std.pcm from parent build"; \
+	elif [ -n "$(LLVM_PREFIX)" ] && [ -f $(LLVM_PREFIX)/share/libc++/v1/std.cppm ]; then \
 		echo "Precompiling std module from $(LLVM_PREFIX)/share/libc++/v1/std.cppm"; \
-		$(CXX) -std=c++23 -stdlib=libc++ -pthread -fPIC -fexperimental-library \
+		$(CXX) -std=c++23 -pthread -fPIC -fexperimental-library \
 			-nostdinc++ -isystem $(LLVM_PREFIX)/include/c++/v1 \
 			-fno-implicit-modules -fno-implicit-module-maps \
 			-Wall -Wextra -Wno-reserved-module-identifier -Wno-deprecated-declarations -g -O3 \
 			$(LLVM_PREFIX)/share/libc++/v1/std.cppm --precompile -o $(moduledir)/std.pcm; \
-	elif [ -f /usr/lib/llvm-20/include/c++/v1/std.cppm ]; then \
-		echo "Precompiling std module from /usr/lib/llvm-20/include/c++/v1/std.cppm"; \
-		$(CXX) -std=c++23 -stdlib=libc++ -pthread -fPIC -fexperimental-library \
+	elif [ -f /usr/lib/llvm-20/share/libc++/v1/std.cppm ]; then \
+		echo "Precompiling std module from /usr/lib/llvm-20/share/libc++/v1/std.cppm"; \
+		$(CXX) -std=c++23 -pthread -fPIC -fexperimental-library \
 			-nostdinc++ -isystem /usr/lib/llvm-20/include/c++/v1 \
 			-fno-implicit-modules -fno-implicit-module-maps \
 			-Wall -Wextra -Wno-reserved-module-identifier -Wno-deprecated-declarations -g -O3 \
-			/usr/lib/llvm-20/include/c++/v1/std.cppm --precompile -o $(moduledir)/std.pcm; \
+			/usr/lib/llvm-20/share/libc++/v1/std.cppm --precompile -o $(moduledir)/std.pcm; \
 	else \
-		echo "Error: std.cppm not found at $(LLVM_PREFIX)/share/libc++/v1/std.cppm or /usr/lib/llvm-20/include/c++/v1/std.cppm"; \
-		echo "Please ensure LLVM with libc++ modules is installed."; \
+		echo "Error: std.cppm not found and std.pcm does not exist at $(moduledir)/std.pcm"; \
+		if [ -n "$(LLVM_PREFIX)" ]; then \
+			echo "  Checked: $(LLVM_PREFIX)/share/libc++/v1/std.cppm"; \
+		fi; \
+		echo "  Checked: /usr/lib/llvm-20/share/libc++/v1/std.cppm"; \
+		echo "Please ensure LLVM with libc++ modules is installed or std.pcm is built by parent."; \
 		exit 1; \
 	fi
 

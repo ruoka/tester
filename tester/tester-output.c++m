@@ -214,6 +214,12 @@ auto function_name(const std::source_location sl = std::source_location::current
     return display;
 }
 
+template<class T>
+concept chrono_clock = requires {
+    typename T::time_point;
+    T::now();
+};
+
 template <typename V>
 void value(const V& val)
 {
@@ -229,7 +235,7 @@ void value(const V& val)
         stream << (val != nullptr ? val : "nullptr");
     else if constexpr (std::is_enum_v<V>)
         stream << std::to_underlying(val);
-    else if constexpr (std::chrono::is_clock_v<V>)
+    else if constexpr (chrono_clock<V>)
         stream << std::format("{0:%F}T{0:%T}", val);
     else
         stream << std::boolalpha << val;

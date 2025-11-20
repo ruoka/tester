@@ -16,9 +16,9 @@ ARFLAGS = rv
 # Platform-specific compiler configuration
 ifeq ($(OS),Linux)
 # Debian/Ubuntu package installation paths
-CC = clang-19
-CXX = clang++-19
-CXXFLAGS = $(COMMON_CXXFLAGS) -I/usr/include/c++/v1 -O3
+CC = clang-20
+CXX = clang++-20
+CXXFLAGS = $(COMMON_CXXFLAGS) -I/usr/lib/llvm-20/include/c++/v1 -O3
 ARCH = $(shell uname -m)
 LDFLAGS = $(COMMON_LDFLAGS) -L/usr/lib/$(ARCH)-linux-gnu -lc++ -O3
 endif
