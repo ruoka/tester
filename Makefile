@@ -40,7 +40,7 @@ OS = $(shell uname -s)
 endif
 
 COMMON_CXXFLAGS = -std=c++23 -stdlib=libc++ -pthread
-COMMON_CXXFLAGS += -fexperimental-library -Wall -Wextra -Wno-reserved-module-identifier -Wno-deprecated-declarations
+COMMON_CXXFLAGS += -fexperimental-library -Wall -Wextra
 COMMON_LDFLAGS = -lc++
 AR = ar
 ARFLAGS = rv
@@ -224,14 +224,14 @@ $(moduledir)/std.pcm: | $(moduledir)
 		$(CXX) -std=c++23 -pthread -fPIC -fexperimental-library \
 			-nostdinc++ -isystem $(LLVM_PREFIX)/include/c++/v1 \
 			-fno-implicit-modules -fno-implicit-module-maps \
-			-Wall -Wextra -Wno-reserved-module-identifier -Wno-deprecated-declarations -g -O3 \
+			-Wall -Wextra -Wno-reserved-module-identifier -g -O3 \
 			$(LLVM_PREFIX)/share/libc++/v1/std.cppm --precompile -o $(moduledir)/std.pcm; \
 	elif [ -f /usr/lib/llvm-20/share/libc++/v1/std.cppm ]; then \
 		echo "Precompiling std module from /usr/lib/llvm-20/share/libc++/v1/std.cppm"; \
 		$(CXX) -std=c++23 -pthread -fPIC -fexperimental-library \
 			-nostdinc++ -isystem /usr/lib/llvm-20/include/c++/v1 \
 			-fno-implicit-modules -fno-implicit-module-maps \
-			-Wall -Wextra -Wno-reserved-module-identifier -Wno-deprecated-declarations -g -O3 \
+			-Wall -Wextra -Wno-reserved-module-identifier -g -O3 \
 			/usr/lib/llvm-20/share/libc++/v1/std.cppm --precompile -o $(moduledir)/std.pcm; \
 	else \
 		echo "Error: std.cppm not found and std.pcm does not exist at $(moduledir)/std.pcm"; \

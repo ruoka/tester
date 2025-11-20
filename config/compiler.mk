@@ -8,7 +8,7 @@ OS = $(shell uname -s)
 endif
 
 COMMON_CXXFLAGS = -std=c++23 -stdlib=libc++ -pthread -fPIC
-COMMON_CXXFLAGS += -fexperimental-library -Wall -Wextra -Wno-reserved-module-identifier -Wno-deprecated-declarations -g
+COMMON_CXXFLAGS += -fexperimental-library -Wall -Wextra -g
 COMMON_LDFLAGS =
 AR = ar
 ARFLAGS = rv
