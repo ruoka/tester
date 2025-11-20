@@ -145,6 +145,8 @@ test-program = test_runner
 test-target = $(test-program:%=$(binarydir)/%)
 test-source = $(sourcedir)/$(test-program).c++
 test-object = $(test-source:$(sourcedir)%.c++=$(objectdir)%.o)
+test-sources = $(wildcard $(exampledir)/*.test.c++)
+test-objects = $(test-sources:$(exampledir)/%.test.c++=$(objectdir)/%.test.o)
 
 # Library and dependencies
 library = $(addprefix $(librarydir)/, lib$(project).a)
@@ -270,9 +272,12 @@ $(binarydir)/tools/%: $(toolsdir)/%.c++ $(library) $(libraries) $(BUILTIN_STD_OB
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $(LDFLAGS) $^ -o $@
 
-$(test-target): $(library) $(libraries) $(BUILTIN_STD_OBJECT)
+# Module objects needed by test files (all example modules)
+test-module-objects = $(example-modules:$(exampledir)/%.c++m=$(objectdir)/%.o)
+
+$(test-target): $(library) $(libraries) $(BUILTIN_STD_OBJECT) $(test-objects) $(test-module-objects)
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $(LDFLAGS) $(library) $(libraries) $(BUILTIN_STD_OBJECT) -o $@
+	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $(LDFLAGS) $(library) $(libraries) $(BUILTIN_STD_OBJECT) $(test-objects) $(test-module-objects) -o $@
 
 ###############################################################################
 # Dependency Generation

@@ -12,15 +12,30 @@ Tester is a lightweight, macro-free testing framework built entirely with C++23 
 - Tag-based filtering through the supplied `test_runner` executable with regex pattern support.
 - Supports standalone builds as well as embedding in a parent mono-repo.
 
+## Improvement ideas
+
+Ongoing enhancement notes live in [`docs/tester-improvements.md`](docs/tester-improvements.md). Whether you consume Tester inside Fixer or as a standalone dependency, start there to see the current backlog and proposed assertion features.
+
 ## Repository layout
 
 ```
 tester/
 ├── tester/          – framework modules
 ├── examples/        – sample tests & demo programs
+├── tools/           – helper utilities (e.g. core_pc.c++)
+├── docs/            – design notes and improvement backlog
 ├── deps/            – optional support libraries (net, xson)
-└── tools/           – helper utilities (e.g. core_pc.c++)
+└── build-*/         – generated artifacts (per host OS), ignored by git
 ```
+
+## Assertion reference
+
+The core assertion namespace (`tester::assertions`) ships with matching `check_*` (non-fatal) and `require_*` (fatal) helpers:
+
+- Equality & ordering: `check_eq`, `check_neq`, `check_lt`, `check_lteq`, `check_gt`, `check_gteq` (+ `require_*` counterparts). Floating-point paths automatically use epsilon-based comparison.
+- Boolean helpers: `check_true`, `check_false`, `require_true`, `require_false`.
+- Exception helpers: `check_nothrow`, `check_throws`, `check_throws_as`, `require_nothrow`, `require_throws`, `require_throws_as`.
+- Messaging utilities: `succeed`, `failed`, `warning` for explicit pass/fail annotations.
 
 ## Building
 
@@ -36,11 +51,11 @@ make tests                                 # (optional) builds test_runner
 make tools                                 # (optional) builds utilities in tools/
 ```
 
-Artefacts are emitted under `build/` (`build/pcm` for modules, `build/obj` for objects, `build/lib` for archives, `build/bin` for executables).
+Artifacts land in `build-<os>/` (e.g., `build-linux/pcm`, `build-linux/obj`, `build-linux/lib`, `build-linux/bin`). Override `BUILD_DIR` or `PREFIX` if you need a custom layout.
 
 ### Embedded as a submodule
 
-When `tester` lives under another project’s `deps/` directory, invoke the framework via the parent build (e.g. `make module` at the parent root). Paths are automatically adjusted so the submodules share the parent’s `build/` tree.
+When `tester` lives under another project’s `deps/` directory, invoke the framework via the parent build (e.g., `make module` at the parent root). Paths automatically map to the parent’s `build-<os>/` tree, so every submodule shares the same artifacts.
 
 ## Writing tests
 
@@ -51,18 +66,29 @@ module foo;
 import tester;
 
 namespace foo {
-auto test_set() {
+int add(int lhs, int rhs) { return lhs + rhs; }
+
+auto register_tests()
+{
     using tester::basic::test_case;
     using namespace tester::assertions;
 
-    test_case("Module foo's unit tests") = [] {
-        require_eq(foo::x, 1);
-        require_eq(foo::y, 2);
+    test_case("foo::add handles signed math") = [] {
+        require_eq(add(2, 2), 4);
+        require_eq(add(-5, 3), -2);
+        check_eq(add(0, 0), 0); // non-fatal variant
     };
+
+    test_case("foo::add with floating-point inputs") = [] {
+        require_eq(0.3, 0.1 + 0.2);         // default epsilon path
+        check_near(0.3, 0.1 + 0.2, 1e-9);   // explicit tolerance
+        require_near(0.0, add(1.0, -1.0));  // fatal variant
+    };
+
     return 0;
 }
 
-const auto test_registrar = test_set();
+const auto _ = register_tests();
 } // namespace foo
 ```
 
@@ -75,22 +101,34 @@ import tester;
 using namespace tester::behavior_driven_development;
 using namespace tester::assertions;
 
-auto feature() {
-    scenario("Happy path") = [] {
-        given("Customer wants to buy food") = [] {
-            when("they visit a restaurant") = [] {
-                then("they place an order") = [] {
-                    require_true(true);
-                    require_nothrow([] {});
+namespace ordering {
+struct order {
+    bool submitted = false;
+    void submit() { submitted = true; }
+};
+}
+
+auto feature()
+{
+    using ordering::order;
+
+    scenario("Customer places an order") = [] {
+        order o{};
+        given("a draft order") = [&] {
+            when("the customer confirms") = [&] {
+                o.submit();
+                then("the order is marked as submitted") = [&] {
+                    require_true(o.submitted);
+                    require_nothrow([&]{ o.submit(); });
                 };
             };
         };
     };
 
-    scenario("Failure path") = [] {
-        when("service is unavailable") = [] {
-            then("the client sees an error") = [] {
-                require_throws([] { throw std::runtime_error{"boom"}; });
+    scenario("Submission fails") = [] {
+        given("a faulty payment gateway") = [] {
+            then("submitting raises an error") = [] {
+                require_throws([] { throw std::runtime_error{"gateway down"}; });
             };
         };
     };
@@ -98,7 +136,7 @@ auto feature() {
     return 0;
 }
 
-const auto test_registrar = feature();
+const auto _ = feature();
 ```
 
 ## Running tests
@@ -106,13 +144,13 @@ const auto test_registrar = feature();
 Build the supplied runner (`make tests`) and drive it with tags:
 
 ```bash
-build/bin/test_runner                  # run everything
-build/bin/test_runner --list           # list registered cases
-build/bin/test_runner --tags=simulator # simple substring matching
-build/bin/test_runner --tags=[acceptor] # bracket format
-build/bin/test_runner --tags="scenario.*Happy" # regex pattern matching
-build/bin/test_runner --tags="test_case.*CRUD" # regex for test cases
-build/bin/test_runner --tags="^scenario.*path" # regex with anchors
+build-linux/bin/test_runner                  # run everything (replace build-linux with your BUILD_DIR)
+build-linux/bin/test_runner --list           # list registered cases
+build-linux/bin/test_runner --tags=simulator # simple substring matching
+build-linux/bin/test_runner --tags=[acceptor] # bracket format
+build-linux/bin/test_runner --tags="scenario.*Happy" # regex pattern matching
+build-linux/bin/test_runner --tags="test_case.*CRUD" # regex for test cases
+build-linux/bin/test_runner --tags="^scenario.*path" # regex with anchors
 ```
 
 The tag selector supports both simple substring matching (for backward compatibility) and regular expression patterns. Invalid regex patterns automatically fall back to substring matching. The runner prints results, failures, and aggregate statistics, and returns a non-zero exit code when any scenario fails.
@@ -123,16 +161,18 @@ The tag selector supports both simple substring matching (for backward compatibi
 
 ```bash
 make tools
-build/bin/tools/core_pc /path/to/core
+build-linux/bin/tools/core_pc /path/to/core
 ```
 
 ## Make targets summary
 
+- `make help` – list the available targets and configuration knobs.
 - `make module` – build modules and `libtester.a`.
 - `make run_examples` – compile and execute the sample programs in `examples/`.
 - `make tests` – build the standalone `test_runner`.
-- `make tools` – build helper binaries under `build/bin/tools/`.
-- `make clean` – remove the `build/` directory.
+- `make tools` – build helper binaries under `${BUILD_DIR}/bin/tools/`.
+- `make clean` – remove `${BUILD_DIR}/bin`, `${BUILD_DIR}/lib`, and submodule stamps while preserving `std.pcm`.
+- `make mostlyclean` – drop only `${BUILD_DIR}/obj` so incremental rebuilds stay fast.
 
 ## License
 

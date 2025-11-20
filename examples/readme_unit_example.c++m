@@ -1,0 +1,6 @@
+export module readme_unit_example;
+
+namespace readme_unit_example {
+    export int add(int lhs, int rhs) { return lhs + rhs; }
+}
+

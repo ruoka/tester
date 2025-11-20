@@ -84,7 +84,7 @@ namespace tester::assertions
         }
     };
 
-    // Non-fatal assertions (check_*) - continue on failure
+    // Equality and relational assertions (paired non-fatal/fatal helpers)
     export template<typename A, typename E>
     auto check_eq(A actual, E expected, const std::source_location location = std::source_location::current())
     {
@@ -101,47 +101,6 @@ namespace tester::assertions
     };
 
     export template<typename A, typename E>
-    auto check_neq(A actual, E expected, const std::source_location location = std::source_location::current())
-    {
-        return check(std::not_equal_to<std::common_type_t<A,E>>{},actual,expected,location);
-    };
-
-    export template<typename A, typename E>
-    auto check_lt(A actual, E expected, const std::source_location location = std::source_location::current())
-    {
-        return check(std::less<std::common_type_t<A,E>>{},actual,expected,location);
-    };
-
-    export template<typename A, typename E>
-    auto check_lteq(A actual, E expected, const std::source_location location = std::source_location::current())
-    {
-        return check(std::less_equal<std::common_type_t<A,E>>{},actual,expected,location);
-    };
-
-    export template<typename A, typename E>
-    auto check_gt(A actual, E expected, const std::source_location location = std::source_location::current())
-    {
-        return check(std::greater<std::common_type_t<A,E>>{},actual,expected,location);
-    };
-
-    export template<typename A, typename E>
-    auto check_gteq(A actual, E expected, const std::source_location location = std::source_location::current())
-    {
-        return check(std::greater_equal<std::common_type_t<A,E>>{},actual,expected,location);
-    };
-
-    export auto check_true(bool actual, const std::source_location location = std::source_location::current())
-    {
-        return check(std::equal_to<bool>{},actual,true,location);
-    };
-
-    export auto check_false(bool actual, const std::source_location location = std::source_location::current())
-    {
-        return check(std::equal_to<bool>{},actual,false,location);
-    };
-
-    // Fatal assertions (require_*) - throw on failure
-    export template<typename A, typename E>
     void require_eq(A actual, E expected, const std::source_location location = std::source_location::current())
     {
         if constexpr (both_are_floating_point_v<A,E>)
@@ -156,10 +115,38 @@ namespace tester::assertions
         }
     };
 
+    export template<typename A, typename E, typename T = std::common_type_t<A,E>>
+    requires std::is_floating_point_v<T>
+    auto check_near(A actual, E expected, T epsilon = floating_point_equal<T>::default_epsilon, const std::source_location location = std::source_location::current())
+    {
+        auto comparator = floating_point_equal<T>{epsilon};
+        return check(comparator, static_cast<T>(actual), static_cast<T>(expected), location);
+    };
+
+    export template<typename A, typename E, typename T = std::common_type_t<A,E>>
+    requires std::is_floating_point_v<T>
+    void require_near(A actual, E expected, T epsilon = floating_point_equal<T>::default_epsilon, const std::source_location location = std::source_location::current())
+    {
+        auto comparator = floating_point_equal<T>{epsilon};
+        require(comparator, static_cast<T>(actual), static_cast<T>(expected), location);
+    };
+
+    export template<typename A, typename E>
+    auto check_neq(A actual, E expected, const std::source_location location = std::source_location::current())
+    {
+        return check(std::not_equal_to<std::common_type_t<A,E>>{},actual,expected,location);
+    };
+
     export template<typename A, typename E>
     void require_neq(A actual, E expected, const std::source_location location = std::source_location::current())
     {
         require(std::not_equal_to<std::common_type_t<A,E>>{},actual,expected,location);
+    };
+
+    export template<typename A, typename E>
+    auto check_lt(A actual, E expected, const std::source_location location = std::source_location::current())
+    {
+        return check(std::less<std::common_type_t<A,E>>{},actual,expected,location);
     };
 
     export template<typename A, typename E>
@@ -169,9 +156,21 @@ namespace tester::assertions
     };
 
     export template<typename A, typename E>
+    auto check_lteq(A actual, E expected, const std::source_location location = std::source_location::current())
+    {
+        return check(std::less_equal<std::common_type_t<A,E>>{},actual,expected,location);
+    };
+
+    export template<typename A, typename E>
     void require_lteq(A actual, E expected, const std::source_location location = std::source_location::current())
     {
         require(std::less_equal<std::common_type_t<A,E>>{},actual,expected,location);
+    };
+
+    export template<typename A, typename E>
+    auto check_gt(A actual, E expected, const std::source_location location = std::source_location::current())
+    {
+        return check(std::greater<std::common_type_t<A,E>>{},actual,expected,location);
     };
 
     export template<typename A, typename E>
@@ -181,14 +180,30 @@ namespace tester::assertions
     };
 
     export template<typename A, typename E>
+    auto check_gteq(A actual, E expected, const std::source_location location = std::source_location::current())
+    {
+        return check(std::greater_equal<std::common_type_t<A,E>>{},actual,expected,location);
+    };
+
+    export template<typename A, typename E>
     void require_gteq(A actual, E expected, const std::source_location location = std::source_location::current())
     {
         require(std::greater_equal<std::common_type_t<A,E>>{},actual,expected,location);
     };
 
+    export auto check_true(bool actual, const std::source_location location = std::source_location::current())
+    {
+        return check(std::equal_to<bool>{},actual,true,location);
+    };
+
     export void require_true(bool actual, const std::source_location location = std::source_location::current())
     {
         require(std::equal_to<bool>{},actual,true,location);
+    };
+
+    export auto check_false(bool actual, const std::source_location location = std::source_location::current())
+    {
+        return check(std::equal_to<bool>{},actual,false,location);
     };
 
     export void require_false(bool actual, const std::source_location location = std::source_location::current())
