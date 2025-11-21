@@ -212,13 +212,22 @@ $(test-target): $(library) $(libraries) $(BUILTIN_STD_OBJECT) | $(binarydir)
 # First pass: generate the complete module dependency graph
 # Generate one big dependency file for all sources using p1689 format
 # Parse JSON output to extract module dependencies and create Makefile rules
+# Run clang-scan-deps on each module file individually to ensure all modules are detected
 $(module_depfile): $(all_sources) scripts/parse_module_deps.py | $(objectdir) $(moduledir)
 	@echo "Generating module dependency graph..."
 	@rm -f $@
-	@$(clang_scan_deps) -format=p1689 \
-	    -module-files-dir $(moduledir) \
-	    -- $(CXX) $(CXXFLAGS) $(PCMFLAGS) $(all_sources) 2>/dev/null | \
-	python3 scripts/parse_module_deps.py $(moduledir) $(objectdir) > $@
+	@for src in $(modules) $(example-modules); do \
+		$(clang_scan_deps) -format=p1689 \
+		    -module-files-dir $(moduledir) \
+		    -- $(CXX) $(CXXFLAGS) -fno-implicit-modules -fmodule-file=std=$(moduledir)/std.pcm -fprebuilt-module-path=$(moduledir)/ $$src 2>/dev/null | \
+		python3 scripts/parse_module_deps.py $(moduledir) $(objectdir) >> $@ || true; \
+	done
+	@for src in $(sources) $(example-sources) $(wildcard $(exampledir)/*.test.c++); do \
+		$(clang_scan_deps) -format=p1689 \
+		    -module-files-dir $(moduledir) \
+		    -- $(CXX) $(CXXFLAGS) -fno-implicit-modules -fmodule-file=std=$(moduledir)/std.pcm -fprebuilt-module-path=$(moduledir)/ $$src 2>/dev/null | \
+		python3 scripts/parse_module_deps.py $(moduledir) $(objectdir) >> $@ || true; \
+	done
 
 # Include it so Make knows about all .pcm rules
 -include $(module_depfile)
