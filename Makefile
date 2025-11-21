@@ -144,7 +144,7 @@ $(dirs):
 # Build std.pcm explicitly from libc++ source
 BUILTIN_STD_OBJECT = $(objectdir)/std.o
 
-$(moduledir)/std.pcm: | $(dirs)
+$(moduledir)/std.pcm: | $(moduledir)
 	@mkdir -p $(@D)
 	@echo "Precompiling std module from $(LLVM_PREFIX)/share/libc++/v1/std.cppm"
 	$(CXX) -std=c++23 -pthread -fPIC -fexperimental-library \
