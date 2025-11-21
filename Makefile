@@ -144,7 +144,8 @@ $(dirs):
 # Build std.pcm explicitly from libc++ source
 BUILTIN_STD_OBJECT = $(objectdir)/std.o
 
-$(moduledir)/std.pcm: | $(moduledir)
+$(moduledir)/std.pcm: | $(dirs)
+	@mkdir -p $(@D)
 	@echo "Precompiling std module from $(LLVM_PREFIX)/share/libc++/v1/std.cppm"
 	$(CXX) -std=c++23 -pthread -fPIC -fexperimental-library \
 		-nostdinc++ -isystem $(LLVM_PREFIX)/include/c++/v1 \
@@ -258,7 +259,7 @@ $(librarydir)/lib%.a: | $(librarydir)
 deps: $(header_deps) $(module_depfile)
 
 .PHONY: module
-module: $(module_depfile) $(moduledir)/std.pcm $(foreach M,$(submodules),$(moduledir)/$(M).pcm) \
+module: $(dirs) $(module_depfile) $(moduledir)/std.pcm $(foreach M,$(submodules),$(moduledir)/$(M).pcm) \
         $(foreach M,$(submodules),$(SUBMODULE_PREFIX_ARG)/lib/lib$(M).a) \
         $(library)
 
