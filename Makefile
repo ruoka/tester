@@ -258,7 +258,7 @@ $(librarydir)/lib%.a: | $(librarydir)
 deps: $(header_deps) $(module_depfile)
 
 .PHONY: module
-module: $(moduledir)/std.pcm $(foreach M,$(submodules),$(moduledir)/$(M).pcm) \
+module: $(module_depfile) $(moduledir)/std.pcm $(foreach M,$(submodules),$(moduledir)/$(M).pcm) \
         $(foreach M,$(submodules),$(SUBMODULE_PREFIX_ARG)/lib/lib$(M).a) \
         $(library)
 
