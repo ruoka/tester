@@ -1,11 +1,9 @@
-# Inspired by https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1204r0.html
-
 ###############################################################################
 # Project Configuration
 ###############################################################################
 
 # Note: std module is always provided by libc++, so we don't build deps/std
-submodules =
+# This project has no submodules
 
 ###############################################################################
 # Compiler Configuration
@@ -25,12 +23,17 @@ submodules =
 # MAKELEVEL  > 0 → invoked by parent make
 STANDALONE := $(if $(filter 0,$(MAKELEVEL)),yes,no)
 
+# OS-specific build directory (same logic as main project)
+lowercase_os := $(if $(OS),$(shell echo $(OS) | tr '[:upper:]' '[:lower:]'),unknown)
+BUILD_DIR ?= build-$(lowercase_os)
+export BUILD_DIR
+
 # Default PREFIX based on context
 # If PREFIX is not set, use appropriate default for the mode
 ifndef PREFIX
 ifeq ($(STANDALONE),yes)
-# Standalone mode: use build/ directory
-PREFIX = build
+# Standalone mode: use OS-specific build directory
+PREFIX = $(BUILD_DIR)
 endif
 endif
 
@@ -44,18 +47,6 @@ objectdir = $(PREFIX)/obj
 librarydir = $(PREFIX)/lib
 binarydir = $(PREFIX)/bin
 
-# Compute all standalone-dependent variables once based on STANDALONE
-ifeq ($(STANDALONE),yes)
-# Standalone mode: submodules are in deps/ directory, all use same build/ directory
-SUBMODULE_PREFIX = deps
-SUBMODULE_PREFIX_ARG = ../../build
-else
-# Parent project mode: submodules are siblings in deps/, use parent's PREFIX
-SUBMODULE_PREFIX = ..
-# PREFIX is already set (either explicitly by parent or defaulted by caller)
-# Use provided path for submodules to ensure shared outputs
-SUBMODULE_PREFIX_ARG = $(PREFIX)
-endif
 
 ###############################################################################
 # File Discovery
@@ -85,12 +76,7 @@ test-object = $(test-source:$(sourcedir)%.c++=$(objectdir)%.o)
 
 # Library and dependencies
 library = $(addprefix $(librarydir)/, lib$(project).a)
-# Submodule libraries use the same PREFIX path as submodules
-ifeq ($(STANDALONE),yes)
-libraries = $(submodules:%=$(librarydir)/lib%.a)
-else
-libraries = $(submodules:%=$(SUBMODULE_PREFIX_ARG)/lib/lib%.a)
-endif
+libraries =
 
 # Dependency files: header deps (.d) and module deps
 header_deps = $(objects:.o=.d) $(example-objects:.o=.d)
@@ -120,7 +106,7 @@ PCMFLAGS_COMMON += -fprebuilt-module-path=$(moduledir)/
 PCMFLAGS_PRECOMPILE =
 PCMFLAGS = $(PCMFLAGS_COMMON)
 
-# Export compiler settings for submodules
+# Export compiler settings
 export CC CXX CXXFLAGS LDFLAGS LLVM_PREFIX
 
 ###############################################################################
@@ -221,7 +207,7 @@ $(module_depfile): $(all_sources) scripts/parse_module_deps.py | $(objectdir) $(
 		$(clang_scan_deps) -format=p1689 \
 		    -module-files-dir $(moduledir) \
 		    -- $(CXX) $(CXXFLAGS) -fno-implicit-modules -fmodule-file=std=$(moduledir)/std.pcm -fprebuilt-module-path=$(moduledir)/ $$src 2>/dev/null | \
-		python3 scripts/parse_module_deps.py $(moduledir) $(objectdir) >> $@ || true; \
+		python3 scripts/parse_module_deps.py $(moduledir) $(objectdir) $$src >> $@ || true; \
 	done
 
 # Include it so Make knows about all .pcm rules
@@ -230,18 +216,6 @@ $(module_depfile): $(all_sources) scripts/parse_module_deps.py | $(objectdir) $(
 # Include generated header dependencies
 -include $(header_deps)
 
-###############################################################################
-# Submodule Rules
-###############################################################################
-
-# Submodules build into PREFIX/pcm and PREFIX/lib via SUBMAKE_PREFIX_ARG
-# Since moduledir = $(PREFIX)/pcm and librarydir = $(PREFIX)/lib, no copy needed
-$(submodules:%=$(moduledir)/%.pcm): $(moduledir)/%.pcm: | $(moduledir)
-	@:
-
-$(librarydir)/lib%.a: | $(librarydir)
-	@mkdir -p $(librarydir)
-	$(MAKE) -C $(SUBMODULE_PREFIX)/$* lib PREFIX=$(SUBMODULE_PREFIX_ARG)
 
 ###############################################################################
 # Phony Targets
@@ -253,9 +227,7 @@ $(librarydir)/lib%.a: | $(librarydir)
 deps: $(header_deps) $(module_depfile)
 
 .PHONY: module
-module: $(dirs) $(module_depfile) $(moduledir)/std.pcm $(foreach M,$(submodules),$(moduledir)/$(M).pcm) \
-        $(foreach M,$(submodules),$(SUBMODULE_PREFIX_ARG)/lib/lib$(M).a) \
-        $(library)
+module: $(dirs) $(module_depfile) $(moduledir)/std.pcm $(library)
 
 .PHONY: all
 all: module
