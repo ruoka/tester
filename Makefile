@@ -217,13 +217,7 @@ $(test-target): $(library) $(libraries) $(BUILTIN_STD_OBJECT) | $(binarydir)
 $(module_depfile): $(all_sources) scripts/parse_module_deps.py | $(objectdir) $(moduledir)
 	@echo "Generating module dependency graph..."
 	@rm -f $@
-	@for src in $(modules) $(example-modules); do \
-		$(clang_scan_deps) -format=p1689 \
-		    -module-files-dir $(moduledir) \
-		    -- $(CXX) $(CXXFLAGS) -fno-implicit-modules -fmodule-file=std=$(moduledir)/std.pcm -fprebuilt-module-path=$(moduledir)/ $$src 2>/dev/null | \
-		python3 scripts/parse_module_deps.py $(moduledir) $(objectdir) >> $@ || true; \
-	done
-	@for src in $(sources) $(example-sources) $(wildcard $(exampledir)/*.test.c++); do \
+	@for src in $(all_sources); do \
 		$(clang_scan_deps) -format=p1689 \
 		    -module-files-dir $(moduledir) \
 		    -- $(CXX) $(CXXFLAGS) -fno-implicit-modules -fmodule-file=std=$(moduledir)/std.pcm -fprebuilt-module-path=$(moduledir)/ $$src 2>/dev/null | \
