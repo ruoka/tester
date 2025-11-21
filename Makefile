@@ -132,12 +132,19 @@ export CC CXX CXXFLAGS LDFLAGS LLVM_PREFIX
 .PRECIOUS: $(moduledir)/%.pcm $(objectdir)/%.d $(module_depfile)
 
 ###############################################################################
+# Directory creation
+###############################################################################
+
+dirs = $(moduledir) $(objectdir) $(librarydir) $(binarydir)
+$(dirs):
+	@mkdir -p $@
+
+###############################################################################
 
 # Build std.pcm explicitly from libc++ source
 BUILTIN_STD_OBJECT = $(objectdir)/std.o
 
 $(moduledir)/std.pcm: | $(moduledir)
-	@mkdir -p $(moduledir)
 	@echo "Precompiling std module from $(LLVM_PREFIX)/share/libc++/v1/std.cppm"
 	$(CXX) -std=c++23 -pthread -fPIC -fexperimental-library \
 		-nostdinc++ -isystem $(LLVM_PREFIX)/include/c++/v1 \
