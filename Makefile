@@ -115,7 +115,7 @@ export CC CXX CXXFLAGS LDFLAGS LLVM_PREFIX
 
 .SUFFIXES:
 .SUFFIXES: .deps .c++m .c++ .test.c++ .pcm .o .test.o .a
-.PRECIOUS: $(moduledir)/%.pcm $(objectdir)/%.d $(module_depfile)
+.PRECIOUS: $(objectdir)/%.deps $(moduledir)/%.pcm $(librarydir)/%.a $(objectdir)/%.d $(module_depfile)
 
 ###############################################################################
 # Directory creation
@@ -231,10 +231,13 @@ $(module_depfile): $(all_sources) scripts/parse_module_deps.py | $(objectdir) $(
 .DEFAULT_GOAL = run_examples
 
 .PHONY: deps
-deps: $(header_deps) $(module_depfile)
+deps: $(module_depfile)
 
+# Ensure module_depfile is generated before any parallel builds
+# The -include happens during parsing, so deps must run first to generate the file
+# Make module_depfile a prerequisite to ensure it's built before library
 .PHONY: module
-module: $(dirs) $(module_depfile) $(moduledir)/std.pcm $(library)
+module: $(dirs) $(moduledir)/std.pcm $(module_depfile) $(library)
 
 .PHONY: all
 all: module
@@ -257,7 +260,7 @@ run_tests: tests
 	$(test-target) $(TEST_TAGS)
 
 # Targets that must run sequentially (not in parallel)
-.NOTPARALLEL: clean mostlyclean
+.NOTPARALLEL: clean mostlyclean $(module_depfile)
 
 .PHONY: clean
 clean: mostlyclean
