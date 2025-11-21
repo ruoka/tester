@@ -82,8 +82,8 @@ libraries =
 header_deps = $(objects:.o=.d) $(example-objects:.o=.d)
 
 # clang-scan-deps is required (comes with Clang 20+)
-# Use the same directory as the compiler
-clang_scan_deps := $(shell dirname "$(CXX)" 2>/dev/null)/clang-scan-deps
+# Use CLANG_SCAN_DEPS from config/compiler.mk if available, otherwise derive from compiler
+clang_scan_deps := $(if $(CLANG_SCAN_DEPS),$(CLANG_SCAN_DEPS),$(shell dirname "$(CXX)" 2>/dev/null)/clang-scan-deps)
 
 # One big dependency file for the whole project (module dependencies)
 module_depfile = $(moduledir)/modules.dep
@@ -130,14 +130,21 @@ $(dirs):
 # Build std.pcm explicitly from libc++ source
 BUILTIN_STD_OBJECT = $(objectdir)/std.o
 
-$(moduledir)/std.pcm: | $(dirs)
-	@mkdir -p $(@D)
-	@echo "Precompiling std module from $(LLVM_PREFIX)/share/libc++/v1/std.cppm"
-	$(CXX) -std=c++23 -pthread -fPIC -fexperimental-library \
-		-nostdinc++ -isystem $(LLVM_PREFIX)/include/c++/v1 \
-		-fno-implicit-modules -fno-implicit-module-maps \
-		-Wall -Wextra -Wno-reserved-module-identifier -g -O3 \
-		$(LLVM_PREFIX)/share/libc++/v1/std.cppm --precompile -o $(moduledir)/std.pcm
+# Filter out include paths, sysroot, and stdlib flags (not needed with -nostdinc++ and explicit isystem)
+# -stdlib=libc++ is unused when using -nostdinc++ with explicit -isystem
+STD_MODULE_FLAGS = $(filter-out -I% -isysroot% -stdlib=libc++%,$(CXXFLAGS)) -Wno-reserved-module-identifier -fno-implicit-modules -fno-implicit-module-maps
+
+# Get the full path to the actual compiler binary (resolve symlinks) to detect when it changes
+# STD_LLVM_PREFIX is now defined in config/compiler.mk
+# Resolve symlinks to get the actual binary that will be used
+CXX_BIN := $(shell command -v $(CXX) 2>/dev/null || echo $(CXX))
+CXX_PATH := $(shell python3 -c "import os, sys; print(os.path.realpath(sys.argv[1]))" $(CXX_BIN) 2>/dev/null || echo $(CXX_BIN))
+
+$(moduledir)/std.pcm: $(STD_LLVM_PREFIX)/share/libc++/v1/std.cppm $(CXX_PATH) | $(moduledir)
+	@mkdir -p $(moduledir)
+	@echo "Precompiling std module from libc++ source with matching flags"
+	$(CXX) $(STD_MODULE_FLAGS) -nostdinc++ -isystem $(STD_LLVM_PREFIX)/include/c++/v1 \
+		$(STD_LLVM_PREFIX)/share/libc++/v1/std.cppm --precompile -o $(moduledir)/std.pcm
 
 $(objectdir)/std.o: $(moduledir)/std.pcm | $(objectdir)
 	@mkdir -p $(@D)
@@ -248,6 +255,9 @@ tests: all $(test-target)
 .PHONY: run_tests
 run_tests: tests
 	$(test-target) $(TEST_TAGS)
+
+# Targets that must run sequentially (not in parallel)
+.NOTPARALLEL: clean mostlyclean
 
 .PHONY: clean
 clean: mostlyclean

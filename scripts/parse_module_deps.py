@@ -9,7 +9,17 @@ def main():
     objectdir = sys.argv[2] if len(sys.argv) > 2 else ""
     source_file = sys.argv[3] if len(sys.argv) > 3 else ""
     
-    data = json.load(sys.stdin)
+    # Read stdin and handle empty input gracefully
+    stdin_content = sys.stdin.read().strip()
+    if not stdin_content:
+        # Empty input from clang-scan-deps (tool not available or no output)
+        return
+    
+    try:
+        data = json.loads(stdin_content)
+    except json.JSONDecodeError:
+        # Invalid JSON, skip this file
+        return
     
     for r in data.get("rules", []):
         prov = r.get("provides", [])
