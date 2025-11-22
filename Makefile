@@ -187,7 +187,7 @@ $(library) : $(objects)
 	$(AR) $(ARFLAGS) $@ $^
 
 # Executable linking
-$(binarydir)/%: $(exampledir)/%.c++ $(example-objects) $(library) $(libraries) $(BUILTIN_STD_OBJECT) | $(binarydir)
+$(binarydir)/%: $(exampledir)/%.test.c++ $(example-objects) $(library) $(libraries) $(BUILTIN_STD_OBJECT) | $(binarydir)
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $(LDFLAGS) $^ -o $@
 
