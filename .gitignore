@@ -1,9 +1,22 @@
 # Build artifacts
 build/
-obj
-pcm
-lib
-bin
+build-*/
+obj/
+pcm/
+lib/
+bin/
+cache/
+
+# Compiled binaries
+tools/cb
+tools/builder
+
+# Compiled object files
+*.o
+*.a
+*.pcm
+*.d
+*.deps
 
 # Dependencies (for standalone builds)
 deps/
