@@ -1,8 +1,8 @@
-# Tester – a C++23 module-based testing framework
+# C++ Builder & Tester – a C++23 module-based build system and testing framework
 
 ## Introduction
 
-Tester is a lightweight, macro-free testing framework built entirely with C++23 modules. It provides both traditional unit tests and behaviour-driven helpers, offering expressive assertions and clean syntax without preprocessor tricks. The focus is on readability, ease of refactoring, and straightforward integration into larger projects.
+C++ Builder & Tester is a lightweight, macro-free testing framework built entirely with C++23 modules, combined with a powerful single-file C++ build system. It provides both traditional unit tests and behaviour-driven helpers, offering expressive assertions and clean syntax without preprocessor tricks. The focus is on readability, ease of refactoring, and straightforward integration into larger projects.
 
 ## Features
 
@@ -12,9 +12,31 @@ Tester is a lightweight, macro-free testing framework built entirely with C++23 
 - Tag-based filtering through the supplied `test_runner` executable with regex pattern support.
 - Supports standalone builds as well as embedding in a parent mono-repo.
 
+## Key Benefits
+
+C++ Builder & Tester offers unique advantages for modern C++ development:
+
+- **Pure C++ Language**: Build and test management using only C++ – no need for heavy external build systems (CMake, Bazel, etc.), test frameworks with macros, configuration languages (YAML, TOML, etc.), or other programming languages (Python, Lua, etc.). Everything you need is in standard C++.
+
+- **Fast and Lightweight**: Optimized for speed in workflows and Docker containers. Single-file build system with minimal overhead, fast startup times, and efficient incremental builds with intelligent caching.
+
+- **Full Control**: Complete transparency and control over what the build system and test framework does. Single-file implementation means you can read, understand, and modify the entire build logic. No black boxes or hidden abstractions.
+
+- **Zero External Dependencies**: No build tool installation required beyond your C++ compiler. The build system compiles itself on first use and is ready to go.
+
+- **Module-Aware**: Native understanding of C++23 modules with automatic dependency resolution, topological sorting, and proper module interface/implementation handling.
+
+- **Self-Contained**: Everything in one file (`cb.c++`) – easy to version control, embed in projects, or customize for specific needs. No complex directory structures or scattered configuration files.
+
+- **CI/CD Friendly**: Perfect for continuous integration pipelines. Fast builds, clear output, and easy integration into GitHub Actions, GitLab CI, or any containerized environment.
+
+- **No Learning Curve**: If you know C++, you can understand and modify the build system. No need to learn Makefile syntax, CMake scripting, or other domain-specific languages.
+
+- **Cross-Platform**: Works seamlessly on Linux and macOS with automatic OS detection and appropriate compiler flag handling.
+
 ## Improvement ideas
 
-Ongoing enhancement notes live in [`docs/tester-improvements.md`](docs/tester-improvements.md). Whether you consume Tester inside Fixer or as a standalone dependency, start there to see the current backlog and proposed assertion features.
+Ongoing enhancement notes live in [`docs/tester-improvements.md`](docs/tester-improvements.md). Whether you consume C++ Builder & Tester inside Fixer or as a standalone dependency, start there to see the current backlog and proposed assertion features.
 
 ## Repository layout
 
@@ -22,9 +44,9 @@ Ongoing enhancement notes live in [`docs/tester-improvements.md`](docs/tester-im
 tester/
 ├── tester/          – framework modules
 ├── examples/        – sample tests & demo programs
-├── tools/           – helper utilities (e.g. core_pc.c++)
+├── tools/           – helper utilities (e.g. core_pc.c++, cb.c++ - the C++ Builder)
 ├── docs/            – design notes and improvement backlog
-├── deps/            – optional support libraries (net, xson)
+├── config/          – compiler configuration (Makefile support)
 └── build-*/         – generated artifacts (per host OS), ignored by git
 ```
 
@@ -39,12 +61,52 @@ The core assertion namespace (`tester::assertions`) ships with matching `check_*
 
 ## Building
 
-### Standalone checkout
+C++ Builder & Tester provides two build systems:
+1. **C++ Builder (`cb.c++`)** - Modern single-file build system (recommended)
+2. **Makefile** - Traditional build system (for compatibility with other projects)
+
+### Using C++ Builder (Recommended)
+
+The C++ Builder is located in `tools/cb.c++` and can be invoked via `tools/CB.sh`:
+
+```bash
+# Build in debug mode (includes examples and tests)
+./tools/CB.sh debug build
+
+# Build in release mode
+./tools/CB.sh release build
+
+# Build and run tests (automatically includes examples)
+./tools/CB.sh debug test
+
+# Clean build artifacts
+./tools/CB.sh debug clean
+
+# List all translation units
+./tools/CB.sh debug list
+
+# Include examples explicitly (excluded by default)
+./tools/CB.sh debug --include-examples build
+
+# Show help
+./tools/CB.sh --help
+```
+
+The C++ Builder automatically:
+- Detects your OS and compiler
+- Resolves `std.cppm` path from LLVM installation
+- Handles module dependencies and incremental builds
+- Includes examples when running tests or when building standalone
+
+Artifacts land in `build-<os>-<config>/` (e.g., `build-linux-debug/pcm`, `build-linux-debug/obj`, `build-linux-debug/bin`).
+
+### Using Makefile (Legacy)
+
+For projects that still use Makefile-based builds:
 
 ```bash
 git clone https://github.com/ruoka/tester.git
 cd tester
-git submodule update --init --recursive  # pulls deps/net, …
 make module                                # builds libtester.a and modules
 make run_examples                          # (optional) compiles & runs demos
 make tests                                 # (optional) builds test_runner
@@ -55,7 +117,11 @@ Artifacts land in `build-<os>/` (e.g., `build-linux/pcm`, `build-linux/obj`, `bu
 
 ### Embedded as a submodule
 
-When `tester` lives under another project’s `deps/` directory, invoke the framework via the parent build (e.g., `make module` at the parent root). Paths automatically map to the parent’s `build-<os>/` tree, so every submodule shares the same artifacts.
+When C++ Builder & Tester lives under another project's `deps/` directory:
+
+- **Using C++ Builder**: The parent project's build system (e.g., `tools/CB.sh` in fixer) will automatically detect and build tester. Examples are excluded by default when building as a submodule, but included when running tests.
+
+- **Using Makefile**: Invoke the framework via the parent build (e.g., `make module` at the parent root). Paths automatically map to the parent's `build-<os>/` tree, so every submodule shares the same artifacts.
 
 ## Writing tests
 
@@ -147,6 +213,18 @@ const auto _ = feature();
 
 ## Running tests
 
+### Using C++ Builder
+
+```bash
+# Build and run all tests (automatically includes examples)
+./tools/CB.sh debug test
+
+# Build and run tests with filter
+./tools/CB.sh debug test "scenario.*Happy"
+```
+
+### Using Makefile
+
 Build the supplied runner (`make tests`) and drive it with tags:
 
 ```bash
@@ -163,14 +241,35 @@ The tag selector supports both simple substring matching (for backward compatibi
 
 ## Utilities
 
-`tools/core_pc.c++` is a small utility that dumps register state from a POSIX core file. Build it via the new `tools` target:
+### C++ Builder
+
+`tools/core_pc.c++` is a small utility that dumps register state from a POSIX core file. Build it using C++ Builder:
+
+```bash
+./tools/CB.sh debug build
+build-<os>-debug/bin/tools/core_pc /path/to/core
+```
+
+### Makefile
 
 ```bash
 make tools
-build-linux/bin/tools/core_pc /path/to/core
+build-<os>/bin/tools/core_pc /path/to/core
 ```
 
-## Make targets summary
+## Build System Reference
+
+### C++ Builder Commands
+
+- `./tools/CB.sh debug build` – Build in debug mode (includes tests)
+- `./tools/CB.sh release build` – Build in release mode (optimized, no tests)
+- `./tools/CB.sh debug test [filter]` – Build and run tests (optional filter)
+- `./tools/CB.sh debug clean` – Remove build directories
+- `./tools/CB.sh debug list` – List all translation units
+- `./tools/CB.sh debug --include-examples build` – Include examples directory
+- `./tools/CB.sh --help` – Show help message
+
+### Makefile Targets
 
 - `make help` – list the available targets and configuration knobs.
 - `make module` – build modules and `libtester.a`.
@@ -182,5 +281,5 @@ build-linux/bin/tools/core_pc /path/to/core
 
 ## License
 
-Tester is released under the MIT license. See [LICENSE](LICENSE) for full text.
+C++ Builder & Tester is released under the MIT license. See [LICENSE](LICENSE) for full text.
 
