@@ -1,16 +1,55 @@
 # C++ Builder & Tester – a C++23 module-based build system and testing framework
 
+A lightweight, macro-free testing framework built entirely with C++23 modules, combined with a powerful single-file C++ build system. Everything you need for building and testing modern C++ projects – in pure C++.
+
+## Table of Contents
+
+- [Introduction](#introduction)
+- [Features](#features)
+- [Key Benefits](#key-benefits)
+- [Requirements](#requirements)
+- [Quick Start](#quick-start)
+- [Repository Layout](#repository-layout)
+- [Building](#building)
+- [Writing Tests](#writing-tests)
+- [Running Tests](#running-tests)
+- [Assertion Reference](#assertion-reference)
+- [Utilities](#utilities)
+- [Build System Reference](#build-system-reference)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
+
 ## Introduction
 
 C++ Builder & Tester is a lightweight, macro-free testing framework built entirely with C++23 modules, combined with a powerful single-file C++ build system. It provides both traditional unit tests and behaviour-driven helpers, offering expressive assertions and clean syntax without preprocessor tricks. The focus is on readability, ease of refactoring, and straightforward integration into larger projects.
 
+**Why C++ Builder & Tester?**
+- Write build logic and tests in pure C++ – no external build tools or configuration languages
+- Single-file implementation (`cb.c++`) – understand and modify everything
+- Zero external dependencies beyond your C++ compiler
+- Fast incremental builds with intelligent caching
+- Native C++23 module support with automatic dependency resolution
+
 ## Features
 
-- Pure C++23 module interface – no headers to include.
-- Unit (`tester::basic::test_case`) and BDD (`tester::behavior_driven_development::scenario`) styles.
-- Rich assertion set (`require_eq`, `require_nothrow`, `require_throws_as`, etc.).
-- Tag-based filtering through the supplied `test_runner` executable with regex pattern support.
-- Supports standalone builds as well as embedding in a parent mono-repo.
+### Testing Framework
+- **Pure C++23 module interface** – no headers to include, just `import tester;`
+- **Dual testing styles**: Unit tests (`tester::basic::test_case`) and BDD (`tester::behavior_driven_development::scenario`)
+- **Rich assertion set**: `require_eq`, `require_nothrow`, `require_throws_as`, and more
+- **Tag-based filtering**: Filter tests using regex patterns via `test_runner`
+- **Floating-point comparisons**: Automatic epsilon-based comparison for floating-point values
+
+### Build System
+- **Single-file implementation**: Everything in `cb.c++` (~1300 lines)
+- **Incremental builds**: Intelligent caching of object files and executable signatures
+- **Parallel compilation**: Utilizes multiple CPU cores automatically
+- **Module-aware**: Automatic dependency resolution and topological sorting
+- **Zero configuration**: Works out of the box with sensible defaults
+
+### Integration
+- **Standalone builds**: Works as a standalone project
+- **Submodule support**: Seamlessly embeds in parent projects (e.g., as `deps/tester`)
+- **Cross-platform**: Linux and macOS support with automatic OS detection
 
 ## Key Benefits
 
@@ -34,30 +73,93 @@ C++ Builder & Tester offers unique advantages for modern C++ development:
 
 - **Cross-Platform**: Works seamlessly on Linux and macOS with automatic OS detection and appropriate compiler flag handling.
 
+## Requirements
+
+### Linux
+- Clang 20 (`clang++-20`)
+- LLVM 20 installation (for `std.cppm`)
+- libc++ development libraries
+
+### macOS
+- **Requires locally built LLVM/clang** (not Homebrew)
+- **LLVM installation at `/usr/local/llvm`**
+- System clang from Xcode doesn't fully support C++23 modules
+- You must build LLVM from source and install it to `/usr/local/llvm`
+
+### Optional: Environment Variables
+- `LLVM_PATH`: Override path to `std.cppm` (defaults to OS-specific locations)
+- `CXX`: Override C++ compiler (defaults to OS-specific clang++)
+- `CB_INCLUDE_FLAGS`: Override include paths (space-separated)
+
+## Quick Start
+
+Get up and running in minutes:
+
+```bash
+# Clone the repository
+git clone --recursive https://github.com/ruoka/tester.git
+cd tester
+
+# Build (debug mode, includes examples)
+./tools/CB.sh debug build
+
+# Run tests
+./tools/CB.sh debug test
+```
+
+**Note**: If you didn't clone with `--recursive`, initialize submodules first:
+```bash
+git submodule update --init --recursive
+```
+
 ## Improvement ideas
 
 Ongoing enhancement notes live in [`docs/tester-improvements.md`](docs/tester-improvements.md). Whether you consume C++ Builder & Tester inside Fixer or as a standalone dependency, start there to see the current backlog and proposed assertion features.
 
-## Repository layout
+## Repository Layout
 
 ```
 tester/
-├── tester/          – framework modules
-├── examples/        – sample tests & demo programs
-├── tools/           – helper utilities (e.g. core_pc.c++, cb.c++ - the C++ Builder)
-├── docs/            – design notes and improvement backlog
-├── config/          – compiler configuration (Makefile support)
-└── build-*/         – generated artifacts (per host OS), ignored by git
+├── tester/          # Framework modules (testing framework implementation)
+├── examples/        # Sample tests & demo programs
+├── tools/           # Helper utilities
+│   ├── cb.c++       # C++ Builder (single-file build system)
+│   ├── CB.sh        # Bootstrap script for C++ Builder
+│   └── core_pc.c++  # Core file analysis utility
+├── docs/            # Design notes and improvement backlog
+├── config/          # Compiler configuration (Makefile support)
+└── build-*/         # Generated artifacts (per host OS), ignored by git
+    ├── pcm/         # Precompiled module files
+    ├── obj/         # Object files
+    ├── bin/         # Executables
+    └── cache/       # Build cache
 ```
 
-## Assertion reference
+## Assertion Reference
 
-The core assertion namespace (`tester::assertions`) ships with matching `check_*` (non-fatal) and `require_*` (fatal) helpers:
+The core assertion namespace (`tester::assertions`) provides matching `check_*` (non-fatal) and `require_*` (fatal) helpers:
 
-- Equality & ordering: `check_eq`, `check_neq`, `check_lt`, `check_lteq`, `check_gt`, `check_gteq` (+ `require_*` counterparts). Floating-point paths automatically use epsilon-based comparison.
-- Boolean helpers: `check_true`, `check_false`, `require_true`, `require_false`.
-- Exception helpers: `check_nothrow`, `check_throws`, `check_throws_as`, `require_nothrow`, `require_throws`, `require_throws_as`.
-- Messaging utilities: `succeed`, `failed`, `warning` for explicit pass/fail annotations.
+### Equality & Ordering
+- `check_eq`, `check_neq`, `check_lt`, `check_lteq`, `check_gt`, `check_gteq`
+- `require_eq`, `require_neq`, `require_lt`, `require_lteq`, `require_gt`, `require_gteq`
+- **Floating-point**: Automatically uses epsilon-based comparison
+- **Custom tolerance**: `check_near`, `require_near` with explicit tolerance
+
+### Boolean Helpers
+- `check_true`, `check_false` (non-fatal)
+- `require_true`, `require_false` (fatal, stops test execution on failure)
+
+### Exception Helpers
+- `check_nothrow`, `check_throws`, `check_throws_as` (non-fatal)
+- `require_nothrow`, `require_throws`, `require_throws_as` (fatal)
+- `require_throws_as<ExceptionType>(callable)` – verifies specific exception type
+
+### Messaging Utilities
+- `succeed(message)` – Explicit success annotation
+- `failed(message)` – Explicit failure annotation
+- `warning(message)` – Warning message (doesn't fail test)
+
+**Usage**: All assertions are in the `tester::assertions` namespace. Use `using namespace tester::assertions;` for convenience.
 
 ## Building
 
@@ -97,8 +199,16 @@ The C++ Builder automatically:
 - Resolves `std.cppm` path from LLVM installation
 - Handles module dependencies and incremental builds
 - Includes examples when running tests or when building standalone
+- Supports parallel compilation for faster builds
+- Caches object files and executable signatures for incremental builds
 
-Artifacts land in `build-<os>-<config>/` (e.g., `build-linux-debug/pcm`, `build-linux-debug/obj`, `build-linux-debug/bin`).
+**Build Output**: Artifacts land in `build-<os>-<config>/`:
+- `build-<os>-<config>/pcm/` – Precompiled module files
+- `build-<os>-<config>/obj/` – Object files
+- `build-<os>-<config>/bin/` – Executables
+- `build-<os>-<config>/cache/` – Build cache (object timestamps, executable signatures)
+
+Example: `build-linux-debug/`, `build-darwin-release/`
 
 ### Using Makefile (Legacy)
 
@@ -115,13 +225,20 @@ make tools                                 # (optional) builds utilities in tool
 
 Artifacts land in `build-<os>/` (e.g., `build-linux/pcm`, `build-linux/obj`, `build-linux/lib`, `build-linux/bin`). Override `BUILD_DIR` or `PREFIX` if you need a custom layout.
 
-### Embedded as a submodule
+### Embedded as a Submodule
 
 When C++ Builder & Tester lives under another project's `deps/` directory:
 
-- **Using C++ Builder**: The parent project's build system (e.g., `tools/CB.sh` in fixer) will automatically detect and build tester. Examples are excluded by default when building as a submodule, but included when running tests.
+**Using C++ Builder**:
+- The parent project's build system (e.g., `tools/CB.sh` in fixer) automatically detects and builds tester
+- Examples are **excluded by default** when building as a submodule
+- Examples are **included automatically** when running tests (`./tools/CB.sh debug test`)
+- Include examples explicitly: `./tools/CB.sh debug --include-examples build`
 
-- **Using Makefile**: Invoke the framework via the parent build (e.g., `make module` at the parent root). Paths automatically map to the parent's `build-<os>/` tree, so every submodule shares the same artifacts.
+**Using Makefile**:
+- Invoke the framework via the parent build (e.g., `make module` at the parent root)
+- Paths automatically map to the parent's `build-<os>/` tree
+- All submodules share the same build artifacts
 
 ## Writing tests
 
@@ -237,7 +354,13 @@ build-linux/bin/test_runner --tags="test_case.*CRUD" # regex for test cases
 build-linux/bin/test_runner --tags="^scenario.*path" # regex with anchors
 ```
 
-The tag selector supports both simple substring matching (for backward compatibility) and regular expression patterns. Invalid regex patterns automatically fall back to substring matching. The runner prints results, failures, and aggregate statistics, and returns a non-zero exit code when any scenario fails.
+**Tag Filtering**:
+- **Simple substring matching**: `--tags=simulator` matches any test containing "simulator"
+- **Regex patterns**: `--tags="scenario.*Happy"` uses regex matching
+- **Bracket format**: `--tags=[acceptor]` for exact substring match
+- **Automatic fallback**: Invalid regex patterns fall back to substring matching
+
+The runner prints results, failures, and aggregate statistics, and returns a non-zero exit code when any test fails.
 
 ## Utilities
 
@@ -279,7 +402,66 @@ build-<os>/bin/tools/core_pc /path/to/core
 - `make clean` – remove `${BUILD_DIR}/bin`, `${BUILD_DIR}/lib`, and submodule stamps while preserving `std.pcm`.
 - `make mostlyclean` – drop only `${BUILD_DIR}/obj` so incremental rebuilds stay fast.
 
+## Troubleshooting
+
+### Build Issues
+
+**`std.cppm not found`**:
+- Ensure LLVM is installed and `std.cppm` exists at the expected path
+- Set `LLVM_PATH` environment variable to point to `std.cppm`
+- Pass `std.cppm` path as first argument: `./tools/CB.sh /path/to/std.cppm debug build`
+
+**Compiler not found**:
+- Set `CXX` environment variable to point to your clang++ compiler
+- Ensure clang++ supports C++23 modules (Clang 19+)
+
+**Module dependency errors**:
+- Clean and rebuild: `./tools/CB.sh debug clean && ./tools/CB.sh debug build`
+- Check that all submodules are initialized: `git submodule update --init --recursive`
+
+**Examples not building**:
+- Examples are excluded by default when building as a submodule
+- Use `--include-examples` flag: `./tools/CB.sh debug --include-examples build`
+- Examples are automatically included when running tests: `./tools/CB.sh debug test`
+
+### Test Issues
+
+**Tests not running**:
+- Ensure tests are built: `./tools/CB.sh debug build`
+- Check that test files have `.test.c++` extension
+- Verify `test_runner` exists: `ls build-<os>-debug/bin/test_runner`
+
+**Tag filtering not working**:
+- Use quotes for regex patterns: `--tags="scenario.*Happy"`
+- Check regex syntax if using complex patterns
+- Invalid regex automatically falls back to substring matching
+
+## Architecture
+
+### Build System (`cb.c++`)
+
+The C++ Builder is a single-file build system (~1300 lines) that:
+- Parses C++23 module dependencies automatically
+- Performs topological sorting of translation units
+- Supports incremental builds with timestamp caching
+- Handles both module interfaces and implementations
+- Manages precompiled module (PCM) files
+- Links executables with proper module dependencies
+
+### Testing Framework
+
+The testing framework provides:
+- **Registration system**: Tests register themselves via global constructors
+- **Test discovery**: Automatic discovery of test files (`.test.c++` extension)
+- **Test execution**: Runs all registered tests or filtered subsets
+- **Assertion framework**: Rich set of assertions with clear error messages
+- **BDD support**: Behavior-driven development with `scenario`/`given`/`when`/`then`
+
 ## License
 
 C++ Builder & Tester is released under the MIT license. See [LICENSE](LICENSE) for full text.
 
+## Related Resources
+
+- [Improvement Ideas](docs/tester-improvements.md) – Current backlog and proposed features
+- [P1204R0](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1204r0.html) – Canonical Project Structure for C++ projects
