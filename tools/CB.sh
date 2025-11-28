@@ -37,6 +37,7 @@ if [[ ! -x "$BIN" || "$SRC" -nt "$BIN" ]]; then
     echo "Building C++ Builder & Tester with $CXX_COMPILER..."
     "$CXX_COMPILER" \
         -std=c++23 -O3 -pthread \
+        -fuse-ld=lld \
         -stdlib=libc++ \
         -I"$LLVM_PREFIX/include/c++/v1" \
         -L"$LLVM_PREFIX/lib" \

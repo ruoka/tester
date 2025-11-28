@@ -1213,7 +1213,8 @@ public:
 
 using namespace std::string_literals;
 
-int main(int argc, char* argv[]) {
+int main(int argc, char* argv[])
+try {
     auto stdcppm = ""s;  // Empty string triggers auto-detection
     auto arg_index = 1;
     if (argc > 1) {
@@ -1297,21 +1298,19 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    try {
-        auto build_system = cb::build_system{config, include_flags, {}, ".", stdcppm, static_linking, include_examples};
+    auto build_system = cb::build_system{config, include_flags, {}, ".", stdcppm, static_linking, include_examples};
 
-        if (do_list) build_system.print_sources();
-        if (do_clean) build_system.clean();
-        if (do_build) build_system.build();
-        if (do_run_tests) build_system.run_tests(test_filter);
-        if (not do_clean and not do_list and not do_run_tests and not do_build) build_system.build();
+    if (do_list) build_system.print_sources();
+    if (do_clean) build_system.clean();
+    if (do_build) build_system.build();
+    if (do_run_tests) build_system.run_tests(test_filter);
+    if (not do_clean and not do_list and not do_run_tests and not do_build) build_system.build();
 
-        return 0;
-    } catch (const std::exception& e) {
-        cb::log::error("Fatal error: "s + e.what());
-        std::exit(1);
-    } catch (...) {
-        cb::log::error("Fatal error: unknown exception");
-        std::exit(1);
-    }
+    return 0;
+} catch (const std::exception& e) {
+    cb::log::error("Fatal error: "s + e.what());
+    std::exit(1);
+} catch (...) {
+    cb::log::error("Fatal error: unknown exception");
+    std::exit(1);
 }
