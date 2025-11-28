@@ -12,7 +12,6 @@
 #include <string_view>
 #include <regex>
 #include <fstream>
-#include <sstream>
 #include <queue>
 #include <map>
 #include <array>
@@ -90,7 +89,6 @@ enum class unit_kind : unsigned {
 
 using suffix_list = std::vector<std::string>;
 using string_list = std::vector<std::string>;
-using imported_module_list = std::vector<std::string>;
 
 inline const suffix_list supported_suffixes = {
     ".test.c++m",
@@ -119,7 +117,11 @@ inline bool determine_is_test(std::string_view rel_dir, std::string_view name, s
     if (suffix_value == ".test.c++" or suffix_value == ".test.c++m")
         return true;
     auto combined = rel_dir.empty() ? std::string{name} : std::string{rel_dir} + "/" + std::string{name};
-    return combined.contains("tester");
+    // Exclude "tester/" framework directory - it's the testing framework, not test files
+    if (combined.starts_with("tester/"))
+        return false;
+    // Check for test files/directories (but not the tester framework)
+    return combined.contains("test");
 }
 
 inline std::string make_unit(std::string_view module_value, unit_kind kind, std::string_view filename_value) {
@@ -172,25 +174,21 @@ public:
     const bool is_modular = false;
     
     // Build artifacts
-    std::string object_path;
-    std::string pcm_path;
-    std::string executable_path;
+    std::string object_path{};
+    std::string pcm_path{};
+    std::string executable_path{};
     
     // Metadata
     fs::file_time_type last_modified{};
     int dependency_level = -1;
 
 private:
-    translation_unit(const fs::path& relative_path,
-                     std::string full_path,
-                     std::string suffix,
+    translation_unit(const fs::path& relative,
+                     const fs::path& full_path,
                      std::string module,
                      string_list imports,
                      unit_kind kind_value,
-                     bool has_main_flag,
-                     std::string pcm_path_value,
-                     fs::file_time_type last_modified,
-                     int dependency_level_value);
+                     bool has_main_flag);
 
 
     inline static const std::regex module_regex{R"(\s*(?:export\s+)?module\s+([\w:-]+)\s*;)"};
@@ -210,27 +208,30 @@ inline bool translation_unit::match_supported_suffix(std::string_view filename, 
     return false;
 }
 
+inline std::string extract_suffix(std::string_view filename) {
+    auto suffix = std::string{};
+    if (not translation_unit::match_supported_suffix(filename, suffix))
+        throw std::runtime_error{"unsupported source suffix"};
+    return suffix;
+}
+
 inline bool translation_unit::is_supported(const fs::path& file_path) {
     auto name = file_path.filename().string();
     auto suffix = std::string{};
     return match_supported_suffix(name, suffix);
 }
 
-inline translation_unit::translation_unit(const fs::path& relative_path,
-                                          std::string full_path_value,
-                                          std::string suffix_value,
+inline translation_unit::translation_unit(const fs::path& relative,
+                                          const fs::path& full_path,
                                           std::string module_value,
                                           string_list imports_value,
                                           unit_kind kind_value,
-                                          bool has_main_flag,
-                                          std::string pcm_path_value,
-                                          fs::file_time_type last_modified_value,
-                                          int dependency_level_value)
-    : filename(relative_path.filename().string()),
-      path(normalize_relative_dir(relative_path.parent_path())),
-      suffix(std::move(suffix_value)),
+                                          bool has_main_flag)
+    : filename(relative.filename().string()),
+      path(normalize_relative_dir(relative.parent_path())),
+      suffix(extract_suffix(relative.filename().string())),
       base_name(make_base_name(this->filename)),
-      full_path(std::move(full_path_value)),
+      full_path(make_full_path(full_path)),
       unit(make_unit(module_value, kind_value, this->filename)),
       module(std::move(module_value)),
       imports(std::move(imports_value)),
@@ -238,19 +239,11 @@ inline translation_unit::translation_unit(const fs::path& relative_path,
       has_main(has_main_flag),
       is_test(determine_is_test(this->path, this->filename, this->suffix)),
       is_modular(kind_value == unit_kind::interface_unit or kind_value == unit_kind::partition_unit),
-      object_path(),
-      pcm_path(std::move(pcm_path_value)),
-      last_modified(last_modified_value),
-      dependency_level(dependency_level_value) {}
+      last_modified(fs::last_write_time(full_path)) {}
 
 inline translation_unit parse_translation_unit(const fs::path& project_root, const fs::path& file_path) {
     auto relative_path = file_path.lexically_relative(project_root);
     if (relative_path.empty() or relative_path == ".") relative_path = file_path.filename();
-
-    auto full_path_str = make_full_path(file_path);
-    auto suffix = ""s;
-    if (not translation_unit::match_supported_suffix(relative_path.filename().string(), suffix))
-        throw std::runtime_error{"unsupported source suffix"};
 
     std::ifstream file{file_path};
     if (not file) throw std::runtime_error{"cannot open file"};
@@ -331,19 +324,13 @@ inline translation_unit parse_translation_unit(const fs::path& project_root, con
     if (kind == unit_kind::implementation_unit and module_name.empty())
         throw std::runtime_error{"implementation unit missing module name"};
 
-    auto mod_time = fs::last_write_time(file_path);
-
     return translation_unit{
         relative_path,
-        std::move(full_path_str),
-        std::move(suffix),
+        file_path,
         std::move(module_name),
         std::move(imports),
         kind,
-        has_main,
-        ""s,
-        mod_time,
-        -1
+        has_main
     };
 }
 
@@ -736,6 +723,16 @@ private:
         fs::rename(tmp, executable_cache_path());
     }
 
+    bool needs_relinking(const translation_unit& tu, const std::string& signature, const executable_cache_map& link_cache) const {
+        if (not fs::exists(tu.executable_path))
+            return true;
+
+        if (auto it = link_cache.find(tu.executable_path); it != link_cache.end() and it->second == signature)
+            return false;
+
+        return true;
+    }
+
     // ============================================================================
     // Dependency Analysis
     // ============================================================================
@@ -875,7 +872,6 @@ private:
             fs::last_write_time(std_pcm) >= fs::last_write_time(std_module_source))
             return;
 
-        fs::create_directories(module_cache_dir());
         auto cmd = llvm_cxx + " " + compile_flags + " " + cpp_flags +
                    " -nostdinc++ -isystem " + llvm_prefix + "/include/c++/v1 "
                    " -Wno-unused-command-line-argument -fno-implicit-modules "
@@ -891,7 +887,6 @@ private:
         if (fs::exists(std_obj) and fs::last_write_time(std_obj) >= fs::last_write_time(std_pcm))
             return;
 
-        fs::create_directories(object_dir());
         auto os = os_name();
         auto is_darwin = (os == "darwin");
         
@@ -1050,12 +1045,9 @@ private:
         for (const auto& tu : units_in_topological_order)
             if (tu.has_main and not tu.filename.contains("test_runner")) {
                 auto signature = compute_link_signature(tu, shared_objects);
-                bool executable_exists = fs::exists(tu.executable_path);
-                if (executable_exists) {
-                    if (auto it = link_cache.find(tu.executable_path); it != link_cache.end() and it->second == signature) {
-                        log::info("Skipping link (up-to-date): "s + tu.executable_path);
-                        continue;
-                    }
+                if (not needs_relinking(tu, signature, link_cache)) {
+                    log::info("Skipping link (up-to-date): "s + tu.executable_path);
+                    continue;
                 }
                 threads.emplace_back([this, tu, &shared_objects, signature, &link_cache]() {
                     link_executable(tu, shared_objects);
@@ -1183,19 +1175,12 @@ public:
         auto runner = binary_dir() + "/test_runner";
         if (not fs::exists(runner)) {
             log::error("test_runner not found — no test files discovered");
-            log::error("Make sure you have .test.c++ files or a test_runner.cpp");
+            log::error("Make sure you have .test.c++ files or a test_runner.c++");
             std::exit(1);
         }
     
         execute_system_command(runner + (filter.empty() ? "" : " " + filter));
         log::success("All tests passed!");
-    }
-
-    void print_diagnostics() {
-        scan_and_order();
-        log::info("Configuration: "s + (config == build_config::release ? "RELEASE" : "DEBUG"));
-        log::info("Build directory: "s + build_root());
-        log::info("Found "s + std::to_string(units_in_topological_order.size()) + " translation units");
     }
 
     void print_sources() {
@@ -1312,13 +1297,21 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    auto build_system = cb::build_system{config, include_flags, {}, ".", stdcppm, static_linking, include_examples};
+    try {
+        auto build_system = cb::build_system{config, include_flags, {}, ".", stdcppm, static_linking, include_examples};
 
-    if (do_list) build_system.print_sources();
-    if (do_clean) build_system.clean();
-    if (do_build) build_system.build();
-    if (do_run_tests) build_system.run_tests(test_filter);
-    if (not do_clean and not do_list and not do_run_tests and not do_build) build_system.build();
+        if (do_list) build_system.print_sources();
+        if (do_clean) build_system.clean();
+        if (do_build) build_system.build();
+        if (do_run_tests) build_system.run_tests(test_filter);
+        if (not do_clean and not do_list and not do_run_tests and not do_build) build_system.build();
 
-    return 0;
+        return 0;
+    } catch (const std::exception& e) {
+        cb::log::error("Fatal error: "s + e.what());
+        std::exit(1);
+    } catch (...) {
+        cb::log::error("Fatal error: unknown exception");
+        std::exit(1);
+    }
 }
