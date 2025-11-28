@@ -463,6 +463,9 @@ private:
                 // macOS cannot fully static-link libc++ (it stays dynamic)
                 link_flags = "-pthread -lc++ "
                              "-L" + llvm_prefix + "/lib "
+                             "-L/opt/homebrew/lib "
+                             "-Wl,-rpath,/opt/homebrew/lib "
+                             "-lcrypto "
                              "-Wl,-dead_strip";
                 log::warning("Static linking on macOS is limited – libc++ remains dynamically linked");
             } else {
@@ -484,6 +487,9 @@ private:
                 link_flags = "-pthread "
                              "-L" + llvm_prefix + "/lib "
                              "-Wl,-rpath," + llvm_prefix + "/lib "
+                             "-L/opt/homebrew/lib "
+                             "-Wl,-rpath,/opt/homebrew/lib "
+                             "-lcrypto "
                              "-Wl,-dead_strip ";
                 if (fs::exists("/usr/lib/system/introspection/libunwind.reexported_symbols")) {
                     link_flags += "-Wl,-unexported_symbols_list,/usr/lib/system/introspection/libunwind.reexported_symbols";
