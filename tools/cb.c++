@@ -360,6 +360,7 @@ private:
     const bool static_link;
     bool include_tests = false;
     bool include_examples = false;
+    std::string extra_compile_flags;
 
     // ============================================================================
     // Initialization and Setup
@@ -456,12 +457,18 @@ private:
         }
     
         // ------------------------------------------------------------------
-        // Additional compiler flags from environment
+        // Additional compiler flags (from constructor parameter or environment)
         // ------------------------------------------------------------------
-        if (auto extra_flags = std::getenv("EXTRA_CXXFLAGS"); extra_flags and *extra_flags) {
-            compile_flags += extra_flags;
+        if (extra_compile_flags.empty()) {
+            // Fallback to environment variable for backward compatibility
+            if (auto env_flags = std::getenv("EXTRA_CXXFLAGS"); env_flags and *env_flags) {
+                extra_compile_flags = env_flags;
+            }
+        }
+        if (not extra_compile_flags.empty()) {
+            compile_flags += extra_compile_flags;
             compile_flags += " ";
-            log::info("Added extra compiler flags from EXTRA_CXXFLAGS: "s + extra_flags);
+            log::info("Added extra compiler flags: "s + extra_compile_flags);
         }
     
         // ------------------------------------------------------------------
@@ -1140,8 +1147,9 @@ public:
         const std::string& src = ".",
         const std::string& stdcppm = "",
         bool static_linking = false,
-        bool include_examples_flag = false
-    ) : config(cfg), static_link(static_linking), source_dir(src), cpp_flags(cpf), module_ldflags(mlf), std_module_source(stdcppm), include_tests(config == build_config::debug), include_examples(include_examples_flag) {
+        bool include_examples_flag = false,
+        const std::string& extra_flags = ""
+    ) : config(cfg), static_link(static_linking), source_dir(src), cpp_flags(cpf), module_ldflags(mlf), std_module_source(stdcppm), include_tests(config == build_config::debug), include_examples(include_examples_flag), extra_compile_flags(extra_flags) {
         source_dir = normalize_path(source_dir);
         fs::create_directories(module_cache_dir());
         fs::create_directories(object_dir());
@@ -1246,6 +1254,7 @@ try {
     auto static_linking = false;
     auto include_examples = false;
     auto include_paths = std::vector<std::string>{};
+    auto extra_compile_flags = std::string{};
 
     for (int i = arg_index; i < argc; ++i) {
         auto argument = std::string_view{argv[i]};
@@ -1277,6 +1286,13 @@ try {
                 cb::log::error("Missing path after -I/--include");
                 std::exit(1);
             }
+        } else if (argument == "-X" or argument == "--extra-flags") {
+            if (i+1 < argc) {
+                extra_compile_flags = argv[++i];
+            } else {
+                cb::log::error("Missing flags after -X/--extra-flags");
+                std::exit(1);
+            }
         } else if (argument == "help" or argument == "-h" or argument == "--help") {
             std::cout << "Usage: " << argv[0] << " [std.cppm] [options]\n\n"
                       << "Options:\n"
@@ -1290,12 +1306,14 @@ try {
                       << "  static           Enable static linking (C++ stdlib static)\n"
                       << "  --include-examples Include examples directory in build (excluded by default)\n"
                       << "  -I, --include    Add include directory (can be specified multiple times)\n"
+                      << "  -X, --extra-flags Add extra compiler flags (e.g., -X \"-march=native -funroll-loops\")\n"
                       << "  help, -h, --help Show this help message\n\n"
                       << "Examples:\n"
                       << "  " << argv[0] << " debug build\n"
                       << "  " << argv[0] << " release build\n"
                       << "  " << argv[0] << " -I include/path debug build\n"
                       << "  " << argv[0] << " -I path1 -I path2 debug build\n"
+                      << "  " << argv[0] << " -X \"-march=native -funroll-loops\" release build\n"
                       << "  " << argv[0] << " clean build\n"
                       << "  " << argv[0] << " ci\n"
                       << "  " << argv[0] << " test\n"
@@ -1313,7 +1331,7 @@ try {
         }
     }
 
-    auto build_system = cb::build_system{config, include_flags, {}, ".", stdcppm, static_linking, include_examples};
+    auto build_system = cb::build_system{config, include_flags, {}, ".", stdcppm, static_linking, include_examples, extra_compile_flags};
 
     if (do_list) build_system.print_sources();
     if (do_clean) build_system.clean();
