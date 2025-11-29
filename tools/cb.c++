@@ -1142,13 +1142,13 @@ private:
 public:
     build_system(
         build_config cfg,
-        const std::string& cpf = "",
-        const module_to_ldflags_map& mlf = {},
-        const std::string& src = ".",
         const std::string& stdcppm = "",
+        const std::string& cpf = "",
+        const std::string& extra_flags = "",
         bool static_linking = false,
         bool include_examples_flag = false,
-        const std::string& extra_flags = ""
+        const std::string& src = ".",
+        const module_to_ldflags_map& mlf = {}
     ) : config(cfg), static_link(static_linking), source_dir(src), cpp_flags(cpf), module_ldflags(mlf), std_module_source(stdcppm), include_tests(config == build_config::debug), include_examples(include_examples_flag), extra_compile_flags(extra_flags) {
         source_dir = normalize_path(source_dir);
         fs::create_directories(module_cache_dir());
@@ -1331,7 +1331,7 @@ try {
         }
     }
 
-    auto build_system = cb::build_system{config, include_flags, {}, ".", stdcppm, static_linking, include_examples, extra_compile_flags};
+    auto build_system = cb::build_system{config, stdcppm, include_flags, extra_compile_flags, static_linking, include_examples};
 
     if (do_list) build_system.print_sources();
     if (do_clean) build_system.clean();
