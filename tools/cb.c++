@@ -347,20 +347,31 @@ using executable_cache_map = std::map<std::string, std::string>;
 
 class build_system {
 private:
-    std::string source_dir;
-    std::string compile_flags, link_flags, cpp_flags;
-    module_to_ldflags_map module_ldflags;
-    std::string module_flags;
-    std::string std_module_source;
-    std::string llvm_prefix, llvm_cxx;
-    translation_unit_list units_in_topological_order;
-    std::mutex cache_mutex;
-    std::mutex link_cache_mutex;
+    // Configuration (set at construction)
     const build_config config;
     const bool static_link;
     bool include_tests = false;
     bool include_examples = false;
+    
+    // Paths and directories
+    std::string source_dir;
+    std::string std_module_source;
+    std::string llvm_prefix, llvm_cxx;
+    
+    // Compiler flags
+    std::string compile_flags, link_flags, cpp_flags;
     std::string extra_compile_flags;
+    
+    // Module-related
+    std::string module_flags;
+    module_to_ldflags_map module_ldflags;
+    
+    // Data structures
+    translation_unit_list units_in_topological_order;
+    
+    // Synchronization
+    std::mutex cache_mutex;
+    std::mutex link_cache_mutex;
 
     // ============================================================================
     // Initialization and Setup
