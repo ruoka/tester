@@ -456,6 +456,15 @@ private:
         }
     
         // ------------------------------------------------------------------
+        // Additional compiler flags from environment
+        // ------------------------------------------------------------------
+        if (auto extra_flags = std::getenv("EXTRA_CXXFLAGS"); extra_flags and *extra_flags) {
+            compile_flags += extra_flags;
+            compile_flags += " ";
+            log::info("Added extra compiler flags from EXTRA_CXXFLAGS: "s + extra_flags);
+        }
+    
+        // ------------------------------------------------------------------
         // Link flags
         // ------------------------------------------------------------------
         if (static_link) {
