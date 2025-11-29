@@ -468,17 +468,10 @@ private:
         }
     
         // ------------------------------------------------------------------
-        // Additional compiler flags (from constructor parameter or environment)
+        // Additional compiler flags
         // ------------------------------------------------------------------
-        if (extra_compile_flags.empty()) {
-            // Fallback to environment variable for backward compatibility
-            if (auto env_flags = std::getenv("EXTRA_CXXFLAGS"); env_flags and *env_flags) {
-                extra_compile_flags = env_flags;
-            }
-        }
         if (not extra_compile_flags.empty()) {
-            compile_flags += extra_compile_flags;
-            compile_flags += " ";
+            compile_flags += extra_compile_flags + " ";
             log::info("Added extra compiler flags: "s + extra_compile_flags);
         }
     
