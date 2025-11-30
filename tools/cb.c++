@@ -533,12 +533,11 @@ private:
         if (not extra_link_flags.empty()) {
             link_flags += " " + extra_link_flags;
             log::info("Added extra link flags: "s + extra_link_flags);
-        } else {
-            // Debug: check if environment variable is set as fallback
-            if (const char* env_link_flags = std::getenv("CB_LINK_FLAGS")) {
-                link_flags += " " + std::string{env_link_flags};
-                log::info("Added extra link flags from CB_LINK_FLAGS: "s + env_link_flags);
-            }
+        }
+        // Always check environment variable (can be used alone or in addition to --link-flags)
+        if (const char* env_link_flags = std::getenv("CB_LINK_FLAGS")) {
+            link_flags += " " + std::string{env_link_flags};
+            log::info("Added extra link flags from CB_LINK_FLAGS: "s + env_link_flags);
         }
     
         // ------------------------------------------------------------------
