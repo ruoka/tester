@@ -1,27 +1,41 @@
-FROM debian:bookworm-slim AS os
+FROM debian:bookworm-slim
 
 RUN set -ex && \
     apt-get update && \
-    apt-get install -y wget git zsh && \
+    apt-get install -y --no-install-recommends wget gnupg ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-RUN set -ex &&\
-    echo "deb http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-19 main" > /etc/apt/sources.list.d/apt.llvm.org.list && \
-    wget --no-check-certificate -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc && \
-	touch /etc/apt/apt.conf.d/99verify-peer.conf && echo >>/etc/apt/apt.conf.d/99verify-peer.conf "Acquire { https::Verify-Peer false }" && \
+RUN set -ex && \
+    wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/apt-llvm.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-20 main" > /etc/apt/sources.list.d/apt.llvm.org.list && \
     apt-get update && \
-    apt-get install --no-install-recommends --yes git cmake make clang-19 lldb-19 lld-19 libc++-19-dev libc++abi-19-dev && \
+    apt-get install -y --no-install-recommends git cmake make clang-20 lldb-20 lld-20 libc++-20-dev libc++abi-20-dev && \
     rm -rf /var/lib/apt/lists/*
+
+RUN update-alternatives --install /usr/bin/clang clang /usr/bin/clang-20 100 && \
+    update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-20 100 && \
+    update-alternatives --install /usr/bin/lld lld /usr/bin/lld-20 100
 
 # https://code.visualstudio.com/remote/advancedcontainers/add-nonroot-user
 ARG USERNAME=vscode
 ARG USER_UID=1000
 ARG USER_GID=$USER_UID
 
-# Create the user and set zsh as default shell
-RUN groupadd --gid $USER_GID $USERNAME \
-    && useradd --uid $USER_UID --gid $USER_GID -m $USERNAME \
-    && usermod --shell /bin/zsh $USERNAME
+# Create the user (handle pre-existing gids/users in base image)
+RUN existing_group="$(getent group "$USER_GID" | cut -d: -f1 || true)" && \
+    if [ -z "$existing_group" ]; then \
+        groupadd --gid "$USER_GID" "$USERNAME"; \
+    elif [ "$existing_group" != "$USERNAME" ]; then \
+        groupmod -n "$USERNAME" "$existing_group"; \
+    fi && \
+    existing_user="$(getent passwd "$USER_UID" | cut -d: -f1 || true)" && \
+    if [ -n "$existing_user" ] && [ "$existing_user" != "$USERNAME" ]; then \
+        usermod -l "$USERNAME" "$existing_user" && \
+        usermod -d "/home/$USERNAME" -m "$USERNAME"; \
+    fi && \
+    if ! id -u "$USERNAME" >/dev/null 2>&1; then \
+        useradd --uid "$USER_UID" --gid "$USER_GID" -m "$USERNAME"; \
+    fi
 
 # [Optional] Set the default user. Omit if you want to keep the default as root.
 USER $USERNAME
