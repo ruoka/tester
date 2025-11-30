@@ -360,6 +360,8 @@ private:
     const bool static_link;
     bool include_tests = false;
     bool include_examples = false;
+    std::string extra_compile_flags;
+    std::string extra_link_flags;
 
     // ============================================================================
     // Initialization and Setup
@@ -500,6 +502,18 @@ private:
                     link_flags += " -g3";
                 }
             }
+        }
+        
+        // Append extra link flags if provided
+        if (not extra_link_flags.empty()) {
+            link_flags += " " + extra_link_flags;
+            log::info("Added extra linker flags: "s + extra_link_flags);
+        }
+        
+        // Append extra compile flags if provided
+        if (not extra_compile_flags.empty()) {
+            compile_flags += " " + extra_compile_flags;
+            log::info("Added extra compile flags: "s + extra_compile_flags);
         }
     
         // ------------------------------------------------------------------
@@ -1125,8 +1139,10 @@ public:
         const std::string& src = ".",
         const std::string& stdcppm = "",
         bool static_linking = false,
-        bool include_examples_flag = false
-    ) : config(cfg), static_link(static_linking), source_dir(src), cpp_flags(cpf), module_ldflags(mlf), std_module_source(stdcppm), include_tests(config == build_config::debug), include_examples(include_examples_flag) {
+        bool include_examples_flag = false,
+        const std::string& extra_compile_flags_param = "",
+        const std::string& extra_link_flags_param = ""
+    ) : config(cfg), static_link(static_linking), source_dir(src), cpp_flags(cpf), module_ldflags(mlf), std_module_source(stdcppm), include_tests(config == build_config::debug), include_examples(include_examples_flag), extra_compile_flags(extra_compile_flags_param), extra_link_flags(extra_link_flags_param) {
         source_dir = normalize_path(source_dir);
         fs::create_directories(module_cache_dir());
         fs::create_directories(object_dir());
@@ -1231,6 +1247,8 @@ try {
     auto static_linking = false;
     auto include_examples = false;
     auto include_paths = std::vector<std::string>{};
+    auto extra_compile_flags = std::string{};
+    auto extra_link_flags = std::string{};
 
     for (int i = arg_index; i < argc; ++i) {
         auto argument = std::string_view{argv[i]};
@@ -1262,6 +1280,20 @@ try {
                 cb::log::error("Missing path after -I/--include");
                 std::exit(1);
             }
+        } else if (argument == "--link-flags") {
+            if (i+1 < argc) {
+                extra_link_flags = argv[++i];
+            } else {
+                cb::log::error("Missing flags after --link-flags");
+                std::exit(1);
+            }
+        } else if (argument == "--compile-flags" or argument == "--extra-compile-flags") {
+            if (i+1 < argc) {
+                extra_compile_flags = argv[++i];
+            } else {
+                cb::log::error("Missing flags after --compile-flags");
+                std::exit(1);
+            }
         } else if (argument == "help" or argument == "-h" or argument == "--help") {
             std::cout << "Usage: " << argv[0] << " [std.cppm] [options]\n\n"
                       << "Options:\n"
@@ -1275,6 +1307,8 @@ try {
                       << "  static           Enable static linking (C++ stdlib static)\n"
                       << "  --include-examples Include examples directory in build (excluded by default)\n"
                       << "  -I, --include    Add include directory (can be specified multiple times)\n"
+                      << "  --link-flags     Add extra linker flags (e.g., --link-flags \"-lcrypto\")\n"
+                      << "  --compile-flags  Add extra compiler flags\n"
                       << "  help, -h, --help Show this help message\n\n"
                       << "Examples:\n"
                       << "  " << argv[0] << " debug build\n"
@@ -1298,7 +1332,7 @@ try {
         }
     }
 
-    auto build_system = cb::build_system{config, include_flags, {}, ".", stdcppm, static_linking, include_examples};
+    auto build_system = cb::build_system{config, include_flags, {}, ".", stdcppm, static_linking, include_examples, extra_compile_flags, extra_link_flags};
 
     if (do_list) build_system.print_sources();
     if (do_clean) build_system.clean();
