@@ -361,6 +361,7 @@ private:
     // Compiler flags
     std::string compile_flags, link_flags, cpp_flags;
     std::string extra_compile_flags;
+    std::string extra_link_flags;
     
     // Module-related
     std::string module_flags;
@@ -485,7 +486,6 @@ private:
                              "-L" + llvm_prefix + "/lib "
                              "-L/opt/homebrew/lib "
                              "-Wl,-rpath,/opt/homebrew/lib "
-                             "-lcrypto "
                              "-Wl,-dead_strip";
                 log::warning("Static linking on macOS is limited – libc++ remains dynamically linked");
             } else {
@@ -509,7 +509,6 @@ private:
                              "-Wl,-rpath," + llvm_prefix + "/lib "
                              "-L/opt/homebrew/lib "
                              "-Wl,-rpath,/opt/homebrew/lib "
-                             "-lcrypto "
                              "-Wl,-dead_strip ";
                 if (fs::exists("/usr/lib/system/introspection/libunwind.reexported_symbols")) {
                     link_flags += "-Wl,-unexported_symbols_list,/usr/lib/system/introspection/libunwind.reexported_symbols";
@@ -526,6 +525,14 @@ private:
                     link_flags += " -g3";
                 }
             }
+        }
+    
+        // ------------------------------------------------------------------
+        // Additional linker flags
+        // ------------------------------------------------------------------
+        if (not extra_link_flags.empty()) {
+            link_flags += " " + extra_link_flags;
+            log::info("Added extra linker flags: "s + extra_link_flags);
         }
     
         // ------------------------------------------------------------------
@@ -1024,7 +1031,7 @@ private:
         auto objects = tu.object_path + " ";
         for (const auto& object_path : shared_objects)
             objects += object_path + " ";
-
+        
         auto cmd = llvm_cxx + " " + compile_flags + " " +
                 collect_module_ldflags(tu.imports) + " " +
                 module_flags + " " +
@@ -1117,7 +1124,7 @@ private:
             [this](const translation_unit& tu) {
                 return tu.has_main and tu.base_name.contains("test_runner");
             });
-
+        
         if (test_runner_it != units_in_topological_order.end()) {
             auto cmd = llvm_cxx + " " +
                     collect_module_ldflags(test_runner_it->imports) + " " +
@@ -1149,11 +1156,12 @@ public:
         const std::string& stdcppm = "",
         const std::string& cpf = "",
         const std::string& extra_flags = "",
+        const std::string& extra_link_flags_param = "",
         bool static_linking = false,
         bool include_examples_flag = false,
         const std::string& src = ".",
         const module_to_ldflags_map& mlf = {}
-    ) : config(cfg), static_link(static_linking), source_dir(src), cpp_flags(cpf), module_ldflags(mlf), std_module_source(stdcppm), include_tests(config == build_config::debug), include_examples(include_examples_flag), extra_compile_flags(extra_flags) {
+    ) : config(cfg), static_link(static_linking), source_dir(src), cpp_flags(cpf), module_ldflags(mlf), std_module_source(stdcppm), include_tests(config == build_config::debug), include_examples(include_examples_flag), extra_compile_flags(extra_flags), extra_link_flags(extra_link_flags_param) {
         source_dir = normalize_path(source_dir);
         fs::create_directories(module_cache_dir());
         fs::create_directories(object_dir());
@@ -1259,6 +1267,7 @@ try {
     auto include_examples = false;
     auto include_paths = std::vector<std::string>{};
     auto extra_compile_flags = std::string{};
+    auto extra_link_flags = std::string{};
 
     for (int i = arg_index; i < argc; ++i) {
         auto argument = std::string_view{argv[i]};
@@ -1297,6 +1306,13 @@ try {
                 cb::log::error("Missing flags after -X/--extra-flags");
                 std::exit(1);
             }
+        } else if (argument == "--link-flags") {
+            if (i+1 < argc) {
+                extra_link_flags = argv[++i];
+            } else {
+                cb::log::error("Missing flags after --link-flags");
+                std::exit(1);
+            }
         } else if (argument == "help" or argument == "-h" or argument == "--help") {
             std::cout << "Usage: " << argv[0] << " [std.cppm] [options]\n\n"
                       << "Options:\n"
@@ -1311,6 +1327,7 @@ try {
                       << "  --include-examples Include examples directory in build (excluded by default)\n"
                       << "  -I, --include    Add include directory (can be specified multiple times)\n"
                       << "  -X, --extra-flags Add extra compiler flags (e.g., -X \"-march=native -funroll-loops\")\n"
+                      << "  --link-flags     Add extra linker flags (e.g., --link-flags \"-lcrypto -lssl\")\n"
                       << "  help, -h, --help Show this help message\n\n"
                       << "Examples:\n"
                       << "  " << argv[0] << " debug build\n"
@@ -1318,6 +1335,7 @@ try {
                       << "  " << argv[0] << " -I include/path debug build\n"
                       << "  " << argv[0] << " -I path1 -I path2 debug build\n"
                       << "  " << argv[0] << " -X \"-march=native -funroll-loops\" release build\n"
+                      << "  " << argv[0] << " --link-flags \"-lcrypto -lssl\" debug build\n"
                       << "  " << argv[0] << " clean build\n"
                       << "  " << argv[0] << " ci\n"
                       << "  " << argv[0] << " test\n"
@@ -1335,7 +1353,7 @@ try {
         }
     }
 
-    auto build_system = cb::build_system{config, stdcppm, include_flags, extra_compile_flags, static_linking, include_examples};
+    auto build_system = cb::build_system{config, stdcppm, include_flags, extra_compile_flags, extra_link_flags, static_linking, include_examples};
 
     if (do_list) build_system.print_sources();
     if (do_clean) build_system.clean();
