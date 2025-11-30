@@ -1160,13 +1160,13 @@ public:
         build_config cfg,
         const std::string& stdcppm = "",
         const std::string& cpf = "",
-        const std::string& extra_compile_flags = "",
-        const std::string& extra_link_flags = "",
+        const std::string& extra_compile_flags_param = "",
+        const std::string& extra_link_flags_param = "",
         bool static_linking = false,
         bool include_examples_flag = false,
         const std::string& src = ".",
         const module_to_ldflags_map& mlf = {}
-    ) : config(cfg), static_link(static_linking), source_dir(src), cpp_flags(cpf), module_ldflags(mlf), std_module_source(stdcppm), include_tests(config == build_config::debug), include_examples(include_examples_flag), extra_compile_flags(extra_compile_flags), extra_link_flags(extra_link_flags) {
+    ) : config(cfg), static_link(static_linking), source_dir(src), cpp_flags(cpf), module_ldflags(mlf), std_module_source(stdcppm), include_tests(config == build_config::debug), include_examples(include_examples_flag), extra_compile_flags(extra_compile_flags_param), extra_link_flags(extra_link_flags_param) {
         source_dir = normalize_path(source_dir);
         fs::create_directories(module_cache_dir());
         fs::create_directories(object_dir());
