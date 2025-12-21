@@ -1144,10 +1144,6 @@ public:
         const std::string& extra_link_flags_param = ""
     ) : config(cfg), static_link(static_linking), source_dir(src), cpp_flags(cpf), module_ldflags(mlf), std_module_source(stdcppm), include_tests(config == build_config::debug), include_examples(include_examples_flag), extra_compile_flags(extra_compile_flags_param), extra_link_flags(extra_link_flags_param) {
         source_dir = normalize_path(source_dir);
-        fs::create_directories(module_cache_dir());
-        fs::create_directories(object_dir());
-        fs::create_directories(binary_dir());
-        fs::create_directories(cache_dir());
 
         // Detect and setup LLVM environment (std.cppm location, LLVM prefix, compiler path)
         detect_llvm_environment();
@@ -1166,7 +1162,13 @@ public:
         }
     }
 
-    void build() {    
+    void build() {
+        // Ensure build directories exist (they may have been removed by clean())
+        fs::create_directories(module_cache_dir());
+        fs::create_directories(object_dir());
+        fs::create_directories(binary_dir());
+        fs::create_directories(cache_dir());
+        
         build_std_pcm();
         build_std_o();
         scan_and_order();
@@ -1195,7 +1197,13 @@ public:
             std::exit(1);
         }
     
-        execute_system_command(runner + (filter.empty() ? "" : " " + filter));
+        auto cmd = runner + (filter.empty() ? "" : " " + filter);
+        log::command(cmd);
+        auto r = system(cmd.c_str());
+        if (r) {
+            log::error("Some tests or assertions failed!");
+            std::exit(1);
+        }
         log::success("All tests passed!");
     }
 

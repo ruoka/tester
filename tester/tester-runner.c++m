@@ -67,6 +67,12 @@ public:
         output::print_test_statistics();
     }
 
+    bool all_tests_passed() const
+    {
+        return statistics.total_tests == statistics.successful_tests 
+            && statistics.total_assertions == statistics.successful_assertions;
+    }
+
     bool included(const test_case& tc) const
     {
         return included(tc.test_name);
