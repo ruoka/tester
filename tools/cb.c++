@@ -347,32 +347,21 @@ using executable_cache_map = std::map<std::string, std::string>;
 
 class build_system {
 private:
-    // Configuration (set at construction)
+    std::string source_dir;
+    std::string compile_flags, link_flags, cpp_flags;
+    module_to_ldflags_map module_ldflags;
+    std::string module_flags;
+    std::string std_module_source;
+    std::string llvm_prefix, llvm_cxx;
+    translation_unit_list units_in_topological_order;
+    std::mutex cache_mutex;
+    std::mutex link_cache_mutex;
     const build_config config;
     const bool static_link;
     bool include_tests = false;
     bool include_examples = false;
-    
-    // Paths and directories
-    std::string source_dir;
-    std::string std_module_source;
-    std::string llvm_prefix, llvm_cxx;
-    
-    // Compiler flags
-    std::string compile_flags, link_flags, cpp_flags;
     std::string extra_compile_flags;
     std::string extra_link_flags;
-    
-    // Module-related
-    std::string module_flags;
-    module_to_ldflags_map module_ldflags;
-    
-    // Data structures
-    translation_unit_list units_in_topological_order;
-    
-    // Synchronization
-    std::mutex cache_mutex;
-    std::mutex link_cache_mutex;
 
     // ============================================================================
     // Initialization and Setup
@@ -469,14 +458,6 @@ private:
         }
     
         // ------------------------------------------------------------------
-        // Additional compiler flags
-        // ------------------------------------------------------------------
-        if (not extra_compile_flags.empty()) {
-            compile_flags += extra_compile_flags + " ";
-            log::info("Added extra compiler flags: "s + extra_compile_flags);
-        }
-    
-        // ------------------------------------------------------------------
         // Link flags
         // ------------------------------------------------------------------
         if (static_link) {
@@ -484,8 +465,6 @@ private:
                 // macOS cannot fully static-link libc++ (it stays dynamic)
                 link_flags = "-pthread -lc++ "
                              "-L" + llvm_prefix + "/lib "
-                             "-L/opt/homebrew/lib "
-                             "-Wl,-rpath,/opt/homebrew/lib "
                              "-Wl,-dead_strip";
                 log::warning("Static linking on macOS is limited – libc++ remains dynamically linked");
             } else {
@@ -507,8 +486,6 @@ private:
                 link_flags = "-pthread "
                              "-L" + llvm_prefix + "/lib "
                              "-Wl,-rpath," + llvm_prefix + "/lib "
-                             "-L/opt/homebrew/lib "
-                             "-Wl,-rpath,/opt/homebrew/lib "
                              "-Wl,-dead_strip ";
                 if (fs::exists("/usr/lib/system/introspection/libunwind.reexported_symbols")) {
                     link_flags += "-Wl,-unexported_symbols_list,/usr/lib/system/introspection/libunwind.reexported_symbols";
@@ -526,13 +503,17 @@ private:
                 }
             }
         }
-    
-        // ------------------------------------------------------------------
-        // Additional linker flags
-        // ------------------------------------------------------------------
+        
+        // Append extra link flags if provided
         if (not extra_link_flags.empty()) {
             link_flags += " " + extra_link_flags;
             log::info("Added extra linker flags: "s + extra_link_flags);
+        }
+        
+        // Append extra compile flags if provided
+        if (not extra_compile_flags.empty()) {
+            compile_flags += " " + extra_compile_flags;
+            log::info("Added extra compile flags: "s + extra_compile_flags);
         }
     
         // ------------------------------------------------------------------
@@ -1031,7 +1012,7 @@ private:
         auto objects = tu.object_path + " ";
         for (const auto& object_path : shared_objects)
             objects += object_path + " ";
-        
+
         auto cmd = llvm_cxx + " " + compile_flags + " " +
                 collect_module_ldflags(tu.imports) + " " +
                 module_flags + " " +
@@ -1124,7 +1105,7 @@ private:
             [this](const translation_unit& tu) {
                 return tu.has_main and tu.base_name.contains("test_runner");
             });
-        
+
         if (test_runner_it != units_in_topological_order.end()) {
             auto cmd = llvm_cxx + " " +
                     collect_module_ldflags(test_runner_it->imports) + " " +
@@ -1153,20 +1134,16 @@ private:
 public:
     build_system(
         build_config cfg,
-        const std::string& stdcppm = "",
         const std::string& cpf = "",
-        const std::string& extra_flags = "",
-        const std::string& extra_link_flags_param = "",
+        const module_to_ldflags_map& mlf = {},
+        const std::string& src = ".",
+        const std::string& stdcppm = "",
         bool static_linking = false,
         bool include_examples_flag = false,
-        const std::string& src = ".",
-        const module_to_ldflags_map& mlf = {}
-    ) : config(cfg), static_link(static_linking), source_dir(src), cpp_flags(cpf), module_ldflags(mlf), std_module_source(stdcppm), include_tests(config == build_config::debug), include_examples(include_examples_flag), extra_compile_flags(extra_flags), extra_link_flags(extra_link_flags_param) {
+        const std::string& extra_compile_flags_param = "",
+        const std::string& extra_link_flags_param = ""
+    ) : config(cfg), static_link(static_linking), source_dir(src), cpp_flags(cpf), module_ldflags(mlf), std_module_source(stdcppm), include_tests(config == build_config::debug), include_examples(include_examples_flag), extra_compile_flags(extra_compile_flags_param), extra_link_flags(extra_link_flags_param) {
         source_dir = normalize_path(source_dir);
-        fs::create_directories(module_cache_dir());
-        fs::create_directories(object_dir());
-        fs::create_directories(binary_dir());
-        fs::create_directories(cache_dir());
 
         // Detect and setup LLVM environment (std.cppm location, LLVM prefix, compiler path)
         detect_llvm_environment();
@@ -1185,7 +1162,13 @@ public:
         }
     }
 
-    void build() {    
+    void build() {
+        // Ensure build directories exist (they may have been removed by clean())
+        fs::create_directories(module_cache_dir());
+        fs::create_directories(object_dir());
+        fs::create_directories(binary_dir());
+        fs::create_directories(cache_dir());
+        
         build_std_pcm();
         build_std_o();
         scan_and_order();
@@ -1214,7 +1197,13 @@ public:
             std::exit(1);
         }
     
-        execute_system_command(runner + (filter.empty() ? "" : " " + filter));
+        auto cmd = runner + (filter.empty() ? "" : " " + filter);
+        log::command(cmd);
+        auto r = system(cmd.c_str());
+        if (r) {
+            log::error("Some tests or assertions failed!");
+            std::exit(1);
+        }
         log::success("All tests passed!");
     }
 
@@ -1299,18 +1288,18 @@ try {
                 cb::log::error("Missing path after -I/--include");
                 std::exit(1);
             }
-        } else if (argument == "-X" or argument == "--extra-flags") {
-            if (i+1 < argc) {
-                extra_compile_flags = argv[++i];
-            } else {
-                cb::log::error("Missing flags after -X/--extra-flags");
-                std::exit(1);
-            }
         } else if (argument == "--link-flags") {
             if (i+1 < argc) {
                 extra_link_flags = argv[++i];
             } else {
                 cb::log::error("Missing flags after --link-flags");
+                std::exit(1);
+            }
+        } else if (argument == "--compile-flags" or argument == "--extra-compile-flags") {
+            if (i+1 < argc) {
+                extra_compile_flags = argv[++i];
+            } else {
+                cb::log::error("Missing flags after --compile-flags");
                 std::exit(1);
             }
         } else if (argument == "help" or argument == "-h" or argument == "--help") {
@@ -1326,16 +1315,14 @@ try {
                       << "  static           Enable static linking (C++ stdlib static)\n"
                       << "  --include-examples Include examples directory in build (excluded by default)\n"
                       << "  -I, --include    Add include directory (can be specified multiple times)\n"
-                      << "  -X, --extra-flags Add extra compiler flags (e.g., -X \"-march=native -funroll-loops\")\n"
-                      << "  --link-flags     Add extra linker flags (e.g., --link-flags \"-lcrypto -lssl\")\n"
+                      << "  --link-flags     Add extra linker flags (e.g., --link-flags \"-lcrypto\")\n"
+                      << "  --compile-flags  Add extra compiler flags\n"
                       << "  help, -h, --help Show this help message\n\n"
                       << "Examples:\n"
                       << "  " << argv[0] << " debug build\n"
                       << "  " << argv[0] << " release build\n"
                       << "  " << argv[0] << " -I include/path debug build\n"
                       << "  " << argv[0] << " -I path1 -I path2 debug build\n"
-                      << "  " << argv[0] << " -X \"-march=native -funroll-loops\" release build\n"
-                      << "  " << argv[0] << " --link-flags \"-lcrypto -lssl\" debug build\n"
                       << "  " << argv[0] << " clean build\n"
                       << "  " << argv[0] << " ci\n"
                       << "  " << argv[0] << " test\n"
@@ -1353,7 +1340,7 @@ try {
         }
     }
 
-    auto build_system = cb::build_system{config, stdcppm, include_flags, extra_compile_flags, extra_link_flags, static_linking, include_examples};
+    auto build_system = cb::build_system{config, include_flags, {}, ".", stdcppm, static_linking, include_examples, extra_compile_flags, extra_link_flags};
 
     if (do_list) build_system.print_sources();
     if (do_clean) build_system.clean();

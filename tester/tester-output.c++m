@@ -227,22 +227,49 @@ concept chrono_clock = requires {
 template <typename V>
 void value(const V& val)
 {
-    if constexpr (std::is_same_v<std::remove_cvref_t<V>, std::string>)
+    using T = std::remove_cvref_t<V>;
+
+    if constexpr (std::is_same_v<T, std::string>)
         stream << demangle(val);
-    else if constexpr (std::is_same_v<std::remove_cvref_t<V>, std::string_view>)
+    else if constexpr (std::is_same_v<T, std::string_view>)
         stream << demangle(std::string{val});
-    else if constexpr (std::is_same_v<std::remove_cvref_t<V>, const char*>)
+    else if constexpr (std::is_same_v<T, const char*> || std::is_same_v<T, char*>)
         stream << demangle(val != nullptr ? std::string{val} : std::string{"nullptr"});
-    else if constexpr (std::is_same_v<std::remove_cvref_t<V>, char*>)
-        stream << demangle(val != nullptr ? std::string{val} : std::string{"nullptr"});
-    else if constexpr (std::is_pointer_v<V>)
+    else if constexpr (std::is_pointer_v<T>)
         stream << (val != nullptr ? val : "nullptr");
-    else if constexpr (std::is_enum_v<V>)
+    else if constexpr (std::is_enum_v<T>)
         stream << std::to_underlying(val);
-    else if constexpr (chrono_clock<V>)
+    else if constexpr (chrono_clock<T>)
         stream << std::format("{0:%F}T{0:%T}", val);
-    else
+
+    // ——— NEW: Support for common variant-based JSON/value types ———
+
+    else if constexpr (requires { val.index(); }) // has .index() → probably std::variant or similar
+    {
+        if (std::holds_alternative<std::monostate>(val) || val.valueless_by_exception())
+            stream << "null";
+        else
+            std::visit([&](const auto& alt) {
+                using Alt = std::decay_t<decltype(alt)>;
+                if constexpr (std::is_same_v<Alt, bool>)
+                    stream << std::boolalpha << alt;
+                else if constexpr (std::is_same_v<Alt, std::nullptr_t> || std::is_same_v<Alt, std::monostate>)
+                    stream << "null";
+                else if constexpr (std::is_same_v<Alt, std::string> || std::is_same_v<Alt, std::string_view>)
+                    stream << '"' << alt << '"';
+                else if constexpr (std::is_arithmetic_v<Alt>)
+                    stream << alt;
+                else if constexpr (requires { stream << alt; })
+                    stream << alt; // fallback: use existing operator<<
+                else
+                    stream << "..."; // unknown alternative
+            }, val);
+    }
+    // ——— Final fallback ———
+    else if constexpr (requires { not val.index(); }) 
         stream << std::boolalpha << val;
+    else
+        stream << "..."; // unknown alternative
 }
 
 template<typename A,typename E>

@@ -87,7 +87,7 @@ int main(int argc, char** argv)
         tr.print_test_results();
         tr.print_test_failures();
         tr.print_test_statistics();
-        return 0;
+        return tr.all_tests_passed() ? 0 : 1;
     }
     catch(const tester::assertions::assertion_failure& ex)
     {
