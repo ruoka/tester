@@ -1107,7 +1107,7 @@ private:
             });
 
         if (test_runner_it != units_in_topological_order.end()) {
-            auto cmd = llvm_cxx + " " +
+            auto cmd = llvm_cxx + " " + compile_flags + " " +
                     collect_module_ldflags(test_runner_it->imports) + " " +
                     module_flags + " " +
                     test_runner_it->object_path + " " +
@@ -1119,7 +1119,7 @@ private:
             log::success("test_runner linked with test objects");
         } else {
             // Auto-create test_runner (no source file, so compute path directly)
-            auto cmd = llvm_cxx + " " +
+            auto cmd = llvm_cxx + " " + compile_flags + " " +
                     collect_test_module_ldflags() + " " +
                     module_flags + " " +
                     collect_linkable_objects() + // Regular (non-main, non-test) objects
