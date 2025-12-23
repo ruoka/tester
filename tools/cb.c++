@@ -432,7 +432,9 @@ private:
         // ------------------------------------------------------------------
         // Compile flags (common to all configs)
         // ------------------------------------------------------------------
-        compile_flags = "-std=c++23 -stdlib=libc++ -pthread -fPIC -fuse-ld=lld "
+        // Use -B to tell clang++ where to find binaries (like the linker)
+        compile_flags = "-B" + llvm_prefix + "/bin "
+                        "-std=c++23 -stdlib=libc++ -pthread -fPIC "
                         "-fexperimental-library -Wall -Wextra "
                         "-Wno-reserved-module-identifier "
                         "-Wno-unused-command-line-argument ";
