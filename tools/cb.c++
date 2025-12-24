@@ -701,11 +701,29 @@ private:
         if (object_timestamp < cached->second)
             return true;
 
-        // Rebuild if any imported units required rebuilding.
+        // For modular units, also check if .pcm file is stale
+        if (tu.is_modular) {
+            if (not fs::exists(tu.pcm_path))
+                return true;
+            auto pcm_timestamp = fs::last_write_time(tu.pcm_path);
+            if (pcm_timestamp < tu.last_modified)
+                return true;
+        }
+
+        // Rebuild if any imported modules have changed (their .pcm files are stale or they need recompiling)
         for (const auto& dependency_key : tu.imports) {
             if (auto dependency = u2tu.find(dependency_key); dependency != u2tu.end()) {
-                if (needs_recompile(*dependency->second, c, u2tu))
-                return true;
+                const auto& dep_tu = *dependency->second;
+                // Check if the imported module's .pcm is stale compared to its source
+                if (dep_tu.is_modular) {
+                    if (not fs::exists(dep_tu.pcm_path) or 
+                        fs::last_write_time(dep_tu.pcm_path) < dep_tu.last_modified) {
+                        return true;  // Imported module's .pcm is stale, rebuild this unit
+                    }
+                }
+                // Also recursively check if the imported module needs recompiling
+                if (needs_recompile(dep_tu, c, u2tu))
+                    return true;
             }
         }
 
