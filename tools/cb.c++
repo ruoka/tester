@@ -434,6 +434,7 @@ private:
         // ------------------------------------------------------------------
         // Use -B to tell clang++ where to find binaries (like the linker)
         compile_flags = "-B" + llvm_prefix + "/bin "
+                        "-fuse-ld=lld "
                         "-std=c++23 -stdlib=libc++ -pthread -fPIC "
                         "-fexperimental-library -Wall -Wextra "
                         "-Wno-reserved-module-identifier "
