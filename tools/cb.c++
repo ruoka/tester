@@ -25,6 +25,7 @@
 #include <utility>
 #include <stdexcept>
 #include <unistd.h>
+#include <sys/wait.h>
 
 namespace fs = std::filesystem;
 
@@ -1364,10 +1365,29 @@ public:
         });
 
         auto r = system(cmd.c_str());
+        auto exit_code = r;
+        auto signaled = false;
+        auto signal_number = 0;
+#if defined(WIFEXITED) && defined(WEXITSTATUS) && defined(WIFSIGNALED) && defined(WTERMSIG)
+        if (r != -1)
+        {
+            if (WIFEXITED(r))
+                exit_code = WEXITSTATUS(r);
+            else if (WIFSIGNALED(r))
+            {
+                signaled = true;
+                signal_number = WTERMSIG(r);
+                exit_code = 128 + signal_number;
+            }
+        }
+#endif
         const auto test_finished = std::chrono::steady_clock::now();
         cb::jsonl::emit_event("test_end", [&](std::string& line){
             cb::jsonl::emit_kv_bool(line, "ok", r == 0);
-            cb::jsonl::emit_kv_int(line, "exit_code", r);
+            cb::jsonl::emit_kv_int(line, "exit_code", exit_code);
+            cb::jsonl::emit_kv_int(line, "wait_status", r);
+            cb::jsonl::emit_kv_bool(line, "signaled", signaled);
+            if(signaled) cb::jsonl::emit_kv_int(line, "signal", signal_number);
             cb::jsonl::emit_kv_int(line, "duration_ms",
                 std::chrono::duration_cast<std::chrono::milliseconds>(test_finished - test_started).count());
         });
