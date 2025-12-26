@@ -241,6 +241,13 @@ void value(const V& val)
         stream << std::to_underlying(val);
     else if constexpr (chrono_clock<T>)
         stream << std::format("{0:%F}T{0:%T}", val);
+    else if constexpr (std::is_arithmetic_v<T>)
+    {
+        if constexpr (std::is_same_v<T, bool>)
+            stream << std::boolalpha << val;
+        else
+            stream << val;
+    }
 
     // ——— NEW: Support for common variant-based JSON/value types ———
 
@@ -266,10 +273,10 @@ void value(const V& val)
             }, val);
     }
     // ——— Final fallback ———
-    else if constexpr (requires { not val.index(); }) 
+    else if constexpr (requires { stream << val; })
         stream << std::boolalpha << val;
     else
-        stream << "..."; // unknown alternative
+        stream << "..."; // unknown type
 }
 
 template<typename A,typename E>
