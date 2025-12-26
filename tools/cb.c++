@@ -805,7 +805,7 @@ private:
     // General Utilities
     // ============================================================================
 
-    auto diagnostics_format_flag() const -> const std::string&
+    const std::string& diagnostics_format_flag() const
     {
         static const auto empty = std::string{};
         return json_diagnostics_format_enabled ? json_diagnostics_flag : empty;
