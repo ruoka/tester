@@ -27,6 +27,8 @@
 
 namespace fs = std::filesystem;
 
+static std::string shell_quote(std::string_view arg);
+
 namespace cb {
 
 using namespace std::string_literals;
@@ -34,6 +36,7 @@ using namespace std::string_view_literals;
 
 namespace log {
 inline std::mutex mutex{};
+inline bool use_stderr = false;
 
 namespace color {
     constinit auto reset   = "\033[0m";
@@ -58,22 +61,26 @@ inline void error(std::string_view msg) {
 
 inline void warning(std::string_view msg) {
     auto lock = std::lock_guard<std::mutex>{mutex};
-    std::cout << color::bold::yellow << "WARNING" << color::reset << " " << msg << "\n";
+    auto& os = use_stderr ? std::cerr : std::cout;
+    os << color::bold::yellow << "WARNING" << color::reset << " " << msg << "\n";
 }
 
 inline void info(std::string_view msg) {
     auto lock = std::lock_guard<std::mutex>{mutex};
-    std::cout << color::bold::blue << "INFO" << color::reset << " " << msg << "\n";
+    auto& os = use_stderr ? std::cerr : std::cout;
+    os << color::bold::blue << "INFO" << color::reset << " " << msg << "\n";
 }
 
 inline void success(std::string_view msg) {
     auto lock = std::lock_guard<std::mutex>{mutex};
-    std::cout << color::bold::green << "SUCCESS" << color::reset << " " << msg << "\n";
+    auto& os = use_stderr ? std::cerr : std::cout;
+    os << color::bold::green << "SUCCESS" << color::reset << " " << msg << "\n";
 }
 
 inline void command(std::string_view cmd) {
     auto lock = std::lock_guard<std::mutex>{mutex};
-    std::cout << color::bold::blue << "COMMAND" << color::reset << " " << cmd << "\n";
+    auto& os = use_stderr ? std::cerr : std::cout;
+    os << color::bold::blue << "COMMAND" << color::reset << " " << cmd << "\n";
 }
 } // namespace log
 
@@ -1204,7 +1211,7 @@ public:
         log::success("Build completed: "s + build_root());
     }
 
-    void run_tests(const std::string& filter = {}) {
+    void run_tests(const std::vector<std::string>& args = {}) {
         log::info("=== Running tests ===");
 
         include_tests = true;
@@ -1218,7 +1225,9 @@ public:
             std::exit(1);
         }
     
-        auto cmd = runner + (filter.empty() ? "" : " " + filter);
+        auto cmd = runner;
+        for (const auto& a : args)
+            cmd += " " + shell_quote(a);
         log::command(cmd);
         auto r = system(cmd.c_str());
         if (r) {
@@ -1258,6 +1267,23 @@ public:
 
 using namespace std::string_literals;
 
+static std::string shell_quote(std::string_view arg)
+{
+    // POSIX shell single-quote escaping: ' -> '\'' 
+    auto out = std::string{};
+    out.reserve(arg.size() + 2);
+    out.push_back('\'');
+    for(const char ch : arg)
+    {
+        if(ch == '\'')
+            out.append("'\\''");
+        else
+            out.push_back(ch);
+    }
+    out.push_back('\'');
+    return out;
+}
+
 int main(int argc, char* argv[])
 try {
     auto stdcppm = ""s;  // Empty string triggers auto-detection
@@ -1273,6 +1299,8 @@ try {
     auto config = cb::build_config::debug;  // default to debug
     auto do_clean = false, do_list = false, do_build = false, do_run_tests = false;
     auto test_filter = std::string{};
+    auto test_runner_args = std::vector<std::string>{};
+    auto machine_output = false;
     auto static_linking = false;
     auto include_examples = false;
     auto include_paths = std::vector<std::string>{};
@@ -1281,6 +1309,15 @@ try {
 
     for (int i = arg_index; i < argc; ++i) {
         auto argument = std::string_view{argv[i]};
+        if (argument == "--") {
+            // Everything after "--" is passed to test_runner (only meaningful with "test").
+            for (int j = i + 1; j < argc; ++j)
+                test_runner_args.emplace_back(argv[j]);
+            for (const auto& a : test_runner_args)
+                if (a == "--output=jsonl" || a == "--output=JSONL")
+                    machine_output = true;
+            break;
+        }
         if (argument == "release") {
             config = cb::build_config::release;
         } else if (argument == "debug") {
@@ -1302,6 +1339,15 @@ try {
             static_linking = true;
         } else if (argument == "--include-examples") {
             include_examples = true;
+        } else if (do_run_tests && (argument.starts_with("--output=") ||
+                                   argument.starts_with("--slowest=") ||
+                                   argument.starts_with("--jsonl-output=") ||
+                                   argument.starts_with("--jsonl-output-max-bytes=") ||
+                                   argument == "--result")) {
+            // Convenience: allow passing common test_runner CLI flags directly without "--".
+            test_runner_args.emplace_back(argv[i]);
+            if (argument == "--output=jsonl" || argument == "--output=JSONL")
+                machine_output = true;
         } else if (argument == "-I" or argument == "--include") {
             if (i+1 < argc) {
                 include_paths.push_back(argv[++i]);
@@ -1332,7 +1378,9 @@ try {
                       << "  clean            Remove build directories\n"
                       << "  ci               Clean and run tests (shortcut for: clean test)\n"
                       << "  list             List all translation units\n"
-                      << "  test [filter]    Build and run tests (optional filter)\n"
+                      << "  test [filter] [-- <args...>]  Build and run tests (optional filter)\n"
+                      << "                 Pass extra args to test_runner after '--' (recommended)\n"
+                      << "                 or pass common flags directly (e.g. --output=jsonl)\n"
                       << "  static           Enable static linking (C++ stdlib static)\n"
                       << "  --include-examples Include examples directory in build (excluded by default)\n"
                       << "  -I, --include    Add include directory (can be specified multiple times)\n"
@@ -1347,10 +1395,15 @@ try {
                       << "  " << argv[0] << " clean build\n"
                       << "  " << argv[0] << " ci\n"
                       << "  " << argv[0] << " test\n"
+                      << "  " << argv[0] << " test -- --output=jsonl --slowest=10\n"
                       << "  " << argv[0] << " clean\n";
             return 0;
         }
     }
+
+    // If we are going to run tests in JSONL mode, keep stdout machine-parseable by moving
+    // all CB logs (including clean/build) to stderr.
+    cb::log::use_stderr = machine_output;
 
     // Build include flags from command-line arguments
     auto include_flags = std::string{};
@@ -1366,7 +1419,18 @@ try {
     if (do_list) build_system.print_sources();
     if (do_clean) build_system.clean();
     if (do_build) build_system.build();
-    if (do_run_tests) build_system.run_tests(test_filter);
+    if (do_run_tests) {
+        // Run tests with filter + optional extra args for test_runner.
+        // We pass both as argv-like tokens to avoid shell injection and to preserve spaces.
+        auto args = std::vector<std::string>{};
+        if (!test_filter.empty())
+            args.emplace_back(test_filter);
+        for (auto& a : test_runner_args)
+            args.emplace_back(a);
+
+        // Build include_tests etc inside run_tests(), but pass args as tokens.
+        build_system.run_tests(args);
+    }
     if (not do_clean and not do_list and not do_run_tests and not do_build) build_system.build();
 
     return 0;
