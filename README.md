@@ -86,10 +86,12 @@ C++ Builder & Tester offers unique advantages for modern C++ development:
 - System clang from Xcode doesn't fully support C++23 modules
 - You must build LLVM from source and install it to `/usr/local/llvm`
 
-### Optional: Environment Variables
+### Optional: Environment Variables (build bootstrap)
 - `LLVM_PATH`: Override path to `std.cppm` (defaults to OS-specific locations)
 - `CXX`: Override C++ compiler (defaults to OS-specific clang++)
-- `CB_INCLUDE_FLAGS`: Override include paths (space-separated)
+- `CB_INCLUDE_FLAGS`: Override include paths for `tools/CB.sh` (space-separated)
+
+**Note:** test runner output (human vs JSONL, slowest list, etc.) is configured via `test_runner` CLI options (see [Running tests](#running-tests)), not environment variables.
 
 ## Quick Start
 
@@ -338,6 +340,16 @@ const auto _ = feature();
 
 # Build and run tests with filter
 ./tools/CB.sh debug test "scenario.*Happy"
+
+# Pass options through to test_runner (everything after "--" is forwarded):
+./tools/CB.sh debug test -- --list
+./tools/CB.sh debug test -- --tags="scenario.*Happy"
+
+# JSONL output (stdout), with human logs on stderr:
+./tools/CB.sh debug test -- --output=jsonl --schema=tester-jsonl --jsonl-output=always --slowest=10
+
+# Emit a stable RESULT: line (on stderr in JSONL mode):
+./tools/CB.sh debug test -- --output=jsonl --result
 ```
 
 ### Using Makefile
