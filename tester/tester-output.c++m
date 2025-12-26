@@ -230,9 +230,9 @@ auto prepare_json_output(const std::string& raw)
     return std::tuple{std::move(cleaned), truncated, original_bytes};
 }
 
-auto& json_os() { return std::cout; }
-auto& human_os() { return std::clog; }
-auto& result_os() { return is_jsonl() ? static_cast<std::ostream&>(std::cerr) : static_cast<std::ostream&>(std::clog); }
+auto& json_os() { return std::cout; }   // machine output channel
+auto& human_os() { return std::clog; } // human/log channel
+auto& result_os() { return std::clog; } // always non-JSON, keep off stdout
 
 auto& meta_printed()
 {

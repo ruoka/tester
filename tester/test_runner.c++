@@ -151,7 +151,7 @@ int main(int argc, char** argv)
 
         if(option.starts_with("-"))
         {
-            std::cerr << "Unknown option: " << option << std::endl;
+            std::clog << "Unknown option: " << option << std::endl;
             std::cout << usage << std::endl;
             return 1;
         }
@@ -187,17 +187,17 @@ int main(int argc, char** argv)
     }
     catch(const tester::assertions::assertion_failure& ex)
     {
-        std::cerr << "Unhandled assertion failure: " << ex.what() << std::endl;
+        std::clog << "Unhandled assertion failure: " << ex.what() << std::endl;
         return 1;
     }
     catch(const std::exception& ex)
     {
-        std::cerr << "Unhandled exception: " << ex.what() << std::endl;
+        std::clog << "Unhandled exception: " << ex.what() << std::endl;
         return 1;
     }
     catch(...)
     {
-        std::cerr << "Unknown exception occurred" << std::endl;
+        std::clog << "Unknown exception occurred" << std::endl;
         return 1;
     }
 }
