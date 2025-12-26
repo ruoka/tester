@@ -39,8 +39,13 @@ using namespace std::string_view_literals;
 namespace jsonl {
 inline bool enabled = false;
 inline bool meta_printed = false;
+inline bool eof_emitted = false;
 inline constexpr auto schema = "cb-jsonl";
 inline constexpr int version = 1;
+enum class phase { none, build, test };
+inline phase current_phase = phase::none;
+inline std::chrono::steady_clock::time_point phase_started{};
+inline bool build_end_emitted = false;
 
 inline auto unix_ms()
 {
@@ -131,7 +136,19 @@ inline void emit_event(std::string_view type, auto&& add_fields)
     line += "}\n";
     std::cout << line << std::flush;
 }
+
+inline void emit_eof()
+{
+    if(!enabled || eof_emitted) return;
+    eof_emitted = true;
+    emit_event("eof", [&](std::string&){});
+}
 } // namespace jsonl
+
+static void jsonl_atexit_handler()
+{
+    cb::jsonl::emit_eof();
+}
 
 namespace log {
 inline std::mutex mutex{};
@@ -158,6 +175,18 @@ inline void error(std::string_view msg) {
     std::cerr << color::bold::red << "ERROR" << color::reset << " " << msg << "\n";
     if(cb::jsonl::enabled)
     {
+        // If build fails mid-flight, emit a structured build_end before cb_error.
+        if(cb::jsonl::current_phase == cb::jsonl::phase::build && !cb::jsonl::build_end_emitted)
+        {
+            const auto finished = std::chrono::steady_clock::now();
+            cb::jsonl::emit_event("build_end", [&](std::string& line){
+                cb::jsonl::emit_kv_bool(line, "ok", false);
+                cb::jsonl::emit_kv_int(line, "duration_ms",
+                    std::chrono::duration_cast<std::chrono::milliseconds>(finished - cb::jsonl::phase_started).count());
+            });
+            cb::jsonl::build_end_emitted = true;
+        }
+
         cb::jsonl::emit_event("cb_error", [&](std::string& line){
             cb::jsonl::emit_kv_str(line, "message", msg);
         });
@@ -1330,6 +1359,9 @@ public:
         log::info("=== Running tests ===");
 
         const auto build_started = std::chrono::steady_clock::now();
+        cb::jsonl::current_phase = cb::jsonl::phase::build;
+        cb::jsonl::phase_started = build_started;
+        cb::jsonl::build_end_emitted = false;
         cb::jsonl::emit_event("build_start", [&](std::string& line){
             cb::jsonl::emit_kv_str(line, "config", config_name(config));
             cb::jsonl::emit_kv_bool(line, "include_tests", true);
@@ -1353,6 +1385,8 @@ public:
             cb::jsonl::emit_kv_int(line, "duration_ms",
                 std::chrono::duration_cast<std::chrono::milliseconds>(build_finished - build_started).count());
         });
+        cb::jsonl::build_end_emitted = true;
+        cb::jsonl::current_phase = cb::jsonl::phase::none;
 
         auto cmd = runner;
         for (const auto& a : args)
@@ -1360,6 +1394,8 @@ public:
         log::command(cmd);
 
         const auto test_started = std::chrono::steady_clock::now();
+        cb::jsonl::current_phase = cb::jsonl::phase::test;
+        cb::jsonl::phase_started = test_started;
         cb::jsonl::emit_event("test_start", [&](std::string& line){
             cb::jsonl::emit_kv_str(line, "runner", runner);
         });
@@ -1391,6 +1427,7 @@ public:
             cb::jsonl::emit_kv_int(line, "duration_ms",
                 std::chrono::duration_cast<std::chrono::milliseconds>(test_finished - test_started).count());
         });
+        cb::jsonl::current_phase = cb::jsonl::phase::none;
         if (r) {
             log::error("Some tests or assertions failed!");
             std::exit(1);
@@ -1567,6 +1604,9 @@ try {
     cb::log::use_stderr = machine_output;
     cb::jsonl::enabled = machine_output;
     cb::jsonl::meta_printed = false;
+    cb::jsonl::eof_emitted = false;
+    if (machine_output)
+        std::atexit(cb::jsonl_atexit_handler);
 
     // Build include flags from command-line arguments
     auto include_flags = std::string{};
