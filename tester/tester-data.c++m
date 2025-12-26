@@ -34,6 +34,7 @@ struct test_result : public test_metadata
 {
     bool success = true;
     std::string output = "";
+    std::uint64_t duration_ms = 0;
 };
 
 auto test_results = std::list<test_result>{};
