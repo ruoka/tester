@@ -44,11 +44,20 @@ public:
 
     auto print_test_cases()
     {
+        if(output::jsonl_enabled())
+            output::begin_run("list", m_tags);
+
         output::print_test_cases([this](const auto& tc){return this->included(tc);});
+
+        if(output::jsonl_enabled())
+            output::end_run(true);
     }
 
     auto run_tests()
     {
+        if(output::jsonl_enabled())
+            output::begin_run("run", m_tags);
+
         engine::run_test_cases([this](const auto& tc){return this->excluded(tc);});
     }
 

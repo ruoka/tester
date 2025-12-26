@@ -9,6 +9,7 @@ module;
 #else
 #   define TESTER_HAVE_CXXABI 0
 #endif
+#include <unistd.h>
 
 export module tester:output;
 import :data;
@@ -50,7 +51,11 @@ using namespace data;
 
 namespace {
 
+constexpr auto jsonl_schema = std::string_view{"tester-jsonl"};
+constexpr auto jsonl_version = 1;
+
 enum class output_format { human, jsonl };
+enum class jsonl_output_policy { never, failures, always };
 
 auto getenv_sv(const char* name)
 {
@@ -71,6 +76,17 @@ auto parse_usize(std::string_view sv)
     return std::optional<std::size_t>{value};
 }
 
+auto now_unix_ms()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+auto pid_u32()
+{
+    return static_cast<std::uint32_t>(::getpid());
+}
+
 auto current_format()
 {
     static const auto fmt = []{
@@ -81,9 +97,15 @@ auto current_format()
     return fmt;
 }
 
+auto is_jsonl()
+{
+    return current_format() == output_format::jsonl;
+}
+
 auto want_result_line()
 {
-    return current_format() == output_format::jsonl || getenv_sv("TESTER_RESULT") == "1";
+    // Keep stdout JSONL pure: in JSONL mode, print RESULT to stderr only.
+    return is_jsonl() || getenv_sv("TESTER_RESULT") == "1";
 }
 
 auto slowest_count()
@@ -91,6 +113,33 @@ auto slowest_count()
     if(const auto n = parse_usize(getenv_sv("TESTER_SLOWEST")))
         return *n;
     return std::size_t{0};
+}
+
+auto jsonl_policy()
+{
+    static const auto policy = []{
+        auto v = getenv_sv("TESTER_JSONL_OUTPUT");
+        if(v == "never") return jsonl_output_policy::never;
+        if(v == "always") return jsonl_output_policy::always;
+        if(v == "failures" || v.empty()) return jsonl_output_policy::failures;
+
+        // Backward compat
+        if(getenv_sv("TESTER_JSONL_INCLUDE_OUTPUT") == "1")
+            return jsonl_output_policy::always;
+
+        return jsonl_output_policy::failures;
+    }();
+    return policy;
+}
+
+auto jsonl_output_max_bytes()
+{
+    static const auto max_bytes = []{
+        if(const auto n = parse_usize(getenv_sv("TESTER_JSONL_OUTPUT_MAX_BYTES")))
+            return *n;
+        return std::size_t{16384};
+    }();
+    return max_bytes;
 }
 
 auto json_escape(std::string_view sv)
@@ -155,46 +204,207 @@ auto strip_ansi(std::string_view sv)
     return out;
 }
 
+auto fnv1a64(std::string_view sv)
+{
+    std::uint64_t h = 14695981039346656037ull;
+    for(const unsigned char c : sv)
+    {
+        h ^= static_cast<std::uint64_t>(c);
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+auto hex_u64(std::uint64_t v)
+{
+    static constexpr char hex[] = "0123456789abcdef";
+    char buf[16];
+    for(int i = 15; i >= 0; --i)
+    {
+        buf[i] = hex[v & 0xF];
+        v >>= 4;
+    }
+    return std::string{buf, 16};
+}
+
+auto stable_test_id(const test_metadata& m)
+{
+    auto s = std::string{};
+    s.reserve(m.test_name.size() + m.file_name.size() + 32);
+    s.append(m.file_name);
+    s.push_back(':');
+    s.append(std::to_string(m.line));
+    s.push_back(':');
+    s.append(std::to_string(m.column));
+    s.push_back('|');
+    s.append(m.test_name);
+    return hex_u64(fnv1a64(s));
+}
+
+auto prepare_json_output(const std::string& raw)
+{
+    auto cleaned = strip_ansi(raw);
+    const auto original_bytes = cleaned.size();
+
+    const auto max_bytes = jsonl_output_max_bytes();
+    auto truncated = false;
+    if(max_bytes > 0 && cleaned.size() > max_bytes)
+    {
+        cleaned.resize(max_bytes);
+        cleaned.append("...(truncated)");
+        truncated = true;
+    }
+
+    return std::tuple{std::move(cleaned), truncated, original_bytes};
+}
+
+auto& json_os() { return std::cout; }
+auto& human_os() { return std::clog; }
+auto& result_os() { return is_jsonl() ? static_cast<std::ostream&>(std::cerr) : static_cast<std::ostream&>(std::clog); }
+
+auto& meta_printed()
+{
+    static auto printed = false;
+    return printed;
+}
+
+auto& run_started_unix_ms()
+{
+    static auto ms = std::int64_t{0};
+    return ms;
+}
+
+auto& run_mode()
+{
+    static auto mode = std::string_view{};
+    return mode;
+}
+
+auto& run_tags()
+{
+    static auto tags = std::string_view{};
+    return tags;
+}
+
+void internal_print_meta_once()
+{
+    if(!is_jsonl() || meta_printed())
+        return;
+
+    meta_printed() = true;
+
+    json_os()
+        << "{\"type\":\"meta\""
+        << ",\"schema\":\"" << json_escape(jsonl_schema) << "\""
+        << ",\"version\":" << jsonl_version
+        << ",\"pid\":" << pid_u32()
+        << ",\"ts_unix_ms\":" << now_unix_ms()
+        << "}\n";
+}
+
+void internal_run_start(std::string_view mode, std::string_view tags)
+{
+    if(!is_jsonl())
+        return;
+
+    internal_print_meta_once();
+    run_started_unix_ms() = now_unix_ms();
+    run_mode() = mode;
+    run_tags() = tags;
+
+    json_os()
+        << "{\"type\":\"run_start\""
+        << ",\"schema\":\"" << json_escape(jsonl_schema) << "\""
+        << ",\"version\":" << jsonl_version
+        << ",\"pid\":" << pid_u32()
+        << ",\"mode\":\"" << json_escape(mode) << "\""
+        << ",\"tags\":\"" << json_escape(tags) << "\""
+        << ",\"ts_unix_ms\":" << run_started_unix_ms()
+        << "}\n";
+}
+
+void internal_run_end(bool passed)
+{
+    if(!is_jsonl())
+        return;
+
+    const auto ended = now_unix_ms();
+    const auto dur_ms = (run_started_unix_ms() > 0) ? (ended - run_started_unix_ms()) : 0;
+
+    json_os()
+        << "{\"type\":\"run_end\""
+        << ",\"schema\":\"" << json_escape(jsonl_schema) << "\""
+        << ",\"version\":" << jsonl_version
+        << ",\"pid\":" << pid_u32()
+        << ",\"mode\":\"" << json_escape(run_mode()) << "\""
+        << ",\"tags\":\"" << json_escape(run_tags()) << "\""
+        << ",\"passed\":" << json_bool(passed)
+        << ",\"duration_ms\":" << dur_ms
+        << ",\"ts_unix_ms\":" << ended
+        << "}\n";
+}
+
 } // namespace
+
+bool jsonl_enabled()
+{
+    return is_jsonl();
+}
+
+void begin_run(std::string_view mode, std::string_view tags)
+{
+    internal_run_start(mode, tags);
+}
+
+void end_run(bool passed)
+{
+    internal_run_end(passed);
+}
 
 void print_test_cases(auto included)
 {
-    if(current_format() == output_format::jsonl)
+    if(is_jsonl())
     {
+        internal_print_meta_once();
         for(const auto& tc : test_cases)
         {
             if(!included(tc)) continue;
-            std::clog
+            json_os()
                 << "{\"type\":\"case\""
+                << ",\"id\":\"" << stable_test_id(tc) << "\""
                 << ",\"set\":\"" << json_escape(tc.test_set_name) << "\""
                 << ",\"name\":\"" << json_escape(tc.test_name) << "\""
                 << ",\"file\":\"" << json_escape(tc.file_name) << "\""
                 << ",\"line\":" << tc.line
                 << ",\"column\":" << tc.column
+                << ",\"ts_unix_ms\":" << now_unix_ms()
                 << "}\n";
         }
         return;
     }
 
-    std::clog << "Test cases:\n";
+    human_os() << "Test cases:\n";
     for(auto tc : test_cases)
         if(included(tc))
-            std::clog << color::text::yellow
-                      << tc.test_name
-                      << " (" << tc.file_name << " " << tc.line << ':' << tc.column << ")"
-                      << color::reset << std::endl;
+            human_os() << color::text::yellow
+                       << tc.test_name
+                       << " (" << tc.file_name << " " << tc.line << ':' << tc.column << ")"
+                       << color::reset << std::endl;
 }
 
 void print_test_results()
 {
-    if(current_format() == output_format::jsonl)
+    if(is_jsonl())
     {
-        const auto include_all_output = (getenv_sv("TESTER_JSONL_INCLUDE_OUTPUT") == "1");
+        const auto policy = jsonl_policy();
         for(const auto& result : test_results)
         {
-            const auto include_output = include_all_output || (not result.success);
-            std::clog
+            const auto include_output = (policy == jsonl_output_policy::always)
+                || (policy == jsonl_output_policy::failures && !result.success);
+
+            json_os()
                 << "{\"type\":\"test\""
+                << ",\"id\":\"" << stable_test_id(result) << "\""
                 << ",\"set\":\"" << json_escape(result.test_set_name) << "\""
                 << ",\"name\":\"" << json_escape(result.test_name) << "\""
                 << ",\"file\":\"" << json_escape(result.file_name) << "\""
@@ -202,23 +412,34 @@ void print_test_results()
                 << ",\"column\":" << result.column
                 << ",\"success\":" << json_bool(result.success)
                 << ",\"duration_ms\":" << as_ms(result.duration);
+            json_os()
+                << ",\"assertions_ok\":" << result.assertions_ok
+                << ",\"assertions_total\":" << result.assertions_total
+                << ",\"started_unix_ms\":" << result.started_unix_ms
+                << ",\"finished_unix_ms\":" << result.finished_unix_ms;
             if(include_output)
-                std::clog << ",\"output\":\"" << json_escape(strip_ansi(result.output)) << "\"";
-            std::clog << "}\n";
+            {
+                auto [out, truncated, original_bytes] = prepare_json_output(result.output);
+                json_os()
+                    << ",\"output\":\"" << json_escape(out) << "\""
+                    << ",\"output_truncated\":" << json_bool(truncated)
+                    << ",\"output_bytes\":" << original_bytes;
+            }
+            json_os() << ",\"ts_unix_ms\":" << now_unix_ms() << "}\n";
         }
         return;
     }
 
-    std::clog << color::text::yellow
-              << "Test results:"
-              << color::reset << '\n';
+    human_os() << color::text::yellow
+               << "Test results:"
+               << color::reset << '\n';
     for(auto result : test_results)
-        std::clog << result.output;
+        human_os() << result.output;
 }
 
 void print_test_failures()
 {
-    if(current_format() == output_format::jsonl)
+    if(is_jsonl())
         return;
 
     auto any_failures = false;
@@ -227,19 +448,19 @@ void print_test_failures()
 
     if(!any_failures)
     {
-        std::clog << color::text::green
-                  << "No test failures."
-                  << color::reset << '\n';
+        human_os() << color::text::green
+                   << "No test failures."
+                   << color::reset << '\n';
         return;
     }
 
-    std::clog << color::text::red
-              << "Test failures:"
-              << color::reset << '\n';
+    human_os() << color::text::red
+               << "Test failures:"
+               << color::reset << '\n';
 
     for(const auto& result : test_results)
         if(not result.success)
-            std::clog << result.output;
+            human_os() << result.output;
 }
 
 void print_test_statistics()
@@ -266,10 +487,14 @@ void print_test_statistics()
         if(slowest.size() > slow_n) slowest.resize(slow_n);
     }
 
-    if(current_format() == output_format::jsonl)
+    if(is_jsonl())
     {
-        std::clog
+        internal_print_meta_once();
+        json_os()
             << "{\"type\":\"summary\""
+            << ",\"schema\":\"" << json_escape(jsonl_schema) << "\""
+            << ",\"version\":" << jsonl_version
+            << ",\"pid\":" << pid_u32()
             << ",\"tests_ok\":" << statistics.successful_tests
             << ",\"tests_total\":" << statistics.total_tests
             << ",\"assertions_ok\":" << statistics.successful_assertions
@@ -278,23 +503,27 @@ void print_test_statistics()
 
         if(!slowest.empty())
         {
-            std::clog << ",\"slowest\":[";
+            json_os() << ",\"slowest\":[";
             for(std::size_t i = 0; i < slowest.size(); ++i)
             {
                 const auto& r = *slowest[i];
-                if(i) std::clog << ",";
-                std::clog
-                    << "{\"name\":\"" << json_escape(r.test_name) << "\""
+                if(i) json_os() << ",";
+                json_os()
+                    << "{\"id\":\"" << stable_test_id(r) << "\""
+                    << ",\"name\":\"" << json_escape(r.test_name) << "\""
+                    << ",\"file\":\"" << json_escape(r.file_name) << "\""
+                    << ",\"line\":" << r.line
+                    << ",\"column\":" << r.column
                     << ",\"duration_ms\":" << as_ms(r.duration)
                     << "}";
             }
-            std::clog << "]";
+            json_os() << "]";
         }
-        std::clog << "}\n";
+        json_os() << ",\"ts_unix_ms\":" << now_unix_ms() << "}\n";
 
         if(want_result_line())
         {
-            std::clog
+            result_os()
                 << "RESULT:"
                 << " tests_ok=" << statistics.successful_tests
                 << " tests_total=" << statistics.total_tests
@@ -303,27 +532,29 @@ void print_test_statistics()
                 << " passed=" << (passed ? "true" : "false")
                 << '\n';
         }
+
+        end_run(passed);
         return;
     }
 
-    std::clog << color::text::yellow
-              << "Test statistics:" << '\n'
-              << "tests:      " << statistics.successful_tests << "/" << statistics.total_tests
-              << " passed"
-              << " (" << std::fixed << std::setprecision(1) << pct(statistics.successful_tests, statistics.total_tests) << "%)"
-              << " | failed: " << failed_tests << '\n'
-              << "assertions: " << statistics.successful_assertions << "/" << statistics.total_assertions
-              << " passed"
-              << " (" << std::fixed << std::setprecision(1) << pct(statistics.successful_assertions, statistics.total_assertions) << "%)"
-              << " | failed: " << failed_assertions
-              << color::reset << std::endl;
+    human_os() << color::text::yellow
+               << "Test statistics:" << '\n'
+               << "tests:      " << statistics.successful_tests << "/" << statistics.total_tests
+               << " passed"
+               << " (" << std::fixed << std::setprecision(1) << pct(statistics.successful_tests, statistics.total_tests) << "%)"
+               << " | failed: " << failed_tests << '\n'
+               << "assertions: " << statistics.successful_assertions << "/" << statistics.total_assertions
+               << " passed"
+               << " (" << std::fixed << std::setprecision(1) << pct(statistics.successful_assertions, statistics.total_assertions) << "%)"
+               << " | failed: " << failed_assertions
+               << color::reset << std::endl;
 
     if(slow_n > 0)
     {
-        std::clog << color::text::yellow << "Slowest tests:" << color::reset << '\n';
+        human_os() << color::text::yellow << "Slowest tests:" << color::reset << '\n';
         for(const auto* r : slowest)
         {
-            std::clog
+            human_os()
                 << "  " << as_ms(r->duration) << "ms  "
                 << r->test_name
                 << " (" << r->file_name << " " << r->line << ":" << r->column << ")"
@@ -333,7 +564,7 @@ void print_test_statistics()
 
     if(want_result_line())
     {
-        std::clog
+        result_os()
             << "RESULT:"
             << " tests_ok=" << statistics.successful_tests
             << " tests_total=" << statistics.total_tests

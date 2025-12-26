@@ -141,6 +141,9 @@ auto run_test_cases(auto filter)
 
         auto tr = test_result{*tc};
         const auto started = std::chrono::steady_clock::now();
+        const auto started_sys = std::chrono::system_clock::now();
+        const auto assertions_total_before = statistics.total_assertions;
+        const auto assertions_ok_before = statistics.successful_assertions;
         try
         {
             ++statistics.total_tests;
@@ -180,7 +183,14 @@ auto run_test_cases(auto filter)
             output::exception(*tc,std::runtime_error{"Unknown exception"});
         }
         const auto finished = std::chrono::steady_clock::now();
+        const auto finished_sys = std::chrono::system_clock::now();
         tr.duration = std::chrono::duration_cast<std::chrono::nanoseconds>(finished - started);
+        tr.started_unix_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            started_sys.time_since_epoch()).count();
+        tr.finished_unix_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            finished_sys.time_since_epoch()).count();
+        tr.assertions_total = statistics.total_assertions - assertions_total_before;
+        tr.assertions_ok = statistics.successful_assertions - assertions_ok_before;
         // Erase the test case after execution. Note that if nested test cases were added
         // during tc->run(), they are already in test_cases and will be processed in
         // subsequent loop iterations. The test_case object itself is safe to erase here
