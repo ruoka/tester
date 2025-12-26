@@ -274,6 +274,24 @@ auto& run_started_unix_ms()
     return tp;
 }
 
+auto& run_started_monotonic()
+{
+    static auto tp = std::chrono::steady_clock::time_point{};
+    return tp;
+}
+
+auto& run_finished_monotonic()
+{
+    static auto tp = std::chrono::steady_clock::time_point{};
+    return tp;
+}
+
+auto& run_has_started()
+{
+    static auto started = false;
+    return started;
+}
+
 auto& run_mode()
 {
     static auto mode = std::string_view{};
@@ -284,6 +302,22 @@ auto& run_tags()
 {
     static auto tags = std::string_view{};
     return tags;
+}
+
+void record_run_start(std::string_view mode, std::string_view tags)
+{
+    run_has_started() = true;
+    run_started_unix_ms() = std::chrono::system_clock::now();
+    run_started_monotonic() = std::chrono::steady_clock::now();
+    run_finished_monotonic() = std::chrono::steady_clock::time_point{};
+    run_mode() = mode;
+    run_tags() = tags;
+}
+
+void record_run_end()
+{
+    if(run_has_started())
+        run_finished_monotonic() = std::chrono::steady_clock::now();
 }
 
 void internal_print_meta_once()
@@ -304,13 +338,10 @@ void internal_print_meta_once()
 
 void internal_run_start(std::string_view mode, std::string_view tags)
 {
-    if(!is_jsonl())
-        return;
+    record_run_start(mode, tags);
+    if(!is_jsonl()) return;
 
     internal_print_meta_once();
-    run_started_unix_ms() = std::chrono::system_clock::now();
-    run_mode() = mode;
-    run_tags() = tags;
 
     json_os()
         << "{\"type\":\"run_start\""
@@ -325,8 +356,8 @@ void internal_run_start(std::string_view mode, std::string_view tags)
 
 void internal_run_end(bool passed)
 {
-    if(!is_jsonl())
-        return;
+    record_run_end();
+    if(!is_jsonl()) return;
 
     const auto ended_at = std::chrono::system_clock::now();
     const auto ended = unix_timestamp(ended_at);
@@ -478,6 +509,9 @@ void print_test_statistics()
 
     const auto passed = (failed_tests == 0 && failed_assertions == 0);
 
+    // Record run end (for duration reporting). In JSONL mode this will also emit run_end later.
+    end_run(passed);
+
     const auto slow_n = slowest_count();
     auto slowest = std::vector<const test_result*>{};
     if(slow_n > 0)
@@ -551,6 +585,22 @@ void print_test_statistics()
                << " (" << std::fixed << std::setprecision(1) << pct(statistics.successful_assertions, statistics.total_assertions) << "%)"
                << " | failed: " << failed_assertions
                << color::reset << std::endl;
+
+    if(run_has_started() && run_finished_monotonic() != std::chrono::steady_clock::time_point{})
+    {
+        const auto dur = std::chrono::duration_cast<std::chrono::milliseconds>(
+            run_finished_monotonic() - run_started_monotonic());
+        human_os() << color::text::yellow
+                   << "duration:  " << dur.count() << "ms"
+                   << color::reset << '\n';
+    }
+
+    if(!run_tags().empty())
+    {
+        human_os() << color::text::yellow
+                   << "filter:    " << run_tags()
+                   << color::reset << '\n';
+    }
 
     if(slow_n > 0)
     {

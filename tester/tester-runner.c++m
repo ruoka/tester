@@ -55,8 +55,7 @@ public:
 
     auto run_tests()
     {
-        if(output::jsonl_enabled())
-            output::begin_run("run", m_tags);
+        output::begin_run("run", m_tags);
 
         engine::run_test_cases([this](const auto& tc){return this->excluded(tc);});
     }
