@@ -819,8 +819,9 @@ private:
         return true;
     }
 
-    void execute_system_command(std::string_view cmd) const {
-        auto cmd_str = std::string(cmd);
+    void execute_system_command(std::string_view cmd) const
+    {
+        auto cmd_str = std::string{cmd};
         log::command(cmd_str);
         auto r = system(cmd_str.c_str());
         if (r && json_diagnostics_format_enabled && cmd_str.find(json_diagnostics_flag) != std::string::npos) {
