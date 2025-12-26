@@ -185,10 +185,8 @@ auto run_test_cases(auto filter)
         const auto finished = std::chrono::steady_clock::now();
         const auto finished_sys = std::chrono::system_clock::now();
         tr.duration = std::chrono::duration_cast<std::chrono::nanoseconds>(finished - started);
-        tr.started_unix_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            started_sys.time_since_epoch()).count();
-        tr.finished_unix_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            finished_sys.time_since_epoch()).count();
+        tr.started_at = started_sys;
+        tr.finished_at = finished_sys;
         tr.assertions_total = statistics.total_assertions - assertions_total_before;
         tr.assertions_ok = statistics.successful_assertions - assertions_ok_before;
         // Erase the test case after execution. Note that if nested test cases were added
