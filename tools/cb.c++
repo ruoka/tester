@@ -514,7 +514,7 @@ private:
     std::string extra_compile_flags;
     std::string extra_link_flags;
     mutable bool json_diagnostics_format_enabled = false;
-    static constexpr auto json_diagnostics_flag = std::string_view{"-fdiagnostics-format=json "};
+    static const inline auto json_diagnostics_flag = "-fdiagnostics-format=json "s;
 
     // ============================================================================
     // Initialization and Setup
@@ -805,9 +805,10 @@ private:
     // General Utilities
     // ============================================================================
 
-    auto diagnostics_format_flag() const -> std::string_view
+    auto diagnostics_format_flag() const -> const std::string&
     {
-        return json_diagnostics_format_enabled ? json_diagnostics_flag : std::string_view{};
+        static const auto empty = std::string{};
+        return json_diagnostics_format_enabled ? json_diagnostics_flag : empty;
     }
 
     static auto erase_once(std::string& s, std::string_view needle) -> bool
@@ -1096,7 +1097,7 @@ private:
             fs::last_write_time(std_pcm) >= fs::last_write_time(std_module_source))
             return;
 
-        auto cmd = llvm_cxx + " " + compile_flags + " " + std::string(diagnostics_format_flag()) + " " + cpp_flags +
+        auto cmd = llvm_cxx + " " + compile_flags + diagnostics_format_flag() + cpp_flags +
                    " -nostdinc++ -isystem " + llvm_prefix + "/include/c++/v1 "
                    " -Wno-unused-command-line-argument -fno-implicit-modules "
                    " -fno-implicit-module-maps -Wno-reserved-module-identifier "
@@ -1126,7 +1127,7 @@ private:
         std_obj_flags += "-fno-implicit-modules -fno-implicit-module-maps ";
         std_obj_flags += "-fmodule-file=std=" + std_pcm + " ";
         
-        auto cmd = llvm_cxx + " " + std_obj_flags + std::string(diagnostics_format_flag()) + std_pcm + " -c -o " + std_obj;
+        auto cmd = llvm_cxx + " " + std_obj_flags + diagnostics_format_flag() + std_pcm + " -c -o " + std_obj;
         execute_system_command(cmd);
     }
 
@@ -1138,10 +1139,10 @@ private:
         if (tu.is_modular) {
             // Regular module interface/partition - create PCM file
             execute_system_command(
-                llvm_cxx + " " + compile_flags + " " + std::string(diagnostics_format_flag()) + " " + cpp_flags + " " + module_flags + " " + tu.full_path + " --precompile -o " + tu.pcm_path
+                llvm_cxx + " " + compile_flags + diagnostics_format_flag() + cpp_flags + " " + module_flags + " " + tu.full_path + " --precompile -o " + tu.pcm_path
             );
             execute_system_command(
-                llvm_cxx + " " + compile_flags + " " + std::string(diagnostics_format_flag()) + " " + module_flags + " " + tu.pcm_path + " -c -o " + tu.object_path
+                llvm_cxx + " " + compile_flags + diagnostics_format_flag() + module_flags + " " + tu.pcm_path + " -c -o " + tu.object_path
             );
         } else {
             auto extra = ""s;
@@ -1152,7 +1153,7 @@ private:
             }
 
             execute_system_command(
-                llvm_cxx + " " + compile_flags + " " + std::string(diagnostics_format_flag()) + " " + cpp_flags + " " + module_flags + " " + extra + tu.full_path + " -c -o " + tu.object_path
+                llvm_cxx + " " + compile_flags + diagnostics_format_flag() + cpp_flags + " " + module_flags + " " + extra + tu.full_path + " -c -o " + tu.object_path
             );
         }
     }
