@@ -1379,16 +1379,38 @@ public:
     }
 
     void build() {
+        const auto build_started = std::chrono::steady_clock::now();
+        cb::jsonl::current_phase = cb::jsonl::phase::build;
+        cb::jsonl::phase_started = build_started;
+        cb::jsonl::build_end_emitted = false;
+
+        if (cb::jsonl::enabled) {
+            cb::jsonl::emit_event("build_start", [&](std::string& line){
+                cb::jsonl::emit_kv_str(line, "config", config_name(config));
+                cb::jsonl::emit_kv_bool(line, "include_tests", false);
+                cb::jsonl::emit_kv_bool(line, "include_examples", include_examples);
+            });
+        }
+
         // Ensure build directories exist (they may have been removed by clean())
         fs::create_directories(module_cache_dir());
         fs::create_directories(object_dir());
         fs::create_directories(binary_dir());
         fs::create_directories(cache_dir());
-        
+
         build_std_pcm();
         build_std_o();
         scan_and_order();
         if (units_in_topological_order.empty()) {
+            if (cb::jsonl::enabled) {
+                cb::jsonl::emit_event("build_end", [&](std::string& line){
+                    cb::jsonl::emit_kv_bool(line, "ok", false);
+                    cb::jsonl::emit_kv_int(line, "duration_ms",
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - build_started).count());
+                });
+                cb::jsonl::build_end_emitted = true;
+            }
             log::error("No sources found");
             std::exit(1);
         }
@@ -1396,6 +1418,18 @@ public:
         update_module_flags();
         compile_units();
         link_executables();
+
+        if (cb::jsonl::enabled) {
+            cb::jsonl::emit_event("build_end", [&](std::string& line){
+                cb::jsonl::emit_kv_bool(line, "ok", true);
+                cb::jsonl::emit_kv_int(line, "duration_ms",
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - build_started).count());
+            });
+            cb::jsonl::build_end_emitted = true;
+            cb::jsonl::current_phase = cb::jsonl::phase::none;
+        }
+
         log::success("Build completed: "s + build_root());
     }
 
@@ -1551,6 +1585,10 @@ try {
 
     for (int i = arg_index; i < argc; ++i) {
         auto argument = std::string_view{argv[i]};
+        if (argument == "--output=jsonl" || argument == "--output=JSONL") {
+            cb::jsonl::enabled = true;
+            continue;
+        }
         if (argument == "--") {
             // Everything after "--" is passed to test_runner (only meaningful with "test").
             for (int j = i + 1; j < argc; ++j)
@@ -1644,10 +1682,13 @@ try {
         }
     }
 
-    // If we are going to run tests in JSONL mode, keep stdout machine-parseable by moving
-    // all CB logs (including clean/build) to stderr.
-    cb::log::use_stderr = machine_output;
-    cb::jsonl::enabled = machine_output;
+    // If we are going to run tests in JSONL mode, or build in JSONL mode,
+    // keep stdout machine-parseable by moving all CB logs (including clean/build) to stderr.
+    cb::log::use_stderr = machine_output || cb::jsonl::enabled;
+    // For tests, JSONL is controlled by machine_output. For builds, it's already set.
+    if (!cb::jsonl::enabled) {
+        cb::jsonl::enabled = machine_output;
+    }
     cb::jsonl::meta_printed = false;
     cb::jsonl::eof_emitted = false;
     if (machine_output)
@@ -1673,6 +1714,23 @@ try {
         auto args = std::vector<std::string>{};
         if (!test_filter.empty())
             args.emplace_back(test_filter);
+
+        // If CB is in JSONL mode, automatically enable JSONL for test_runner
+        // unless the user explicitly specified a different output format
+        bool has_output_flag = false;
+        for (const auto& arg : test_runner_args) {
+            if (arg.starts_with("--output=")) {
+                has_output_flag = true;
+                break;
+            }
+        }
+        if (cb::jsonl::enabled && !has_output_flag) {
+            args.emplace_back("--output=jsonl");
+        } else if (cb::jsonl::enabled && has_output_flag) {
+            // User specified custom output format, respect it
+            // Don't add --output=jsonl
+        }
+
         for (auto& a : test_runner_args)
             args.emplace_back(a);
 
