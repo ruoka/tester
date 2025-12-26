@@ -78,6 +78,11 @@ public:
         output::set_jsonl_output_max_bytes(n);
     }
 
+    void set_schema(std::string_view schema)
+    {
+        output::set_schema(schema);
+    }
+
     auto run_tests()
     {
         output::begin_run("run", m_tags);

@@ -12,15 +12,20 @@ import std;
 import tester;
 
 static volatile sig_atomic_t g_jsonl_enabled = 0;
+using namespace std::literals;
+static constexpr auto g_default_schema = "tester-jsonl"sv;
+static auto g_schema_buf = std::array<char, 64>{};
+static auto g_schema_len = std::size_t{0};
 
 constexpr auto usage =
 R"(test_runner [--help] [--list] [--tags=<tag>] [--output=<human|jsonl>] [--slowest=<N>]
             [--jsonl-output=<never|failures|always>] [--jsonl-output-max-bytes=<N>] [--result]
+            [--schema=<name>]
             [<tags>]
 Examples:
   test_runner
   test_runner --list
-  test_runner --output=jsonl --jsonl-output=failures --slowest=10
+  test_runner --output=jsonl --schema=ydb-cb-tester-jsonl --jsonl-output=failures --slowest=10
   test_runner --tags=scenario("My test")
   test_runner --tags=[acceptor]
   test_runner --tags="scenario.*Happy"
@@ -43,6 +48,11 @@ static auto parse_usize(std::string_view sv) -> std::optional<std::size_t>
 
 int main(int argc, char** argv)
 {
+    // Initialize schema used by crash handler (kept in a fixed buffer so the handler stays async-signal-safe).
+    g_schema_len = std::min(g_default_schema.size(), g_schema_buf.size() - 1);
+    std::copy_n(g_default_schema.begin(), g_schema_len, g_schema_buf.begin());
+    g_schema_buf[g_schema_len] = '\0';
+
     auto crash_handler = [](int signal)
     {
         if(g_jsonl_enabled)
@@ -67,7 +77,10 @@ int main(int argc, char** argv)
                     buf[n++] = tmp[m];
             };
 
-            append_cstr("{\"type\":\"crash\",\"schema\":\"tester-jsonl\",\"version\":1,\"pid\":");
+            append_cstr("{\"type\":\"crash\",\"schema\":\"");
+            for(std::size_t i = 0; i < g_schema_len && n < static_cast<int>(sizeof(buf)); ++i)
+                buf[n++] = g_schema_buf[i];
+            append_cstr("\",\"version\":1,\"pid\":");
             append_u(static_cast<unsigned>(::getpid()));
             append_cstr(",\"signal\":");
             append_u(static_cast<unsigned>(signal));
@@ -92,6 +105,7 @@ int main(int argc, char** argv)
     auto list_only = false;
     auto tags = std::string_view{};
     auto output = std::string_view{"human"};
+    auto schema = std::string_view{"tester-jsonl"};
     auto result_line = false;
     auto slowest = std::size_t{0};
     auto jsonl_output = std::string_view{"failures"};
@@ -120,6 +134,12 @@ int main(int argc, char** argv)
         if(option.starts_with("--output="))
         {
             output = option.substr(std::string_view{"--output="}.size());
+            continue;
+        }
+
+        if(option.starts_with("--schema="))
+        {
+            schema = option.substr(std::string_view{"--schema="}.size());
             continue;
         }
 
@@ -163,12 +183,35 @@ int main(int argc, char** argv)
     {
         auto tr = tester::runner{tags};
         tr.set_output_format(output);
+        tr.set_schema(schema);
         tr.set_result_line(result_line);
         tr.set_slowest(slowest);
         tr.set_jsonl_output(jsonl_output);
         tr.set_jsonl_output_max_bytes(jsonl_output_max_bytes);
 
         g_jsonl_enabled = (output == "jsonl" || output == "JSONL");
+        if(!schema.empty())
+        {
+            // Keep crash handler simple: accept only safe schema characters and cap length.
+            auto ok = true;
+            for(const char ch : schema)
+            {
+                const auto safe =
+                    (ch >= 'a' && ch <= 'z') ||
+                    (ch >= 'A' && ch <= 'Z') ||
+                    (ch >= '0' && ch <= '9') ||
+                    ch == '-' || ch == '_' || ch == '.' || ch == ':';
+                if(!safe) { ok = false; break; }
+            }
+            if(!ok)
+            {
+                std::clog << "Invalid --schema (allowed: [A-Za-z0-9._:-])" << std::endl;
+                return 1;
+            }
+            g_schema_len = std::min(schema.size(), g_schema_buf.size() - 1);
+            std::copy_n(schema.begin(), g_schema_len, g_schema_buf.begin());
+            g_schema_buf[g_schema_len] = '\0';
+        }
 
         if(list_only)
         {

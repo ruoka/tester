@@ -51,7 +51,6 @@ using namespace data;
 
 namespace {
 
-constexpr auto jsonl_schema = std::string_view{"tester-jsonl"};
 constexpr auto jsonl_version = 1;
 
 enum class output_format { human, jsonl };
@@ -64,6 +63,7 @@ struct output_config
     std::size_t slowest = 0;
     jsonl_output_policy jsonl_output = jsonl_output_policy::failures;
     std::size_t jsonl_output_max_bytes = 16384;
+    std::string schema = "tester-jsonl";
 };
 
 auto& cfg()
@@ -81,6 +81,11 @@ auto unix_timestamp(std::chrono::system_clock::time_point tp)
 auto pid_u32()
 {
     return static_cast<std::uint32_t>(::getpid());
+}
+
+auto schema_name() -> std::string_view
+{
+    return cfg().schema;
 }
 
 auto current_format()
@@ -315,7 +320,7 @@ void internal_print_meta_once()
 
     json_os()
         << "{\"type\":\"meta\""
-        << ",\"schema\":\"" << json_escape(jsonl_schema) << "\""
+        << ",\"schema\":\"" << json_escape(schema_name()) << "\""
         << ",\"version\":" << jsonl_version
         << ",\"pid\":" << pid_u32()
         << ",\"ts_unix_ms\":" << unix_timestamp(std::chrono::system_clock::now())
@@ -331,7 +336,7 @@ void internal_run_start(std::string_view mode, std::string_view tags)
 
     json_os()
         << "{\"type\":\"run_start\""
-        << ",\"schema\":\"" << json_escape(jsonl_schema) << "\""
+        << ",\"schema\":\"" << json_escape(schema_name()) << "\""
         << ",\"version\":" << jsonl_version
         << ",\"pid\":" << pid_u32()
         << ",\"mode\":\"" << json_escape(mode) << "\""
@@ -361,7 +366,7 @@ void internal_run_end(bool passed)
 
     json_os()
         << "{\"type\":\"run_end\""
-        << ",\"schema\":\"" << json_escape(jsonl_schema) << "\""
+        << ",\"schema\":\"" << json_escape(schema_name()) << "\""
         << ",\"version\":" << jsonl_version
         << ",\"pid\":" << pid_u32()
         << ",\"mode\":\"" << json_escape(run_mode()) << "\""
@@ -407,6 +412,11 @@ export void set_jsonl_output(std::string_view policy)
 export void set_jsonl_output_max_bytes(std::size_t n)
 {
     cfg().jsonl_output_max_bytes = n;
+}
+
+export void set_schema(std::string_view schema)
+{
+    cfg().schema.assign(schema.begin(), schema.end());
 }
 
 void begin_run(std::string_view mode, std::string_view tags)
@@ -550,7 +560,7 @@ void print_test_statistics()
         internal_print_meta_once();
         json_os()
             << "{\"type\":\"summary\""
-            << ",\"schema\":\"" << json_escape(jsonl_schema) << "\""
+            << ",\"schema\":\"" << json_escape(schema_name()) << "\""
             << ",\"version\":" << jsonl_version
             << ",\"pid\":" << pid_u32()
             << ",\"tests_ok\":" << statistics.successful_tests
@@ -608,7 +618,7 @@ void print_test_statistics()
 
             json_os()
                 << "{\"type\":\"run_end\""
-                << ",\"schema\":\"" << json_escape(jsonl_schema) << "\""
+                << ",\"schema\":\"" << json_escape(schema_name()) << "\""
                 << ",\"version\":" << jsonl_version
                 << ",\"pid\":" << pid_u32()
                 << ",\"mode\":\"" << json_escape(run_mode()) << "\""
