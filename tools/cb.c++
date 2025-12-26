@@ -811,7 +811,7 @@ private:
         return json_diagnostics_format_enabled ? json_diagnostics_flag : empty;
     }
 
-    static auto erase_once(std::string& s, std::string_view needle) -> bool
+    static bool erase_once(std::string& s, std::string_view needle)
     {
         const auto pos = s.find(needle);
         if (pos == std::string::npos) return false;
