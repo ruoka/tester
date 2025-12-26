@@ -52,26 +52,26 @@ namespace {
 
 enum class output_format { human, jsonl };
 
-auto getenv_sv(const char* name) -> std::string_view
+auto getenv_sv(const char* name)
 {
     if(const char* v = std::getenv(name))
         return std::string_view{v};
-    return {};
+    return std::string_view{};
 }
 
-auto parse_usize(std::string_view sv) -> std::optional<std::size_t>
+auto parse_usize(std::string_view sv)
 {
-    if(sv.empty()) return std::nullopt;
+    if(sv.empty()) return std::optional<std::size_t>{};
     std::size_t value = 0;
     for(const char ch : sv)
     {
-        if(ch < '0' || ch > '9') return std::nullopt;
+        if(ch < '0' || ch > '9') return std::optional<std::size_t>{};
         value = value * 10u + static_cast<std::size_t>(ch - '0');
     }
-    return value;
+    return std::optional<std::size_t>{value};
 }
 
-auto current_format() -> output_format
+auto current_format()
 {
     static const auto fmt = []{
         auto v = getenv_sv("TESTER_OUTPUT");
@@ -81,19 +81,19 @@ auto current_format() -> output_format
     return fmt;
 }
 
-auto want_result_line() -> bool
+auto want_result_line()
 {
     return current_format() == output_format::jsonl || getenv_sv("TESTER_RESULT") == "1";
 }
 
-auto slowest_count() -> std::size_t
+auto slowest_count()
 {
     if(const auto n = parse_usize(getenv_sv("TESTER_SLOWEST")))
         return *n;
-    return 0;
+    return std::size_t{0};
 }
 
-auto json_escape(std::string_view sv) -> std::string
+auto json_escape(std::string_view sv)
 {
     auto out = std::string{};
     out.reserve(sv.size() + 16);
@@ -118,14 +118,14 @@ auto json_escape(std::string_view sv) -> std::string
     return out;
 }
 
-auto json_bool(bool b) -> std::string_view { return b ? "true" : "false"; }
+auto json_bool(bool b) { return b ? std::string_view{"true"} : std::string_view{"false"}; }
 
-auto as_ms(std::chrono::nanoseconds ns) -> std::int64_t
+auto as_ms(std::chrono::nanoseconds ns)
 {
     return std::chrono::duration_cast<std::chrono::milliseconds>(ns).count();
 }
 
-auto strip_ansi(std::string_view sv) -> std::string
+auto strip_ansi(std::string_view sv)
 {
     // Strip common ANSI escape sequences so JSONL output stays clean.
     // This is a best-effort filter for sequences like: ESC [ ... letter
