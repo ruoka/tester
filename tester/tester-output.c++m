@@ -120,10 +120,57 @@ auto json_escape(std::string_view sv) -> std::string
 
 auto json_bool(bool b) -> std::string_view { return b ? "true" : "false"; }
 
+auto strip_ansi(std::string_view sv) -> std::string
+{
+    // Strip common ANSI escape sequences so JSONL output stays clean.
+    // This is a best-effort filter for sequences like: ESC [ ... letter
+    auto out = std::string{};
+    out.reserve(sv.size());
+
+    for(std::size_t i = 0; i < sv.size(); )
+    {
+        const unsigned char ch = static_cast<unsigned char>(sv[i]);
+        if(ch == 0x1B && (i + 1) < sv.size() && sv[i + 1] == '[') // ESC [
+        {
+            i += 2;
+            while(i < sv.size())
+            {
+                const unsigned char c = static_cast<unsigned char>(sv[i]);
+                // CSI final byte is in the range 0x40..0x7E.
+                if(c >= 0x40 && c <= 0x7E) { ++i; break; }
+                ++i;
+            }
+            continue;
+        }
+
+        out.push_back(static_cast<char>(ch));
+        ++i;
+    }
+
+    return out;
+}
+
 } // namespace
 
 void print_test_cases(auto included)
 {
+    if(current_format() == output_format::jsonl)
+    {
+        for(const auto& tc : test_cases)
+        {
+            if(!included(tc)) continue;
+            std::clog
+                << "{\"type\":\"case\""
+                << ",\"set\":\"" << json_escape(tc.test_set_name) << "\""
+                << ",\"name\":\"" << json_escape(tc.test_name) << "\""
+                << ",\"file\":\"" << json_escape(tc.file_name) << "\""
+                << ",\"line\":" << tc.line
+                << ",\"column\":" << tc.column
+                << "}\n";
+        }
+        return;
+    }
+
     std::clog << "Test cases:\n";
     for(auto tc : test_cases)
         if(included(tc))
@@ -151,7 +198,7 @@ void print_test_results()
                 << ",\"success\":" << json_bool(result.success)
                 << ",\"duration_ms\":" << result.duration_ms;
             if(include_output)
-                std::clog << ",\"output\":\"" << json_escape(result.output) << "\"";
+                std::clog << ",\"output\":\"" << json_escape(strip_ansi(result.output)) << "\"";
             std::clog << "}\n";
         }
         return;

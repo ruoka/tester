@@ -26,6 +26,12 @@ Examples:
 
 int main(int argc, char** argv)
 {
+    const auto want_jsonl = []{
+        if(const char* v = std::getenv("TESTER_OUTPUT"))
+            return std::string_view{v} == "jsonl" || std::string_view{v} == "JSONL";
+        return false;
+    }();
+
     auto crash_handler = [](int signal)
     {
         void* frames[64];
@@ -82,7 +88,9 @@ int main(int argc, char** argv)
             return 0;
         }
 
-        tr.print_test_cases();
+        // In JSONL mode, keep output machine-parseable: don't emit the human test list.
+        if(!want_jsonl)
+            tr.print_test_cases();
         tr.run_tests();
         tr.print_test_results();
         tr.print_test_failures();
