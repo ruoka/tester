@@ -120,6 +120,11 @@ auto json_escape(std::string_view sv) -> std::string
 
 auto json_bool(bool b) -> std::string_view { return b ? "true" : "false"; }
 
+auto as_ms(std::chrono::nanoseconds ns) -> std::int64_t
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(ns).count();
+}
+
 auto strip_ansi(std::string_view sv) -> std::string
 {
     // Strip common ANSI escape sequences so JSONL output stays clean.
@@ -196,7 +201,7 @@ void print_test_results()
                 << ",\"line\":" << result.line
                 << ",\"column\":" << result.column
                 << ",\"success\":" << json_bool(result.success)
-                << ",\"duration_ms\":" << result.duration_ms;
+                << ",\"duration_ms\":" << as_ms(result.duration);
             if(include_output)
                 std::clog << ",\"output\":\"" << json_escape(strip_ansi(result.output)) << "\"";
             std::clog << "}\n";
@@ -256,7 +261,7 @@ void print_test_statistics()
         slowest.reserve(test_results.size());
         for(const auto& r : test_results) slowest.push_back(&r);
         std::ranges::sort(slowest, [](const test_result* a, const test_result* b) {
-            return a->duration_ms > b->duration_ms;
+            return a->duration > b->duration;
         });
         if(slowest.size() > slow_n) slowest.resize(slow_n);
     }
@@ -280,7 +285,7 @@ void print_test_statistics()
                 if(i) std::clog << ",";
                 std::clog
                     << "{\"name\":\"" << json_escape(r.test_name) << "\""
-                    << ",\"duration_ms\":" << r.duration_ms
+                    << ",\"duration_ms\":" << as_ms(r.duration)
                     << "}";
             }
             std::clog << "]";
@@ -319,7 +324,7 @@ void print_test_statistics()
         for(const auto* r : slowest)
         {
             std::clog
-                << "  " << r->duration_ms << "ms  "
+                << "  " << as_ms(r->duration) << "ms  "
                 << r->test_name
                 << " (" << r->file_name << " " << r->line << ":" << r->column << ")"
                 << '\n';

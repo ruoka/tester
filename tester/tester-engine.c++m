@@ -180,8 +180,7 @@ auto run_test_cases(auto filter)
             output::exception(*tc,std::runtime_error{"Unknown exception"});
         }
         const auto finished = std::chrono::steady_clock::now();
-        tr.duration_ms = static_cast<std::uint64_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(finished - started).count());
+        tr.duration = std::chrono::duration_cast<std::chrono::nanoseconds>(finished - started);
         // Erase the test case after execution. Note that if nested test cases were added
         // during tc->run(), they are already in test_cases and will be processed in
         // subsequent loop iterations. The test_case object itself is safe to erase here
