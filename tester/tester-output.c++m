@@ -57,23 +57,19 @@ constexpr auto jsonl_version = 1;
 enum class output_format { human, jsonl };
 enum class jsonl_output_policy { never, failures, always };
 
-auto getenv_sv(const char* name)
+struct output_config
 {
-    if(const char* v = std::getenv(name))
-        return std::string_view{v};
-    return std::string_view{};
-}
+    output_format format = output_format::human;
+    bool human_result_line = false;
+    std::size_t slowest = 0;
+    jsonl_output_policy jsonl_output = jsonl_output_policy::failures;
+    std::size_t jsonl_output_max_bytes = 16384;
+};
 
-auto parse_usize(std::string_view sv)
+auto& cfg()
 {
-    if(sv.empty()) return std::optional<std::size_t>{};
-    std::size_t value = 0;
-    for(const char ch : sv)
-    {
-        if(ch < '0' || ch > '9') return std::optional<std::size_t>{};
-        value = value * 10u + static_cast<std::size_t>(ch - '0');
-    }
-    return std::optional<std::size_t>{value};
+    static auto config = output_config{};
+    return config;
 }
 
 auto unix_timestamp(std::chrono::system_clock::time_point tp)
@@ -89,12 +85,7 @@ auto pid_u32()
 
 auto current_format()
 {
-    static const auto fmt = []{
-        auto v = getenv_sv("TESTER_OUTPUT");
-        if(v == "jsonl" || v == "JSONL") return output_format::jsonl;
-        return output_format::human;
-    }();
-    return fmt;
+    return cfg().format;
 }
 
 auto is_jsonl()
@@ -105,41 +96,22 @@ auto is_jsonl()
 auto want_result_line()
 {
     // Keep stdout JSONL pure: in JSONL mode, print RESULT to stderr only.
-    return is_jsonl() || getenv_sv("TESTER_RESULT") == "1";
+    return is_jsonl() || cfg().human_result_line;
 }
 
 auto slowest_count()
 {
-    if(const auto n = parse_usize(getenv_sv("TESTER_SLOWEST")))
-        return *n;
-    return std::size_t{0};
+    return cfg().slowest;
 }
 
 auto jsonl_policy()
 {
-    static const auto policy = []{
-        auto v = getenv_sv("TESTER_JSONL_OUTPUT");
-        if(v == "never") return jsonl_output_policy::never;
-        if(v == "always") return jsonl_output_policy::always;
-        if(v == "failures" || v.empty()) return jsonl_output_policy::failures;
-
-        // Backward compat
-        if(getenv_sv("TESTER_JSONL_INCLUDE_OUTPUT") == "1")
-            return jsonl_output_policy::always;
-
-        return jsonl_output_policy::failures;
-    }();
-    return policy;
+    return cfg().jsonl_output;
 }
 
 auto jsonl_output_max_bytes()
 {
-    static const auto max_bytes = []{
-        if(const auto n = parse_usize(getenv_sv("TESTER_JSONL_OUTPUT_MAX_BYTES")))
-            return *n;
-        return std::size_t{16384};
-    }();
-    return max_bytes;
+    return cfg().jsonl_output_max_bytes;
 }
 
 auto json_escape(std::string_view sv)
@@ -304,6 +276,18 @@ auto& run_tags()
     return tags;
 }
 
+auto& pending_run_end_passed()
+{
+    static auto pending = std::optional<bool>{};
+    return pending;
+}
+
+auto& run_end_emitted()
+{
+    static auto emitted = false;
+    return emitted;
+}
+
 void record_run_start(std::string_view mode, std::string_view tags)
 {
     run_has_started() = true;
@@ -312,6 +296,8 @@ void record_run_start(std::string_view mode, std::string_view tags)
     run_finished_monotonic() = std::chrono::steady_clock::time_point{};
     run_mode() = mode;
     run_tags() = tags;
+    pending_run_end_passed() = std::nullopt;
+    run_end_emitted() = false;
 }
 
 void record_run_end()
@@ -359,6 +345,14 @@ void internal_run_end(bool passed)
     record_run_end();
     if(!is_jsonl()) return;
 
+    // In "run" mode, we defer emitting run_end until after the summary so the JSONL stream
+    // ends in a predictable order. For other modes (e.g. "list"), emit immediately.
+    if(run_mode() == "run")
+    {
+        pending_run_end_passed() = passed;
+        return;
+    }
+
     const auto ended_at = std::chrono::system_clock::now();
     const auto ended = unix_timestamp(ended_at);
     const auto dur_ms = (run_started_unix_ms() != std::chrono::system_clock::time_point{})
@@ -376,6 +370,8 @@ void internal_run_end(bool passed)
         << ",\"duration_ms\":" << dur_ms
         << ",\"ts_unix_ms\":" << ended
         << "}\n";
+
+    run_end_emitted() = true;
 }
 
 } // namespace
@@ -383,6 +379,34 @@ void internal_run_end(bool passed)
 bool jsonl_enabled()
 {
     return is_jsonl();
+}
+
+export void set_output_format(std::string_view fmt)
+{
+    if(fmt == "jsonl" || fmt == "JSONL") cfg().format = output_format::jsonl;
+    else cfg().format = output_format::human;
+}
+
+export void set_human_result_line(bool enabled)
+{
+    cfg().human_result_line = enabled;
+}
+
+export void set_slowest(std::size_t n)
+{
+    cfg().slowest = n;
+}
+
+export void set_jsonl_output(std::string_view policy)
+{
+    if(policy == "never") cfg().jsonl_output = jsonl_output_policy::never;
+    else if(policy == "always") cfg().jsonl_output = jsonl_output_policy::always;
+    else cfg().jsonl_output = jsonl_output_policy::failures;
+}
+
+export void set_jsonl_output_max_bytes(std::size_t n)
+{
+    cfg().jsonl_output_max_bytes = n;
 }
 
 void begin_run(std::string_view mode, std::string_view tags)
@@ -509,9 +533,6 @@ void print_test_statistics()
 
     const auto passed = (failed_tests == 0 && failed_assertions == 0);
 
-    // Record run end (for duration reporting). In JSONL mode this will also emit run_end later.
-    end_run(passed);
-
     const auto slow_n = slowest_count();
     auto slowest = std::vector<const test_result*>{};
     if(slow_n > 0)
@@ -570,7 +591,35 @@ void print_test_statistics()
                 << '\n';
         }
 
-        end_run(passed);
+        // Emit deferred run_end exactly once, after summary.
+        if(!pending_run_end_passed().has_value())
+            pending_run_end_passed() = passed;
+
+        if(!run_end_emitted() && pending_run_end_passed().has_value())
+        {
+            const auto passed_value = *pending_run_end_passed();
+            pending_run_end_passed() = std::nullopt;
+
+            const auto ended_at = std::chrono::system_clock::now();
+            const auto ended = unix_timestamp(ended_at);
+            const auto dur_ms = (run_started_unix_ms() != std::chrono::system_clock::time_point{})
+                ? std::chrono::duration_cast<std::chrono::milliseconds>(ended_at - run_started_unix_ms()).count()
+                : 0;
+
+            json_os()
+                << "{\"type\":\"run_end\""
+                << ",\"schema\":\"" << json_escape(jsonl_schema) << "\""
+                << ",\"version\":" << jsonl_version
+                << ",\"pid\":" << pid_u32()
+                << ",\"mode\":\"" << json_escape(run_mode()) << "\""
+                << ",\"tags\":\"" << json_escape(run_tags()) << "\""
+                << ",\"passed\":" << json_bool(passed_value)
+                << ",\"duration_ms\":" << dur_ms
+                << ",\"ts_unix_ms\":" << ended
+                << "}\n";
+
+            run_end_emitted() = true;
+        }
         return;
     }
 
@@ -585,6 +634,9 @@ void print_test_statistics()
                << " (" << std::fixed << std::setprecision(1) << pct(statistics.successful_assertions, statistics.total_assertions) << "%)"
                << " | failed: " << failed_assertions
                << color::reset << std::endl;
+
+    // Record run end (for duration reporting in human output).
+    record_run_end();
 
     if(run_has_started() && run_finished_monotonic() != std::chrono::steady_clock::time_point{})
     {

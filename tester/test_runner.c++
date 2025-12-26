@@ -14,10 +14,13 @@ import tester;
 static volatile sig_atomic_t g_jsonl_enabled = 0;
 
 constexpr auto usage =
-R"(test_runner [--help] [--list] [--tags=<tag>] [<tags>]
+R"(test_runner [--help] [--list] [--tags=<tag>] [--output=<human|jsonl>] [--slowest=<N>]
+            [--jsonl-output=<never|failures|always>] [--jsonl-output-max-bytes=<N>] [--result]
+            [<tags>]
 Examples:
   test_runner
   test_runner --list
+  test_runner --output=jsonl --jsonl-output=failures --slowest=10
   test_runner --tags=scenario("My test")
   test_runner --tags=[acceptor]
   test_runner --tags="scenario.*Happy"
@@ -26,14 +29,20 @@ Examples:
   test_runner --tags="^scenario.*test$"
 )";
 
+static auto parse_usize(std::string_view sv) -> std::optional<std::size_t>
+{
+    if(sv.empty()) return std::nullopt;
+    std::size_t value = 0;
+    for(const char ch : sv)
+    {
+        if(ch < '0' || ch > '9') return std::nullopt;
+        value = value * 10u + static_cast<std::size_t>(ch - '0');
+    }
+    return value;
+}
+
 int main(int argc, char** argv)
 {
-    g_jsonl_enabled = []{
-        if(const char* v = std::getenv("TESTER_OUTPUT"))
-            return std::string_view{v} == "jsonl" || std::string_view{v} == "JSONL";
-        return false;
-    }();
-
     auto crash_handler = [](int signal)
     {
         if(g_jsonl_enabled)
@@ -82,6 +91,11 @@ int main(int argc, char** argv)
 
     auto list_only = false;
     auto tags = std::string_view{};
+    auto output = std::string_view{"human"};
+    auto result_line = false;
+    auto slowest = std::size_t{0};
+    auto jsonl_output = std::string_view{"failures"};
+    auto jsonl_output_max_bytes = std::size_t{16384};
 
     for(std::string_view option : arguments)
     {
@@ -103,6 +117,38 @@ int main(int argc, char** argv)
             continue;
         }
 
+        if(option.starts_with("--output="))
+        {
+            output = option.substr(std::string_view{"--output="}.size());
+            continue;
+        }
+
+        if(option == "--result")
+        {
+            result_line = true;
+            continue;
+        }
+
+        if(option.starts_with("--slowest="))
+        {
+            auto value = option.substr(std::string_view{"--slowest="}.size());
+            slowest = parse_usize(value).value_or(0);
+            continue;
+        }
+
+        if(option.starts_with("--jsonl-output="))
+        {
+            jsonl_output = option.substr(std::string_view{"--jsonl-output="}.size());
+            continue;
+        }
+
+        if(option.starts_with("--jsonl-output-max-bytes="))
+        {
+            auto value = option.substr(std::string_view{"--jsonl-output-max-bytes="}.size());
+            jsonl_output_max_bytes = parse_usize(value).value_or(16384);
+            continue;
+        }
+
         if(option.starts_with("-"))
         {
             std::cerr << "Unknown option: " << option << std::endl;
@@ -116,6 +162,13 @@ int main(int argc, char** argv)
     try
     {
         auto tr = tester::runner{tags};
+        tr.set_output_format(output);
+        tr.set_result_line(result_line);
+        tr.set_slowest(slowest);
+        tr.set_jsonl_output(jsonl_output);
+        tr.set_jsonl_output_max_bytes(jsonl_output_max_bytes);
+
+        g_jsonl_enabled = (output == "jsonl" || output == "JSONL");
 
         if(list_only)
         {

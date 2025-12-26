@@ -53,6 +53,31 @@ public:
             output::end_run(true);
     }
 
+    void set_output_format(std::string_view fmt)
+    {
+        output::set_output_format(fmt);
+    }
+
+    void set_result_line(bool enabled)
+    {
+        output::set_human_result_line(enabled);
+    }
+
+    void set_slowest(std::size_t n)
+    {
+        output::set_slowest(n);
+    }
+
+    void set_jsonl_output(std::string_view policy)
+    {
+        output::set_jsonl_output(policy);
+    }
+
+    void set_jsonl_output_max_bytes(std::size_t n)
+    {
+        output::set_jsonl_output_max_bytes(n);
+    }
+
     auto run_tests()
     {
         output::begin_run("run", m_tags);
