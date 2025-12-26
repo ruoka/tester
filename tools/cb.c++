@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <utility>
 #include <stdexcept>
+#include <unistd.h>
 
 namespace fs = std::filesystem;
 
@@ -33,6 +34,103 @@ namespace cb {
 
 using namespace std::string_literals;
 using namespace std::string_view_literals;
+
+namespace jsonl {
+inline bool enabled = false;
+inline bool meta_printed = false;
+inline constexpr auto schema = "cb-jsonl";
+inline constexpr int version = 1;
+
+inline auto unix_ms()
+{
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+}
+
+inline std::string escape(std::string_view sv)
+{
+    auto out = std::string{};
+    out.reserve(sv.size() + 8);
+    for(const unsigned char ch : sv)
+    {
+        switch(ch)
+        {
+            case '\\': out += "\\\\"; break;
+            case '"':  out += "\\\""; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if(ch < 0x20)
+                {
+                    static constexpr char hex[] = "0123456789abcdef";
+                    out += "\\u";
+                    out.push_back('0');
+                    out.push_back('0');
+                    out.push_back(hex[(ch >> 4) & 0xF]);
+                    out.push_back(hex[ch & 0xF]);
+                }
+                else
+                    out.push_back(static_cast<char>(ch));
+        }
+    }
+    return out;
+}
+
+inline void emit_meta()
+{
+    if(!enabled || meta_printed) return;
+    meta_printed = true;
+    std::cout
+        << "{\"type\":\"meta\",\"schema\":\"" << schema << "\",\"version\":" << version
+        << ",\"pid\":" << static_cast<unsigned>(::getpid())
+        << ",\"ts_unix_ms\":" << unix_ms()
+        << "}\n";
+}
+
+inline void emit_kv_bool(std::string& s, std::string_view key, bool v)
+{
+    s += ",\"";
+    s += key;
+    s += "\":";
+    s += (v ? "true" : "false");
+}
+
+inline void emit_kv_int(std::string& s, std::string_view key, long long v)
+{
+    s += ",\"";
+    s += key;
+    s += "\":";
+    s += std::to_string(v);
+}
+
+inline void emit_kv_str(std::string& s, std::string_view key, std::string_view v)
+{
+    s += ",\"";
+    s += key;
+    s += "\":\"";
+    s += escape(v);
+    s += "\"";
+}
+
+inline void emit_event(std::string_view type, auto&& add_fields)
+{
+    if(!enabled) return;
+    emit_meta();
+    auto line = std::string{};
+    line.reserve(256);
+    line += "{\"type\":\"";
+    line += type;
+    line += "\"";
+    emit_kv_str(line, "schema", schema);
+    emit_kv_int(line, "version", version);
+    emit_kv_int(line, "pid", static_cast<unsigned>(::getpid()));
+    emit_kv_int(line, "ts_unix_ms", unix_ms());
+    add_fields(line);
+    line += "}\n";
+    std::cout << line << std::flush;
+}
+} // namespace jsonl
 
 namespace log {
 inline std::mutex mutex{};
@@ -57,6 +155,12 @@ namespace color {
 inline void error(std::string_view msg) {
     auto lock = std::lock_guard<std::mutex>{mutex};
     std::cerr << color::bold::red << "ERROR" << color::reset << " " << msg << "\n";
+    if(cb::jsonl::enabled)
+    {
+        cb::jsonl::emit_event("cb_error", [&](std::string& line){
+            cb::jsonl::emit_kv_str(line, "message", msg);
+        });
+    }
 }
 
 inline void warning(std::string_view msg) {
@@ -85,6 +189,16 @@ inline void command(std::string_view cmd) {
 } // namespace log
 
 enum class build_config { debug, release };
+
+inline std::string_view config_name(build_config cfg)
+{
+    switch(cfg)
+    {
+        case build_config::debug: return "debug";
+        case build_config::release: return "release";
+    }
+    return "debug";
+}
 
 enum class unit_kind : unsigned {
     non_module,          // non-modular source, no module declaration at all  (.c++ .cpp)
@@ -1214,6 +1328,13 @@ public:
     void run_tests(const std::vector<std::string>& args = {}) {
         log::info("=== Running tests ===");
 
+        const auto build_started = std::chrono::steady_clock::now();
+        cb::jsonl::emit_event("build_start", [&](std::string& line){
+            cb::jsonl::emit_kv_str(line, "config", config_name(config));
+            cb::jsonl::emit_kv_bool(line, "include_tests", true);
+            cb::jsonl::emit_kv_bool(line, "include_examples", include_examples);
+        });
+
         include_tests = true;
         build();
         link_test_runner();
@@ -1225,11 +1346,31 @@ public:
             std::exit(1);
         }
     
+        const auto build_finished = std::chrono::steady_clock::now();
+        cb::jsonl::emit_event("build_end", [&](std::string& line){
+            cb::jsonl::emit_kv_bool(line, "ok", true);
+            cb::jsonl::emit_kv_int(line, "duration_ms",
+                std::chrono::duration_cast<std::chrono::milliseconds>(build_finished - build_started).count());
+        });
+
         auto cmd = runner;
         for (const auto& a : args)
             cmd += " " + shell_quote(a);
         log::command(cmd);
+
+        const auto test_started = std::chrono::steady_clock::now();
+        cb::jsonl::emit_event("test_start", [&](std::string& line){
+            cb::jsonl::emit_kv_str(line, "runner", runner);
+        });
+
         auto r = system(cmd.c_str());
+        const auto test_finished = std::chrono::steady_clock::now();
+        cb::jsonl::emit_event("test_end", [&](std::string& line){
+            cb::jsonl::emit_kv_bool(line, "ok", r == 0);
+            cb::jsonl::emit_kv_int(line, "exit_code", r);
+            cb::jsonl::emit_kv_int(line, "duration_ms",
+                std::chrono::duration_cast<std::chrono::milliseconds>(test_finished - test_started).count());
+        });
         if (r) {
             log::error("Some tests or assertions failed!");
             std::exit(1);
@@ -1404,6 +1545,8 @@ try {
     // If we are going to run tests in JSONL mode, keep stdout machine-parseable by moving
     // all CB logs (including clean/build) to stderr.
     cb::log::use_stderr = machine_output;
+    cb::jsonl::enabled = machine_output;
+    cb::jsonl::meta_printed = false;
 
     // Build include flags from command-line arguments
     auto include_flags = std::string{};
