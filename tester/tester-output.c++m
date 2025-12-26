@@ -70,23 +70,47 @@ void print_test_results()
 
 void print_test_failures()
 {
+    auto any_failures = false;
+    for(const auto& result : test_results)
+        if(not result.success) { any_failures = true; break; }
+
+    if(!any_failures)
+    {
+        std::clog << color::text::green
+                  << "No test failures."
+                  << color::reset << '\n';
+        return;
+    }
+
     std::clog << color::text::red
               << "Test failures:"
               << color::reset << '\n';
 
-    for(auto result : test_results)
+    for(const auto& result : test_results)
         if(not result.success)
             std::clog << result.output;
 }
 
 void print_test_statistics()
 {
+    const auto failed_tests = statistics.total_tests - statistics.successful_tests;
+    const auto failed_assertions = statistics.total_assertions - statistics.successful_assertions;
+
+    auto pct = [](std::size_t ok, std::size_t total) -> double {
+        if(total == 0) return 100.0;
+        return 100.0 * static_cast<double>(ok) / static_cast<double>(total);
+    };
+
     std::clog << color::text::yellow
               << "Test statistics:" << '\n'
-              << "total tests: "<< statistics.total_tests << '\n'
-              << "successful tests: "<< statistics.successful_tests << '\n'
-              << "total assertions: "<< statistics.total_assertions << '\n'
-              << "successful assertions: "<< statistics.successful_assertions
+              << "tests:      " << statistics.successful_tests << "/" << statistics.total_tests
+              << " passed"
+              << " (" << std::fixed << std::setprecision(1) << pct(statistics.successful_tests, statistics.total_tests) << "%)"
+              << " | failed: " << failed_tests << '\n'
+              << "assertions: " << statistics.successful_assertions << "/" << statistics.total_assertions
+              << " passed"
+              << " (" << std::fixed << std::setprecision(1) << pct(statistics.successful_assertions, statistics.total_assertions) << "%)"
+              << " | failed: " << failed_assertions
               << color::reset << std::endl;
 }
 
