@@ -1357,6 +1357,10 @@ public:
         }
     }
 
+    void set_include_tests(bool value) {
+        include_tests = value;
+    }
+
     void build() {    
         const auto build_started = std::chrono::steady_clock::now();
         cb::jsonl::current_phase = cb::jsonl::phase::build;
@@ -1559,6 +1563,7 @@ try {
     auto machine_output = false;
     auto static_linking = false;
     auto include_examples = false;
+    auto build_tests = false;  // --build-tests flag: build tests but don't run them
     auto include_paths = std::vector<std::string>{};
     auto extra_compile_flags = std::string{};
     auto extra_link_flags = std::string{};
@@ -1599,6 +1604,8 @@ try {
             static_linking = true;
         } else if (argument == "--include-examples") {
             include_examples = true;
+        } else if (argument == "--build-tests") {
+            build_tests = true;
         } else if (do_run_tests && (argument.starts_with("--output=") ||
                                    argument.starts_with("--slowest=") ||
                                    argument.starts_with("--jsonl-output=") ||
@@ -1644,6 +1651,7 @@ try {
                       << "                 or pass common flags directly (e.g. --output=jsonl)\n"
                       << "  static           Enable static linking (C++ stdlib static)\n"
                       << "  --include-examples Include examples directory in build (excluded by default)\n"
+                      << "  --build-tests    Build tests in release mode (useful for CI to verify compilation)\n"
                       << "  -I, --include    Add include directory (can be specified multiple times)\n"
                       << "  --link-flags     Add extra linker flags (e.g., --link-flags \"-lcrypto\")\n"
                       << "  --compile-flags  Add extra compiler flags\n"
@@ -1651,6 +1659,7 @@ try {
                       << "Examples:\n"
                       << "  " << argv[0] << " debug build\n"
                       << "  " << argv[0] << " release build\n"
+                      << "  " << argv[0] << " release build --build-tests\n"
                       << "  " << argv[0] << " -I include/path debug build\n"
                       << "  " << argv[0] << " -I path1 -I path2 debug build\n"
                       << "  " << argv[0] << " clean build\n"
@@ -1687,7 +1696,13 @@ try {
 
     if (do_list) build_system.print_sources();
     if (do_clean) build_system.clean();
-    if (do_build) build_system.build();
+    if (do_build) {
+        if (build_tests) {
+            // --build-tests: build tests but don't run them (useful for CI)
+            build_system.set_include_tests(true);
+        }
+        build_system.build();
+    }
     if (do_run_tests) {
         // Run tests with filter + optional extra args for test_runner.
         // We pass both as argv-like tokens to avoid shell injection and to preserve spaces.
