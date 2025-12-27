@@ -4,10 +4,6 @@
 
 #pragma once
 
-// Shared ANSI terminal formatting constants used by both:
-// - deps/tester/tools/cb.c++
-// - deps/tester/tester/tester-output.c++m
-
 namespace term {
     inline constexpr auto reset = "\033[0m";
 
@@ -23,7 +19,6 @@ namespace term {
         inline constexpr auto gray    = "\033[0;90m";
     }
 
-    // Convenience aliases (some code uses term::{color} directly, others term::text::{color})
     inline constexpr auto cyan    = text::cyan;
     inline constexpr auto yellow  = text::yellow;
     inline constexpr auto green   = text::green;

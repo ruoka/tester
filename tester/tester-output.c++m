@@ -10,7 +10,7 @@ module;
 #   define TESTER_HAVE_CXXABI 0
 #endif
 #include <unistd.h>
-#include "../tools/io.h++"
+#include "details/io.h++"
 
 export module tester:output;
 import :data;
@@ -38,7 +38,7 @@ struct output_config
     std::size_t jsonl_output_max_bytes = 16384;
 };
 
-// Schema and version are owned by jsonl_context in tools/jsonl-format.h++ (via tools/io.h++)
+// Schema and version are owned by jsonl_context in details/jsonl-format.h++ (via details/io.h++)
 
 auto& cfg()
 {
@@ -81,7 +81,7 @@ auto jsonl_output_max_bytes()
     return cfg().jsonl_output_max_bytes;
 }
 
-// JSON formatting utilities are now provided by tools/jsonl-format.h++ (via tools/io.h++)
+// JSON formatting utilities are now provided by details/jsonl-format.h++ (via details/io.h++)
 using jsonl_util::escape;
 
 auto as_ms(std::chrono::nanoseconds ns)
@@ -230,7 +230,7 @@ auto& run_end_emitted()
     return emitted;
 }
 
-// JSONL context using shared utilities from tools/io.h++
+// JSONL context using shared utilities from details/io.h++
 // Context owns schema and version as static constants
 inline auto& jsonl_ctx()
 {

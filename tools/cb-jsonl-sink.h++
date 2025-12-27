@@ -9,7 +9,7 @@
 #include <ostream>
 #include <string_view>
 
-#include "io.h++"
+#include "../tester/details/io.h++"
 
 namespace cb_jsonl {
 

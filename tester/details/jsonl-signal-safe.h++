@@ -4,27 +4,20 @@
 
 #pragma once
 
-// Signal-safe JSONL emission helpers.
-//
-// IMPORTANT:
-// - Only use async-signal-safe functions.
-// - Do NOT use iostream, malloc/new, std::string, std::format, chrono, etc.
-// - Intended for crash handlers (SIGSEGV, SIGABRT, ...).
-
 #include <cstddef>
 #include <cstdint>
 #include <unistd.h>
 
 namespace jsonl_util::signal_safe {
 
-inline auto append_cstr(char* buf, std::size_t n, std::size_t cap, const char* s) -> std::size_t
+inline std::size_t append_cstr(char* buf, std::size_t n, std::size_t cap, const char* s)
 {
     while(*s && n < cap)
         buf[n++] = *s++;
     return n;
 }
 
-inline auto append_u(char* buf, std::size_t n, std::size_t cap, unsigned v) -> std::size_t
+inline std::size_t append_u(char* buf, std::size_t n, std::size_t cap, unsigned v)
 {
     char tmp[32];
     int m = 0;
@@ -43,7 +36,6 @@ inline void emit_crash_event_jsonl(
     int version,
     bool emit_result_line)
 {
-    // Keep buffer small and stack-only.
     char buf[256];
     std::size_t n = 0;
 

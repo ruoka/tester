@@ -3,7 +3,7 @@
 // See the LICENSE file in the project root for full license text.
 
 module;
-#include "../tools/io.h++"
+#include "details/io.h++"
 
 export module tester:jsonl_sink;
 

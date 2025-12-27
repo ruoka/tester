@@ -8,7 +8,7 @@
 #pragma clang diagnostic pop
 #include <execinfo.h>
 #include <unistd.h>
-#include "../tools/jsonl-signal-safe.h++"
+#include "details/jsonl-signal-safe.h++"
 import std;
 import tester;
 
