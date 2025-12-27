@@ -513,8 +513,6 @@ private:
     bool include_examples = false;
     std::string extra_compile_flags;
     std::string extra_link_flags;
-    mutable bool json_diagnostics_format_enabled = false;
-    static const inline auto json_diagnostics_flag = "-fdiagnostics-format=json "s;
 
     // ============================================================================
     // Initialization and Setup
@@ -617,10 +615,6 @@ private:
         // Machine-readable diagnostics (JSONL mode)
         // ------------------------------------------------------------------
         // Keep output low-noise in machine runs (stderr only).
-        // NOTE: We do NOT force -fdiagnostics-format here:
-        // - Clang 20 rejects "-fdiagnostics-format=json"
-        // - "-fdiagnostics-format=sarif" is unstable and can crash with modules
-        // We still attempt JSON diagnostics in JSONL mode, but via a guarded per-command flag with fallback.
         if (cb::jsonl::enabled) {
             compile_flags += "-fno-caret-diagnostics -fno-show-column -fno-show-source-location ";
         }
@@ -810,12 +804,6 @@ private:
     // General Utilities
     // ============================================================================
 
-    const std::string& diagnostics_format_flag() const
-    {
-        static const auto empty = std::string{};
-        return json_diagnostics_format_enabled ? json_diagnostics_flag : empty;
-    }
-
     static bool erase_once(std::string& s, std::string_view needle)
     {
         const auto pos = s.find(needle);
@@ -829,16 +817,6 @@ private:
         auto cmd_str = std::string{cmd};
         log::command(cmd_str);
         auto r = system(cmd_str.c_str());
-        if (r && json_diagnostics_format_enabled && cmd_str.find(json_diagnostics_flag) != std::string::npos) {
-            // Auto-fallback: if clang rejects or crashes with JSON diagnostics enabled, retry once without it
-            // and disable it for the rest of the run.
-            json_diagnostics_format_enabled = false;
-            auto retry = cmd_str;
-            (void)erase_once(retry, json_diagnostics_flag);
-            log::warning("clang++ does not support -fdiagnostics-format=json in this configuration; retrying without it");
-            log::command(retry);
-            r = system(retry.c_str());
-        }
         if (r) {
             log::error("Command failed: "s + cmd_str);
             std::exit(1);
@@ -1103,7 +1081,7 @@ private:
             fs::last_write_time(std_pcm) >= fs::last_write_time(std_module_source))
             return;
 
-        auto cmd = llvm_cxx + " " + compile_flags + diagnostics_format_flag() + cpp_flags +
+        auto cmd = llvm_cxx + " " + compile_flags + cpp_flags +
                    " -nostdinc++ -isystem " + llvm_prefix + "/include/c++/v1 "
                    " -Wno-unused-command-line-argument -fno-implicit-modules "
                    " -fno-implicit-module-maps -Wno-reserved-module-identifier "
@@ -1133,7 +1111,7 @@ private:
         std_obj_flags += "-fno-implicit-modules -fno-implicit-module-maps ";
         std_obj_flags += "-fmodule-file=std=" + std_pcm + " ";
         
-        auto cmd = llvm_cxx + " " + std_obj_flags + diagnostics_format_flag() + std_pcm + " -c -o " + std_obj;
+        auto cmd = llvm_cxx + " " + std_obj_flags + std_pcm + " -c -o " + std_obj;
         execute_system_command(cmd);
     }
 
@@ -1145,10 +1123,10 @@ private:
         if (tu.is_modular) {
             // Regular module interface/partition - create PCM file
             execute_system_command(
-                llvm_cxx + " " + compile_flags + diagnostics_format_flag() + cpp_flags + " " + module_flags + " " + tu.full_path + " --precompile -o " + tu.pcm_path
+                llvm_cxx + " " + compile_flags + cpp_flags + " " + module_flags + " " + tu.full_path + " --precompile -o " + tu.pcm_path
             );
             execute_system_command(
-                llvm_cxx + " " + compile_flags + diagnostics_format_flag() + module_flags + " " + tu.pcm_path + " -c -o " + tu.object_path
+                llvm_cxx + " " + compile_flags + module_flags + " " + tu.pcm_path + " -c -o " + tu.object_path
             );
         } else {
             auto extra = ""s;
@@ -1159,7 +1137,7 @@ private:
             }
 
             execute_system_command(
-                llvm_cxx + " " + compile_flags + diagnostics_format_flag() + cpp_flags + " " + module_flags + " " + extra + tu.full_path + " -c -o " + tu.object_path
+                llvm_cxx + " " + compile_flags + cpp_flags + " " + module_flags + " " + extra + tu.full_path + " -c -o " + tu.object_path
             );
         }
     }
@@ -1367,10 +1345,6 @@ public:
 
         // Initialize compile and link flags based on OS, config, and LLVM paths
         initialize_build_flags();
-
-        // JSON diagnostics are attempted only for machine (JSONL) runs and automatically disabled
-        // if unsupported / unstable in this toolchain/configuration.
-        json_diagnostics_format_enabled = cb::jsonl::enabled;
     }
 
     void clean() const {
