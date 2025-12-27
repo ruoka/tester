@@ -612,7 +612,7 @@ private:
             compile_flags += "-O0 -g3 ";
             log::info("Building DEBUG configuration"s + (static_link ? " (static C++ stdlib)"s : ""s));
         }
-
+    
         // ------------------------------------------------------------------
         // Machine-readable diagnostics (JSONL mode)
         // ------------------------------------------------------------------
@@ -915,7 +915,7 @@ private:
                 }
                 // Also recursively check if the imported module needs recompiling
                 if (needs_recompile(dep_tu, c, u2tu))
-                    return true;
+                return true;
             }
         }
 
@@ -1378,7 +1378,7 @@ public:
         }
     }
 
-    void build() {
+    void build() {    
         const auto build_started = std::chrono::steady_clock::now();
         cb::jsonl::current_phase = cb::jsonl::phase::build;
         cb::jsonl::phase_started = build_started;
@@ -1505,6 +1505,7 @@ public:
             cb::jsonl::emit_kv_int(line, "duration_ms",
                 std::chrono::duration_cast<std::chrono::milliseconds>(test_finished - test_started).count());
         });
+        cb::jsonl::emit_eof();
         cb::jsonl::current_phase = cb::jsonl::phase::none;
         if (r) {
             log::error("Some tests or assertions failed!");
