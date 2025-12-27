@@ -56,7 +56,7 @@ inline auto& sink()
     return s;
 }
 
-// JSONL context using shared utilities from io.h++
+// JSONL context (owned by the shared output mux).
 inline auto& ctx()
 {
     return io_mux().jsonl;
@@ -65,18 +65,14 @@ inline auto& ctx()
 inline bool enabled() { return ctx().is_enabled(); }
 inline void set_enabled(bool v) { io_mux().set_jsonl_enabled(v); }
 inline void reset() { io_mux().reset_jsonl_state(); }
-
-inline void emit_meta() { auto lock = std::lock_guard<std::mutex>{io_mux().mutex}; ctx().emit_meta(); }
-inline void emit_event(std::string_view type, auto&& add_fields) {
-    auto lock = std::lock_guard<std::mutex>{io_mux().mutex};
-    ctx()(type) << std::forward<decltype(add_fields)>(add_fields);
-}
-inline void emit_eof() { auto lock = std::lock_guard<std::mutex>{io_mux().mutex}; ctx().emit_eof(); }
 } // namespace jsonl
 
 static void jsonl_atexit_handler()
 {
-    cb::jsonl::emit_eof();
+    // Keep stdout parseable: only JSONL here.
+    // Lock to avoid interleaving with other threads that may be emitting events at exit.
+    auto lock = std::lock_guard<std::mutex>{cb::jsonl::io_mux().mutex};
+    cb::jsonl::ctx().emit_eof();
 }
 
 namespace log {
@@ -691,14 +687,6 @@ private:
     // ============================================================================
     // General Utilities
     // ============================================================================
-
-    static bool erase_once(std::string& s, std::string_view needle)
-    {
-        const auto pos = s.find(needle);
-        if (pos == std::string::npos) return false;
-        s.erase(pos, needle.size());
-        return true;
-    }
 
     void execute_system_command(std::string_view cmd) const
     {
