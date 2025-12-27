@@ -26,7 +26,6 @@
 #include <stdexcept>
 #include <unistd.h>
 #include <sys/wait.h>
-#include "../tester/details/io.h++"
 #include "cb-jsonl-sink.h++"
 
 namespace fs = std::filesystem;
