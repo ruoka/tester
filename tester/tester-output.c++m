@@ -391,7 +391,7 @@ void end_run(bool passed)
     internal_run_end(passed);
 }
 
-void print_test_cases(auto included)
+export void print_test_cases(std::function<bool(const test_case&)> included)
 {
     if(is_jsonl())
     {
