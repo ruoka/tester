@@ -60,9 +60,12 @@ inline auto enabled() -> bool { return ctx().is_enabled(); }
 inline void set_enabled(bool v) { io_mux().set_jsonl_enabled(v); }
 inline void reset() { io_mux().reset_jsonl_state(); }
 
-inline void emit_meta() { ctx().emit_meta(); }
-inline void emit_event(std::string_view type, auto&& add_fields) { ctx()(type) << std::forward<decltype(add_fields)>(add_fields); }
-inline void emit_eof() { ctx().emit_eof(); }
+inline void emit_meta() { auto lock = std::lock_guard<std::mutex>{io_mux().mutex}; ctx().emit_meta(); }
+inline void emit_event(std::string_view type, auto&& add_fields) {
+    auto lock = std::lock_guard<std::mutex>{io_mux().mutex};
+    ctx()(type) << std::forward<decltype(add_fields)>(add_fields);
+}
+inline void emit_eof() { auto lock = std::lock_guard<std::mutex>{io_mux().mutex}; ctx().emit_eof(); }
 } // namespace jsonl
 
 static void jsonl_atexit_handler()
@@ -699,8 +702,31 @@ private:
     void execute_system_command(std::string_view cmd) const
     {
         auto cmd_str = std::string{cmd};
-        log::command(cmd_str);
+        // Human logs are suppressed in JSONL mode; still emit machine-readable command events.
+        if (cb::jsonl::enabled())
+        {
+            cb::jsonl::emit_event("command_start", [&](std::ostream& os){
+                os << ",\"cmd\":\"" << jsonl_util::escape(cmd_str) << "\"";
+            });
+        }
+        else
+        {
+            log::command(cmd_str);
+        }
+
+        const auto started = std::chrono::steady_clock::now();
         auto r = system(cmd_str.c_str());
+        const auto finished = std::chrono::steady_clock::now();
+
+        if (cb::jsonl::enabled())
+        {
+            cb::jsonl::emit_event("command_end", [&](std::ostream& os){
+                os << ",\"cmd\":\"" << jsonl_util::escape(cmd_str) << "\"";
+                os << ",\"ok\":" << (r == 0 ? "true" : "false");
+                os << ",\"exit_code\":" << r;
+                os << ",\"duration_ms\":" << jsonl_util::duration_ms(started, finished);
+            });
+        }
         if (r) {
             log::error("Command failed: "s + cmd_str);
             std::exit(1);
