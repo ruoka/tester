@@ -56,7 +56,7 @@ inline auto& ctx()
     return io_mux().jsonl;
 }
 
-inline auto enabled() -> bool { return ctx().is_enabled(); }
+inline bool enabled() { return ctx().is_enabled(); }
 inline void set_enabled(bool v) { io_mux().set_jsonl_enabled(v); }
 inline void reset() { io_mux().reset_jsonl_state(); }
 
