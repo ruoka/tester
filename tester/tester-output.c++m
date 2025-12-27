@@ -165,9 +165,9 @@ auto& io_mux()
     return mux;
 }
 
-auto& json_os() { return io_mux().json; }      // machine output channel
-auto& human_os() { return io_mux().human; }    // human/log channel
-auto& result_os() { return io_mux().result; }  // always non-JSON, keep off stdout
+auto& json_os() { return io_mux().json; }            // machine output channel
+auto& human_os() { return io_mux().human_os(); }     // human/log channel
+auto& result_os() { return io_mux().result_os(); }   // always non-JSON, keep off stdout
 
 auto& run_started_unix_ms()
 {

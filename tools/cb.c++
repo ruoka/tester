@@ -71,17 +71,11 @@ static void jsonl_atexit_handler()
 }
 
 namespace log {
-inline std::mutex mutex{};
-inline bool use_stderr = false;
-
-namespace color = ::io::color;
-
 inline void error(std::string_view msg) {
-    auto lock = std::lock_guard<std::mutex>{mutex};
-    // In JSONL mode, skip human-readable output to keep stdout pure (JSONL event contains the message)
-    if(!cb::jsonl::enabled()) {
-        std::cerr << color::bold::red << "ERROR" << color::reset << " " << msg << "\n";
-    }
+    // Human error (shared formatting)
+    io::error(cb::jsonl::io_mux(), msg);
+
+    // JSONL error event (machine output)
     if(cb::jsonl::enabled())
     {
         // If build fails mid-flight, emit a structured build_end before cb_error.
@@ -101,29 +95,10 @@ inline void error(std::string_view msg) {
     }
 }
 
-inline void warning(std::string_view msg) {
-    auto lock = std::lock_guard<std::mutex>{mutex};
-    auto& os = use_stderr ? std::cerr : std::cout;
-    os << color::bold::yellow << "WARNING" << color::reset << " " << msg << "\n";
-}
-
-inline void info(std::string_view msg) {
-    auto lock = std::lock_guard<std::mutex>{mutex};
-    auto& os = use_stderr ? std::cerr : std::cout;
-    os << color::bold::blue << "INFO" << color::reset << " " << msg << "\n";
-}
-
-inline void success(std::string_view msg) {
-    auto lock = std::lock_guard<std::mutex>{mutex};
-    auto& os = use_stderr ? std::cerr : std::cout;
-    os << color::bold::green << "SUCCESS" << color::reset << " " << msg << "\n";
-}
-
-inline void command(std::string_view cmd) {
-    auto lock = std::lock_guard<std::mutex>{mutex};
-    auto& os = use_stderr ? std::cerr : std::cout;
-    os << color::bold::blue << "COMMAND" << color::reset << " " << cmd << "\n";
-}
+inline void warning(std::string_view msg) { io::warning(cb::jsonl::io_mux(), msg); }
+inline void info(std::string_view msg) { io::info(cb::jsonl::io_mux(), msg); }
+inline void success(std::string_view msg) { io::success(cb::jsonl::io_mux(), msg); }
+inline void command(std::string_view cmd) { io::command(cb::jsonl::io_mux(), cmd); }
 } // namespace log
 
 enum class build_config { debug, release };
@@ -1401,27 +1376,29 @@ public:
 
     void print_sources() {
         scan_and_order();
-        auto lock = std::lock_guard<std::mutex>{log::mutex};
-        std::cout << log::color::cyan << "\nFound " << units_in_topological_order.size() << " translation units:\n\n" << log::color::reset;
+        auto& mux = cb::jsonl::io_mux();
+        auto lock = std::lock_guard<std::mutex>{mux.mutex};
+        auto& os = mux.human_os();
+        os << io::color::cyan << "\nFound " << units_in_topological_order.size() << " translation units:\n\n" << io::color::reset;
         int main_count = 0, test_count = 0;
         for (const auto& tu : units_in_topological_order) {
             if (tu.has_main) main_count++;
             if (tu.is_test) test_count++;
         }
-        std::cout << log::color::cyan << " Total: " << units_in_topological_order.size()
+        os << io::color::cyan << " Total: " << units_in_topological_order.size()
                   << " | Main: " << main_count
-                  << " | Tests: " << test_count << "\n\n" << log::color::reset;
+                  << " | Tests: " << test_count << "\n\n" << io::color::reset;
 
         for (const auto& tu : units_in_topological_order) {
             auto full = tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename;
-            std::cout << log::color::cyan << " " << full << log::color::reset;
-            if (not tu.module.empty()) std::cout << " " << log::color::yellow << "[module: " << tu.module << "]" << log::color::reset;
-            if (tu.has_main) std::cout << " " << log::color::green << "[main]" << log::color::reset;
-            if (tu.is_test) std::cout << " " << log::color::magenta << "[TEST]" << log::color::reset;
-            if (tu.dependency_level >= 0) std::cout << " " << log::color::gray << "level=" << tu.dependency_level << log::color::reset;
-            std::cout << "\n";
+            os << io::color::cyan << " " << full << io::color::reset;
+            if (not tu.module.empty()) os << " " << io::color::yellow << "[module: " << tu.module << "]" << io::color::reset;
+            if (tu.has_main) os << " " << io::color::green << "[main]" << io::color::reset;
+            if (tu.is_test) os << " " << io::color::magenta << "[TEST]" << io::color::reset;
+            if (tu.dependency_level >= 0) os << " " << io::color::gray << "level=" << tu.dependency_level << io::color::reset;
+            os << "\n";
         }
-        std::cout << log::color::cyan << "\n" << log::color::reset;
+        os << io::color::cyan << "\n" << io::color::reset;
     }
 };
 
@@ -1573,8 +1550,17 @@ try {
     }
 
     // If we are going to run tests in JSONL mode, or build in JSONL mode,
-    // keep stdout machine-parseable by moving all CB logs (including clean/build) to stderr.
-    cb::log::use_stderr = machine_output || cb::jsonl::enabled();
+    // keep stdout machine-parseable by moving all CB human logs (including clean/build) to stderr.
+    if(machine_output || cb::jsonl::enabled())
+    {
+        cb::jsonl::io_mux().set_human(std::cerr);
+        cb::jsonl::io_mux().set_result(std::cerr);
+    }
+    else
+    {
+        cb::jsonl::io_mux().set_human(std::cout);
+        cb::jsonl::io_mux().set_result(std::cout);
+    }
     // For tests, JSONL is controlled by machine_output. For builds, it's already set.
     if (!cb::jsonl::enabled()) {
         cb::jsonl::set_enabled(machine_output);
