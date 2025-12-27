@@ -1,0 +1,125 @@
+// Copyright (c) 2025 Kaius Ruokonen. All rights reserved.
+// SPDX-License-Identifier: MIT
+// See the LICENSE file in the project root for full license text.
+
+#pragma once
+
+#include <cstdint>
+#include <chrono>
+#include <mutex>
+#include <ostream>
+#include <string_view>
+
+#include "io.h++"
+
+namespace tester_jsonl {
+
+struct sink
+{
+    io::mux& m;
+
+    explicit sink(io::mux& mux) : m(mux) {}
+
+    void run_start(std::string_view mode, std::string_view tags, std::chrono::system_clock::time_point started_at)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("run_start", started_at) << [&](std::ostream& os){
+            os << ",\"mode\":\"" << jsonl_util::escape(mode) << "\"";
+            os << ",\"tags\":\"" << jsonl_util::escape(tags) << "\"";
+        };
+    }
+
+    void run_end(std::string_view mode, std::string_view tags, bool passed, long long duration_ms, std::chrono::system_clock::time_point ended_at)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("run_end", ended_at) << [&](std::ostream& os){
+            os << ",\"mode\":\"" << jsonl_util::escape(mode) << "\"";
+            os << ",\"tags\":\"" << jsonl_util::escape(tags) << "\"";
+            os << ",\"passed\":" << (passed ? "true" : "false");
+            os << ",\"duration_ms\":" << duration_ms;
+        };
+    }
+
+    void case_event(std::string_view id,
+                    std::string_view set,
+                    std::string_view name,
+                    std::string_view file,
+                    std::uint_least32_t line,
+                    std::uint_least32_t column)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("case") << [&](std::ostream& os){
+            os << ",\"id\":\"" << jsonl_util::escape(id) << "\"";
+            os << ",\"set\":\"" << jsonl_util::escape(set) << "\"";
+            os << ",\"name\":\"" << jsonl_util::escape(name) << "\"";
+            os << ",\"file\":\"" << jsonl_util::escape(file) << "\"";
+            os << ",\"line\":" << line;
+            os << ",\"column\":" << column;
+        };
+    }
+
+    void test_event(std::string_view id,
+                    std::string_view set,
+                    std::string_view name,
+                    std::string_view file,
+                    std::uint_least32_t line,
+                    std::uint_least32_t column,
+                    bool success,
+                    long long duration_ms,
+                    std::size_t assertions_ok,
+                    std::size_t assertions_total,
+                    long long started_unix_ms,
+                    long long finished_unix_ms,
+                    bool include_output,
+                    std::string_view output,
+                    bool output_truncated,
+                    std::size_t output_bytes)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("test") << [&](std::ostream& os){
+            os << ",\"id\":\"" << jsonl_util::escape(id) << "\"";
+            os << ",\"set\":\"" << jsonl_util::escape(set) << "\"";
+            os << ",\"name\":\"" << jsonl_util::escape(name) << "\"";
+            os << ",\"file\":\"" << jsonl_util::escape(file) << "\"";
+            os << ",\"line\":" << line;
+            os << ",\"column\":" << column;
+            os << ",\"success\":" << (success ? "true" : "false");
+            os << ",\"duration_ms\":" << duration_ms;
+            os << ",\"assertions_ok\":" << assertions_ok;
+            os << ",\"assertions_total\":" << assertions_total;
+            os << ",\"started_unix_ms\":" << started_unix_ms;
+            os << ",\"finished_unix_ms\":" << finished_unix_ms;
+            if(include_output)
+            {
+                os << ",\"output\":\"" << jsonl_util::escape(output) << "\"";
+                os << ",\"output_truncated\":" << (output_truncated ? "true" : "false");
+                os << ",\"output_bytes\":" << output_bytes;
+            }
+        };
+    }
+
+    void assertion_event(bool ok,
+                         std::string_view matcher,
+                         std::string_view actual_json,
+                         std::string_view expected_json,
+                         std::string_view test_id,
+                         std::string_view file,
+                         std::uint_least32_t line,
+                         std::uint_least32_t column)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl(ok ? "assertion_passed" : "assertion_failed") << [&](std::ostream& os){
+            os << ",\"test_id\":\"" << jsonl_util::escape(test_id) << "\"";
+            os << ",\"matcher\":\"" << jsonl_util::escape(matcher) << "\"";
+            os << ",\"actual\":" << actual_json;
+            os << ",\"expected\":" << expected_json;
+            os << ",\"file\":\"" << jsonl_util::escape(file) << "\"";
+            os << ",\"line\":" << line;
+            os << ",\"column\":" << column;
+        };
+    }
+};
+
+} // namespace tester_jsonl
+
+

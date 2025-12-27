@@ -11,6 +11,7 @@ module;
 #endif
 #include <unistd.h>
 #include "../tools/io.h++"
+#include "../tools/tester-jsonl-sink.hpp"
 
 export module tester:output;
 import :data;
@@ -165,6 +166,12 @@ auto& io_mux()
     return mux;
 }
 
+auto& jsonl_sink()
+{
+    static auto sink = tester_jsonl::sink{io_mux()};
+    return sink;
+}
+
 auto& json_os() { return io_mux().json; }            // machine output channel
 auto& human_os() { return io_mux().human_os(); }     // human/log channel
 auto& result_os() { return io_mux().result_os(); }   // always non-JSON, keep off stdout
@@ -253,11 +260,7 @@ void internal_run_start(std::string_view mode, std::string_view tags)
     record_run_start(mode, tags);
     if(!is_jsonl()) return;
 
-    // Single shared JSONL emission style:
-    json_os() << jsonl_ctx()("run_start", run_started_unix_ms()) << [&](auto& os){
-        os << ",\"mode\":\"" << escape(mode) << "\"";
-        os << ",\"tags\":\"" << escape(tags) << "\"";
-    };
+    jsonl_sink().run_start(mode, tags, run_started_unix_ms());
 }
 
 void internal_run_end(bool passed)
@@ -278,12 +281,7 @@ void internal_run_end(bool passed)
         ? jsonl_util::duration_ms(run_started_unix_ms(), ended_at)
         : 0;
 
-    json_os() << jsonl_ctx()("run_end", ended_at) << [&](auto& os){
-        os << ",\"mode\":\"" << escape(run_mode()) << "\"";
-        os << ",\"tags\":\"" << escape(run_tags()) << "\"";
-        os << ",\"passed\":" << (passed ? "true" : "false");
-        os << ",\"duration_ms\":" << dur_ms;
-    };
+    jsonl_sink().run_end(run_mode(), run_tags(), passed, dur_ms, ended_at);
 
     run_end_emitted() = true;
 }
@@ -305,15 +303,7 @@ void emit_jsonl_assertion_event_impl(
     
     if(should_emit)
     {
-        json_os() << jsonl_ctx()(ok ? "assertion_passed" : "assertion_failed") << [&](auto& os){
-            os << ",\"test_id\":\"" << escape(test_id) << "\"";
-            os << ",\"matcher\":\"" << escape(matcher) << "\"";
-            os << ",\"actual\":" << actual_json;
-            os << ",\"expected\":" << expected_json;
-            os << ",\"file\":\"" << escape(file) << "\"";
-            os << ",\"line\":" << line;
-            os << ",\"column\":" << column;
-        };
+        jsonl_sink().assertion_event(ok, matcher, actual_json, expected_json, test_id, file, line, column);
     }
 }
 
@@ -398,14 +388,13 @@ export void print_test_cases(std::function<bool(const test_case&)> included)
         for(const auto& tc : test_cases)
         {
             if(!included(tc)) continue;
-            json_os() << jsonl_ctx()("case") << [&](auto& os){
-                os << ",\"id\":\"" << stable_test_id(tc) << "\"";
-                os << ",\"set\":\"" << escape(tc.test_set_name) << "\"";
-                os << ",\"name\":\"" << escape(tc.test_name) << "\"";
-                os << ",\"file\":\"" << escape(tc.file_name) << "\"";
-                os << ",\"line\":" << tc.line;
-                os << ",\"column\":" << tc.column;
-            };
+            jsonl_sink().case_event(
+                stable_test_id(tc),
+                tc.test_set_name,
+                tc.test_name,
+                tc.file_name,
+                tc.line,
+                tc.column);
         }
         return;
     }
@@ -429,27 +418,34 @@ void print_test_results()
             const auto include_output = (policy == jsonl_output_policy::always)
                 || (policy == jsonl_output_policy::failures && !result.success);
 
-            json_os() << jsonl_ctx()("test") << [&](auto& os){
-                os << ",\"id\":\"" << stable_test_id(result) << "\"";
-                os << ",\"set\":\"" << escape(result.test_set_name) << "\"";
-                os << ",\"name\":\"" << escape(result.test_name) << "\"";
-                os << ",\"file\":\"" << escape(result.file_name) << "\"";
-                os << ",\"line\":" << result.line;
-                os << ",\"column\":" << result.column;
-                os << ",\"success\":" << (result.success ? "true" : "false");
-                os << ",\"duration_ms\":" << as_ms(result.duration);
-                os << ",\"assertions_ok\":" << result.assertions_ok;
-                os << ",\"assertions_total\":" << result.assertions_total;
-                os << ",\"started_unix_ms\":" << unix_timestamp(result.started_at);
-                os << ",\"finished_unix_ms\":" << unix_timestamp(result.finished_at);
-                if(include_output)
-                {
-                    auto [out, truncated, original_bytes] = prepare_json_output(result.output);
-                    os << ",\"output\":\"" << escape(out) << "\"";
-                    os << ",\"output_truncated\":" << (truncated ? "true" : "false");
-                    os << ",\"output_bytes\":" << original_bytes;
-                }
-            };
+            auto out = std::string{};
+            auto truncated = false;
+            auto original_bytes = std::size_t{0};
+            if(include_output)
+            {
+                auto t = prepare_json_output(result.output);
+                out = std::move(std::get<0>(t));
+                truncated = std::get<1>(t);
+                original_bytes = std::get<2>(t);
+            }
+
+            jsonl_sink().test_event(
+                stable_test_id(result),
+                result.test_set_name,
+                result.test_name,
+                result.file_name,
+                result.line,
+                result.column,
+                result.success,
+                as_ms(result.duration),
+                result.assertions_ok,
+                result.assertions_total,
+                unix_timestamp(result.started_at),
+                unix_timestamp(result.finished_at),
+                include_output,
+                out,
+                truncated,
+                original_bytes);
         }
         return;
     }
@@ -564,12 +560,7 @@ void print_test_statistics()
                 ? jsonl_util::duration_ms(run_started_unix_ms(), ended_at)
                 : 0;
 
-            json_os() << jsonl_ctx()("run_end", ended_at) << [&](auto& os){
-                os << ",\"mode\":\"" << escape(run_mode()) << "\"";
-                os << ",\"tags\":\"" << escape(run_tags()) << "\"";
-                os << ",\"passed\":" << (passed_value ? "true" : "false");
-                os << ",\"duration_ms\":" << dur_ms;
-            };
+            jsonl_sink().run_end(run_mode(), run_tags(), passed_value, dur_ms, ended_at);
 
             run_end_emitted() = true;
         }
