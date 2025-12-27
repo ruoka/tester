@@ -1,4 +1,12 @@
 {
+  "files.associations": {
+    "*.h++": "cpp",
+    "*.c++": "cpp",
+    "*.c++m": "cpp"
+  }
+}
+
+{
     "files.associations": {
         "*.hpp": "cpp",
         "*.cpp": "cpp",

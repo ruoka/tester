@@ -15,8 +15,8 @@
 #include <mutex>
 #include <string_view>
 
-#include "jsonl-format.hpp"
-#include "term.hpp"
+#include "jsonl-format.h++"
+#include "term.h++"
 
 namespace io {
 

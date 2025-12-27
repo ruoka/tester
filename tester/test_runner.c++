@@ -8,13 +8,13 @@
 #pragma clang diagnostic pop
 #include <execinfo.h>
 #include <unistd.h>
-#include "../tools/jsonl-signal-safe.hpp"
+#include "../tools/jsonl-signal-safe.h++"
 import std;
 import tester;
 
 static volatile sig_atomic_t g_jsonl_enabled = 0;
 using namespace std::literals;
-// Schema is defined in jsonl-format.hpp as jsonl_util::jsonl_context<std::ostream>::schema
+// Schema is defined in jsonl-format.h++ as jsonl_util::jsonl_context<std::ostream>::schema
 // We duplicate it here as a string literal to avoid header inclusion conflicts with the std module
 static constexpr auto g_schema = "tester-jsonl"sv;
 static auto g_schema_buf = std::array<char, 64>{};

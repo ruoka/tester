@@ -2,17 +2,15 @@
 // SPDX-License-Identifier: MIT
 // See the LICENSE file in the project root for full license text.
 
-#pragma once
+module;
+#include "../tools/io.h++"
 
-#include <cstdint>
-#include <chrono>
-#include <mutex>
-#include <ostream>
-#include <string_view>
+export module tester:jsonl_sink;
 
-#include "io.h++"
+import std;
 
-namespace tester_jsonl {
+namespace tester::output::jsonl
+{
 
 struct sink
 {
@@ -120,6 +118,6 @@ struct sink
     }
 };
 
-} // namespace tester_jsonl
+} // namespace tester::output::jsonl
 
 
