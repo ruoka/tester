@@ -156,6 +156,22 @@ The core assertion namespace (`tester::assertions`) provides matching `check_*` 
 - `require_nothrow`, `require_throws`, `require_throws_as` (fatal)
 - `require_throws_as<ExceptionType>(callable)` – verifies specific exception type
 
+### Container Assertions
+- `check_container_eq`, `require_container_eq` – Compare two containers element-by-element with readable diff messages
+  - Provides clear error messages showing first mismatch and highlighting differences
+  - Works with any container type (vectors, arrays, etc.)
+
+### String Assertions
+- `check_contains`, `require_contains` – Check if a string contains a substring or character
+- `check_has_substr`, `require_has_substr` – Alias for `contains` (substring check)
+- `check_starts_with`, `require_starts_with` – Check if a string starts with a prefix
+- `check_ends_with`, `require_ends_with` – Check if a string ends with a suffix
+- Supports string literals, `std::string`, `std::string_view`, and `const char*`
+
+### Container Element Checks
+- `check_contains(container, element)`, `require_contains(container, element)` – Check if a container contains a specific element
+  - Works with any container type (overloaded with string version)
+
 ### Messaging Utilities
 - `succeed(message)` – Explicit success annotation
 - `failed(message)` – Explicit failure annotation
@@ -268,6 +284,11 @@ auto register_tests()
         require_eq(0.3, 0.1 + 0.2);         // default epsilon path
         check_near(0.3, 0.1 + 0.2, 1e-9);   // explicit tolerance
         require_near(0.0, add(1.0, -1.0));  // fatal variant
+    };
+
+    test_case("foo::add with container assertions") = [] {
+        auto results = std::vector<int>{add(1, 2), add(3, 4), add(5, 6)};
+        require_container_eq(results, std::vector<int>{3, 7, 11});
     };
 
     return 0;
@@ -398,6 +419,7 @@ build-<os>/bin/tools/core_pc /path/to/core
 
 - `./tools/CB.sh debug build` – Build in debug mode (includes tests)
 - `./tools/CB.sh release build` – Build in release mode (optimized, no tests)
+- `./tools/CB.sh release build --build-tests` – Build tests in release mode without running them (useful for CI)
 - `./tools/CB.sh debug test [filter]` – Build and run tests (optional filter)
 - `./tools/CB.sh debug clean` – Remove build directories
 - `./tools/CB.sh debug list` – List all translation units

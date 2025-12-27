@@ -406,4 +406,324 @@ namespace tester::assertions
         output::message(true,message,location);
     }
 
+    // ============================================================================
+    // Container equality assertions
+    // ============================================================================
+
+    // Helper to check if a type is a container (has begin/end iterators)
+    template<typename T>
+    concept is_container = requires(T& t) {
+        t.begin();
+        t.end();
+        typename T::iterator;
+    };
+
+    // Helper to format container for error messages
+    template<is_container C>
+    std::string format_container(const C& container)
+    {
+        auto result = std::string{"["};
+        bool first = true;
+        for (const auto& elem : container) {
+            if (!first) result += ", ";
+            first = false;
+            // Use stringstream to format individual elements
+            auto ss = std::ostringstream{};
+            ss << elem;
+            result += ss.str();
+        }
+        result += "]";
+        return result;
+    }
+
+    // Helper to compare containers and find first mismatch
+    template<is_container A, is_container E>
+    std::pair<bool, std::optional<std::string>> compare_containers(const A& actual, const E& expected)
+    {
+        auto actual_it = actual.begin();
+        auto expected_it = expected.begin();
+        auto actual_end = actual.end();
+        auto expected_end = expected.end();
+        std::size_t index = 0;
+
+        while (actual_it != actual_end && expected_it != expected_end) {
+            if (!(*actual_it == *expected_it)) {
+                auto msg = std::ostringstream{};
+                msg << "mismatch at index " << index << ": actual=" << *actual_it << ", expected=" << *expected_it;
+                return {false, msg.str()};
+            }
+            ++actual_it;
+            ++expected_it;
+            ++index;
+        }
+
+        if (actual_it != actual_end) {
+            auto msg = std::ostringstream{};
+            msg << "actual has " << (std::distance(actual_it, actual_end)) << " extra element(s) starting at index " << index;
+            return {false, msg.str()};
+        }
+
+        if (expected_it != expected_end) {
+            auto msg = std::ostringstream{};
+            msg << "expected has " << (std::distance(expected_it, expected_end)) << " extra element(s) starting at index " << index;
+            return {false, msg.str()};
+        }
+
+        return {true, std::nullopt};
+    }
+
+    export template<is_container A, is_container E>
+    auto check_container_eq(const A& actual, const E& expected, const std::source_location location = std::source_location::current())
+    {
+        ++statistics.total_assertions;
+        const auto [ok, diff_msg] = compare_containers(actual, expected);
+        statistics.successful_assertions += ok;
+        
+        // Format containers for output
+        auto actual_str = format_container(actual);
+        auto expected_str = format_container(expected);
+        auto expected_final = expected_str;
+        if (diff_msg.has_value()) {
+            expected_final = expected_str + " (" + diff_msg.value() + ")";
+        }
+        
+        output::assertion(ok, actual_str, expected_final, location);
+        return ok;
+    }
+
+    export template<is_container A, is_container E>
+    void require_container_eq(const A& actual, const E& expected, const std::source_location location = std::source_location::current())
+    {
+        ++statistics.total_assertions;
+        const auto [ok, diff_msg] = compare_containers(actual, expected);
+        statistics.successful_assertions += ok;
+        
+        auto actual_str = format_container(actual);
+        auto expected_str = format_container(expected);
+        auto expected_final = expected_str;
+        if (diff_msg.has_value()) {
+            expected_final = expected_str + " (" + diff_msg.value() + ")";
+        }
+        
+        output::assertion(ok, actual_str, expected_final, location);
+        if (!ok) {
+            auto msg = std::string{"Container equality assertion failed"};
+            if (diff_msg.has_value()) {
+                msg += ": " + diff_msg.value();
+            }
+            throw assertion_failure{msg};
+        }
+    }
+
+    // ============================================================================
+    // String-focused assertions
+    // ============================================================================
+
+    // Helper to check if type is string-like (including string literal arrays)
+    template<typename T>
+    concept is_string_like = std::is_same_v<T, std::string> || 
+                             std::is_same_v<T, std::string_view> ||
+                             std::is_same_v<T, const char*> ||
+                             std::is_same_v<T, char*> ||
+                             (std::is_array_v<T> && std::is_same_v<std::remove_extent_t<T>, char>);
+
+    template<is_string_like S>
+    std::string to_std_string(const S& s)
+    {
+        if constexpr (std::is_same_v<S, std::string>) {
+            return s;
+        } else if constexpr (std::is_same_v<S, std::string_view>) {
+            return std::string{s};
+        } else if constexpr (std::is_array_v<S>) {
+            return std::string{s};
+        } else {
+            return std::string{s != nullptr ? s : ""};
+        }
+    }
+
+    // String contains - must not match containers (std::string is a container but we want it here)
+    export template<typename S1, typename S2>
+    requires is_string_like<S1> && is_string_like<S2>
+    auto check_contains(const S1& haystack, const S2& needle, const std::source_location location = std::source_location::current())
+    {
+        ++statistics.total_assertions;
+        auto haystack_str = to_std_string(haystack);
+        auto needle_str = to_std_string(needle);
+        const auto ok = haystack_str.find(needle_str) != std::string::npos;
+        statistics.successful_assertions += ok;
+        output::assertion(ok, haystack_str, std::string{"contains: "} + needle_str, location);
+        return ok;
+    }
+
+    export template<typename S1, typename S2>
+    requires is_string_like<S1> && is_string_like<S2>
+    void require_contains(const S1& haystack, const S2& needle, const std::source_location location = std::source_location::current())
+    {
+        ++statistics.total_assertions;
+        auto haystack_str = to_std_string(haystack);
+        auto needle_str = to_std_string(needle);
+        const auto ok = haystack_str.find(needle_str) != std::string::npos;
+        statistics.successful_assertions += ok;
+        output::assertion(ok, haystack_str, std::string{"contains: "} + needle_str, location);
+        if (!ok) {
+            throw assertion_failure{"String does not contain expected substring: " + needle_str};
+        }
+    }
+
+    export template<typename S1, typename S2>
+    requires is_string_like<S1> && is_string_like<S2>
+    auto check_has_substr(const S1& haystack, const S2& needle, const std::source_location location = std::source_location::current())
+    {
+        return check_contains(haystack, needle, location);
+    }
+
+    export template<typename S1, typename S2>
+    requires is_string_like<S1> && is_string_like<S2>
+    void require_has_substr(const S1& haystack, const S2& needle, const std::source_location location = std::source_location::current())
+    {
+        require_contains(haystack, needle, location);
+    }
+
+    // Helper to check if string starts with prefix
+    template<typename Str>
+    bool string_starts_with(const Str& str, const std::string& prefix)
+    {
+        auto str_s = to_std_string(str);
+        if constexpr (requires { str_s.starts_with(prefix); }) {
+            return str_s.starts_with(prefix);
+        } else {
+            return str_s.size() >= prefix.size() && str_s.substr(0, prefix.size()) == prefix;
+        }
+    }
+
+    template<typename Str>
+    bool string_ends_with(const Str& str, const std::string& suffix)
+    {
+        auto str_s = to_std_string(str);
+        if constexpr (requires { str_s.ends_with(suffix); }) {
+            return str_s.ends_with(suffix);
+        } else {
+            return str_s.size() >= suffix.size() && str_s.substr(str_s.size() - suffix.size()) == suffix;
+        }
+    }
+
+    export template<typename S1, typename S2>
+    requires is_string_like<S1> && is_string_like<S2>
+    auto check_starts_with(const S1& str, const S2& prefix, const std::source_location location = std::source_location::current())
+    {
+        ++statistics.total_assertions;
+        auto str_val = to_std_string(str);
+        auto prefix_val = to_std_string(prefix);
+        const auto ok = string_starts_with(str, prefix_val);
+        statistics.successful_assertions += ok;
+        output::assertion(ok, str_val, std::string{"starts with: "} + prefix_val, location);
+        return ok;
+    }
+
+    export template<typename S1, typename S2>
+    requires is_string_like<S1> && is_string_like<S2>
+    void require_starts_with(const S1& str, const S2& prefix, const std::source_location location = std::source_location::current())
+    {
+        ++statistics.total_assertions;
+        auto str_val = to_std_string(str);
+        auto prefix_val = to_std_string(prefix);
+        const auto ok = string_starts_with(str, prefix_val);
+        statistics.successful_assertions += ok;
+        output::assertion(ok, str_val, std::string{"starts with: "} + prefix_val, location);
+        if (!ok) {
+            throw assertion_failure{"String does not start with expected prefix: " + prefix_val};
+        }
+    }
+
+    export template<typename S1, typename S2>
+    requires is_string_like<S1> && is_string_like<S2>
+    auto check_ends_with(const S1& str, const S2& suffix, const std::source_location location = std::source_location::current())
+    {
+        ++statistics.total_assertions;
+        auto str_val = to_std_string(str);
+        auto suffix_val = to_std_string(suffix);
+        const auto ok = string_ends_with(str, suffix_val);
+        statistics.successful_assertions += ok;
+        output::assertion(ok, str_val, std::string{"ends with: "} + suffix_val, location);
+        return ok;
+    }
+
+    export template<typename S1, typename S2>
+    requires is_string_like<S1> && is_string_like<S2>
+    void require_ends_with(const S1& str, const S2& suffix, const std::source_location location = std::source_location::current())
+    {
+        ++statistics.total_assertions;
+        auto str_val = to_std_string(str);
+        auto suffix_val = to_std_string(suffix);
+        const auto ok = str_val.ends_with(suffix_val);
+        statistics.successful_assertions += ok;
+        output::assertion(ok, str_val, std::string{"ends with: "} + suffix_val, location);
+        if (!ok) {
+            throw assertion_failure{"String does not end with expected suffix: " + suffix_val};
+        }
+    }
+
+    // For char overloads (check if string contains a character) - these must come before container template to avoid ambiguity
+    export auto check_contains(const std::string& haystack, char needle, const std::source_location location = std::source_location::current())
+    {
+        ++statistics.total_assertions;
+        const auto ok = haystack.find(needle) != std::string::npos;
+        statistics.successful_assertions += ok;
+        auto needle_str = std::string{1, needle};
+        output::assertion(ok, haystack, std::string{"contains: '"} + needle_str + "'", location);
+        return ok;
+    }
+
+    export void require_contains(const std::string& haystack, char needle, const std::source_location location = std::source_location::current())
+    {
+        ++statistics.total_assertions;
+        const auto ok = haystack.find(needle) != std::string::npos;
+        statistics.successful_assertions += ok;
+        auto needle_str = std::string{1, needle};
+        output::assertion(ok, haystack, std::string{"contains: '"} + needle_str + "'", location);
+        if (!ok) {
+            throw assertion_failure{"String does not contain expected character: '" + needle_str + "'"};
+        }
+    }
+
+    // ============================================================================
+    // Container "contains element" matchers
+    // ============================================================================
+    // Note: These must come after string contains to avoid ambiguity
+    // They require the first parameter to be a container but NOT a string-like type
+
+    export template<typename C, typename E>
+    requires is_container<C> && (!is_string_like<C>)
+    auto check_contains(const C& container, const E& element, const std::source_location location = std::source_location::current())
+    {
+        ++statistics.total_assertions;
+        const auto ok = std::find(container.begin(), container.end(), element) != container.end();
+        statistics.successful_assertions += ok;
+        
+        auto container_str = format_container(container);
+        auto elem_str = std::ostringstream{};
+        elem_str << element;
+        output::assertion(ok, container_str, std::string{"contains: "} + elem_str.str(), location);
+        return ok;
+    }
+
+    export template<typename C, typename E>
+    requires is_container<C> && (!is_string_like<C>)
+    void require_contains(const C& container, const E& element, const std::source_location location = std::source_location::current())
+    {
+        ++statistics.total_assertions;
+        const auto ok = std::find(container.begin(), container.end(), element) != container.end();
+        statistics.successful_assertions += ok;
+        
+        auto container_str = format_container(container);
+        auto elem_str = std::ostringstream{};
+        elem_str << element;
+        output::assertion(ok, container_str, std::string{"contains: "} + elem_str.str(), location);
+        if (!ok) {
+            auto msg = std::ostringstream{};
+            msg << "Container does not contain expected element: " << element;
+            throw assertion_failure{msg.str()};
+        }
+    }
+
 }

@@ -7,11 +7,16 @@ Recent review of `deps/tester/tester/tester-assertions.c++m` highlighted a few c
    - Explore extending approximate comparisons to user-defined types (e.g., vectors of floats) so tolerance-based checks are easy to express.
 
 2. **Container and range assertions**
-   - Add helpers for sequence equality with readable diffs (e.g., highlight first mismatch).
-   - Optional: basic matchers like “contains element”, “starts with”, or “is permutation”.
+   - ✅ `check_container_eq` / `require_container_eq` now provide sequence equality with readable diffs (highlights first mismatch).
+   - ✅ `check_contains(container, element)` / `require_contains(container, element)` for checking if container contains element.
+   - Optional: additional matchers like "starts with" (for sequences), or "is permutation".
 
 3. **String-focused assertions**
-   - Helpers for equality with case/locale options, prefix/suffix/substring checks, and regex matches.
+   - ✅ `check_contains` / `require_contains` for substring checks
+   - ✅ `check_has_substr` / `require_has_substr` (alias for contains)
+   - ✅ `check_starts_with` / `require_starts_with` for prefix checks
+   - ✅ `check_ends_with` / `require_ends_with` for suffix checks
+   - Optional: equality with case/locale options and regex matches.
 
 4. **Predicate / matcher API**
    - Expose lightweight matchers so users can compose checks declaratively without hand-writing boilerplate lambdas.
@@ -26,9 +31,10 @@ These additions would close the feature gap with mainstream test frameworks whil
 These are focused on making test + build output easier to parse and act on by tools (including AI agents), while keeping human output readable.
 
 1. **Structured assertion events (JSONL)**
-   - Emit a dedicated `assertion_failed` (and optionally `assertion_passed`) JSONL event with structured fields:
+   - TODO: Emit a dedicated `assertion_failed` (and optionally `assertion_passed`) JSONL event with structured fields:
      - `matcher`, `actual`, `expected`, `file`, `line`, `column`, `expression`, `message`
-   - Keep the existing pretty “output” string, but avoid requiring parsers to scrape it.
+   - Currently assertions are only captured in the test's `output` field as text
+   - This would make it easier for tools to parse assertion failures without scraping text output
 
 2. **First-failure + failure index**
    - In `summary` / `run_end`, include:
@@ -55,8 +61,4 @@ These are focused on making test + build output easier to parse and act on by to
 7. **CB/tester: attach log artifacts**
    - Write large stderr/stdout to files and emit paths like `stderr_path` / `stdout_path`.
    - Optionally include a small `*_head` snippet in JSONL (bounded by size limits).
-
-8. **Optional SARIF diagnostics (guarded)**
-   - Consider offering `--diagnostics=sarif` as an opt-in mode (only if the compiler supports it and it does not crash).
-   - Treat SARIF as supplemental to CB/tester JSONL (not a replacement).
 
