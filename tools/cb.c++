@@ -651,9 +651,14 @@ private:
         else {
             // ---------- Dynamic linking ----------
             if (is_darwin) {
+                // Workaround for llvm/llvm-project#92121 and #168287:
+                // When using ld64.lld, we must explicitly link with LLVM libunwind
+                // to avoid exception handling bugs on macOS ARM.
+                // See: https://gist.github.com/ruoka/a62dbdddeacec52d75382791bdc0a2ba
                 link_flags = "-pthread "
                              "-L" + llvm_prefix + "/lib "
                              "-Wl,-rpath," + llvm_prefix + "/lib "
+                             "-lunwind "
                              "-Wl,-dead_strip ";
                 if (fs::exists("/usr/lib/system/introspection/libunwind.reexported_symbols")) {
                     link_flags += "-Wl,-unexported_symbols_list,/usr/lib/system/introspection/libunwind.reexported_symbols";
