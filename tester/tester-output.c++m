@@ -10,6 +10,8 @@ module;
 #   define TESTER_HAVE_CXXABI 0
 #endif
 #include <unistd.h>
+#include "../tools/jsonl-format.hpp"
+#include "../tools/term.hpp"
 
 export module tester:output;
 import :data;
@@ -18,40 +20,11 @@ import std;
 namespace tester::output
 {
 
-namespace color
-{
-    constinit auto reset   = "\033[0m";
-
-    namespace text
-    {
-        constinit auto black   = "\033[30m"; // black
-        constinit auto red     = "\033[31m"; // red
-        constinit auto green   = "\033[32m"; // green
-        constinit auto yellow  = "\033[33m"; // yellow
-        constinit auto blue    = "\033[34m"; // blue
-        constinit auto magenta = "\033[35m"; // magenta
-        constinit auto cyan    = "\033[36m"; // cyan
-        constinit auto white   = "\033[37m"; // white
-    }
-
-    namespace background
-    {
-        constinit auto black   = "\033[40m"; // black
-        constinit auto red     = "\033[41m"; // red
-        constinit auto green   = "\033[42m"; // green
-        constinit auto yellow  = "\033[43m"; // yellow
-        constinit auto blue    = "\033[44m"; // blue
-        constinit auto magenta = "\033[45m"; // magenta
-        constinit auto cyan    = "\033[46m"; // cyan
-        constinit auto white   = "\033[47m"; // white
-    }
-}
+namespace color = ::term;
 
 using namespace data;
 
 namespace {
-
-constexpr auto jsonl_version = 1;
 
 enum class output_format { human, jsonl };
 enum class jsonl_output_policy { never, failures, always };
@@ -63,8 +36,10 @@ struct output_config
     std::size_t slowest = 0;
     jsonl_output_policy jsonl_output = jsonl_output_policy::failures;
     std::size_t jsonl_output_max_bytes = 16384;
-    std::string schema = "tester-jsonl";
 };
+
+// Schema and version are owned by jsonl_context class in jsonl-format.hpp
+// Implementation details are encapsulated in jsonl_context
 
 auto& cfg()
 {
@@ -72,21 +47,9 @@ auto& cfg()
     return config;
 }
 
-auto unix_timestamp(std::chrono::system_clock::time_point tp)
-{
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-        tp.time_since_epoch()).count();
-}
+// Convert time_point to unix_ms (shared utility)
+auto unix_timestamp(std::chrono::system_clock::time_point tp) { return jsonl_util::unix_ms(tp); }
 
-auto pid_u32()
-{
-    return static_cast<std::uint32_t>(::getpid());
-}
-
-auto schema_name() -> std::string_view
-{
-    return cfg().schema;
-}
 
 auto current_format()
 {
@@ -119,32 +82,8 @@ auto jsonl_output_max_bytes()
     return cfg().jsonl_output_max_bytes;
 }
 
-auto json_escape(std::string_view sv)
-{
-    auto out = std::string{};
-    out.reserve(sv.size() + 16);
-    for(const unsigned char ch : sv)
-    {
-        switch(ch)
-        {
-            case '\\': out += "\\\\"; break;
-            case '"':  out += "\\\""; break;
-            case '\b': out += "\\b"; break;
-            case '\f': out += "\\f"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if(ch < 0x20)
-                    out += std::format("\\u{:04x}", static_cast<unsigned int>(ch));
-                else
-                    out.push_back(static_cast<char>(ch));
-        }
-    }
-    return out;
-}
-
-auto json_bool(bool b) { return b ? std::string_view{"true"} : std::string_view{"false"}; }
+// JSON formatting utilities are now provided by jsonl-format.hpp
+using jsonl_util::escape;
 
 auto as_ms(std::chrono::nanoseconds ns)
 {
@@ -204,20 +143,6 @@ auto hex_u64(std::uint64_t v)
     return std::string{buf, 16};
 }
 
-auto stable_test_id(const test_metadata& m)
-{
-    auto s = std::string{};
-    s.reserve(m.test_name.size() + m.file_name.size() + 32);
-    s.append(m.file_name);
-    s.push_back(':');
-    s.append(std::to_string(m.line));
-    s.push_back(':');
-    s.append(std::to_string(m.column));
-    s.push_back('|');
-    s.append(m.test_name);
-    return hex_u64(fnv1a64(s));
-}
-
 auto prepare_json_output(const std::string& raw)
 {
     auto cleaned = strip_ansi(raw);
@@ -238,12 +163,6 @@ auto prepare_json_output(const std::string& raw)
 auto& json_os() { return std::cout; }   // machine output channel
 auto& human_os() { return std::clog; } // human/log channel
 auto& result_os() { return std::clog; } // always non-JSON, keep off stdout
-
-auto& meta_printed()
-{
-    static auto printed = false;
-    return printed;
-}
 
 auto& run_started_unix_ms()
 {
@@ -281,6 +200,12 @@ auto& run_tags()
     return tags;
 }
 
+auto& current_test_id()
+{
+    static auto test_id = std::string{};
+    return test_id;
+}
+
 auto& pending_run_end_passed()
 {
     static auto pending = std::optional<bool>{};
@@ -291,6 +216,15 @@ auto& run_end_emitted()
 {
     static auto emitted = false;
     return emitted;
+}
+
+// JSONL context using shared utilities from jsonl-format.hpp
+// Context owns schema and version as static constants
+inline auto& jsonl_ctx()
+{
+    static auto ctx = jsonl_util::jsonl_context<std::ostream>{json_os()};
+    ctx.set_enabled(is_jsonl());
+    return ctx;
 }
 
 void record_run_start(std::string_view mode, std::string_view tags)
@@ -311,38 +245,16 @@ void record_run_end()
         run_finished_monotonic() = std::chrono::steady_clock::now();
 }
 
-void internal_print_meta_once()
-{
-    if(!is_jsonl() || meta_printed())
-        return;
-
-    meta_printed() = true;
-
-    json_os()
-        << "{\"type\":\"meta\""
-        << ",\"schema\":\"" << json_escape(schema_name()) << "\""
-        << ",\"version\":" << jsonl_version
-        << ",\"pid\":" << pid_u32()
-        << ",\"ts_unix_ms\":" << unix_timestamp(std::chrono::system_clock::now())
-        << "}\n";
-}
-
 void internal_run_start(std::string_view mode, std::string_view tags)
 {
     record_run_start(mode, tags);
     if(!is_jsonl()) return;
 
-    internal_print_meta_once();
-
-    json_os()
-        << "{\"type\":\"run_start\""
-        << ",\"schema\":\"" << json_escape(schema_name()) << "\""
-        << ",\"version\":" << jsonl_version
-        << ",\"pid\":" << pid_u32()
-        << ",\"mode\":\"" << json_escape(mode) << "\""
-        << ",\"tags\":\"" << json_escape(tags) << "\""
-        << ",\"ts_unix_ms\":" << unix_timestamp(run_started_unix_ms())
-        << "}\n";
+    // Single shared JSONL emission style:
+    json_os() << jsonl_ctx()("run_start", run_started_unix_ms()) << [&](auto& os){
+        os << ",\"mode\":\"" << escape(mode) << "\"";
+        os << ",\"tags\":\"" << escape(tags) << "\"";
+    };
 }
 
 void internal_run_end(bool passed)
@@ -359,27 +271,64 @@ void internal_run_end(bool passed)
     }
 
     const auto ended_at = std::chrono::system_clock::now();
-    const auto ended = unix_timestamp(ended_at);
     const auto dur_ms = (run_started_unix_ms() != std::chrono::system_clock::time_point{})
-        ? std::chrono::duration_cast<std::chrono::milliseconds>(ended_at - run_started_unix_ms()).count()
+        ? jsonl_util::duration_ms(run_started_unix_ms(), ended_at)
         : 0;
 
-    json_os()
-        << "{\"type\":\"run_end\""
-        << ",\"schema\":\"" << json_escape(schema_name()) << "\""
-        << ",\"version\":" << jsonl_version
-        << ",\"pid\":" << pid_u32()
-        << ",\"mode\":\"" << json_escape(run_mode()) << "\""
-        << ",\"tags\":\"" << json_escape(run_tags()) << "\""
-        << ",\"passed\":" << json_bool(passed)
-        << ",\"duration_ms\":" << dur_ms
-        << ",\"ts_unix_ms\":" << ended
-        << "}\n";
+    json_os() << jsonl_ctx()("run_end", ended_at) << [&](auto& os){
+        os << ",\"mode\":\"" << escape(run_mode()) << "\"";
+        os << ",\"tags\":\"" << escape(run_tags()) << "\"";
+        os << ",\"passed\":" << (passed ? "true" : "false");
+        os << ",\"duration_ms\":" << dur_ms;
+    };
 
     run_end_emitted() = true;
 }
 
+// Helper function to emit JSONL assertion events (non-template to avoid TU-local entity warnings)
+// Must be in anonymous namespace to access json_escape, jsonl_policy, etc.
+void emit_jsonl_assertion_event_impl(
+    bool ok,
+    std::string_view matcher,
+    std::string_view actual_json,
+    std::string_view expected_json,
+    std::string_view test_id,
+    std::string_view file,
+    std::uint_least32_t line,
+    std::uint_least32_t column)
+{
+    const auto policy = jsonl_policy();
+    const bool should_emit = !ok || (policy == jsonl_output_policy::always);
+    
+    if(should_emit)
+    {
+        json_os() << jsonl_ctx()(ok ? "assertion_passed" : "assertion_failed") << [&](auto& os){
+            os << ",\"test_id\":\"" << escape(test_id) << "\"";
+            os << ",\"matcher\":\"" << escape(matcher) << "\"";
+            os << ",\"actual\":" << actual_json;
+            os << ",\"expected\":" << expected_json;
+            os << ",\"file\":\"" << escape(file) << "\"";
+            os << ",\"line\":" << line;
+            os << ",\"column\":" << column;
+        };
+    }
+}
+
 } // namespace
+
+export auto stable_test_id(const test_metadata& m)
+{
+    auto s = std::string{};
+    s.reserve(m.test_name.size() + m.file_name.size() + 32);
+    s.append(m.file_name);
+    s.push_back(':');
+    s.append(std::to_string(m.line));
+    s.push_back(':');
+    s.append(std::to_string(m.column));
+    s.push_back('|');
+    s.append(m.test_name);
+    return hex_u64(fnv1a64(s));
+}
 
 bool jsonl_enabled()
 {
@@ -414,9 +363,19 @@ export void set_jsonl_output_max_bytes(std::size_t n)
     cfg().jsonl_output_max_bytes = n;
 }
 
-export void set_schema(std::string_view schema)
+export void set_current_test_id(std::string_view id)
 {
-    cfg().schema.assign(schema.begin(), schema.end());
+    current_test_id().assign(id.begin(), id.end());
+}
+
+export void clear_current_test_id()
+{
+    current_test_id().clear();
+}
+
+export std::string_view get_current_test_id()
+{
+    return current_test_id();
 }
 
 void begin_run(std::string_view mode, std::string_view tags)
@@ -433,20 +392,17 @@ void print_test_cases(auto included)
 {
     if(is_jsonl())
     {
-        internal_print_meta_once();
         for(const auto& tc : test_cases)
         {
             if(!included(tc)) continue;
-            json_os()
-                << "{\"type\":\"case\""
-                << ",\"id\":\"" << stable_test_id(tc) << "\""
-                << ",\"set\":\"" << json_escape(tc.test_set_name) << "\""
-                << ",\"name\":\"" << json_escape(tc.test_name) << "\""
-                << ",\"file\":\"" << json_escape(tc.file_name) << "\""
-                << ",\"line\":" << tc.line
-                << ",\"column\":" << tc.column
-                << ",\"ts_unix_ms\":" << unix_timestamp(std::chrono::system_clock::now())
-                << "}\n";
+            json_os() << jsonl_ctx()("case") << [&](auto& os){
+                os << ",\"id\":\"" << stable_test_id(tc) << "\"";
+                os << ",\"set\":\"" << escape(tc.test_set_name) << "\"";
+                os << ",\"name\":\"" << escape(tc.test_name) << "\"";
+                os << ",\"file\":\"" << escape(tc.file_name) << "\"";
+                os << ",\"line\":" << tc.line;
+                os << ",\"column\":" << tc.column;
+            };
         }
         return;
     }
@@ -470,30 +426,27 @@ void print_test_results()
             const auto include_output = (policy == jsonl_output_policy::always)
                 || (policy == jsonl_output_policy::failures && !result.success);
 
-            json_os()
-                << "{\"type\":\"test\""
-                << ",\"id\":\"" << stable_test_id(result) << "\""
-                << ",\"set\":\"" << json_escape(result.test_set_name) << "\""
-                << ",\"name\":\"" << json_escape(result.test_name) << "\""
-                << ",\"file\":\"" << json_escape(result.file_name) << "\""
-                << ",\"line\":" << result.line
-                << ",\"column\":" << result.column
-                << ",\"success\":" << json_bool(result.success)
-                << ",\"duration_ms\":" << as_ms(result.duration);
-            json_os()
-                << ",\"assertions_ok\":" << result.assertions_ok
-                << ",\"assertions_total\":" << result.assertions_total
-                << ",\"started_unix_ms\":" << unix_timestamp(result.started_at)
-                << ",\"finished_unix_ms\":" << unix_timestamp(result.finished_at);
-            if(include_output)
-            {
-                auto [out, truncated, original_bytes] = prepare_json_output(result.output);
-                json_os()
-                    << ",\"output\":\"" << json_escape(out) << "\""
-                    << ",\"output_truncated\":" << json_bool(truncated)
-                    << ",\"output_bytes\":" << original_bytes;
-            }
-            json_os() << ",\"ts_unix_ms\":" << unix_timestamp(std::chrono::system_clock::now()) << "}\n";
+            json_os() << jsonl_ctx()("test") << [&](auto& os){
+                os << ",\"id\":\"" << stable_test_id(result) << "\"";
+                os << ",\"set\":\"" << escape(result.test_set_name) << "\"";
+                os << ",\"name\":\"" << escape(result.test_name) << "\"";
+                os << ",\"file\":\"" << escape(result.file_name) << "\"";
+                os << ",\"line\":" << result.line;
+                os << ",\"column\":" << result.column;
+                os << ",\"success\":" << (result.success ? "true" : "false");
+                os << ",\"duration_ms\":" << as_ms(result.duration);
+                os << ",\"assertions_ok\":" << result.assertions_ok;
+                os << ",\"assertions_total\":" << result.assertions_total;
+                os << ",\"started_unix_ms\":" << unix_timestamp(result.started_at);
+                os << ",\"finished_unix_ms\":" << unix_timestamp(result.finished_at);
+                if(include_output)
+                {
+                    auto [out, truncated, original_bytes] = prepare_json_output(result.output);
+                    os << ",\"output\":\"" << escape(out) << "\"";
+                    os << ",\"output_truncated\":" << (truncated ? "true" : "false");
+                    os << ",\"output_bytes\":" << original_bytes;
+                }
+            };
         }
         return;
     }
@@ -557,37 +510,30 @@ void print_test_statistics()
 
     if(is_jsonl())
     {
-        internal_print_meta_once();
-        json_os()
-            << "{\"type\":\"summary\""
-            << ",\"schema\":\"" << json_escape(schema_name()) << "\""
-            << ",\"version\":" << jsonl_version
-            << ",\"pid\":" << pid_u32()
-            << ",\"tests_ok\":" << statistics.successful_tests
-            << ",\"tests_total\":" << statistics.total_tests
-            << ",\"assertions_ok\":" << statistics.successful_assertions
-            << ",\"assertions_total\":" << statistics.total_assertions
-            << ",\"passed\":" << json_bool(passed);
-
-        if(!slowest.empty())
-        {
-            json_os() << ",\"slowest\":[";
-            for(std::size_t i = 0; i < slowest.size(); ++i)
+        json_os() << jsonl_ctx()("summary") << [&](auto& os){
+            os << ",\"tests_ok\":" << statistics.successful_tests;
+            os << ",\"tests_total\":" << statistics.total_tests;
+            os << ",\"assertions_ok\":" << statistics.successful_assertions;
+            os << ",\"assertions_total\":" << statistics.total_assertions;
+            os << ",\"passed\":" << (passed ? "true" : "false");
+            if(!slowest.empty())
             {
-                const auto& r = *slowest[i];
-                if(i) json_os() << ",";
-                json_os()
-                    << "{\"id\":\"" << stable_test_id(r) << "\""
-                    << ",\"name\":\"" << json_escape(r.test_name) << "\""
-                    << ",\"file\":\"" << json_escape(r.file_name) << "\""
-                    << ",\"line\":" << r.line
-                    << ",\"column\":" << r.column
-                    << ",\"duration_ms\":" << as_ms(r.duration)
-                    << "}";
+                os << ",\"slowest\":[";
+                for(std::size_t i = 0; i < slowest.size(); ++i)
+                {
+                    const auto& r = *slowest[i];
+                    if(i) os << ",";
+                    os << "{\"id\":\"" << stable_test_id(r) << "\"";
+                    os << ",\"name\":\"" << escape(r.test_name) << "\"";
+                    os << ",\"file\":\"" << escape(r.file_name) << "\"";
+                    os << ",\"line\":" << r.line;
+                    os << ",\"column\":" << r.column;
+                    os << ",\"duration_ms\":" << as_ms(r.duration);
+                    os << "}";
+                }
+                os << "]";
             }
-            json_os() << "]";
-        }
-        json_os() << ",\"ts_unix_ms\":" << unix_timestamp(std::chrono::system_clock::now()) << "}\n";
+        };
 
         if(want_result_line())
         {
@@ -611,22 +557,16 @@ void print_test_statistics()
             pending_run_end_passed() = std::nullopt;
 
             const auto ended_at = std::chrono::system_clock::now();
-            const auto ended = unix_timestamp(ended_at);
             const auto dur_ms = (run_started_unix_ms() != std::chrono::system_clock::time_point{})
-                ? std::chrono::duration_cast<std::chrono::milliseconds>(ended_at - run_started_unix_ms()).count()
+                ? jsonl_util::duration_ms(run_started_unix_ms(), ended_at)
                 : 0;
 
-            json_os()
-                << "{\"type\":\"run_end\""
-                << ",\"schema\":\"" << json_escape(schema_name()) << "\""
-                << ",\"version\":" << jsonl_version
-                << ",\"pid\":" << pid_u32()
-                << ",\"mode\":\"" << json_escape(run_mode()) << "\""
-                << ",\"tags\":\"" << json_escape(run_tags()) << "\""
-                << ",\"passed\":" << json_bool(passed_value)
-                << ",\"duration_ms\":" << dur_ms
-                << ",\"ts_unix_ms\":" << ended
-                << "}\n";
+            json_os() << jsonl_ctx()("run_end", ended_at) << [&](auto& os){
+                os << ",\"mode\":\"" << escape(run_mode()) << "\"";
+                os << ",\"tags\":\"" << escape(run_tags()) << "\"";
+                os << ",\"passed\":" << (passed_value ? "true" : "false");
+                os << ",\"duration_ms\":" << dur_ms;
+            };
 
             run_end_emitted() = true;
         }
@@ -818,6 +758,67 @@ auto function_name(const std::source_location sl = std::source_location::current
     return display;
 }
 
+// Extract matcher name from function name (e.g., "require_eq", "check_contains")
+auto extract_matcher_name(const std::source_location sl)
+{
+    using namespace std::literals;
+    auto name = std::string_view{sl.function_name()};
+    
+    // Find "assertions::" prefix and extract the matcher name
+    if(auto assertions_pos = name.find("assertions::"); assertions_pos != std::string_view::npos)
+        name.remove_prefix(assertions_pos + "assertions::"s.length());
+    
+    // Extract base function name (before '(' or '<')
+    auto end = name.find_first_of("(<");
+    auto base = name.substr(0, end != std::string_view::npos ? end : name.size());
+    
+    return std::string{base};
+}
+
+// Format value as JSON string (for structured assertion events)
+template <typename V>
+std::string value_to_json_string(const V& val)
+{
+    auto ss = std::ostringstream{};
+    using T = std::remove_cvref_t<V>;
+    
+    if constexpr (std::is_same_v<T, std::string>)
+        ss << '"' << escape(val) << '"';
+    else if constexpr (std::is_same_v<T, std::string_view>)
+        ss << '"' << escape(val) << '"';
+    else if constexpr (std::is_same_v<T, const char*> || std::is_same_v<T, char*>)
+        ss << '"' << escape(val != nullptr ? std::string_view{val} : std::string_view{"nullptr"}) << '"';
+    else if constexpr (std::is_pointer_v<T>)
+    {
+        if(val != nullptr)
+        {
+            auto temp = std::ostringstream{};
+            temp << val;
+            ss << '"' << escape(temp.str()) << '"';
+        }
+        else
+            ss << "\"nullptr\"";
+    }
+    else if constexpr (std::is_enum_v<T>)
+        ss << std::to_underlying(val);
+    else if constexpr (std::is_arithmetic_v<T>)
+    {
+        if constexpr (std::is_same_v<T, bool>)
+            ss << (val ? "true" : "false");
+        else
+            ss << val;
+    }
+    else
+    {
+        // For complex types, format using ostringstream and escape as JSON string
+        auto temp = std::ostringstream{};
+        temp << val;
+        ss << '"' << escape(temp.str()) << '"';
+    }
+    
+    return ss.str();
+}
+
 template<class T>
 concept chrono_clock = requires {
     typename T::time_point;
@@ -879,9 +880,45 @@ void value(const V& val)
         stream << "..."; // unknown type
 }
 
+// Wrapper function in module namespace that calls the anonymous namespace implementation
+void emit_jsonl_assertion_event_wrapper(
+    bool ok,
+    std::string_view matcher,
+    std::string_view actual_json,
+    std::string_view expected_json,
+    std::string_view test_id,
+    std::string_view file,
+    std::uint_least32_t line,
+    std::uint_least32_t column)
+{
+    // Forward to the anonymous namespace implementation
+    emit_jsonl_assertion_event_impl(ok, matcher, actual_json, expected_json, test_id, file, line, column);
+}
+
 template<typename A,typename E>
 void assertion(const bool ok, const A& actual, const E& expected, const std::source_location location1, const std::source_location location2 = std::source_location::current())
 {
+    // Emit structured JSONL assertion event if in JSONL mode
+    // Use exported wrapper functions to avoid TU-local entity warnings
+    if(jsonl_enabled() && !get_current_test_id().empty())
+    {
+        const auto matcher = extract_matcher_name(location2);
+        const auto actual_str = value_to_json_string(actual);
+        const auto expected_str = value_to_json_string(expected);
+        const auto test_id = get_current_test_id();
+        
+        emit_jsonl_assertion_event_wrapper(
+            ok,
+            matcher,
+            actual_str,
+            expected_str,
+            test_id,
+            location1.file_name(),
+            location1.line(),
+            location1.column());
+    }
+    
+    // Always generate human-readable output
     if(ok)
         stream << color::text::green;
     else

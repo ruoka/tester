@@ -367,7 +367,7 @@ const auto _ = feature();
 ./tools/CB.sh debug test -- --tags="scenario.*Happy"
 
 # JSONL output (stdout), with human logs on stderr:
-./tools/CB.sh debug test -- --output=jsonl --schema=tester-jsonl --jsonl-output=always --slowest=10
+./tools/CB.sh debug test -- --output=jsonl --jsonl-output=always --slowest=10
 
 # Emit a stable RESULT: line (on stderr in JSONL mode):
 ./tools/CB.sh debug test -- --output=jsonl --result

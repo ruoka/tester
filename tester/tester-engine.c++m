@@ -140,6 +140,9 @@ auto run_test_cases(auto filter)
         output::test_case(*tc);
 
         auto tr = test_result{*tc};
+        const auto test_id = output::stable_test_id(*tc);
+        output::set_current_test_id(test_id);
+        
         const auto started = std::chrono::steady_clock::now();
         const auto started_sys = std::chrono::system_clock::now();
         const auto assertions_total_before = statistics.total_assertions;
@@ -189,6 +192,9 @@ auto run_test_cases(auto filter)
         tr.finished_at = finished_sys;
         tr.assertions_total = statistics.total_assertions - assertions_total_before;
         tr.assertions_ok = statistics.successful_assertions - assertions_ok_before;
+        
+        output::clear_current_test_id();
+        
         // Erase the test case after execution. Note that if nested test cases were added
         // during tc->run(), they are already in test_cases and will be processed in
         // subsequent loop iterations. The test_case object itself is safe to erase here

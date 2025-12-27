@@ -26,6 +26,8 @@
 #include <stdexcept>
 #include <unistd.h>
 #include <sys/wait.h>
+#include "jsonl-format.hpp"
+#include "term.hpp"
 
 namespace fs = std::filesystem;
 
@@ -37,112 +39,26 @@ using namespace std::string_literals;
 using namespace std::string_view_literals;
 
 namespace jsonl {
-inline bool enabled = false;
-inline bool meta_printed = false;
-inline bool eof_emitted = false;
-inline constexpr auto schema = "cb-jsonl";
-inline constexpr int version = 1;
+// JSONL state is owned by jsonl_context (no global flags)
 enum class phase { none, build, test };
 inline phase current_phase = phase::none;
 inline std::chrono::steady_clock::time_point phase_started{};
 inline bool build_end_emitted = false;
 
-inline auto unix_ms()
+// JSONL context using shared utilities from jsonl-format.hpp
+inline auto& ctx()
 {
-    using namespace std::chrono;
-    return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+    static auto context = jsonl_util::jsonl_context<std::ostream>{std::cout};
+    return context;
 }
 
-inline std::string escape(std::string_view sv)
-{
-    auto out = std::string{};
-    out.reserve(sv.size() + 8);
-    for(const unsigned char ch : sv)
-    {
-        switch(ch)
-        {
-            case '\\': out += "\\\\"; break;
-            case '"':  out += "\\\""; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if(ch < 0x20)
-                {
-                    static constexpr char hex[] = "0123456789abcdef";
-                    out += "\\u";
-                    out.push_back('0');
-                    out.push_back('0');
-                    out.push_back(hex[(ch >> 4) & 0xF]);
-                    out.push_back(hex[ch & 0xF]);
-                }
-                else
-                    out.push_back(static_cast<char>(ch));
-        }
-    }
-    return out;
-}
+inline auto enabled() -> bool { return ctx().is_enabled(); }
+inline void set_enabled(bool v) { ctx().set_enabled(v); }
+inline void reset() { ctx().reset_stream_state(); }
 
-inline void emit_meta()
-{
-    if(!enabled || meta_printed) return;
-    meta_printed = true;
-    std::cout
-        << "{\"type\":\"meta\",\"schema\":\"" << schema << "\",\"version\":" << version
-        << ",\"pid\":" << static_cast<unsigned>(::getpid())
-        << ",\"ts_unix_ms\":" << unix_ms()
-        << "}\n";
-}
-
-inline void emit_kv_bool(std::string& s, std::string_view key, bool v)
-{
-    s += ",\"";
-    s += key;
-    s += "\":";
-    s += (v ? "true" : "false");
-}
-
-inline void emit_kv_int(std::string& s, std::string_view key, long long v)
-{
-    s += ",\"";
-    s += key;
-    s += "\":";
-    s += std::to_string(v);
-}
-
-inline void emit_kv_str(std::string& s, std::string_view key, std::string_view v)
-{
-    s += ",\"";
-    s += key;
-    s += "\":\"";
-    s += escape(v);
-    s += "\"";
-}
-
-inline void emit_event(std::string_view type, auto&& add_fields)
-{
-    if(!enabled) return;
-    emit_meta();
-    auto line = std::string{};
-    line.reserve(256);
-    line += "{\"type\":\"";
-    line += type;
-    line += "\"";
-    emit_kv_str(line, "schema", schema);
-    emit_kv_int(line, "version", version);
-    emit_kv_int(line, "pid", static_cast<unsigned>(::getpid()));
-    emit_kv_int(line, "ts_unix_ms", unix_ms());
-    add_fields(line);
-    line += "}\n";
-    std::cout << line << std::flush;
-}
-
-inline void emit_eof()
-{
-    if(!enabled || eof_emitted) return;
-    eof_emitted = true;
-    emit_event("eof", [&](std::string&){});
-}
+inline void emit_meta() { ctx().emit_meta(); }
+inline void emit_event(std::string_view type, auto&& add_fields) { ctx()(type) << std::forward<decltype(add_fields)>(add_fields); }
+inline void emit_eof() { ctx().emit_eof(); }
 } // namespace jsonl
 
 static void jsonl_atexit_handler()
@@ -154,41 +70,29 @@ namespace log {
 inline std::mutex mutex{};
 inline bool use_stderr = false;
 
-namespace color {
-    constinit auto reset   = "\033[0m";
-    constinit auto cyan    = "\033[0;36m";
-    constinit auto yellow  = "\033[0;33m";
-    constinit auto green   = "\033[0;32m";
-    constinit auto magenta = "\033[0;35m";
-    constinit auto gray    = "\033[0;90m";
-    
-    namespace bold {
-        constinit auto red    = "\033[1;31m";
-        constinit auto yellow = "\033[1;33m";
-        constinit auto blue   = "\033[1;34m";
-        constinit auto green  = "\033[1;32m";
-    }
-}
+namespace color = ::term;
 
 inline void error(std::string_view msg) {
     auto lock = std::lock_guard<std::mutex>{mutex};
-    std::cerr << color::bold::red << "ERROR" << color::reset << " " << msg << "\n";
-    if(cb::jsonl::enabled)
+    // In JSONL mode, skip human-readable output to keep stdout pure (JSONL event contains the message)
+    if(!cb::jsonl::enabled()) {
+        std::cerr << color::bold::red << "ERROR" << color::reset << " " << msg << "\n";
+    }
+    if(cb::jsonl::enabled())
     {
         // If build fails mid-flight, emit a structured build_end before cb_error.
         if(cb::jsonl::current_phase == cb::jsonl::phase::build && !cb::jsonl::build_end_emitted)
         {
             const auto finished = std::chrono::steady_clock::now();
-            cb::jsonl::emit_event("build_end", [&](std::string& line){
-                cb::jsonl::emit_kv_bool(line, "ok", false);
-                cb::jsonl::emit_kv_int(line, "duration_ms",
-                    std::chrono::duration_cast<std::chrono::milliseconds>(finished - cb::jsonl::phase_started).count());
+            cb::jsonl::emit_event("build_end", [&](std::ostream& os){
+                os << ",\"ok\":false";
+                os << ",\"duration_ms\":" << jsonl_util::duration_ms(cb::jsonl::phase_started, finished);
             });
             cb::jsonl::build_end_emitted = true;
         }
 
-        cb::jsonl::emit_event("cb_error", [&](std::string& line){
-            cb::jsonl::emit_kv_str(line, "message", msg);
+        cb::jsonl::emit_event("cb_error", [&](std::ostream& os){
+            os << ",\"message\":\"" << jsonl_util::escape(msg) << "\"";
         });
     }
 }
@@ -615,7 +519,7 @@ private:
         // Machine-readable diagnostics (JSONL mode)
         // ------------------------------------------------------------------
         // Keep output low-noise in machine runs (stderr only).
-        if (cb::jsonl::enabled) {
+        if (cb::jsonl::enabled()) {
             compile_flags += "-fno-caret-diagnostics -fno-show-column -fno-show-source-location ";
         }
     
@@ -1367,11 +1271,11 @@ public:
         cb::jsonl::phase_started = build_started;
         cb::jsonl::build_end_emitted = false;
 
-        if (cb::jsonl::enabled) {
-            cb::jsonl::emit_event("build_start", [&](std::string& line){
-                cb::jsonl::emit_kv_str(line, "config", config_name(config));
-                cb::jsonl::emit_kv_bool(line, "include_tests", false);
-                cb::jsonl::emit_kv_bool(line, "include_examples", include_examples);
+        if (cb::jsonl::enabled()) {
+            cb::jsonl::emit_event("build_start", [&](std::ostream& os){
+                os << ",\"config\":\"" << jsonl_util::escape(config_name(config)) << "\"";
+                os << ",\"include_tests\":false";
+                os << ",\"include_examples\":" << (include_examples ? "true" : "false");
             });
         }
 
@@ -1385,12 +1289,10 @@ public:
         build_std_o();
         scan_and_order();
         if (units_in_topological_order.empty()) {
-            if (cb::jsonl::enabled) {
-                cb::jsonl::emit_event("build_end", [&](std::string& line){
-                    cb::jsonl::emit_kv_bool(line, "ok", false);
-                    cb::jsonl::emit_kv_int(line, "duration_ms",
-                        std::chrono::duration_cast<std::chrono::milliseconds>(
-                            std::chrono::steady_clock::now() - build_started).count());
+            if (cb::jsonl::enabled()) {
+                cb::jsonl::emit_event("build_end", [&](std::ostream& os){
+                    os << ",\"ok\":false";
+                    os << ",\"duration_ms\":" << jsonl_util::duration_ms(build_started, std::chrono::steady_clock::now());
                 });
                 cb::jsonl::build_end_emitted = true;
             }
@@ -1402,12 +1304,10 @@ public:
         compile_units();
         link_executables();
 
-        if (cb::jsonl::enabled) {
-            cb::jsonl::emit_event("build_end", [&](std::string& line){
-                cb::jsonl::emit_kv_bool(line, "ok", true);
-                cb::jsonl::emit_kv_int(line, "duration_ms",
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::steady_clock::now() - build_started).count());
+        if (cb::jsonl::enabled()) {
+            cb::jsonl::emit_event("build_end", [&](std::ostream& os){
+                os << ",\"ok\":true";
+                os << ",\"duration_ms\":" << jsonl_util::duration_ms(build_started, std::chrono::steady_clock::now());
             });
             cb::jsonl::build_end_emitted = true;
             cb::jsonl::current_phase = cb::jsonl::phase::none;
@@ -1423,10 +1323,10 @@ public:
         cb::jsonl::current_phase = cb::jsonl::phase::build;
         cb::jsonl::phase_started = build_started;
         cb::jsonl::build_end_emitted = false;
-        cb::jsonl::emit_event("build_start", [&](std::string& line){
-            cb::jsonl::emit_kv_str(line, "config", config_name(config));
-            cb::jsonl::emit_kv_bool(line, "include_tests", true);
-            cb::jsonl::emit_kv_bool(line, "include_examples", include_examples);
+        cb::jsonl::emit_event("build_start", [&](std::ostream& os){
+            os << ",\"config\":\"" << jsonl_util::escape(config_name(config)) << "\"";
+            os << ",\"include_tests\":true";
+            os << ",\"include_examples\":" << (include_examples ? "true" : "false");
         });
 
         include_tests = true;
@@ -1441,10 +1341,9 @@ public:
         }
     
         const auto build_finished = std::chrono::steady_clock::now();
-        cb::jsonl::emit_event("build_end", [&](std::string& line){
-            cb::jsonl::emit_kv_bool(line, "ok", true);
-            cb::jsonl::emit_kv_int(line, "duration_ms",
-                std::chrono::duration_cast<std::chrono::milliseconds>(build_finished - build_started).count());
+        cb::jsonl::emit_event("build_end", [&](std::ostream& os){
+            os << ",\"ok\":true";
+            os << ",\"duration_ms\":" << jsonl_util::duration_ms(build_started, build_finished);
         });
         cb::jsonl::build_end_emitted = true;
         cb::jsonl::current_phase = cb::jsonl::phase::none;
@@ -1457,8 +1356,8 @@ public:
         const auto test_started = std::chrono::steady_clock::now();
         cb::jsonl::current_phase = cb::jsonl::phase::test;
         cb::jsonl::phase_started = test_started;
-        cb::jsonl::emit_event("test_start", [&](std::string& line){
-            cb::jsonl::emit_kv_str(line, "runner", runner);
+        cb::jsonl::emit_event("test_start", [&](std::ostream& os){
+            os << ",\"runner\":\"" << jsonl_util::escape(runner) << "\"";
         });
 
         auto r = system(cmd.c_str());
@@ -1479,14 +1378,13 @@ public:
         }
 #endif
         const auto test_finished = std::chrono::steady_clock::now();
-        cb::jsonl::emit_event("test_end", [&](std::string& line){
-            cb::jsonl::emit_kv_bool(line, "ok", r == 0);
-            cb::jsonl::emit_kv_int(line, "exit_code", exit_code);
-            cb::jsonl::emit_kv_int(line, "wait_status", r);
-            cb::jsonl::emit_kv_bool(line, "signaled", signaled);
-            if(signaled) cb::jsonl::emit_kv_int(line, "signal", signal_number);
-            cb::jsonl::emit_kv_int(line, "duration_ms",
-                std::chrono::duration_cast<std::chrono::milliseconds>(test_finished - test_started).count());
+        cb::jsonl::emit_event("test_end", [&](std::ostream& os){
+            os << ",\"ok\":" << (r == 0 ? "true" : "false");
+            os << ",\"exit_code\":" << exit_code;
+            os << ",\"wait_status\":" << r;
+            os << ",\"signaled\":" << (signaled ? "true" : "false");
+            if(signaled) os << ",\"signal\":" << signal_number;
+            os << ",\"duration_ms\":" << jsonl_util::duration_ms(test_started, test_finished);
         });
         cb::jsonl::emit_eof();
         cb::jsonl::current_phase = cb::jsonl::phase::none;
@@ -1571,7 +1469,7 @@ try {
     for (int i = arg_index; i < argc; ++i) {
         auto argument = std::string_view{argv[i]};
         if (argument == "--output=jsonl" || argument == "--output=JSONL") {
-            cb::jsonl::enabled = true;
+            cb::jsonl::set_enabled(true);
             continue;
         }
         if (argument == "--") {
@@ -1610,9 +1508,8 @@ try {
                                    argument.starts_with("--slowest=") ||
                                    argument.starts_with("--jsonl-output=") ||
                                    argument.starts_with("--jsonl-output-max-bytes=") ||
-                                   argument.starts_with("--schema=") ||
                                    argument == "--result")) {
-            // Convenience: allow passing common test_runner CLI flags directly without "--".
+            // Convenience: allow passing common test_runner CLI flags directly
             test_runner_args.emplace_back(argv[i]);
             if (argument == "--output=jsonl" || argument == "--output=JSONL")
                 machine_output = true;
@@ -1673,13 +1570,12 @@ try {
 
     // If we are going to run tests in JSONL mode, or build in JSONL mode,
     // keep stdout machine-parseable by moving all CB logs (including clean/build) to stderr.
-    cb::log::use_stderr = machine_output || cb::jsonl::enabled;
+    cb::log::use_stderr = machine_output || cb::jsonl::enabled();
     // For tests, JSONL is controlled by machine_output. For builds, it's already set.
-    if (!cb::jsonl::enabled) {
-        cb::jsonl::enabled = machine_output;
+    if (!cb::jsonl::enabled()) {
+        cb::jsonl::set_enabled(machine_output);
     }
-    cb::jsonl::meta_printed = false;
-    cb::jsonl::eof_emitted = false;
+    cb::jsonl::reset();
     if (machine_output)
         std::atexit(cb::jsonl_atexit_handler);
 
@@ -1719,9 +1615,9 @@ try {
                 break;
             }
         }
-        if (cb::jsonl::enabled && !has_output_flag) {
+        if (cb::jsonl::enabled() && !has_output_flag) {
             args.emplace_back("--output=jsonl");
-        } else if (cb::jsonl::enabled && has_output_flag) {
+        } else if (cb::jsonl::enabled() && has_output_flag) {
             // User specified custom output format, respect it
             // Don't add --output=jsonl
         }
