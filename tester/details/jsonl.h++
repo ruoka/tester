@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT
 // See the LICENSE file in the project root for full license text.
 
-// Header-only JSONL formatting utilities
-// Used by both cb.c++ and tester output code to avoid code duplication
-// Provides JSON escaping and event emission utilities
+// JSONL utilities for this project:
+// - JSON escaping
+// - unix time helpers
+// - jsonl_context for emitting JSONL events (meta/event/eof) to a stream
 
 #pragma once
 
@@ -35,13 +36,9 @@ inline std::string escape(std::string_view sv)
             case '\t': out += "\\t"; break;
             default:
                 if(ch < 0x20)
-                {
                     out += std::format("\\u{:04x}", static_cast<unsigned int>(ch));
-                }
                 else
-                {
                     out.push_back(static_cast<char>(ch));
-                }
         }
     }
     return out;
@@ -192,7 +189,7 @@ struct jsonl_context
 
     event_builder event(std::string_view type) { return event_builder{this, type, 0, false}; }
     event_builder event_with_ts(std::string_view type, long long ts) { return event_builder{this, type, ts, true}; }
-    event_builder event_at(std::string_view type, std::chrono::system_clock::time_point tp) { return event_with_ts(type, unix_ms(tp)); }
+    event_builder event_at(std::string_view type, std::chrono::system_clock::time_point tp) { return event_builder{this, type, unix_ms(tp), true}; }
 
     event_builder operator()(std::string_view type) { return event(type); }
     event_builder operator()(std::string_view type, long long ts) { return event_with_ts(type, ts); }

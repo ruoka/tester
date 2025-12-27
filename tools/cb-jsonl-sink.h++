@@ -9,7 +9,7 @@
 #include <ostream>
 #include <string_view>
 
-#include "../tester/details/io.h++"
+#include "../tester/details/output-mux.h++"
 
 namespace cb_jsonl {
 

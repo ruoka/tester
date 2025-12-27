@@ -3,7 +3,7 @@
 // See the LICENSE file in the project root for full license text.
 
 module;
-#include "details/io.h++"
+#include "details/output-mux.h++"
 
 export module tester:jsonl_sink;
 

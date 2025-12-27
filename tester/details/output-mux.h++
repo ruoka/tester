@@ -2,13 +2,18 @@
 // SPDX-License-Identifier: MIT
 // See the LICENSE file in the project root for full license text.
 
+// Output/log multiplexing for this project:
+// - JSONL events go to the "json" stream (typically stdout)
+// - Human logs go to the "human" stream (typically stderr/clog)
+// - RESULT: line goes to the "result" stream
+
 #pragma once
 
 #include <ostream>
 #include <mutex>
 #include <string_view>
 
-#include "jsonl-format.h++"
+#include "jsonl.h++"
 #include "term.h++"
 
 namespace io {
