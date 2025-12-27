@@ -356,22 +356,26 @@ void print_test_results()
             const auto include_output = (policy == jsonl_output_policy::always)
                 || (policy == jsonl_output_policy::failures && !result.success);
 
-            jsonl_sink().test_event(
-                stable_test_id(result),
-                result.test_set_name,
-                result.test_name,
-                result.file_name,
-                result.line,
-                result.column,
-                result.success,
-                std::chrono::duration_cast<std::chrono::milliseconds>(result.duration),
-                result.assertions_ok,
-                result.assertions_total,
-                result.started_at,
-                result.finished_at,
-                include_output,
-                result.output,
-                jsonl_output_max_bytes());
+            auto out = include_output
+                ? std::optional{jsonl::output_payload{.raw = result.output, .max_bytes = jsonl_output_max_bytes()}}
+                : std::optional<jsonl::output_payload>{};
+
+            jsonl_sink().test(
+                jsonl::test_event{
+                    .id = stable_test_id(result),
+                    .set = result.test_set_name,
+                    .name = result.test_name,
+                    .file = result.file_name,
+                    .line = result.line,
+                    .column = result.column,
+                    .success = result.success,
+                    .duration = std::chrono::duration_cast<std::chrono::milliseconds>(result.duration),
+                    .assertions_ok = result.assertions_ok,
+                    .assertions_total = result.assertions_total,
+                    .started_at = result.started_at,
+                    .finished_at = result.finished_at,
+                },
+                out);
         }
         return;
     }

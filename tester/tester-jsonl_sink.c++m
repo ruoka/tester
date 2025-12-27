@@ -69,6 +69,28 @@ auto prepare_output(std::string_view raw, std::size_t max_bytes) -> prepared_out
 
 } // namespace
 
+export struct output_payload
+{
+    std::string_view raw{};
+    std::size_t max_bytes = 0;
+};
+
+export struct test_event
+{
+    std::string_view id{};
+    std::string_view set{};
+    std::string_view name{};
+    std::string_view file{};
+    std::uint_least32_t line{};
+    std::uint_least32_t column{};
+    bool success{};
+    std::chrono::milliseconds duration{};
+    std::size_t assertions_ok{};
+    std::size_t assertions_total{};
+    std::chrono::system_clock::time_point started_at{};
+    std::chrono::system_clock::time_point finished_at{};
+};
+
 struct slow_test
 {
     std::string id{};
@@ -123,41 +145,27 @@ struct sink
         };
     }
 
-    void test_event(std::string_view id,
-                    std::string_view set,
-                    std::string_view name,
-                    std::string_view file,
-                    std::uint_least32_t line,
-                    std::uint_least32_t column,
-                    bool success,
-                    std::chrono::milliseconds duration,
-                    std::size_t assertions_ok,
-                    std::size_t assertions_total,
-                    std::chrono::system_clock::time_point started_at,
-                    std::chrono::system_clock::time_point finished_at,
-                    bool include_output,
-                    std::string_view raw_output,
-                    std::size_t max_output_bytes)
+    void test(const test_event& ev, std::optional<output_payload> output = std::nullopt)
     {
         auto prepared = prepared_output{};
-        if(include_output)
-            prepared = prepare_output(raw_output, max_output_bytes);
+        if(output.has_value())
+            prepared = prepare_output(output->raw, output->max_bytes);
 
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("test") << [&](std::ostream& os){
-            os << ",\"id\":\"" << jsonl_util::escape(id) << "\"";
-            os << ",\"set\":\"" << jsonl_util::escape(set) << "\"";
-            os << ",\"name\":\"" << jsonl_util::escape(name) << "\"";
-            os << ",\"file\":\"" << jsonl_util::escape(file) << "\"";
-            os << ",\"line\":" << line;
-            os << ",\"column\":" << column;
-            os << ",\"success\":" << (success ? "true" : "false");
-            os << ",\"duration_ms\":" << duration.count();
-            os << ",\"assertions_ok\":" << assertions_ok;
-            os << ",\"assertions_total\":" << assertions_total;
-            os << ",\"started_unix_ms\":" << jsonl_util::unix_ms(started_at).count();
-            os << ",\"finished_unix_ms\":" << jsonl_util::unix_ms(finished_at).count();
-            if(include_output)
+            os << ",\"id\":\"" << jsonl_util::escape(ev.id) << "\"";
+            os << ",\"set\":\"" << jsonl_util::escape(ev.set) << "\"";
+            os << ",\"name\":\"" << jsonl_util::escape(ev.name) << "\"";
+            os << ",\"file\":\"" << jsonl_util::escape(ev.file) << "\"";
+            os << ",\"line\":" << ev.line;
+            os << ",\"column\":" << ev.column;
+            os << ",\"success\":" << (ev.success ? "true" : "false");
+            os << ",\"duration_ms\":" << ev.duration.count();
+            os << ",\"assertions_ok\":" << ev.assertions_ok;
+            os << ",\"assertions_total\":" << ev.assertions_total;
+            os << ",\"started_unix_ms\":" << jsonl_util::unix_ms(ev.started_at).count();
+            os << ",\"finished_unix_ms\":" << jsonl_util::unix_ms(ev.finished_at).count();
+            if(output.has_value())
             {
                 os << ",\"output\":\"" << jsonl_util::escape(prepared.out) << "\"";
                 os << ",\"output_truncated\":" << (prepared.truncated ? "true" : "false");
