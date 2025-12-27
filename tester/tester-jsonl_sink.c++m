@@ -155,8 +155,8 @@ struct sink
             os << ",\"duration_ms\":" << duration.count();
             os << ",\"assertions_ok\":" << assertions_ok;
             os << ",\"assertions_total\":" << assertions_total;
-            os << ",\"started_unix_ms\":" << jsonl_util::unix_ms(started_at);
-            os << ",\"finished_unix_ms\":" << jsonl_util::unix_ms(finished_at);
+            os << ",\"started_unix_ms\":" << jsonl_util::unix_ms(started_at).count();
+            os << ",\"finished_unix_ms\":" << jsonl_util::unix_ms(finished_at).count();
             if(include_output)
             {
                 os << ",\"output\":\"" << jsonl_util::escape(prepared.out) << "\"";

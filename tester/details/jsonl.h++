@@ -44,28 +44,28 @@ inline std::string escape(std::string_view sv)
     return out;
 }
 
-inline long long unix_ms_now()
+inline std::chrono::milliseconds unix_ms_now()
 {
     using namespace std::chrono;
-    return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+    return duration_cast<milliseconds>(system_clock::now().time_since_epoch());
 }
 
-inline long long unix_ms(std::chrono::system_clock::time_point tp)
+inline std::chrono::milliseconds unix_ms(std::chrono::system_clock::time_point tp)
 {
     using namespace std::chrono;
-    return duration_cast<milliseconds>(tp.time_since_epoch()).count();
+    return duration_cast<milliseconds>(tp.time_since_epoch());
 }
 
-inline long long duration_ms(std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished)
+inline std::chrono::milliseconds duration_ms(std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished)
 {
     using namespace std::chrono;
-    return duration_cast<milliseconds>(finished - started).count();
+    return duration_cast<milliseconds>(finished - started);
 }
 
-inline long long duration_ms(std::chrono::system_clock::time_point started, std::chrono::system_clock::time_point finished)
+inline std::chrono::milliseconds duration_ms(std::chrono::system_clock::time_point started, std::chrono::system_clock::time_point finished)
 {
     using namespace std::chrono;
-    return duration_cast<milliseconds>(finished - started).count();
+    return duration_cast<milliseconds>(finished - started);
 }
 
 inline unsigned pid()
@@ -74,19 +74,19 @@ inline unsigned pid()
 }
 
 template<typename Stream, typename F>
-void emit_event_raw(Stream& os, std::string_view type, std::string_view schema, int version, long long ts_unix_ms, unsigned pid_value, F&& add_fields)
+void emit_event_raw(Stream& os, std::string_view type, std::string_view schema, int version, std::chrono::milliseconds ts_unix_ms, unsigned pid_value, F&& add_fields)
 {
     os << "{\"type\":\"" << type << "\"";
     os << ",\"schema\":\"" << escape(schema) << "\"";
     os << ",\"version\":" << version;
     os << ",\"pid\":" << pid_value;
-    os << ",\"ts_unix_ms\":" << ts_unix_ms;
+    os << ",\"ts_unix_ms\":" << ts_unix_ms.count();
     add_fields(os);
     os << "}\n";
 }
 
 template<typename Stream, typename F>
-void emit_event(Stream& os, std::string_view type, std::string_view schema, int version, long long ts_unix_ms, unsigned pid_value, F&& add_fields)
+void emit_event(Stream& os, std::string_view type, std::string_view schema, int version, std::chrono::milliseconds ts_unix_ms, unsigned pid_value, F&& add_fields)
 {
     emit_event_raw(os, type, schema, version, ts_unix_ms, pid_value, std::forward<F>(add_fields));
 }
@@ -108,7 +108,7 @@ struct jsonl_context
     {
         jsonl_context* ctx = nullptr;
         std::string_view type{};
-        long long ts_unix_ms = 0;
+        std::chrono::milliseconds ts_unix_ms{0};
         bool has_ts = false;
 
         template<typename F>
@@ -166,7 +166,7 @@ struct jsonl_context
     }
 
     template<typename F>
-    void emit_event_with_ts(std::string_view type, long long ts, F&& add_fields)
+    void emit_event_with_ts(std::string_view type, std::chrono::milliseconds ts, F&& add_fields)
     {
         if(!enabled) return;
         emit_meta();
@@ -188,11 +188,11 @@ struct jsonl_context
     }
 
     event_builder event(std::string_view type) { return event_builder{this, type, 0, false}; }
-    event_builder event_with_ts(std::string_view type, long long ts) { return event_builder{this, type, ts, true}; }
+    event_builder event_with_ts(std::string_view type, std::chrono::milliseconds ts) { return event_builder{this, type, ts, true}; }
     event_builder event_at(std::string_view type, std::chrono::system_clock::time_point tp) { return event_builder{this, type, unix_ms(tp), true}; }
 
     event_builder operator()(std::string_view type) { return event(type); }
-    event_builder operator()(std::string_view type, long long ts) { return event_with_ts(type, ts); }
+    event_builder operator()(std::string_view type, std::chrono::milliseconds ts) { return event_with_ts(type, ts); }
     event_builder operator()(std::string_view type, std::chrono::system_clock::time_point tp) { return event_at(type, tp); }
 };
 

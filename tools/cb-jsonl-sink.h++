@@ -29,12 +29,12 @@ struct sink
         };
     }
 
-    void build_end(bool ok, long long duration_ms)
+    void build_end(bool ok, std::chrono::milliseconds duration)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("build_end") << [&](std::ostream& os){
             os << ",\"ok\":" << (ok ? "true" : "false");
-            os << ",\"duration_ms\":" << duration_ms;
+            os << ",\"duration_ms\":" << duration.count();
         };
     }
 
@@ -46,7 +46,7 @@ struct sink
         };
     }
 
-    void test_end(bool ok, int exit_code, int wait_status, bool signaled, int signal_number, long long duration_ms)
+    void test_end(bool ok, int exit_code, int wait_status, bool signaled, int signal_number, std::chrono::milliseconds duration)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("test_end") << [&](std::ostream& os){
@@ -55,7 +55,7 @@ struct sink
             os << ",\"wait_status\":" << wait_status;
             os << ",\"signaled\":" << (signaled ? "true" : "false");
             if(signaled) os << ",\"signal\":" << signal_number;
-            os << ",\"duration_ms\":" << duration_ms;
+            os << ",\"duration_ms\":" << duration.count();
         };
     }
 
@@ -75,14 +75,14 @@ struct sink
         };
     }
 
-    void command_end(std::string_view cmd, bool ok, int exit_code, long long duration_ms)
+    void command_end(std::string_view cmd, bool ok, int exit_code, std::chrono::milliseconds duration)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("command_end") << [&](std::ostream& os){
             os << ",\"cmd\":\"" << jsonl_util::escape(cmd) << "\"";
             os << ",\"ok\":" << (ok ? "true" : "false");
             os << ",\"exit_code\":" << exit_code;
-            os << ",\"duration_ms\":" << duration_ms;
+            os << ",\"duration_ms\":" << duration.count();
         };
     }
 };
