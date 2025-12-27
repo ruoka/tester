@@ -12,6 +12,16 @@ import std;
 namespace tester::output::jsonl
 {
 
+struct slow_test
+{
+    std::string id{};
+    std::string_view name{};
+    std::string_view file{};
+    std::uint_least32_t line{};
+    std::uint_least32_t column{};
+    long long duration_ms{};
+};
+
 struct sink
 {
     io::mux& m;
@@ -114,6 +124,40 @@ struct sink
             os << ",\"file\":\"" << jsonl_util::escape(file) << "\"";
             os << ",\"line\":" << line;
             os << ",\"column\":" << column;
+        };
+    }
+
+    void summary(std::size_t tests_ok,
+                 std::size_t tests_total,
+                 std::size_t assertions_ok,
+                 std::size_t assertions_total,
+                 bool passed,
+                 std::span<const slow_test> slowest)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("summary") << [&](std::ostream& os){
+            os << ",\"tests_ok\":" << tests_ok;
+            os << ",\"tests_total\":" << tests_total;
+            os << ",\"assertions_ok\":" << assertions_ok;
+            os << ",\"assertions_total\":" << assertions_total;
+            os << ",\"passed\":" << (passed ? "true" : "false");
+            if(!slowest.empty())
+            {
+                os << ",\"slowest\":[";
+                for(std::size_t i = 0; i < slowest.size(); ++i)
+                {
+                    const auto& r = slowest[i];
+                    if(i) os << ",";
+                    os << "{\"id\":\"" << jsonl_util::escape(r.id) << "\"";
+                    os << ",\"name\":\"" << jsonl_util::escape(r.name) << "\"";
+                    os << ",\"file\":\"" << jsonl_util::escape(r.file) << "\"";
+                    os << ",\"line\":" << r.line;
+                    os << ",\"column\":" << r.column;
+                    os << ",\"duration_ms\":" << r.duration_ms;
+                    os << "}";
+                }
+                os << "]";
+            }
         };
     }
 };

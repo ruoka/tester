@@ -172,7 +172,6 @@ auto& jsonl_sink()
     return sink;
 }
 
-auto& json_os() { return io_mux().json; }            // machine output channel
 auto& human_os() { return io_mux().human_os(); }     // human/log channel
 auto& result_os() { return io_mux().result_os(); }   // always non-JSON, keep off stdout
 
@@ -228,13 +227,6 @@ auto& run_end_emitted()
 {
     static auto emitted = false;
     return emitted;
-}
-
-// JSONL context using shared utilities from details/io.h++
-// Context owns schema and version as static constants
-inline auto& jsonl_ctx()
-{
-    return io_mux().jsonl;
 }
 
 void record_run_start(std::string_view mode, std::string_view tags)
@@ -509,30 +501,28 @@ void print_test_statistics()
 
     if(is_jsonl())
     {
-        json_os() << jsonl_ctx()("summary") << [&](auto& os){
-            os << ",\"tests_ok\":" << statistics.successful_tests;
-            os << ",\"tests_total\":" << statistics.total_tests;
-            os << ",\"assertions_ok\":" << statistics.successful_assertions;
-            os << ",\"assertions_total\":" << statistics.total_assertions;
-            os << ",\"passed\":" << (passed ? "true" : "false");
-            if(!slowest.empty())
-            {
-                os << ",\"slowest\":[";
-                for(std::size_t i = 0; i < slowest.size(); ++i)
-                {
-                    const auto& r = *slowest[i];
-                    if(i) os << ",";
-                    os << "{\"id\":\"" << stable_test_id(r) << "\"";
-                    os << ",\"name\":\"" << escape(r.test_name) << "\"";
-                    os << ",\"file\":\"" << escape(r.file_name) << "\"";
-                    os << ",\"line\":" << r.line;
-                    os << ",\"column\":" << r.column;
-                    os << ",\"duration_ms\":" << as_ms(r.duration);
-                    os << "}";
-                }
-                os << "]";
-            }
-        };
+        auto slow_json = std::vector<jsonl::slow_test>{};
+        slow_json.reserve(slowest.size());
+        for(const auto* rp : slowest)
+        {
+            const auto& r = *rp;
+            slow_json.push_back(jsonl::slow_test{
+                .id = stable_test_id(r),
+                .name = r.test_name,
+                .file = r.file_name,
+                .line = r.line,
+                .column = r.column,
+                .duration_ms = as_ms(r.duration),
+            });
+        }
+
+        jsonl_sink().summary(
+            statistics.successful_tests,
+            statistics.total_tests,
+            statistics.successful_assertions,
+            statistics.total_assertions,
+            passed,
+            slow_json);
 
         if(want_result_line())
         {
