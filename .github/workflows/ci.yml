@@ -16,11 +16,7 @@ jobs:
 
     strategy:
       matrix:
-        include:
-          - config: debug
-            cxxflags: "-O0 -g3"
-          - config: release
-            cxxflags: "-O3 -DNDEBUG"
+        config: [debug, release]
 
     steps:
       - uses: actions/checkout@v4
@@ -31,14 +27,19 @@ jobs:
       - name: Setup LLVM (shared)
         uses: ./.github/actions/setup-llvm
 
-      - name: Show compilers
+      - name: Verify std.cppm location
         run: |
-          clang --version || true
-          g++ --version || true
+          if [ -f /usr/lib/llvm-20/share/libc++/v1/std.cppm ]; then
+            echo "std.cppm found at /usr/lib/llvm-20/share/libc++/v1/std.cppm"
+          else
+            echo "Warning: std.cppm not found at expected location"
+            find /usr/lib/llvm-20 -name "std.cppm" 2>/dev/null || echo "std.cppm not found anywhere"
+          fi
+
+      - name: Show compiler version
+        run: clang++ --version
 
       - name: Build project (${{ matrix.config }})
-        env:
-          CXXFLAGS: ${{ matrix.cxxflags }}
         run: ./tools/CB.sh ${{ matrix.config }} build
 
       - name: Run tests with JSONL output (${{ matrix.config }})
@@ -124,7 +125,7 @@ jobs:
       - name: Setup LLVM + analysis tools
         uses: ./.github/actions/setup-llvm
         with:
-          packages: "clang-20 clang-tools-20 clang-tidy-20 cppcheck"
+          packages: "libc++-20-dev libc++abi-20-dev clang-20 lld-20 lldb-20 jq clang-tools-20 clang-tidy-20 cppcheck"
 
       - name: Run clang-tidy on core files
         run: |
