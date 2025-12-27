@@ -19,7 +19,7 @@ struct slow_test
     std::string_view file{};
     std::uint_least32_t line{};
     std::uint_least32_t column{};
-    long long duration_ms{};
+    std::chrono::milliseconds duration{};
 };
 
 struct sink
@@ -37,14 +37,14 @@ struct sink
         };
     }
 
-    void run_end(std::string_view mode, std::string_view tags, bool passed, long long duration_ms, std::chrono::system_clock::time_point ended_at)
+    void run_end(std::string_view mode, std::string_view tags, bool passed, std::chrono::milliseconds duration, std::chrono::system_clock::time_point ended_at)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("run_end", ended_at) << [&](std::ostream& os){
             os << ",\"mode\":\"" << jsonl_util::escape(mode) << "\"";
             os << ",\"tags\":\"" << jsonl_util::escape(tags) << "\"";
             os << ",\"passed\":" << (passed ? "true" : "false");
-            os << ",\"duration_ms\":" << duration_ms;
+            os << ",\"duration_ms\":" << duration.count();
         };
     }
 
@@ -73,11 +73,11 @@ struct sink
                     std::uint_least32_t line,
                     std::uint_least32_t column,
                     bool success,
-                    long long duration_ms,
+                    std::chrono::milliseconds duration,
                     std::size_t assertions_ok,
                     std::size_t assertions_total,
-                    long long started_unix_ms,
-                    long long finished_unix_ms,
+                    std::chrono::system_clock::time_point started_at,
+                    std::chrono::system_clock::time_point finished_at,
                     bool include_output,
                     std::string_view output,
                     bool output_truncated,
@@ -92,11 +92,11 @@ struct sink
             os << ",\"line\":" << line;
             os << ",\"column\":" << column;
             os << ",\"success\":" << (success ? "true" : "false");
-            os << ",\"duration_ms\":" << duration_ms;
+            os << ",\"duration_ms\":" << duration.count();
             os << ",\"assertions_ok\":" << assertions_ok;
             os << ",\"assertions_total\":" << assertions_total;
-            os << ",\"started_unix_ms\":" << started_unix_ms;
-            os << ",\"finished_unix_ms\":" << finished_unix_ms;
+            os << ",\"started_unix_ms\":" << jsonl_util::unix_ms(started_at);
+            os << ",\"finished_unix_ms\":" << jsonl_util::unix_ms(finished_at);
             if(include_output)
             {
                 os << ",\"output\":\"" << jsonl_util::escape(output) << "\"";
@@ -153,7 +153,7 @@ struct sink
                     os << ",\"file\":\"" << jsonl_util::escape(r.file) << "\"";
                     os << ",\"line\":" << r.line;
                     os << ",\"column\":" << r.column;
-                    os << ",\"duration_ms\":" << r.duration_ms;
+                    os << ",\"duration_ms\":" << r.duration.count();
                     os << "}";
                 }
                 os << "]";

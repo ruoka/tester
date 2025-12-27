@@ -46,10 +46,6 @@ auto& cfg()
     return config;
 }
 
-// Convert time_point to unix_ms (shared utility)
-auto unix_timestamp(std::chrono::system_clock::time_point tp) { return jsonl_util::unix_ms(tp); }
-
-
 auto current_format()
 {
     return cfg().format;
@@ -269,11 +265,11 @@ void internal_run_end(bool passed)
     }
 
     const auto ended_at = std::chrono::system_clock::now();
-    const auto dur_ms = (run_started_unix_ms() != std::chrono::system_clock::time_point{})
-        ? jsonl_util::duration_ms(run_started_unix_ms(), ended_at)
-        : 0;
+    const auto dur = (run_started_unix_ms() != std::chrono::system_clock::time_point{})
+        ? std::chrono::duration_cast<std::chrono::milliseconds>(ended_at - run_started_unix_ms())
+        : std::chrono::milliseconds{0};
 
-    jsonl_sink().run_end(run_mode(), run_tags(), passed, dur_ms, ended_at);
+    jsonl_sink().run_end(run_mode(), run_tags(), passed, dur, ended_at);
 
     run_end_emitted() = true;
 }
@@ -429,11 +425,11 @@ void print_test_results()
                 result.line,
                 result.column,
                 result.success,
-                as_ms(result.duration),
+                std::chrono::duration_cast<std::chrono::milliseconds>(result.duration),
                 result.assertions_ok,
                 result.assertions_total,
-                unix_timestamp(result.started_at),
-                unix_timestamp(result.finished_at),
+                result.started_at,
+                result.finished_at,
                 include_output,
                 out,
                 truncated,
@@ -512,7 +508,7 @@ void print_test_statistics()
                 .file = r.file_name,
                 .line = r.line,
                 .column = r.column,
-                .duration_ms = as_ms(r.duration),
+                .duration = std::chrono::duration_cast<std::chrono::milliseconds>(r.duration),
             });
         }
 
@@ -546,11 +542,11 @@ void print_test_statistics()
             pending_run_end_passed() = std::nullopt;
 
             const auto ended_at = std::chrono::system_clock::now();
-            const auto dur_ms = (run_started_unix_ms() != std::chrono::system_clock::time_point{})
-                ? jsonl_util::duration_ms(run_started_unix_ms(), ended_at)
-                : 0;
+            const auto dur = (run_started_unix_ms() != std::chrono::system_clock::time_point{})
+                ? std::chrono::duration_cast<std::chrono::milliseconds>(ended_at - run_started_unix_ms())
+                : std::chrono::milliseconds{0};
 
-            jsonl_sink().run_end(run_mode(), run_tags(), passed_value, dur_ms, ended_at);
+            jsonl_sink().run_end(run_mode(), run_tags(), passed_value, dur, ended_at);
 
             run_end_emitted() = true;
         }
