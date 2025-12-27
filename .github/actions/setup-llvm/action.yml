@@ -25,12 +25,33 @@ runs:
           llvm-20-ubuntu-
           llvm-20-
 
-    - name: Install LLVM toolchain
-      if: steps.cache.outputs.cache-hit != 'true'
+    - name: Ensure LLVM toolchain installed (install if missing)
       shell: bash
       run: |
-        sudo apt-get update -y
-        sudo apt-get install -y wget gnupg ca-certificates lsb-release software-properties-common
-        wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/apt-llvm.gpg
-        echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-20 main" | sudo tee /etc/apt/sources.list.d/apt-llvm.org.list > /dev/null
-        sudo apt-get update
+        set -euo pipefail
+
+        # If clang++-20 is present, skip install; otherwise install requested packages.
+        if command -v clang++-20 >/dev/null 2>&1; then
+          echo "clang++-20 found; skipping apt install."
+        else
+          echo "clang++-20 not found — installing LLVM 20 toolchain..."
+          sudo apt-get update -y
+          sudo apt-get install -y wget gnupg ca-certificates lsb-release software-properties-common
+          wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/apt-llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/apt-llvm.gpg] https://apt.llvm.org/$(lsb_release -cs)/ llvm-toolchain-$(lsb_release -cs)-20 main" | sudo tee /etc/apt/sources.list.d/apt-llvm.org.list > /dev/null
+          sudo apt-get update -y
+          sudo apt-get install -y ${{ inputs.packages }}
+        fi
+
+        # Ensure clang/clang++/lld alternatives point to the clang-20 binaries if present
+        if [ -x /usr/bin/clang-20 ]; then
+          sudo update-alternatives --install /usr/bin/clang   clang   /usr/bin/clang-20   100 || true
+        fi
+        if [ -x /usr/bin/clang++-20 ]; then
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-20 100 || true
+        fi
+        if [ -x /usr/bin/lld-20 ]; then
+          sudo update-alternatives --install /usr/bin/lld     lld     /usr/bin/lld-20     100 || true
+        fi
+
+        echo "LLVM setup complete."
