@@ -72,8 +72,9 @@ static void jsonl_atexit_handler()
 
 namespace log {
 inline void error(std::string_view msg) {
-    // Human error (shared formatting)
-    io::error(cb::jsonl::io_mux(), msg);
+    // In JSONL mode, keep output machine-parseable: do not print human logs.
+    if(!cb::jsonl::enabled())
+        io::error(cb::jsonl::io_mux(), msg);
 
     // JSONL error event (machine output)
     if(cb::jsonl::enabled())
@@ -95,10 +96,10 @@ inline void error(std::string_view msg) {
     }
 }
 
-inline void warning(std::string_view msg) { io::warning(cb::jsonl::io_mux(), msg); }
-inline void info(std::string_view msg) { io::info(cb::jsonl::io_mux(), msg); }
-inline void success(std::string_view msg) { io::success(cb::jsonl::io_mux(), msg); }
-inline void command(std::string_view cmd) { io::command(cb::jsonl::io_mux(), cmd); }
+inline void warning(std::string_view msg) { if(!cb::jsonl::enabled()) io::warning(cb::jsonl::io_mux(), msg); }
+inline void info(std::string_view msg) { if(!cb::jsonl::enabled()) io::info(cb::jsonl::io_mux(), msg); }
+inline void success(std::string_view msg) { if(!cb::jsonl::enabled()) io::success(cb::jsonl::io_mux(), msg); }
+inline void command(std::string_view cmd) { if(!cb::jsonl::enabled()) io::command(cb::jsonl::io_mux(), cmd); }
 } // namespace log
 
 enum class build_config { debug, release };
@@ -1365,7 +1366,6 @@ public:
             if(signaled) os << ",\"signal\":" << signal_number;
             os << ",\"duration_ms\":" << jsonl_util::duration_ms(test_started, test_finished);
         });
-        cb::jsonl::emit_eof();
         cb::jsonl::current_phase = cb::jsonl::phase::none;
         if (r) {
             log::error("Some tests or assertions failed!");
@@ -1566,7 +1566,7 @@ try {
         cb::jsonl::set_enabled(machine_output);
     }
     cb::jsonl::reset();
-    if (machine_output)
+    if (cb::jsonl::enabled())
         std::atexit(cb::jsonl_atexit_handler);
 
     // Build include flags from command-line arguments
