@@ -10,8 +10,7 @@ module;
 #   define TESTER_HAVE_CXXABI 0
 #endif
 #include <unistd.h>
-#include "../tools/jsonl-format.hpp"
-#include "../tools/term.hpp"
+#include "../tools/io.h++"
 
 export module tester:output;
 import :data;
@@ -20,7 +19,7 @@ import std;
 namespace tester::output
 {
 
-namespace color = ::term;
+namespace color = ::io::color;
 
 using namespace data;
 
@@ -38,8 +37,7 @@ struct output_config
     std::size_t jsonl_output_max_bytes = 16384;
 };
 
-// Schema and version are owned by jsonl_context class in jsonl-format.hpp
-// Implementation details are encapsulated in jsonl_context
+// Schema and version are owned by jsonl_context in tools/jsonl-format.hpp (via tools/io.h++)
 
 auto& cfg()
 {
@@ -82,7 +80,7 @@ auto jsonl_output_max_bytes()
     return cfg().jsonl_output_max_bytes;
 }
 
-// JSON formatting utilities are now provided by jsonl-format.hpp
+// JSON formatting utilities are now provided by tools/jsonl-format.hpp (via tools/io.h++)
 using jsonl_util::escape;
 
 auto as_ms(std::chrono::nanoseconds ns)
@@ -160,9 +158,16 @@ auto prepare_json_output(const std::string& raw)
     return std::tuple{std::move(cleaned), truncated, original_bytes};
 }
 
-auto& json_os() { return std::cout; }   // machine output channel
-auto& human_os() { return std::clog; } // human/log channel
-auto& result_os() { return std::clog; } // always non-JSON, keep off stdout
+auto& io_mux()
+{
+    static auto mux = io::mux{std::cout, std::clog, std::clog};
+    mux.set_jsonl_enabled(is_jsonl());
+    return mux;
+}
+
+auto& json_os() { return io_mux().json; }      // machine output channel
+auto& human_os() { return io_mux().human; }    // human/log channel
+auto& result_os() { return io_mux().result; }  // always non-JSON, keep off stdout
 
 auto& run_started_unix_ms()
 {
@@ -218,13 +223,11 @@ auto& run_end_emitted()
     return emitted;
 }
 
-// JSONL context using shared utilities from jsonl-format.hpp
+// JSONL context using shared utilities from tools/io.h++
 // Context owns schema and version as static constants
 inline auto& jsonl_ctx()
 {
-    static auto ctx = jsonl_util::jsonl_context<std::ostream>{json_os()};
-    ctx.set_enabled(is_jsonl());
-    return ctx;
+    return io_mux().jsonl;
 }
 
 void record_run_start(std::string_view mode, std::string_view tags)

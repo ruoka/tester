@@ -26,8 +26,7 @@
 #include <stdexcept>
 #include <unistd.h>
 #include <sys/wait.h>
-#include "jsonl-format.hpp"
-#include "term.hpp"
+#include "io.h++"
 
 namespace fs = std::filesystem;
 
@@ -45,16 +44,21 @@ inline phase current_phase = phase::none;
 inline std::chrono::steady_clock::time_point phase_started{};
 inline bool build_end_emitted = false;
 
-// JSONL context using shared utilities from jsonl-format.hpp
+inline auto& io_mux()
+{
+    static auto mux = io::mux{std::cout, std::cerr, std::cerr};
+    return mux;
+}
+
+// JSONL context using shared utilities from io.h++
 inline auto& ctx()
 {
-    static auto context = jsonl_util::jsonl_context<std::ostream>{std::cout};
-    return context;
+    return io_mux().jsonl;
 }
 
 inline auto enabled() -> bool { return ctx().is_enabled(); }
-inline void set_enabled(bool v) { ctx().set_enabled(v); }
-inline void reset() { ctx().reset_stream_state(); }
+inline void set_enabled(bool v) { io_mux().set_jsonl_enabled(v); }
+inline void reset() { io_mux().reset_jsonl_state(); }
 
 inline void emit_meta() { ctx().emit_meta(); }
 inline void emit_event(std::string_view type, auto&& add_fields) { ctx()(type) << std::forward<decltype(add_fields)>(add_fields); }
@@ -70,7 +74,7 @@ namespace log {
 inline std::mutex mutex{};
 inline bool use_stderr = false;
 
-namespace color = ::term;
+namespace color = ::io::color;
 
 inline void error(std::string_view msg) {
     auto lock = std::lock_guard<std::mutex>{mutex};
