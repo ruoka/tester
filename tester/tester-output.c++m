@@ -77,42 +77,9 @@ auto jsonl_output_max_bytes()
     return cfg().jsonl_output_max_bytes;
 }
 
-// JSON formatting utilities are now provided by details/jsonl.h++ (via details/output-mux.h++)
-using jsonl_util::escape;
-
 auto as_ms(std::chrono::nanoseconds ns)
 {
     return std::chrono::duration_cast<std::chrono::milliseconds>(ns).count();
-}
-
-auto strip_ansi(std::string_view sv)
-{
-    // Strip common ANSI escape sequences so JSONL output stays clean.
-    // This is a best-effort filter for sequences like: ESC [ ... letter
-    auto out = std::string{};
-    out.reserve(sv.size());
-
-    for(std::size_t i = 0; i < sv.size(); )
-    {
-        const unsigned char ch = static_cast<unsigned char>(sv[i]);
-        if(ch == 0x1B && (i + 1) < sv.size() && sv[i + 1] == '[') // ESC [
-        {
-            i += 2;
-            while(i < sv.size())
-            {
-                const unsigned char c = static_cast<unsigned char>(sv[i]);
-                // CSI final byte is in the range 0x40..0x7E.
-                if(c >= 0x40 && c <= 0x7E) { ++i; break; }
-                ++i;
-            }
-            continue;
-        }
-
-        out.push_back(static_cast<char>(ch));
-        ++i;
-    }
-
-    return out;
 }
 
 auto fnv1a64(std::string_view sv)
@@ -136,23 +103,6 @@ auto hex_u64(std::uint64_t v)
         v >>= 4;
     }
     return std::string{buf, 16};
-}
-
-auto prepare_json_output(const std::string& raw)
-{
-    auto cleaned = strip_ansi(raw);
-    const auto original_bytes = cleaned.size();
-
-    const auto max_bytes = jsonl_output_max_bytes();
-    auto truncated = false;
-    if(max_bytes > 0 && cleaned.size() > max_bytes)
-    {
-        cleaned.resize(max_bytes);
-        cleaned.append("...(truncated)");
-        truncated = true;
-    }
-
-    return std::tuple{std::move(cleaned), truncated, original_bytes};
 }
 
 auto& io_mux()
@@ -406,17 +356,6 @@ void print_test_results()
             const auto include_output = (policy == jsonl_output_policy::always)
                 || (policy == jsonl_output_policy::failures && !result.success);
 
-            auto out = std::string{};
-            auto truncated = false;
-            auto original_bytes = std::size_t{0};
-            if(include_output)
-            {
-                auto t = prepare_json_output(result.output);
-                out = std::move(std::get<0>(t));
-                truncated = std::get<1>(t);
-                original_bytes = std::get<2>(t);
-            }
-
             jsonl_sink().test_event(
                 stable_test_id(result),
                 result.test_set_name,
@@ -431,9 +370,8 @@ void print_test_results()
                 result.started_at,
                 result.finished_at,
                 include_output,
-                out,
-                truncated,
-                original_bytes);
+                result.output,
+                jsonl_output_max_bytes());
         }
         return;
     }

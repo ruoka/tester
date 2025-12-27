@@ -12,6 +12,63 @@ import std;
 namespace tester::output::jsonl
 {
 
+namespace {
+
+auto strip_ansi(std::string_view sv) -> std::string
+{
+    // Strip common ANSI escape sequences so JSONL output stays clean.
+    // Best-effort filter for sequences like: ESC [ ... letter
+    auto out = std::string{};
+    out.reserve(sv.size());
+
+    for(std::size_t i = 0; i < sv.size(); )
+    {
+        const unsigned char ch = static_cast<unsigned char>(sv[i]);
+        if(ch == 0x1B && (i + 1) < sv.size() && sv[i + 1] == '[') // ESC [
+        {
+            i += 2;
+            while(i < sv.size())
+            {
+                const unsigned char c = static_cast<unsigned char>(sv[i]);
+                // CSI final byte is in the range 0x40..0x7E.
+                if(c >= 0x40 && c <= 0x7E) { ++i; break; }
+                ++i;
+            }
+            continue;
+        }
+
+        out.push_back(static_cast<char>(ch));
+        ++i;
+    }
+
+    return out;
+}
+
+struct prepared_output
+{
+    std::string out{};
+    bool truncated = false;
+    std::size_t original_bytes = 0;
+};
+
+auto prepare_output(std::string_view raw, std::size_t max_bytes) -> prepared_output
+{
+    auto cleaned = strip_ansi(raw);
+    const auto original_bytes = cleaned.size();
+
+    auto truncated = false;
+    if(max_bytes > 0 && cleaned.size() > max_bytes)
+    {
+        cleaned.resize(max_bytes);
+        cleaned.append("...(truncated)");
+        truncated = true;
+    }
+
+    return prepared_output{std::move(cleaned), truncated, original_bytes};
+}
+
+} // namespace
+
 struct slow_test
 {
     std::string id{};
@@ -79,10 +136,13 @@ struct sink
                     std::chrono::system_clock::time_point started_at,
                     std::chrono::system_clock::time_point finished_at,
                     bool include_output,
-                    std::string_view output,
-                    bool output_truncated,
-                    std::size_t output_bytes)
+                    std::string_view raw_output,
+                    std::size_t max_output_bytes)
     {
+        auto prepared = prepared_output{};
+        if(include_output)
+            prepared = prepare_output(raw_output, max_output_bytes);
+
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("test") << [&](std::ostream& os){
             os << ",\"id\":\"" << jsonl_util::escape(id) << "\"";
@@ -99,9 +159,9 @@ struct sink
             os << ",\"finished_unix_ms\":" << jsonl_util::unix_ms(finished_at);
             if(include_output)
             {
-                os << ",\"output\":\"" << jsonl_util::escape(output) << "\"";
-                os << ",\"output_truncated\":" << (output_truncated ? "true" : "false");
-                os << ",\"output_bytes\":" << output_bytes;
+                os << ",\"output\":\"" << jsonl_util::escape(prepared.out) << "\"";
+                os << ",\"output_truncated\":" << (prepared.truncated ? "true" : "false");
+                os << ",\"output_bytes\":" << prepared.original_bytes;
             }
         };
     }
