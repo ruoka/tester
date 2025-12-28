@@ -55,8 +55,8 @@ public:
         m_run_end_emitted = false;
         m_current_test_id.clear();
 
-        // Set callback for output module to get current test ID
-        output::set_get_test_id_callback([this]{ return this->get_current_test_id(); });
+        // Set current test ID for output module
+        output::set_current_test_id(m_current_test_id);
 
         if(output::jsonl_enabled())
             output::begin_run(m_run_mode, m_run_tags, m_run_started_unix_ms);

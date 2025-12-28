@@ -26,17 +26,10 @@ namespace color = ::io::color;
 
 using namespace data;
 
-// Thread-local callback to get current test ID (set by runner)
-inline thread_local std::function<std::string_view()> g_get_current_test_id;
-
-export void set_get_test_id_callback(std::function<std::string_view()> callback)
-{
-    g_get_current_test_id = std::move(callback);
-}
+// Thread-local current test ID (set by runner)
+inline thread_local std::string_view g_current_test_id;
 
 namespace {
-
-enum class jsonl_output_policy { never, failures, always };
 
 // Schema and version are owned by jsonl_context in details/jsonl.h++ (via details/output-mux.h++)
 
@@ -78,11 +71,11 @@ auto jsonl_output_max_bytes()
 
 auto& jsonl_sink()
 {
-    static auto sink = jsonl::sink{io_mux()};
+    static auto sink = jsonl::sink{console::io_mux()};
     return sink;
 }
 
-auto& result_os() { return io_mux().result_os(); }   // always non-JSON, keep off stdout
+auto& result_os() { return console::io_mux().result_os(); }   // always non-JSON, keep off stdout
 
 // Helper function to emit JSONL assertion events (non-template to avoid TU-local entity warnings)
 // Must be in anonymous namespace to access json_escape, jsonl_policy, etc.
@@ -104,8 +97,6 @@ void emit_jsonl_assertion_event_impl(
         jsonl_sink().assertion_event(ok, matcher, actual_json, expected_json, test_id, file, line, column);
     }
 }
-
-} // namespace
 
 // Helper to get console sink - must be outside anonymous namespace to avoid TU-local entity warnings
 inline auto& console_sink()
@@ -132,14 +123,12 @@ inline auto want_result_line()
 
 inline auto& io_mux()
 {
-    static auto mux = io::mux{std::cout, std::clog, std::clog};
-    mux.set_jsonl_enabled(is_jsonl());
-    return mux;
+    return console::io_mux();
 }
 
-export auto stable_test_id(const test_metadata& m)
+export auto stable_test_id(const data::test_metadata& m)
 {
-    return ids::stable_test_id(m);
+    return tester::ids::stable_test_id(m);
 }
 
 bool jsonl_enabled()
@@ -194,11 +183,14 @@ export void end_run(std::string_view mode, std::string_view tags, bool passed, s
     jsonl_sink().run_end(mode, tags, passed, started_at, ended_at);
 }
 
+export void set_current_test_id(std::string_view test_id)
+{
+    g_current_test_id = test_id;
+}
+
 std::string_view get_current_test_id()
 {
-    if(g_get_current_test_id)
-        return g_get_current_test_id();
-    return {};
+    return g_current_test_id;
 }
 
 export void print_test_cases(std::function<bool(const test_case&)> included)
