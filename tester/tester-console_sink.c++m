@@ -23,12 +23,6 @@ using namespace data;
 
 namespace {
 
-auto& io_mux()
-{
-    static auto mux = io::mux{std::cout, std::clog, std::clog};
-    return mux;
-}
-
 auto& human_os() { return io_mux().human_os(); }
 auto& result_os() { return io_mux().result_os(); }
 
@@ -48,84 +42,6 @@ auto demangle(std::string_view name)
     return std::string{name};
 }
 
-auto function_name(const std::source_location sl = std::source_location::current())
-{
-    using namespace std::literals;
-    auto name = std::string_view{sl.function_name()};
-
-    if(auto assertions_pos = name.find("assertions::"); assertions_pos != std::string_view::npos)
-        name.remove_prefix(assertions_pos + "assertions::"s.length());
-
-    auto base = name.substr(0, name.find_first_of("("));
-    auto display = std::string{base};
-
-    if(auto bracket = name.find('['); bracket != std::string_view::npos)
-    {
-        auto end = name.find(']', bracket);
-        auto parameters = end != std::string_view::npos
-                          ? name.substr(bracket + 1, end - bracket - 1)
-                          : name.substr(bracket + 1);
-
-        auto trim = [](std::string_view sv)
-        {
-            auto start = sv.find_first_not_of(" \t");
-            if(start == std::string_view::npos) return std::string_view{};
-            auto finish = sv.find_last_not_of(" \t");
-            return sv.substr(start, finish - start + 1);
-        };
-
-        auto clean = [](std::string text)
-        {
-            auto replace_all = [](std::string& target, std::string_view from, std::string_view to)
-            {
-                for(auto pos = target.find(from); pos != std::string::npos; pos = target.find(from, pos + to.size()))
-                    target.replace(pos, from.size(), to);
-            };
-
-            replace_all(text, "std::__1::", "std::");
-            replace_all(text, "std::basic_string<char>", "std::string");
-            replace_all(text, "std::basic_string<wchar_t>", "std::wstring");
-            replace_all(text, " >", ">");
-
-            return text;
-        };
-
-        display.push_back(' ');
-        display.push_back('[');
-
-        auto remaining = parameters;
-        auto first = true;
-        while(true)
-        {
-            auto pos = remaining.find(',');
-            auto token = trim(remaining.substr(0, pos));
-            if(not token.empty())
-            {
-                if(not first) display.append(", ");
-                auto eq = token.find('=');
-                if(eq != std::string_view::npos)
-                {
-                    auto key = trim(token.substr(0, eq));
-                    auto value = trim(token.substr(eq + 1));
-                    display.append(std::string{key});
-                    display.append("=");
-                    display.append(demangle(clean(std::string{value})));
-                }
-                else
-                {
-                    display.append(demangle(clean(std::string{token})));
-                }
-                first = false;
-            }
-            if(pos == std::string_view::npos) break;
-            remaining.remove_prefix(pos + 1);
-        }
-
-        display.push_back(']');
-    }
-
-    return display;
-}
 
 template<class T>
 concept chrono_clock = requires {
@@ -133,12 +49,14 @@ concept chrono_clock = requires {
     T::now();
 };
 
-auto as_ms(std::chrono::nanoseconds ns)
-{
-    return std::chrono::duration_cast<std::chrono::milliseconds>(ns).count();
-}
-
 } // namespace
+
+// Helper function - must be outside anonymous namespace to avoid TU-local entity warnings
+inline auto& io_mux()
+{
+    static auto mux = io::mux{std::cout, std::clog, std::clog};
+    return mux;
+}
 
 struct sink
 {

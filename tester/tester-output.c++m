@@ -61,10 +61,6 @@ auto current_format()
     return cfg().format;
 }
 
-auto is_jsonl()
-{
-    return current_format() == output_format::jsonl;
-}
 
 auto want_result_line()
 {
@@ -87,11 +83,6 @@ auto jsonl_output_max_bytes()
     return cfg().jsonl_output_max_bytes;
 }
 
-auto as_ms(std::chrono::nanoseconds ns)
-{
-    return std::chrono::duration_cast<std::chrono::milliseconds>(ns).count();
-}
-
 auto& io_mux()
 {
     static auto mux = io::mux{std::cout, std::clog, std::clog};
@@ -105,7 +96,6 @@ auto& jsonl_sink()
     return sink;
 }
 
-auto& human_os() { return io_mux().human_os(); }     // human/log channel
 auto& result_os() { return io_mux().result_os(); }   // always non-JSON, keep off stdout
 
 // Helper function to emit JSONL assertion events (non-template to avoid TU-local entity warnings)
@@ -135,6 +125,12 @@ void emit_jsonl_assertion_event_impl(
 inline auto& console_sink()
 {
     return console::sink_instance();
+}
+
+// Helper function - must be outside anonymous namespace to avoid TU-local entity warnings
+inline bool is_jsonl()
+{
+    return current_format() == output_format::jsonl;
 }
 
 export auto stable_test_id(const test_metadata& m)
@@ -249,11 +245,6 @@ export void print_test_statistics(
     const auto& stats = data::statistics();
     const auto failed_tests = stats.total_tests - stats.successful_tests;
     const auto failed_assertions = stats.total_assertions - stats.successful_assertions;
-
-    auto pct = [](std::size_t ok, std::size_t total) -> double {
-        if(total == 0) return 100.0;
-        return 100.0 * static_cast<double>(ok) / static_cast<double>(total);
-    };
 
     const auto passed = (failed_tests == 0 && failed_assertions == 0);
 
