@@ -122,14 +122,12 @@ INCLUDE_FLAGS=()
 INCLUDE_EXAMPLES_FLAG=()
 
 # Check if we're in the tester project root (has tester/ subdirectory)
-if [[ -d "$CURRENT_DIR/tester" ]]; then
+if [[ -d "$PROJECT_ROOT/tester" ]]; then
     # Tester project structure
-    INCLUDE_FLAGS=(-I "$CURRENT_DIR/tester")
+    INCLUDE_FLAGS=(-I "$PROJECT_ROOT/tester")
+    
     # Check if we're building as part of fixer (in deps/tester)
-    if [[ "$CURRENT_DIR" != *"/deps/tester"* ]]; then
-        # We're building tester standalone - include examples
-        INCLUDE_EXAMPLES_FLAG=(--include-examples)
-    else
+    if [[ "$PROJECT_ROOT" == *"/deps/tester" ]]; then
         # We're in fixer's deps/tester - check if test command is used
         # When running tests, include examples even if in submodule
         for arg in "$@"; do
@@ -138,8 +136,10 @@ if [[ -d "$CURRENT_DIR/tester" ]]; then
                 break
             fi
         done
+    else
+        # We're building tester standalone - include examples
+        INCLUDE_EXAMPLES_FLAG=(--include-examples)
     fi
-    # Otherwise examples are excluded by default (when part of fixer and not testing)
 fi
 
 # Allow override via environment variable
