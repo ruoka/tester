@@ -46,45 +46,45 @@ export struct output_config
     std::size_t jsonl_output_max_bytes = 16384;
 };
 
-// Per-run configuration (set once by runner)
-inline output_config g_config{};
+// Per-run configuration (owned by runner; output holds a pointer)
+inline thread_local output_config* g_config = nullptr;
 
 const output_config& cfg()
 {
-    return g_config;
+    return *g_config;
 }
 
-export void set_output_config(output_config config)
+export void set_output_config(output_config& config)
 {
-    g_config = std::move(config);
+    g_config = &config;
 }
 
 export void set_output_format(std::string_view fmt)
 {
-    if(fmt == "jsonl" || fmt == "JSONL") g_config.format = output_format::jsonl;
-    else g_config.format = output_format::human;
+    if(fmt == "jsonl" || fmt == "JSONL") g_config->format = output_format::jsonl;
+    else g_config->format = output_format::human;
 }
 
 export void set_human_result_line(bool enabled)
 {
-    g_config.human_result_line = enabled;
+    g_config->human_result_line = enabled;
 }
 
 export void set_slowest(std::size_t n)
 {
-    g_config.slowest = n;
+    g_config->slowest = n;
 }
 
 export void set_jsonl_output(std::string_view policy)
 {
-    if(policy == "never") g_config.jsonl_output = jsonl_output_policy::never;
-    else if(policy == "always") g_config.jsonl_output = jsonl_output_policy::always;
-    else g_config.jsonl_output = jsonl_output_policy::failures;
+    if(policy == "never") g_config->jsonl_output = jsonl_output_policy::never;
+    else if(policy == "always") g_config->jsonl_output = jsonl_output_policy::always;
+    else g_config->jsonl_output = jsonl_output_policy::failures;
 }
 
 export void set_jsonl_output_max_bytes(std::size_t n)
 {
-    g_config.jsonl_output_max_bytes = n;
+    g_config->jsonl_output_max_bytes = n;
 }
 
 auto slowest_count()

@@ -156,6 +156,9 @@ int main(int argc, char** argv)
 
     try
     {
+        tester::output::output_config cfg{};
+        tester::output::set_output_config(cfg);
+
         tester::output::set_output_format(output_mode);
         tester::output::set_human_result_line(result_line);
         tester::output::set_slowest(slowest);
@@ -163,7 +166,7 @@ int main(int argc, char** argv)
         tester::output::set_jsonl_output_max_bytes(jsonl_output_max_bytes);
         state.jsonl_enabled = (output_mode == "jsonl" || output_mode == "JSONL");
 
-        auto tr = tester::runner{tags};
+        auto tr = tester::runner{cfg, tags};
 
         if(list_only)
         {

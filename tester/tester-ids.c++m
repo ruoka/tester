@@ -9,40 +9,7 @@ import std;
 
 namespace tester::ids
 {
-namespace {
-
-[[maybe_unused]] auto fnv1a64(std::string_view sv) -> std::uint64_t
-{
-    std::uint64_t h = 14695981039346656037ull;
-    for(const unsigned char c : sv)
-    {
-        h ^= static_cast<std::uint64_t>(c);
-        h *= 1099511628211ull;
-    }
-    return h;
-}
-
-[[maybe_unused]] auto hex_u64(std::uint64_t v) -> std::string
-{
-    static constexpr char hex[] = "0123456789abcdef";
-    char buf[16];
-    for(int i = 15; i >= 0; --i)
-    {
-        buf[i] = hex[v & 0xF];
-        v >>= 4;
-    }
-    return std::string{buf, 16};
-}
-
-} // namespace
-
-// stable_test_id is retained for backward compatibility but test_metadata::test_id
-// is now the canonical identifier. Prefer using m.test_id directly.
-export auto stable_test_id(const data::test_metadata& m) -> std::string
-{
-    return std::string{m.test_id};
-}
-
+// stable_test_id removed; use data::test_metadata::test_id directly.
 } // namespace tester::ids
 
 

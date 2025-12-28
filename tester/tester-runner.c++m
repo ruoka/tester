@@ -10,16 +10,21 @@ import std;
 
 namespace tester
 {
-
-using namespace std::literals;
-using namespace data;
+using data::test_case;
+using data::test_result;
 
 export class runner
 {
 public:
 
-    explicit runner(std::string_view tags = "") : m_tags{tags}, m_run_mode{}, m_run_tags{}
+    runner(std::string_view tags = "") : runner(output::output_config{}, tags) {}
+
+    explicit runner(output::output_config cfg, std::string_view tags = "")
+        : m_output_config{std::move(cfg)}, m_tags{tags}, m_run_mode{}, m_run_tags{}
     {
+        // Provide output module a view of this runner's config
+        output::set_output_config(m_output_config);
+
         if(not m_tags.empty())
         {
             if(auto tag_list = parse_tag_query(m_tags); not tag_list.empty())
@@ -176,6 +181,7 @@ public:
 
 private:
 
+    output::output_config m_output_config{};
     std::string_view m_tags;
     std::regex m_regex;
     bool m_use_regex = false;
