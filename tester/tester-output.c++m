@@ -16,7 +16,6 @@ export module tester:output;
 import :data;
 import :jsonl_sink;
 import :console_sink;
-import :ids;
 import std;
 
 namespace tester::output
