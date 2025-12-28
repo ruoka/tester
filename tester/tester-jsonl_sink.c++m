@@ -8,7 +8,6 @@ module;
 export module tester:jsonl_sink;
 
 import :data;
-import :ids;
 import std;
 
 namespace tester::output::jsonl
