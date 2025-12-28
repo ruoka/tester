@@ -56,18 +56,6 @@ auto& cfg()
     return config;
 }
 
-auto current_format()
-{
-    return cfg().format;
-}
-
-
-auto want_result_line()
-{
-    // Keep stdout JSONL pure: in JSONL mode, print RESULT to stderr only.
-    return is_jsonl() || cfg().human_result_line;
-}
-
 auto slowest_count()
 {
     return cfg().slowest;
@@ -81,13 +69,6 @@ auto jsonl_policy()
 auto jsonl_output_max_bytes()
 {
     return cfg().jsonl_output_max_bytes;
-}
-
-auto& io_mux()
-{
-    static auto mux = io::mux{std::cout, std::clog, std::clog};
-    mux.set_jsonl_enabled(is_jsonl());
-    return mux;
 }
 
 auto& jsonl_sink()
@@ -128,9 +109,27 @@ inline auto& console_sink()
 }
 
 // Helper function - must be outside anonymous namespace to avoid TU-local entity warnings
+inline auto current_format()
+{
+    return cfg().format;
+}
+
 inline bool is_jsonl()
 {
     return current_format() == output_format::jsonl;
+}
+
+inline auto want_result_line()
+{
+    // Keep stdout JSONL pure: in JSONL mode, print RESULT to stderr only.
+    return is_jsonl() || cfg().human_result_line;
+}
+
+inline auto& io_mux()
+{
+    static auto mux = io::mux{std::cout, std::clog, std::clog};
+    mux.set_jsonl_enabled(is_jsonl());
+    return mux;
 }
 
 export auto stable_test_id(const test_metadata& m)
