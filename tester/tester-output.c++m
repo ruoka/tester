@@ -36,6 +36,13 @@ export void set_get_test_id_callback(std::function<std::string_view()> callback)
 
 namespace {
 
+enum class jsonl_output_policy { never, failures, always };
+
+// Schema and version are owned by jsonl_context in details/jsonl.h++ (via details/output-mux.h++)
+
+}
+
+// Entities that need to be accessible from outside anonymous namespace
 enum class output_format { human, jsonl };
 enum class jsonl_output_policy { never, failures, always };
 
@@ -47,8 +54,6 @@ struct output_config
     jsonl_output_policy jsonl_output = jsonl_output_policy::failures;
     std::size_t jsonl_output_max_bytes = 16384;
 };
-
-// Schema and version are owned by jsonl_context in details/jsonl.h++ (via details/output-mux.h++)
 
 auto& cfg()
 {

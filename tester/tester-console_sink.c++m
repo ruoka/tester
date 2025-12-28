@@ -23,23 +23,6 @@ using namespace data;
 
 namespace {
 
-auto demangle(std::string_view name)
-{
-#if TESTER_HAVE_CXXABI
-    int status = 0;
-    auto buffer = std::string{name};
-    auto demangled = abi::__cxa_demangle(buffer.c_str(), nullptr, nullptr, &status);
-    if(demangled != nullptr)
-    {
-        std::string result{demangled};
-        std::free(demangled);
-        return result;
-    }
-#endif
-    return std::string{name};
-}
-
-
 template<class T>
 concept chrono_clock = requires {
     typename T::time_point;
