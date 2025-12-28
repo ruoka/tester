@@ -46,10 +46,12 @@ export struct output_config
 };
 
 // Per-run configuration (owned by runner; output holds a pointer)
-inline thread_local output_config* g_config = nullptr;
+inline output_config* g_config = nullptr;
 
 const output_config& cfg()
 {
+    static const output_config default_config{};
+    if(g_config == nullptr) return default_config;
     return *g_config;
 }
 
