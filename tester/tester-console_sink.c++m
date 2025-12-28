@@ -23,9 +23,6 @@ using namespace data;
 
 namespace {
 
-auto& human_os() { return io_mux().human_os(); }
-auto& result_os() { return io_mux().result_os(); }
-
 auto demangle(std::string_view name)
 {
 #if TESTER_HAVE_CXXABI
