@@ -104,7 +104,7 @@ struct sink
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("case") << [&](std::ostream& os){
-            os << ",\"id\":\"" << ::jsonl::escape(ids::stable_test_id(tc)) << "\"";
+            os << ",\"id\":\"" << ::jsonl::escape(tc.test_id) << "\"";
             os << ",\"set\":\"" << ::jsonl::escape(tc.test_set_name) << "\"";
             os << ",\"name\":\"" << ::jsonl::escape(tc.test_name) << "\"";
             os << ",\"file\":\"" << ::jsonl::escape(tc.file_name) << "\"";
@@ -121,7 +121,7 @@ struct sink
 
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("test") << [&](std::ostream& os){
-            os << ",\"id\":\"" << ::jsonl::escape(ids::stable_test_id(r)) << "\"";
+            os << ",\"id\":\"" << ::jsonl::escape(r.test_id) << "\"";
             os << ",\"set\":\"" << ::jsonl::escape(r.test_set_name) << "\"";
             os << ",\"name\":\"" << ::jsonl::escape(r.test_name) << "\"";
             os << ",\"file\":\"" << ::jsonl::escape(r.file_name) << "\"";
@@ -181,7 +181,7 @@ struct sink
                 {
                     const auto& r = *slowest[i];
                     if(i) os << ",";
-                    os << "{\"id\":\"" << ::jsonl::escape(ids::stable_test_id(r)) << "\"";
+                    os << "{\"id\":\"" << ::jsonl::escape(r.test_id) << "\"";
                     os << ",\"name\":\"" << ::jsonl::escape(r.test_name) << "\"";
                     os << ",\"file\":\"" << ::jsonl::escape(r.file_name) << "\"";
                     os << ",\"line\":" << r.line;

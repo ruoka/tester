@@ -5,6 +5,7 @@
 export module tester;
 export import :basic;
 export import :runner;
+export import :output;
 export import :assertions;
 export import :behavior_driven_development;
 

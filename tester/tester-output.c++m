@@ -24,8 +24,6 @@ namespace tester::output
 
 namespace color = ::io::color;
 
-using namespace data;
-
 // Thread-local current test ID (set by runner)
 inline thread_local std::string g_current_test_id;
 
@@ -36,10 +34,10 @@ namespace {
 }
 
 // Entities that need to be accessible from outside anonymous namespace
-enum class output_format { human, jsonl };
-enum class jsonl_output_policy { never, failures, always };
+export enum class output_format { human, jsonl };
+export enum class jsonl_output_policy { never, failures, always };
 
-struct output_config
+export struct output_config
 {
     output_format format = output_format::human;
     bool human_result_line = false;
@@ -48,10 +46,45 @@ struct output_config
     std::size_t jsonl_output_max_bytes = 16384;
 };
 
-auto& cfg()
+// Per-run configuration (set once by runner)
+inline output_config g_config{};
+
+const output_config& cfg()
 {
-    static auto config = output_config{};
-    return config;
+    return g_config;
+}
+
+export void set_output_config(output_config config)
+{
+    g_config = std::move(config);
+}
+
+export void set_output_format(std::string_view fmt)
+{
+    if(fmt == "jsonl" || fmt == "JSONL") g_config.format = output_format::jsonl;
+    else g_config.format = output_format::human;
+}
+
+export void set_human_result_line(bool enabled)
+{
+    g_config.human_result_line = enabled;
+}
+
+export void set_slowest(std::size_t n)
+{
+    g_config.slowest = n;
+}
+
+export void set_jsonl_output(std::string_view policy)
+{
+    if(policy == "never") g_config.jsonl_output = jsonl_output_policy::never;
+    else if(policy == "always") g_config.jsonl_output = jsonl_output_policy::always;
+    else g_config.jsonl_output = jsonl_output_policy::failures;
+}
+
+export void set_jsonl_output_max_bytes(std::size_t n)
+{
+    g_config.jsonl_output_max_bytes = n;
 }
 
 auto slowest_count()
@@ -126,42 +159,9 @@ inline auto& io_mux()
     return console::io_mux();
 }
 
-export auto stable_test_id(const data::test_metadata& m)
-{
-    return tester::ids::stable_test_id(m);
-}
-
 bool jsonl_enabled()
 {
     return is_jsonl();
-}
-
-export void set_output_format(std::string_view fmt)
-{
-    if(fmt == "jsonl" || fmt == "JSONL") cfg().format = output_format::jsonl;
-    else cfg().format = output_format::human;
-}
-
-export void set_human_result_line(bool enabled)
-{
-    cfg().human_result_line = enabled;
-}
-
-export void set_slowest(std::size_t n)
-{
-    cfg().slowest = n;
-}
-
-export void set_jsonl_output(std::string_view policy)
-{
-    if(policy == "never") cfg().jsonl_output = jsonl_output_policy::never;
-    else if(policy == "always") cfg().jsonl_output = jsonl_output_policy::always;
-    else cfg().jsonl_output = jsonl_output_policy::failures;
-}
-
-export void set_jsonl_output_max_bytes(std::size_t n)
-{
-    cfg().jsonl_output_max_bytes = n;
 }
 
 export std::string_view stream()
@@ -193,11 +193,11 @@ std::string_view get_current_test_id()
     return std::string_view{g_current_test_id};
 }
 
-export void print_test_cases(std::function<bool(const test_case&)> included)
+export void print_test_cases(std::function<bool(const data::test_case&)> included)
 {
     if(is_jsonl())
     {
-        for(const auto& tc : test_cases)
+        for(const auto& tc : data::test_cases)
         {
             if(!included(tc)) continue;
             jsonl_sink().test_case(tc);
@@ -213,7 +213,7 @@ void print_test_results()
     if(is_jsonl())
     {
         const auto policy = jsonl_policy();
-        for(const auto& result : test_results)
+        for(const auto& result : data::test_results)
         {
             const auto include_output = (policy == jsonl_output_policy::always)
                 || (policy == jsonl_output_policy::failures && !result.success);
@@ -245,12 +245,12 @@ export void print_test_statistics(
     const auto passed = (failed_tests == 0 && failed_assertions == 0);
 
     const auto slow_n = slowest_count();
-    auto slowest = std::vector<const test_result*>{};
+    auto slowest = std::vector<const data::test_result*>{};
     if(slow_n > 0)
     {
-        slowest.reserve(test_results.size());
-        for(const auto& r : test_results) slowest.push_back(&r);
-        std::ranges::sort(slowest, [](const test_result* a, const test_result* b) {
+        slowest.reserve(data::test_results.size());
+        for(const auto& r : data::test_results) slowest.push_back(&r);
+        std::ranges::sort(slowest, [](const data::test_result* a, const data::test_result* b) {
             return a->duration > b->duration;
         });
         if(slowest.size() > slow_n) slowest.resize(slow_n);
@@ -261,7 +261,7 @@ export void print_test_statistics(
         jsonl_sink().summary(
             stats,
             passed,
-            std::span<const test_result* const>{slowest.data(), slowest.size()});
+            std::span<const data::test_result* const>{slowest.data(), slowest.size()});
 
         if(want_result_line())
         {

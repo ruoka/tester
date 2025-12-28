@@ -11,8 +11,6 @@
 #include "details/jsonl-signal-safe.h++"
 import std;
 import tester;
-
-static volatile sig_atomic_t g_jsonl_enabled = 0;
 using namespace std::literals;
 // Schema is defined in jsonl.h++ as jsonl::jsonl_context<std::ostream>::schema
 // We duplicate it here as a string literal to avoid header inclusion conflicts with the std module
@@ -55,9 +53,15 @@ int main(int argc, char** argv)
     std::copy_n(g_schema.begin(), g_schema_len, g_schema_buf.begin());
     g_schema_buf[g_schema_len] = '\0';
 
+    struct run_state
+    {
+        bool jsonl_enabled = false;
+    };
+    static run_state state{};
+
     auto crash_handler = [](int signal)
     {
-        if(g_jsonl_enabled)
+        if(state.jsonl_enabled)
         {
             jsonl::signal_safe::emit_crash_event_jsonl(
                 STDOUT_FILENO,
@@ -82,7 +86,7 @@ int main(int argc, char** argv)
 
     auto list_only = false;
     auto tags = std::string_view{};
-    auto output = std::string_view{"human"};
+    auto output_mode = std::string_view{"human"};
     auto result_line = false;
     auto slowest = std::size_t{0};
     auto jsonl_output = std::string_view{"failures"};
@@ -110,7 +114,7 @@ int main(int argc, char** argv)
 
         if(option.starts_with("--output="))
         {
-            output = option.substr(std::string_view{"--output="}.size());
+            output_mode = option.substr(std::string_view{"--output="}.size());
             continue;
         }
 
@@ -152,14 +156,14 @@ int main(int argc, char** argv)
 
     try
     {
-        auto tr = tester::runner{tags};
-        tr.set_output_format(output);
-        tr.set_result_line(result_line);
-        tr.set_slowest(slowest);
-        tr.set_jsonl_output(jsonl_output);
-        tr.set_jsonl_output_max_bytes(jsonl_output_max_bytes);
+        tester::output::set_output_format(output_mode);
+        tester::output::set_human_result_line(result_line);
+        tester::output::set_slowest(slowest);
+        tester::output::set_jsonl_output(jsonl_output);
+        tester::output::set_jsonl_output_max_bytes(jsonl_output_max_bytes);
+        state.jsonl_enabled = (output_mode == "jsonl" || output_mode == "JSONL");
 
-        g_jsonl_enabled = (output == "jsonl" || output == "JSONL");
+        auto tr = tester::runner{tags};
 
         if(list_only)
         {
@@ -168,7 +172,7 @@ int main(int argc, char** argv)
         }
 
         // In JSONL mode, keep stdout machine-parseable: don't emit the human test list.
-        if(!g_jsonl_enabled)
+        if(!state.jsonl_enabled)
             tr.print_test_cases();
         tr.run_tests();
         tr.print_test_results();
