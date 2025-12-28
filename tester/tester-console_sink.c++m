@@ -55,6 +55,9 @@ inline auto& io_mux()
     return mux;
 }
 
+inline auto& human_os() { return io_mux().human_os(); }
+inline auto& result_os() { return io_mux().result_os(); }
+
 struct sink
 {
     explicit sink(io::mux& /*mux*/) {}
