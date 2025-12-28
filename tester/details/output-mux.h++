@@ -42,6 +42,9 @@ struct mux
     void set_jsonl_enabled(bool v) { jsonl.set_enabled(v); }
     bool jsonl_enabled() const { return jsonl.is_enabled(); }
     void reset_jsonl_state() { jsonl.reset_stream_state(); }
+
+    // Consistent access to the JSONL context
+    auto& jsonl_ctx() { return jsonl; }
 };
 
 inline void log_prefixed(std::ostream& os, std::string_view prefix, std::string_view color_code, std::string_view msg)

@@ -27,7 +27,7 @@ namespace color = ::io::color;
 using namespace data;
 
 // Thread-local current test ID (set by runner)
-inline thread_local std::string_view g_current_test_id;
+inline thread_local std::string g_current_test_id;
 
 namespace {
 
@@ -185,12 +185,12 @@ export void end_run(std::string_view mode, std::string_view tags, bool passed, s
 
 export void set_current_test_id(std::string_view test_id)
 {
-    g_current_test_id = test_id;
+    g_current_test_id = std::string{test_id};
 }
 
 std::string_view get_current_test_id()
 {
-    return g_current_test_id;
+    return std::string_view{g_current_test_id};
 }
 
 export void print_test_cases(std::function<bool(const test_case&)> included)
