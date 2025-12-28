@@ -16,6 +16,7 @@ export struct test_metadata
     const std::uint_least32_t line;
     const std::uint_least32_t column;
     const std::string_view function_name;
+    std::string test_id;  // Stable identifier for the test
 };
 
 using test = std::function<void(void)>;

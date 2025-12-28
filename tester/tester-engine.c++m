@@ -41,7 +41,7 @@ auto& make_test_case(std::string_view description, int priority, std::vector<std
     auto test_name = std::string{test_type} + " -> "s + std::string{description};
     auto assigned_id = id.empty() ? test_name : std::move(id);
     auto test_case = data::test_case{
-        {location1.function_name(),test_name,location1.file_name(),location1.line(),location1.column(),location2.function_name()},
+        {location1.function_name(),test_name,location1.file_name(),location1.line(),location1.column(),location2.function_name(), assigned_id},
         data::test{},
         priority,
         std::move(depends_on),
@@ -161,8 +161,7 @@ auto run_test_cases(auto filter, auto set_test_id, auto clear_test_id, auto /*ge
         output::test_case(*tc);
 
         auto tr = test_result{*tc};
-        const auto test_id = output::stable_test_id(*tc);
-        set_test_id(test_id);
+        set_test_id(tc->test_id);
         
         const auto started = std::chrono::steady_clock::now();
         const auto started_sys = std::chrono::system_clock::now();
