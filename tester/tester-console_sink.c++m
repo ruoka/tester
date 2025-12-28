@@ -32,14 +32,6 @@ auto& io_mux()
 auto& human_os() { return io_mux().human_os(); }
 auto& result_os() { return io_mux().result_os(); }
 
-auto verbose = false;
-auto stream = std::ostringstream{};
-
-void reset()
-{
-    stream = std::ostringstream{};
-}
-
 auto demangle(std::string_view name)
 {
 #if TESTER_HAVE_CXXABI
@@ -150,7 +142,15 @@ auto as_ms(std::chrono::nanoseconds ns)
 
 struct sink
 {
-    explicit sink(io::mux& mux) {}
+    explicit sink(io::mux& /*mux*/) {}
+    
+    std::ostringstream stream{};
+    bool verbose = false;
+    
+    void reset()
+    {
+        stream = std::ostringstream{};
+    }
 
     std::string demangle_impl(std::string_view name) const
     {
@@ -166,6 +166,90 @@ struct sink
         }
 #endif
         return std::string{name};
+    }
+
+    std::string function_name_impl(const std::source_location sl = std::source_location::current()) const
+    {
+        using namespace std::literals;
+        auto name = std::string_view{sl.function_name()};
+
+        if(auto assertions_pos = name.find("assertions::"); assertions_pos != std::string_view::npos)
+            name.remove_prefix(assertions_pos + "assertions::"s.length());
+
+        auto base = name.substr(0, name.find_first_of("("));
+        auto display = std::string{base};
+
+        if(auto bracket = name.find('['); bracket != std::string_view::npos)
+        {
+            auto end = name.find(']', bracket);
+            auto parameters = end != std::string_view::npos
+                              ? name.substr(bracket + 1, end - bracket - 1)
+                              : name.substr(bracket + 1);
+
+            auto trim = [](std::string_view sv)
+            {
+                auto start = sv.find_first_not_of(" \t");
+                if(start == std::string_view::npos) return std::string_view{};
+                auto finish = sv.find_last_not_of(" \t");
+                return sv.substr(start, finish - start + 1);
+            };
+
+            auto clean = [](std::string text)
+            {
+                auto replace_all = [](std::string& target, std::string_view from, std::string_view to)
+                {
+                    for(auto pos = target.find(from); pos != std::string::npos; pos = target.find(from, pos + to.size()))
+                        target.replace(pos, from.size(), to);
+                };
+
+                replace_all(text, "std::__1::", "std::");
+                replace_all(text, "std::basic_string<char>", "std::string");
+                replace_all(text, "std::basic_string<wchar_t>", "std::wstring");
+                replace_all(text, " >", ">");
+
+                return text;
+            };
+
+            display.push_back(' ');
+            display.push_back('[');
+
+            auto remaining = parameters;
+            auto first = true;
+            while(true)
+            {
+                auto pos = remaining.find(',');
+                auto token = trim(remaining.substr(0, pos));
+                if(not token.empty())
+                {
+                    if(not first) display.append(", ");
+                    auto eq = token.find('=');
+                    if(eq != std::string_view::npos)
+                    {
+                        auto key = trim(token.substr(0, eq));
+                        auto value = trim(token.substr(eq + 1));
+                        display.append(std::string{key});
+                        display.append("=");
+                        display.append(demangle_impl(clean(std::string{value})));
+                    }
+                    else
+                    {
+                        display.append(demangle_impl(clean(std::string{token})));
+                    }
+                    first = false;
+                }
+                if(pos == std::string_view::npos) break;
+                remaining.remove_prefix(pos + 1);
+            }
+
+            display.push_back(']');
+        }
+
+        return display;
+    }
+    
+    auto as_ms_impl(std::chrono::nanoseconds ns) const
+    {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(ns).count();
     }
 
     template <typename V>
@@ -200,20 +284,20 @@ struct sink
             if (std::holds_alternative<std::monostate>(val) || val.valueless_by_exception())
                 stream << "null";
             else
-                std::visit([&](const auto& alt) {
+                std::visit([this](const auto& alt) {
                     using Alt = std::decay_t<decltype(alt)>;
                     if constexpr (std::is_same_v<Alt, bool>)
-                        stream << std::boolalpha << alt;
+                        this->stream << std::boolalpha << alt;
                     else if constexpr (std::is_same_v<Alt, std::nullptr_t> || std::is_same_v<Alt, std::monostate>)
-                        stream << "null";
+                        this->stream << "null";
                     else if constexpr (std::is_same_v<Alt, std::string> || std::is_same_v<Alt, std::string_view>)
-                        stream << '"' << alt << '"';
+                        this->stream << '"' << alt << '"';
                     else if constexpr (std::is_arithmetic_v<Alt>)
-                        stream << alt;
-                    else if constexpr (requires { stream << alt; })
-                        stream << alt; // fallback: use existing operator<<
+                        this->stream << alt;
+                    else if constexpr (requires { this->stream << alt; })
+                        this->stream << alt; // fallback: use existing operator<<
                     else
-                        stream << "..."; // unknown alternative
+                        this->stream << "..."; // unknown alternative
                 }, val);
         }
         // ——— Final fallback ———
@@ -255,7 +339,7 @@ struct sink
         else
             stream << color::text::red;
 
-        stream << function_name(location2) << '\n';
+        stream << this->function_name_impl(location2) << '\n';
 
         stream << "  actual:   ";
         this->format_value(actual);
@@ -280,7 +364,7 @@ struct sink
         else
             stream << color::text::red;
 
-        stream << function_name(location2) << '\n';
+        stream << this->function_name_impl(location2) << '\n';
         stream << "  message:  " << msg << '\n';
         stream << "  location: "
                << location1.file_name() << " "
@@ -342,9 +426,9 @@ struct sink
                                std::string_view run_tags,
                                bool want_result_line)
     {
-        using namespace data;
-        const auto failed_tests = data::statistics().total_tests - data::statistics().successful_tests;
-        const auto failed_assertions = data::statistics().total_assertions - data::statistics().successful_assertions;
+        const auto& stats = data::statistics();
+        const auto failed_tests = stats.total_tests - stats.successful_tests;
+        const auto failed_assertions = stats.total_assertions - stats.successful_assertions;
 
         auto pct = [](std::size_t ok, std::size_t total) -> double {
             if(total == 0) return 100.0;
@@ -358,21 +442,22 @@ struct sink
         {
             slowest.reserve(test_results.size());
             for(const auto& r : test_results) slowest.push_back(&r);
-            std::ranges::sort(slowest, [](const test_result* a, const test_result* b) {
+            auto compare = [](const data::test_result* a, const data::test_result* b) -> bool {
                 return a->duration > b->duration;
-            });
+            };
+            std::stable_sort(slowest.begin(), slowest.end(), compare);
             if(slowest.size() > slowest_n) slowest.resize(slowest_n);
         }
 
         human_os() << color::text::yellow
                    << "Test statistics:" << '\n'
-                   << "tests:      " << data::statistics().successful_tests << "/" << data::statistics().total_tests
+                   << "tests:      " << stats.successful_tests << "/" << stats.total_tests
                    << " passed"
-                   << " (" << std::fixed << std::setprecision(1) << pct(data::statistics().successful_tests, data::statistics().total_tests) << "%)"
+                   << " (" << std::fixed << std::setprecision(1) << pct(stats.successful_tests, stats.total_tests) << "%)"
                    << " | failed: " << failed_tests << '\n'
-                   << "assertions: " << data::statistics().successful_assertions << "/" << data::statistics().total_assertions
+                   << "assertions: " << stats.successful_assertions << "/" << stats.total_assertions
                    << " passed"
-                   << " (" << std::fixed << std::setprecision(1) << pct(data::statistics().successful_assertions, data::statistics().total_assertions) << "%)"
+                   << " (" << std::fixed << std::setprecision(1) << pct(stats.successful_assertions, stats.total_assertions) << "%)"
                    << " | failed: " << failed_assertions
                    << color::reset << std::endl;
 
@@ -398,7 +483,7 @@ struct sink
             for(const auto* r : slowest)
             {
                 human_os()
-                    << "  " << as_ms(r->duration) << "ms  "
+                    << "  " << this->as_ms_impl(r->duration) << "ms  "
                     << r->test_name
                     << " (" << r->file_name << " " << r->line << ":" << r->column << ")"
                     << '\n';
@@ -409,10 +494,10 @@ struct sink
         {
             result_os()
                 << "RESULT:"
-                << " tests_ok=" << data::statistics().successful_tests
-                << " tests_total=" << data::statistics().total_tests
-                << " assertions_ok=" << data::statistics().successful_assertions
-                << " assertions_total=" << data::statistics().total_assertions
+                << " tests_ok=" << stats.successful_tests
+                << " tests_total=" << stats.total_tests
+                << " assertions_ok=" << stats.successful_assertions
+                << " assertions_total=" << stats.total_assertions
                 << " passed=" << (passed ? "true" : "false")
                 << '\n';
         }
