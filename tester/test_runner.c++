@@ -19,12 +19,13 @@ static auto g_schema_buf = std::array<char, 64>{};
 static auto g_schema_len = std::size_t{0};
 
 constexpr auto usage =
-R"(test_runner [--help] [--list] [--tags=<tag>] [--output=<human|jsonl>] [--slowest=<N>]
+R"(test_runner [--help] [--list] [--tags=<tag>] [--output=<human|jsonl>] [--jsonl] [--slowest=<N>]
             [--jsonl-output=<never|failures|always>] [--jsonl-output-max-bytes=<N>] [--result]
             [<tags>]
 Examples:
   test_runner
   test_runner --list
+  test_runner --jsonl --jsonl-output=failures --slowest=10
   test_runner --output=jsonl --jsonl-output=failures --slowest=10
   test_runner --tags=scenario("My test")
   test_runner --tags=[acceptor]
@@ -109,6 +110,12 @@ int main(int argc, char** argv)
         if(option.starts_with("--tags="))
         {
             tags = option.substr(std::string_view{"--tags="}.size());
+            continue;
+        }
+
+        if(option == "--jsonl")
+        {
+            output_mode = "jsonl";
             continue;
         }
 
