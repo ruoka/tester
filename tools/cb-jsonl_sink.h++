@@ -13,6 +13,8 @@
 
 namespace cb_jsonl {
 
+using ::jsonl::escape;
+
 struct sink
 {
     io::mux& m;
@@ -23,15 +25,16 @@ struct sink
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("build_start") << [&](std::ostream& os){
-            os << ",\"config\":\"" << jsonl_util::escape(config) << "\"";
+            os << ",\"config\":\"" << escape(config) << "\"";
             os << ",\"include_tests\":" << (include_tests ? "true" : "false");
             os << ",\"include_examples\":" << (include_examples ? "true" : "false");
         };
     }
 
-    void build_end(bool ok, std::chrono::milliseconds duration)
+    void build_end(bool ok, std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
+        const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started);
         m.json << m.jsonl("build_end") << [&](std::ostream& os){
             os << ",\"ok\":" << (ok ? "true" : "false");
             os << ",\"duration_ms\":" << duration.count();
@@ -42,13 +45,14 @@ struct sink
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("test_start") << [&](std::ostream& os){
-            os << ",\"runner\":\"" << jsonl_util::escape(runner) << "\"";
+            os << ",\"runner\":\"" << escape(runner) << "\"";
         };
     }
 
-    void test_end(bool ok, int exit_code, int wait_status, bool signaled, int signal_number, std::chrono::milliseconds duration)
+    void test_end(bool ok, int exit_code, int wait_status, bool signaled, int signal_number, std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
+        const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started);
         m.json << m.jsonl("test_end") << [&](std::ostream& os){
             os << ",\"ok\":" << (ok ? "true" : "false");
             os << ",\"exit_code\":" << exit_code;
@@ -63,7 +67,7 @@ struct sink
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("cb_error") << [&](std::ostream& os){
-            os << ",\"message\":\"" << jsonl_util::escape(message) << "\"";
+            os << ",\"message\":\"" << escape(message) << "\"";
         };
     }
 
@@ -71,15 +75,16 @@ struct sink
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("command_start") << [&](std::ostream& os){
-            os << ",\"cmd\":\"" << jsonl_util::escape(cmd) << "\"";
+            os << ",\"cmd\":\"" << escape(cmd) << "\"";
         };
     }
 
-    void command_end(std::string_view cmd, bool ok, int exit_code, std::chrono::milliseconds duration)
+    void command_end(std::string_view cmd, bool ok, int exit_code, std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
+        const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started);
         m.json << m.jsonl("command_end") << [&](std::ostream& os){
-            os << ",\"cmd\":\"" << jsonl_util::escape(cmd) << "\"";
+            os << ",\"cmd\":\"" << escape(cmd) << "\"";
             os << ",\"ok\":" << (ok ? "true" : "false");
             os << ",\"exit_code\":" << exit_code;
             os << ",\"duration_ms\":" << duration.count();

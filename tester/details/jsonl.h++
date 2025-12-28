@@ -17,7 +17,7 @@
 #include <type_traits>
 #include <unistd.h>
 
-namespace jsonl_util {
+namespace jsonl {
 
 inline std::string escape(std::string_view sv)
 {
@@ -56,18 +56,6 @@ inline std::chrono::milliseconds unix_ms(std::chrono::system_clock::time_point t
     return duration_cast<milliseconds>(tp.time_since_epoch());
 }
 
-inline std::chrono::milliseconds duration_ms(std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished)
-{
-    using namespace std::chrono;
-    return duration_cast<milliseconds>(finished - started);
-}
-
-inline std::chrono::milliseconds duration_ms(std::chrono::system_clock::time_point started, std::chrono::system_clock::time_point finished)
-{
-    using namespace std::chrono;
-    return duration_cast<milliseconds>(finished - started);
-}
-
 inline unsigned pid()
 {
     return static_cast<unsigned>(::getpid());
@@ -83,12 +71,6 @@ void emit_event_raw(Stream& os, std::string_view type, std::string_view schema, 
     os << ",\"ts_unix_ms\":" << ts_unix_ms.count();
     add_fields(os);
     os << "}\n";
-}
-
-template<typename Stream, typename F>
-void emit_event(Stream& os, std::string_view type, std::string_view schema, int version, std::chrono::milliseconds ts_unix_ms, unsigned pid_value, F&& add_fields)
-{
-    emit_event_raw(os, type, schema, version, ts_unix_ms, pid_value, std::forward<F>(add_fields));
 }
 
 template<typename Stream>
@@ -187,7 +169,7 @@ struct jsonl_context
         emit_event("eof", [](auto&){});
     }
 
-    event_builder event(std::string_view type) { return event_builder{this, type, 0, false}; }
+    event_builder event(std::string_view type) { return event_builder{this, type, std::chrono::milliseconds{0}, false}; }
     event_builder event_with_ts(std::string_view type, std::chrono::milliseconds ts) { return event_builder{this, type, ts, true}; }
     event_builder event_at(std::string_view type, std::chrono::system_clock::time_point tp) { return event_builder{this, type, unix_ms(tp), true}; }
 
@@ -196,6 +178,6 @@ struct jsonl_context
     event_builder operator()(std::string_view type, std::chrono::system_clock::time_point tp) { return event_at(type, tp); }
 };
 
-} // namespace jsonl_util
+} // namespace jsonl
 
 

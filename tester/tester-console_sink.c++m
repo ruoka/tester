@@ -1,0 +1,433 @@
+// Copyright (c) 2025 Kaius Ruokonen. All rights reserved.
+// SPDX-License-Identifier: MIT
+// See the LICENSE file in the project root for full license text.
+
+module;
+#if defined(__GNUG__) && __has_include(<cxxabi.h>)
+#   include <cxxabi.h>
+#   define TESTER_HAVE_CXXABI 1
+#else
+#   define TESTER_HAVE_CXXABI 0
+#endif
+#include "details/output-mux.h++"
+
+export module tester:console_sink;
+import :data;
+import std;
+
+namespace tester::output::console
+{
+
+namespace color = ::io::color;
+using namespace data;
+
+namespace {
+
+auto& io_mux()
+{
+    static auto mux = io::mux{std::cout, std::clog, std::clog};
+    return mux;
+}
+
+auto& human_os() { return io_mux().human_os(); }
+auto& result_os() { return io_mux().result_os(); }
+
+auto verbose = false;
+auto stream = std::ostringstream{};
+
+void reset()
+{
+    stream = std::ostringstream{};
+}
+
+auto demangle(std::string_view name)
+{
+#if TESTER_HAVE_CXXABI
+    int status = 0;
+    auto buffer = std::string{name};
+    auto demangled = abi::__cxa_demangle(buffer.c_str(), nullptr, nullptr, &status);
+    if(demangled != nullptr)
+    {
+        std::string result{demangled};
+        std::free(demangled);
+        return result;
+    }
+#endif
+    return std::string{name};
+}
+
+auto function_name(const std::source_location sl = std::source_location::current())
+{
+    using namespace std::literals;
+    auto name = std::string_view{sl.function_name()};
+
+    if(auto assertions_pos = name.find("assertions::"); assertions_pos != std::string_view::npos)
+        name.remove_prefix(assertions_pos + "assertions::"s.length());
+
+    auto base = name.substr(0, name.find_first_of("("));
+    auto display = std::string{base};
+
+    if(auto bracket = name.find('['); bracket != std::string_view::npos)
+    {
+        auto end = name.find(']', bracket);
+        auto parameters = end != std::string_view::npos
+                          ? name.substr(bracket + 1, end - bracket - 1)
+                          : name.substr(bracket + 1);
+
+        auto trim = [](std::string_view sv)
+        {
+            auto start = sv.find_first_not_of(" \t");
+            if(start == std::string_view::npos) return std::string_view{};
+            auto finish = sv.find_last_not_of(" \t");
+            return sv.substr(start, finish - start + 1);
+        };
+
+        auto clean = [](std::string text)
+        {
+            auto replace_all = [](std::string& target, std::string_view from, std::string_view to)
+            {
+                for(auto pos = target.find(from); pos != std::string::npos; pos = target.find(from, pos + to.size()))
+                    target.replace(pos, from.size(), to);
+            };
+
+            replace_all(text, "std::__1::", "std::");
+            replace_all(text, "std::basic_string<char>", "std::string");
+            replace_all(text, "std::basic_string<wchar_t>", "std::wstring");
+            replace_all(text, " >", ">");
+
+            return text;
+        };
+
+        display.push_back(' ');
+        display.push_back('[');
+
+        auto remaining = parameters;
+        auto first = true;
+        while(true)
+        {
+            auto pos = remaining.find(',');
+            auto token = trim(remaining.substr(0, pos));
+            if(not token.empty())
+            {
+                if(not first) display.append(", ");
+                auto eq = token.find('=');
+                if(eq != std::string_view::npos)
+                {
+                    auto key = trim(token.substr(0, eq));
+                    auto value = trim(token.substr(eq + 1));
+                    display.append(std::string{key});
+                    display.append("=");
+                    display.append(demangle(clean(std::string{value})));
+                }
+                else
+                {
+                    display.append(demangle(clean(std::string{token})));
+                }
+                first = false;
+            }
+            if(pos == std::string_view::npos) break;
+            remaining.remove_prefix(pos + 1);
+        }
+
+        display.push_back(']');
+    }
+
+    return display;
+}
+
+template<class T>
+concept chrono_clock = requires {
+    typename T::time_point;
+    T::now();
+};
+
+auto as_ms(std::chrono::nanoseconds ns)
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(ns).count();
+}
+
+} // namespace
+
+struct sink
+{
+    explicit sink(io::mux& mux) {}
+
+    std::string demangle_impl(std::string_view name) const
+    {
+#if TESTER_HAVE_CXXABI
+        int status = 0;
+        auto buffer = std::string{name};
+        auto demangled = abi::__cxa_demangle(buffer.c_str(), nullptr, nullptr, &status);
+        if(demangled != nullptr)
+        {
+            std::string result{demangled};
+            std::free(demangled);
+            return result;
+        }
+#endif
+        return std::string{name};
+    }
+
+    template <typename V>
+    void format_value(const V& val)
+    {
+        using T = std::remove_cvref_t<V>;
+
+        if constexpr (std::is_same_v<T, std::string>)
+            stream << demangle_impl(val);
+        else if constexpr (std::is_same_v<T, std::string_view>)
+            stream << demangle_impl(std::string{val});
+        else if constexpr (std::is_same_v<T, const char*> || std::is_same_v<T, char*>)
+            stream << demangle_impl(val != nullptr ? std::string{val} : std::string{"nullptr"});
+        else if constexpr (std::is_pointer_v<T>)
+            stream << (val != nullptr ? val : "nullptr");
+        else if constexpr (std::is_enum_v<T>)
+            stream << std::to_underlying(val);
+        else if constexpr (chrono_clock<T>)
+            stream << std::format("{0:%F}T{0:%T}", val);
+        else if constexpr (std::is_arithmetic_v<T>)
+        {
+            if constexpr (std::is_same_v<T, bool>)
+                stream << std::boolalpha << val;
+            else
+                stream << val;
+        }
+
+        // ——— NEW: Support for common variant-based JSON/value types ———
+
+        else if constexpr (requires { val.index(); }) // has .index() → probably std::variant or similar
+        {
+            if (std::holds_alternative<std::monostate>(val) || val.valueless_by_exception())
+                stream << "null";
+            else
+                std::visit([&](const auto& alt) {
+                    using Alt = std::decay_t<decltype(alt)>;
+                    if constexpr (std::is_same_v<Alt, bool>)
+                        stream << std::boolalpha << alt;
+                    else if constexpr (std::is_same_v<Alt, std::nullptr_t> || std::is_same_v<Alt, std::monostate>)
+                        stream << "null";
+                    else if constexpr (std::is_same_v<Alt, std::string> || std::is_same_v<Alt, std::string_view>)
+                        stream << '"' << alt << '"';
+                    else if constexpr (std::is_arithmetic_v<Alt>)
+                        stream << alt;
+                    else if constexpr (requires { stream << alt; })
+                        stream << alt; // fallback: use existing operator<<
+                    else
+                        stream << "..."; // unknown alternative
+                }, val);
+        }
+        // ——— Final fallback ———
+        else if constexpr (requires { stream << val; })
+            stream << std::boolalpha << val;
+        else
+            stream << "..."; // unknown type
+    }
+
+    void on_test_case(const data::test_case& tc)
+    {
+        reset();
+
+        if(tc.test_name.starts_with("scenario") or tc.test_name.starts_with("test_case"))
+            stream << color::background::blue
+                << tc.test_set_name
+                << color::reset << '\n';
+
+        stream << color::text::blue
+               << tc.test_name << " "
+               << "(" << tc.file_name << " " <<  tc.line << ":" <<  tc.column << ")"
+               << color::reset << '\n';
+    }
+
+    void on_exception(const data::test_case& tc, const std::exception& ex)
+    {
+        stream << color::background::red
+               << ex.what()
+               << " " << tc.test_name << " "
+               << "(" << tc.file_name << " " <<  tc.line << ":" <<  tc.column << ")"
+               << color::reset << '\n';
+    }
+
+    template<typename A, typename E>
+    void assertion(bool ok, const A& actual, const E& expected, const std::source_location location1, const std::source_location location2 = std::source_location::current())
+    {
+        if(ok)
+            stream << color::text::green;
+        else
+            stream << color::text::red;
+
+        stream << function_name(location2) << '\n';
+
+        stream << "  actual:   ";
+        this->format_value(actual);
+        stream << '\n';
+
+        stream << "  expected: ";
+        this->format_value(expected);
+        stream << '\n';
+
+        stream << "  location: "
+               << location1.file_name() << " "
+               << location1.line() << ":" << location1.column()
+               << color::reset << '\n';
+
+        if(verbose) std::clog << stream.view();
+    }
+
+    void message(bool ok, auto msg, const std::source_location location1, const std::source_location location2 = std::source_location::current())
+    {
+        if(ok)
+            stream << color::text::yellow;
+        else
+            stream << color::text::red;
+
+        stream << function_name(location2) << '\n';
+        stream << "  message:  " << msg << '\n';
+        stream << "  location: "
+               << location1.file_name() << " "
+               << location1.line() << ":" << location1.column()
+               << color::reset << '\n';
+
+        if(verbose) std::clog << stream.view();
+    }
+
+    void print_test_cases(std::function<bool(const data::test_case&)> included)
+    {
+        using namespace data;
+        human_os() << "Test cases:\n";
+        for(auto tc : test_cases)
+            if(included(tc))
+                human_os() << color::text::yellow
+                           << tc.test_name
+                           << " (" << tc.file_name << " " << tc.line << ':' << tc.column << ")"
+                           << color::reset << std::endl;
+    }
+
+    void print_test_results()
+    {
+        using namespace data;
+        human_os() << color::text::yellow
+                   << "Test results:"
+                   << color::reset << '\n';
+        for(auto result : test_results)
+            human_os() << result.output;
+    }
+
+    void print_test_failures()
+    {
+        using namespace data;
+        auto any_failures = false;
+        for(const auto& result : test_results)
+            if(not result.success) { any_failures = true; break; }
+
+        if(!any_failures)
+        {
+            human_os() << color::text::green
+                       << "No test failures."
+                       << color::reset << '\n';
+            return;
+        }
+
+        human_os() << color::text::red
+                   << "Test failures:"
+                   << color::reset << '\n';
+
+        for(const auto& result : test_results)
+            if(not result.success)
+                human_os() << result.output;
+    }
+
+    void print_test_statistics(std::size_t slowest_n, 
+                               std::chrono::steady_clock::time_point run_started,
+                               std::chrono::steady_clock::time_point run_finished,
+                               std::string_view run_tags,
+                               bool want_result_line)
+    {
+        using namespace data;
+        const auto failed_tests = data::statistics().total_tests - data::statistics().successful_tests;
+        const auto failed_assertions = data::statistics().total_assertions - data::statistics().successful_assertions;
+
+        auto pct = [](std::size_t ok, std::size_t total) -> double {
+            if(total == 0) return 100.0;
+            return 100.0 * static_cast<double>(ok) / static_cast<double>(total);
+        };
+
+        const auto passed = (failed_tests == 0 && failed_assertions == 0);
+
+        auto slowest = std::vector<const test_result*>{};
+        if(slowest_n > 0)
+        {
+            slowest.reserve(test_results.size());
+            for(const auto& r : test_results) slowest.push_back(&r);
+            std::ranges::sort(slowest, [](const test_result* a, const test_result* b) {
+                return a->duration > b->duration;
+            });
+            if(slowest.size() > slowest_n) slowest.resize(slowest_n);
+        }
+
+        human_os() << color::text::yellow
+                   << "Test statistics:" << '\n'
+                   << "tests:      " << data::statistics().successful_tests << "/" << data::statistics().total_tests
+                   << " passed"
+                   << " (" << std::fixed << std::setprecision(1) << pct(data::statistics().successful_tests, data::statistics().total_tests) << "%)"
+                   << " | failed: " << failed_tests << '\n'
+                   << "assertions: " << data::statistics().successful_assertions << "/" << data::statistics().total_assertions
+                   << " passed"
+                   << " (" << std::fixed << std::setprecision(1) << pct(data::statistics().successful_assertions, data::statistics().total_assertions) << "%)"
+                   << " | failed: " << failed_assertions
+                   << color::reset << std::endl;
+
+        if(run_finished != std::chrono::steady_clock::time_point{})
+        {
+            const auto dur = std::chrono::duration_cast<std::chrono::milliseconds>(
+                run_finished - run_started);
+            human_os() << color::text::yellow
+                       << "duration:  " << dur.count() << "ms"
+                       << color::reset << '\n';
+        }
+
+        if(!run_tags.empty())
+        {
+            human_os() << color::text::yellow
+                       << "filter:    " << run_tags
+                       << color::reset << '\n';
+        }
+
+        if(slowest_n > 0)
+        {
+            human_os() << color::text::yellow << "Slowest tests:" << color::reset << '\n';
+            for(const auto* r : slowest)
+            {
+                human_os()
+                    << "  " << as_ms(r->duration) << "ms  "
+                    << r->test_name
+                    << " (" << r->file_name << " " << r->line << ":" << r->column << ")"
+                    << '\n';
+            }
+        }
+
+        if(want_result_line)
+        {
+            result_os()
+                << "RESULT:"
+                << " tests_ok=" << data::statistics().successful_tests
+                << " tests_total=" << data::statistics().total_tests
+                << " assertions_ok=" << data::statistics().successful_assertions
+                << " assertions_total=" << data::statistics().total_assertions
+                << " passed=" << (passed ? "true" : "false")
+                << '\n';
+        }
+    }
+
+    std::string_view stream_view() const { return stream.view(); }
+    void reset_stream() { reset(); }
+};
+
+export inline auto& sink_instance()
+{
+    static auto s = sink{io_mux()};
+    return s;
+}
+
+} // namespace tester::output::console
+
+#undef TESTER_HAVE_CXXABI

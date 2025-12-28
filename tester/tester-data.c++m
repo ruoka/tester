@@ -43,14 +43,24 @@ struct test_result : public test_metadata
 
 auto test_results = std::list<test_result>{};
 
-struct test_statistics
+export struct test_statistics
 {
-    std::size_t successful_tests;
-    std::size_t total_tests;
-    std::size_t successful_assertions;
-    std::size_t total_assertions;
+    std::size_t successful_tests{0};
+    std::size_t total_tests{0};
+    std::size_t successful_assertions{0};
+    std::size_t total_assertions{0};
+    
+    // Run metadata
+    std::chrono::steady_clock::time_point run_started{};
+    std::chrono::steady_clock::time_point run_finished{};
+    std::chrono::system_clock::time_point run_started_unix_ms{};
+    std::string run_tags{};
 };
 
-auto statistics = test_statistics{0,0,0,0};
+auto& statistics()
+{
+    static test_statistics stats{};
+    return stats;
+}
 
 }

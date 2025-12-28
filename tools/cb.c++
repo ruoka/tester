@@ -26,7 +26,8 @@
 #include <stdexcept>
 #include <unistd.h>
 #include <sys/wait.h>
-#include "cb-jsonl-sink.h++"
+#include "cb-jsonl_sink.h++"
+#include "cb-console_sink.h++"
 
 namespace fs = std::filesystem;
 
@@ -40,9 +41,6 @@ using namespace std::string_view_literals;
 namespace jsonl {
 // JSONL state is owned by jsonl_context (no global flags)
 enum class phase { none, build, test };
-inline phase current_phase = phase::none;
-inline std::chrono::steady_clock::time_point phase_started{};
-inline bool build_end_emitted = false;
 
 inline auto& io_mux()
 {
@@ -75,31 +73,27 @@ static void jsonl_atexit_handler()
     cb::jsonl::ctx().emit_eof();
 }
 
+inline auto& console_sink()
+{
+    static auto sink = cb_console::sink{jsonl::io_mux()};
+    return sink;
+}
+
 namespace log {
 inline void error(std::string_view msg) {
     // In JSONL mode, keep output machine-parseable: do not print human logs.
     if(!cb::jsonl::enabled())
-        io::error(cb::jsonl::io_mux(), msg);
+        console_sink().error(msg);
 
     // JSONL error event (machine output)
     if(cb::jsonl::enabled())
-    {
-        // If build fails mid-flight, emit a structured build_end before cb_error.
-        if(cb::jsonl::current_phase == cb::jsonl::phase::build && !cb::jsonl::build_end_emitted)
-        {
-            const auto finished = std::chrono::steady_clock::now();
-            cb::jsonl::sink().build_end(false, jsonl_util::duration_ms(cb::jsonl::phase_started, finished));
-            cb::jsonl::build_end_emitted = true;
-        }
-
         cb::jsonl::sink().cb_error(msg);
-    }
 }
 
-inline void warning(std::string_view msg) { if(!cb::jsonl::enabled()) io::warning(cb::jsonl::io_mux(), msg); }
-inline void info(std::string_view msg) { if(!cb::jsonl::enabled()) io::info(cb::jsonl::io_mux(), msg); }
-inline void success(std::string_view msg) { if(!cb::jsonl::enabled()) io::success(cb::jsonl::io_mux(), msg); }
-inline void command(std::string_view cmd) { if(!cb::jsonl::enabled()) io::command(cb::jsonl::io_mux(), cmd); }
+inline void warning(std::string_view msg) { if(!cb::jsonl::enabled()) console_sink().warning(msg); }
+inline void info(std::string_view msg) { if(!cb::jsonl::enabled()) console_sink().info(msg); }
+inline void success(std::string_view msg) { if(!cb::jsonl::enabled()) console_sink().success(msg); }
+inline void command(std::string_view cmd) { if(!cb::jsonl::enabled()) console_sink().command(cmd); }
 } // namespace log
 
 enum class build_config { debug, release };
@@ -397,6 +391,29 @@ private:
     bool include_examples = false;
     std::string extra_compile_flags;
     std::string extra_link_flags;
+    
+    // JSONL phase tracking state
+    jsonl::phase current_phase = jsonl::phase::none;
+    std::chrono::steady_clock::time_point phase_started{};
+    bool build_end_emitted = false;
+    
+    void mark_build_end()
+    {
+        build_end_emitted = true;
+    }
+    
+    void handle_build_error(std::string_view msg) const
+    {
+        // If build fails mid-flight, emit a structured build_end before error.
+        // Note: build_end_emitted is mutable to allow const methods to mark it.
+        if(cb::jsonl::enabled() && current_phase == jsonl::phase::build && !build_end_emitted)
+        {
+            const auto finished = std::chrono::steady_clock::now();
+            cb::jsonl::sink().build_end(false, phase_started, finished);
+            const_cast<build_system*>(this)->mark_build_end();
+        }
+        log::error(msg);
+    }
 
     // ============================================================================
     // Initialization and Setup
@@ -702,9 +719,9 @@ private:
         const auto finished = std::chrono::steady_clock::now();
 
         if (cb::jsonl::enabled())
-            cb::jsonl::sink().command_end(cmd_str, r == 0, r, jsonl_util::duration_ms(started, finished));
+            cb::jsonl::sink().command_end(cmd_str, r == 0, r, started, finished);
         if (r) {
-            log::error("Command failed: "s + cmd_str);
+            handle_build_error("Command failed: "s + cmd_str);
             std::exit(1);
         }
     }
@@ -867,10 +884,10 @@ private:
                 }
             }
         } catch (const std::exception& e) {
-            log::error("Failed to scan project: "s + e.what());
+            handle_build_error("Failed to scan project: "s + e.what());
             throw;
         } catch (...) {
-            log::error("Failed to scan project: unknown error");
+            handle_build_error("Failed to scan project: unknown error");
             throw;
         }
 
@@ -936,7 +953,7 @@ private:
             auto message = "Cyclic dependency detected between units:"s;
             for (const auto& unit : cyclic_units)
                 message += " " + unit;
-            log::error(message);
+            handle_build_error(message);
             throw std::runtime_error{message};
         }
 
@@ -1249,9 +1266,9 @@ public:
 
     void build() {    
         const auto build_started = std::chrono::steady_clock::now();
-        cb::jsonl::current_phase = cb::jsonl::phase::build;
-        cb::jsonl::phase_started = build_started;
-        cb::jsonl::build_end_emitted = false;
+        current_phase = jsonl::phase::build;
+        phase_started = build_started;
+        build_end_emitted = false;
 
         if (cb::jsonl::enabled()) {
             cb::jsonl::sink().build_start(config_name(config), false, include_examples);
@@ -1267,11 +1284,7 @@ public:
         build_std_o();
         scan_and_order();
         if (units_in_topological_order.empty()) {
-            if (cb::jsonl::enabled()) {
-                cb::jsonl::sink().build_end(false, jsonl_util::duration_ms(build_started, std::chrono::steady_clock::now()));
-                cb::jsonl::build_end_emitted = true;
-            }
-            log::error("No sources found");
+            handle_build_error("No sources found");
             std::exit(1);
         }
 
@@ -1280,9 +1293,9 @@ public:
         link_executables();
 
         if (cb::jsonl::enabled()) {
-            cb::jsonl::sink().build_end(true, jsonl_util::duration_ms(build_started, std::chrono::steady_clock::now()));
-            cb::jsonl::build_end_emitted = true;
-            cb::jsonl::current_phase = cb::jsonl::phase::none;
+            cb::jsonl::sink().build_end(true, build_started, std::chrono::steady_clock::now());
+            build_end_emitted = true;
+            current_phase = jsonl::phase::none;
         }
 
         log::success("Build completed: "s + build_root());
@@ -1292,9 +1305,9 @@ public:
         log::info("=== Running tests ===");
 
         const auto build_started = std::chrono::steady_clock::now();
-        cb::jsonl::current_phase = cb::jsonl::phase::build;
-        cb::jsonl::phase_started = build_started;
-        cb::jsonl::build_end_emitted = false;
+        current_phase = jsonl::phase::build;
+        phase_started = build_started;
+        build_end_emitted = false;
         if(cb::jsonl::enabled())
             cb::jsonl::sink().build_start(config_name(config), true, include_examples);
 
@@ -1310,9 +1323,9 @@ public:
         }
     
         const auto build_finished = std::chrono::steady_clock::now();
-        cb::jsonl::sink().build_end(true, jsonl_util::duration_ms(build_started, build_finished));
-        cb::jsonl::build_end_emitted = true;
-        cb::jsonl::current_phase = cb::jsonl::phase::none;
+        cb::jsonl::sink().build_end(true, build_started, build_finished);
+        build_end_emitted = true;
+        current_phase = jsonl::phase::none;
 
         auto cmd = runner;
         for (const auto& a : args)
@@ -1320,8 +1333,8 @@ public:
         log::command(cmd);
 
         const auto test_started = std::chrono::steady_clock::now();
-        cb::jsonl::current_phase = cb::jsonl::phase::test;
-        cb::jsonl::phase_started = test_started;
+        current_phase = jsonl::phase::test;
+        phase_started = test_started;
         cb::jsonl::sink().test_start(runner);
 
         auto r = system(cmd.c_str());
@@ -1342,8 +1355,8 @@ public:
         }
 #endif
         const auto test_finished = std::chrono::steady_clock::now();
-        cb::jsonl::sink().test_end(r == 0, exit_code, r, signaled, signal_number, jsonl_util::duration_ms(test_started, test_finished));
-        cb::jsonl::current_phase = cb::jsonl::phase::none;
+        cb::jsonl::sink().test_end(r == 0, exit_code, r, signaled, signal_number, test_started, test_finished);
+        current_phase = jsonl::phase::none;
         if (r) {
             log::error("Some tests or assertions failed!");
             std::exit(1);
@@ -1353,29 +1366,8 @@ public:
 
     void print_sources() {
         scan_and_order();
-        auto& mux = cb::jsonl::io_mux();
-        auto lock = std::lock_guard<std::mutex>{mux.mutex};
-        auto& os = mux.human_os();
-        os << io::color::cyan << "\nFound " << units_in_topological_order.size() << " translation units:\n\n" << io::color::reset;
-        int main_count = 0, test_count = 0;
-        for (const auto& tu : units_in_topological_order) {
-            if (tu.has_main) main_count++;
-            if (tu.is_test) test_count++;
-        }
-        os << io::color::cyan << " Total: " << units_in_topological_order.size()
-                  << " | Main: " << main_count
-                  << " | Tests: " << test_count << "\n\n" << io::color::reset;
-
-        for (const auto& tu : units_in_topological_order) {
-            auto full = tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename;
-            os << io::color::cyan << " " << full << io::color::reset;
-            if (not tu.module.empty()) os << " " << io::color::yellow << "[module: " << tu.module << "]" << io::color::reset;
-            if (tu.has_main) os << " " << io::color::green << "[main]" << io::color::reset;
-            if (tu.is_test) os << " " << io::color::magenta << "[TEST]" << io::color::reset;
-            if (tu.dependency_level >= 0) os << " " << io::color::gray << "level=" << tu.dependency_level << io::color::reset;
-            os << "\n";
-        }
-        os << io::color::cyan << "\n" << io::color::reset;
+        if(!cb::jsonl::enabled())
+            console_sink().print_sources(units_in_topological_order);
     }
 };
 
@@ -1426,7 +1418,7 @@ try {
 
     for (int i = arg_index; i < argc; ++i) {
         auto argument = std::string_view{argv[i]};
-        if (argument == "--output=jsonl" || argument == "--output=JSONL") {
+        if (argument == "--jsonl" || argument == "--output=jsonl" || argument == "--output=JSONL") {
             cb::jsonl::set_enabled(true);
             continue;
         }
@@ -1507,6 +1499,7 @@ try {
                       << "  static           Enable static linking (C++ stdlib static)\n"
                       << "  --include-examples Include examples directory in build (excluded by default)\n"
                       << "  --build-tests    Build tests in release mode (useful for CI to verify compilation)\n"
+                      << "  --jsonl          Enable JSONL output format (machine-readable)\n"
                       << "  -I, --include    Add include directory (can be specified multiple times)\n"
                       << "  --link-flags     Add extra linker flags (e.g., --link-flags \"-lcrypto\")\n"
                       << "  --compile-flags  Add extra compiler flags\n"

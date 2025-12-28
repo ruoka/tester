@@ -5,6 +5,7 @@
 export module tester:runner;
 import :output;
 import :engine;
+import :data;
 import std;
 
 namespace tester
@@ -17,7 +18,7 @@ export class runner
 {
 public:
 
-    explicit runner(std::string_view tags = "") : m_tags{tags}
+    explicit runner(std::string_view tags = "") : m_tags{tags}, m_run_mode{}, m_run_tags{}
     {
         if(not m_tags.empty())
         {
@@ -42,15 +43,68 @@ public:
         }
     }
 
+    void begin_run(std::string_view mode)
+    {
+        m_run_has_started = true;
+        m_run_started_unix_ms = std::chrono::system_clock::now();
+        m_run_started_monotonic = std::chrono::steady_clock::now();
+        m_run_finished_monotonic = std::chrono::steady_clock::time_point{};
+        m_run_mode = std::string{mode};
+        m_run_tags = std::string{m_tags};
+        m_pending_run_end_passed = std::nullopt;
+        m_run_end_emitted = false;
+        m_current_test_id.clear();
+
+        // Set callback for output module to get current test ID
+        output::set_get_test_id_callback([this]{ return this->get_current_test_id(); });
+
+        if(output::jsonl_enabled())
+            output::begin_run(m_run_mode, m_run_tags, m_run_started_unix_ms);
+    }
+
+    void end_run(bool passed)
+    {
+        if(m_run_has_started)
+            m_run_finished_monotonic = std::chrono::steady_clock::now();
+
+        if(!output::jsonl_enabled()) return;
+
+        // In "run" mode, we defer emitting run_end until after the summary so the JSONL stream
+        // ends in a predictable order. For other modes (e.g. "list"), emit immediately.
+        if(m_run_mode == "run")
+        {
+            m_pending_run_end_passed = passed;
+            // run_end will be emitted by print_test_statistics
+            return;
+        }
+
+        const auto ended_at = std::chrono::system_clock::now();
+        output::end_run(m_run_mode, m_run_tags, passed, m_run_started_unix_ms, ended_at);
+        m_run_end_emitted = true;
+    }
+
+    void set_current_test_id(std::string_view id)
+    {
+        m_current_test_id.assign(id.begin(), id.end());
+    }
+
+    void clear_current_test_id()
+    {
+        m_current_test_id.clear();
+    }
+
+    std::string_view get_current_test_id() const
+    {
+        return m_current_test_id;
+    }
+
     auto print_test_cases()
     {
-        if(output::jsonl_enabled())
-            output::begin_run("list", m_tags);
+        begin_run("list");
 
         output::print_test_cases(std::function<bool(const test_case&)>{[this](const test_case& tc){ return this->included(tc); }});
 
-        if(output::jsonl_enabled())
-            output::end_run(true);
+        end_run(true);
     }
 
     void set_output_format(std::string_view fmt)
@@ -80,9 +134,18 @@ public:
 
     auto run_tests()
     {
-        output::begin_run("run", m_tags);
+        begin_run("run");
 
-        engine::run_test_cases([this](const auto& tc){return this->excluded(tc);});
+        engine::init_statistics(m_run_started_monotonic, m_run_started_unix_ms, m_run_tags);
+
+        engine::run_test_cases(
+            [this](const auto& tc){return this->excluded(tc);},
+            [this](std::string_view id){ this->set_current_test_id(id); },
+            [this]{ this->clear_current_test_id(); },
+            [this]{ return this->get_current_test_id(); });
+
+        engine::finish_statistics(m_run_finished_monotonic);
+        end_run(all_tests_passed());
     }
 
     auto print_test_results()
@@ -97,13 +160,16 @@ public:
 
     auto print_test_statistics()
     {
-        output::print_test_statistics();
+        output::print_test_statistics(
+            m_pending_run_end_passed,
+            m_run_end_emitted,
+            m_run_mode);
     }
 
     bool all_tests_passed() const
     {
-        return statistics.total_tests == statistics.successful_tests 
-            && statistics.total_assertions == statistics.successful_assertions;
+        return data::statistics().total_tests == data::statistics().successful_tests 
+            && data::statistics().total_assertions == data::statistics().successful_assertions;
     }
 
     bool included(const test_case& tc) const
@@ -140,6 +206,17 @@ private:
     bool m_use_regex = false;
     bool m_use_literal_tags = false;
     std::vector<std::string> m_literal_tags;
+
+    // Run state
+    std::chrono::system_clock::time_point m_run_started_unix_ms{};
+    std::chrono::steady_clock::time_point m_run_started_monotonic{};
+    std::chrono::steady_clock::time_point m_run_finished_monotonic{};
+    bool m_run_has_started = false;
+    std::string m_run_mode;
+    std::string m_run_tags;
+    std::string m_current_test_id;
+    std::optional<bool> m_pending_run_end_passed;
+    bool m_run_end_emitted = false;
 
     static std::vector<std::string> parse_tag_query(std::string_view query)
     {

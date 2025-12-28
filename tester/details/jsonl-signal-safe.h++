@@ -8,7 +8,7 @@
 #include <cstdint>
 #include <unistd.h>
 
-namespace jsonl_util::signal_safe {
+namespace jsonl::signal_safe {
 
 inline std::size_t append_cstr(char* buf, std::size_t n, std::size_t cap, const char* s)
 {
@@ -59,6 +59,6 @@ inline void emit_crash_event_jsonl(
     }
 }
 
-} // namespace jsonl_util::signal_safe
+} // namespace jsonl::signal_safe
 
 

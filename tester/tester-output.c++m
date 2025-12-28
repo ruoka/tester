@@ -15,6 +15,8 @@ module;
 export module tester:output;
 import :data;
 import :jsonl_sink;
+import :console_sink;
+import :ids;
 import std;
 
 namespace tester::output
@@ -23,6 +25,14 @@ namespace tester::output
 namespace color = ::io::color;
 
 using namespace data;
+
+// Thread-local callback to get current test ID (set by runner)
+inline thread_local std::function<std::string_view()> g_get_current_test_id;
+
+export void set_get_test_id_callback(std::function<std::string_view()> callback)
+{
+    g_get_current_test_id = std::move(callback);
+}
 
 namespace {
 
@@ -82,29 +92,6 @@ auto as_ms(std::chrono::nanoseconds ns)
     return std::chrono::duration_cast<std::chrono::milliseconds>(ns).count();
 }
 
-auto fnv1a64(std::string_view sv)
-{
-    std::uint64_t h = 14695981039346656037ull;
-    for(const unsigned char c : sv)
-    {
-        h ^= static_cast<std::uint64_t>(c);
-        h *= 1099511628211ull;
-    }
-    return h;
-}
-
-auto hex_u64(std::uint64_t v)
-{
-    static constexpr char hex[] = "0123456789abcdef";
-    char buf[16];
-    for(int i = 15; i >= 0; --i)
-    {
-        buf[i] = hex[v & 0xF];
-        v >>= 4;
-    }
-    return std::string{buf, 16};
-}
-
 auto& io_mux()
 {
     static auto mux = io::mux{std::cout, std::clog, std::clog};
@@ -118,111 +105,13 @@ auto& jsonl_sink()
     return sink;
 }
 
+auto& console_sink()
+{
+    return console::sink_instance();
+}
+
 auto& human_os() { return io_mux().human_os(); }     // human/log channel
 auto& result_os() { return io_mux().result_os(); }   // always non-JSON, keep off stdout
-
-auto& run_started_unix_ms()
-{
-    static auto tp = std::chrono::system_clock::time_point{};
-    return tp;
-}
-
-auto& run_started_monotonic()
-{
-    static auto tp = std::chrono::steady_clock::time_point{};
-    return tp;
-}
-
-auto& run_finished_monotonic()
-{
-    static auto tp = std::chrono::steady_clock::time_point{};
-    return tp;
-}
-
-auto& run_has_started()
-{
-    static auto started = false;
-    return started;
-}
-
-auto& run_mode()
-{
-    static auto mode = std::string_view{};
-    return mode;
-}
-
-auto& run_tags()
-{
-    static auto tags = std::string_view{};
-    return tags;
-}
-
-auto& current_test_id()
-{
-    static auto test_id = std::string{};
-    return test_id;
-}
-
-auto& pending_run_end_passed()
-{
-    static auto pending = std::optional<bool>{};
-    return pending;
-}
-
-auto& run_end_emitted()
-{
-    static auto emitted = false;
-    return emitted;
-}
-
-void record_run_start(std::string_view mode, std::string_view tags)
-{
-    run_has_started() = true;
-    run_started_unix_ms() = std::chrono::system_clock::now();
-    run_started_monotonic() = std::chrono::steady_clock::now();
-    run_finished_monotonic() = std::chrono::steady_clock::time_point{};
-    run_mode() = mode;
-    run_tags() = tags;
-    pending_run_end_passed() = std::nullopt;
-    run_end_emitted() = false;
-}
-
-void record_run_end()
-{
-    if(run_has_started())
-        run_finished_monotonic() = std::chrono::steady_clock::now();
-}
-
-void internal_run_start(std::string_view mode, std::string_view tags)
-{
-    record_run_start(mode, tags);
-    if(!is_jsonl()) return;
-
-    jsonl_sink().run_start(mode, tags, run_started_unix_ms());
-}
-
-void internal_run_end(bool passed)
-{
-    record_run_end();
-    if(!is_jsonl()) return;
-
-    // In "run" mode, we defer emitting run_end until after the summary so the JSONL stream
-    // ends in a predictable order. For other modes (e.g. "list"), emit immediately.
-    if(run_mode() == "run")
-    {
-        pending_run_end_passed() = passed;
-        return;
-    }
-
-    const auto ended_at = std::chrono::system_clock::now();
-    const auto dur = (run_started_unix_ms() != std::chrono::system_clock::time_point{})
-        ? std::chrono::duration_cast<std::chrono::milliseconds>(ended_at - run_started_unix_ms())
-        : std::chrono::milliseconds{0};
-
-    jsonl_sink().run_end(run_mode(), run_tags(), passed, dur, ended_at);
-
-    run_end_emitted() = true;
-}
 
 // Helper function to emit JSONL assertion events (non-template to avoid TU-local entity warnings)
 // Must be in anonymous namespace to access json_escape, jsonl_policy, etc.
@@ -249,16 +138,7 @@ void emit_jsonl_assertion_event_impl(
 
 export auto stable_test_id(const test_metadata& m)
 {
-    auto s = std::string{};
-    s.reserve(m.test_name.size() + m.file_name.size() + 32);
-    s.append(m.file_name);
-    s.push_back(':');
-    s.append(std::to_string(m.line));
-    s.push_back(':');
-    s.append(std::to_string(m.column));
-    s.push_back('|');
-    s.append(m.test_name);
-    return hex_u64(fnv1a64(s));
+    return ids::stable_test_id(m);
 }
 
 bool jsonl_enabled()
@@ -294,29 +174,30 @@ export void set_jsonl_output_max_bytes(std::size_t n)
     cfg().jsonl_output_max_bytes = n;
 }
 
-export void set_current_test_id(std::string_view id)
+export std::string_view stream()
 {
-    current_test_id().assign(id.begin(), id.end());
+    if(is_jsonl())
+        return {};
+    return console_sink().stream_view();
 }
 
-export void clear_current_test_id()
+export void begin_run(std::string_view mode, std::string_view tags, std::chrono::system_clock::time_point started_at)
 {
-    current_test_id().clear();
+    if(!is_jsonl()) return;
+    jsonl_sink().run_start(mode, tags, started_at);
 }
 
-export std::string_view get_current_test_id()
+export void end_run(std::string_view mode, std::string_view tags, bool passed, std::chrono::system_clock::time_point started_at, std::chrono::system_clock::time_point ended_at)
 {
-    return current_test_id();
+    if(!is_jsonl()) return;
+    jsonl_sink().run_end(mode, tags, passed, started_at, ended_at);
 }
 
-void begin_run(std::string_view mode, std::string_view tags)
+std::string_view get_current_test_id()
 {
-    internal_run_start(mode, tags);
-}
-
-void end_run(bool passed)
-{
-    internal_run_end(passed);
+    if(g_get_current_test_id)
+        return g_get_current_test_id();
+    return {};
 }
 
 export void print_test_cases(std::function<bool(const test_case&)> included)
@@ -326,24 +207,12 @@ export void print_test_cases(std::function<bool(const test_case&)> included)
         for(const auto& tc : test_cases)
         {
             if(!included(tc)) continue;
-            jsonl_sink().case_event(
-                stable_test_id(tc),
-                tc.test_set_name,
-                tc.test_name,
-                tc.file_name,
-                tc.line,
-                tc.column);
+            jsonl_sink().test_case(tc);
         }
         return;
     }
 
-    human_os() << "Test cases:\n";
-    for(auto tc : test_cases)
-        if(included(tc))
-            human_os() << color::text::yellow
-                       << tc.test_name
-                       << " (" << tc.file_name << " " << tc.line << ':' << tc.column << ")"
-                       << color::reset << std::endl;
+    console_sink().print_test_cases(included);
 }
 
 void print_test_results()
@@ -355,36 +224,12 @@ void print_test_results()
         {
             const auto include_output = (policy == jsonl_output_policy::always)
                 || (policy == jsonl_output_policy::failures && !result.success);
-
-            auto out = include_output
-                ? std::optional{jsonl::output_payload{.raw = result.output, .max_bytes = jsonl_output_max_bytes()}}
-                : std::optional<jsonl::output_payload>{};
-
-            jsonl_sink().test(
-                jsonl::test_event{
-                    .id = stable_test_id(result),
-                    .set = result.test_set_name,
-                    .name = result.test_name,
-                    .file = result.file_name,
-                    .line = result.line,
-                    .column = result.column,
-                    .success = result.success,
-                    .duration = std::chrono::duration_cast<std::chrono::milliseconds>(result.duration),
-                    .assertions_ok = result.assertions_ok,
-                    .assertions_total = result.assertions_total,
-                    .started_at = result.started_at,
-                    .finished_at = result.finished_at,
-                },
-                out);
+            jsonl_sink().test(result, include_output, jsonl_output_max_bytes());
         }
         return;
     }
 
-    human_os() << color::text::yellow
-               << "Test results:"
-               << color::reset << '\n';
-    for(auto result : test_results)
-        human_os() << result.output;
+    console_sink().print_test_results();
 }
 
 void print_test_failures()
@@ -392,31 +237,17 @@ void print_test_failures()
     if(is_jsonl())
         return;
 
-    auto any_failures = false;
-    for(const auto& result : test_results)
-        if(not result.success) { any_failures = true; break; }
-
-    if(!any_failures)
-    {
-        human_os() << color::text::green
-                   << "No test failures."
-                   << color::reset << '\n';
-        return;
-    }
-
-    human_os() << color::text::red
-               << "Test failures:"
-               << color::reset << '\n';
-
-    for(const auto& result : test_results)
-        if(not result.success)
-            human_os() << result.output;
+    console_sink().print_test_failures();
 }
 
-void print_test_statistics()
+export void print_test_statistics(
+    std::optional<bool>& pending_run_end_passed_ref,
+    bool& run_end_emitted_ref,
+    std::string_view run_mode_param)
 {
-    const auto failed_tests = statistics.total_tests - statistics.successful_tests;
-    const auto failed_assertions = statistics.total_assertions - statistics.successful_assertions;
+    const auto& stats = data::statistics();
+    const auto failed_tests = stats.total_tests - stats.successful_tests;
+    const auto failed_assertions = stats.total_assertions - stats.successful_assertions;
 
     auto pct = [](std::size_t ok, std::size_t total) -> double {
         if(total == 0) return 100.0;
@@ -439,245 +270,59 @@ void print_test_statistics()
 
     if(is_jsonl())
     {
-        auto slow_json = std::vector<jsonl::slow_test>{};
-        slow_json.reserve(slowest.size());
-        for(const auto* rp : slowest)
-        {
-            const auto& r = *rp;
-            slow_json.push_back(jsonl::slow_test{
-                .id = stable_test_id(r),
-                .name = r.test_name,
-                .file = r.file_name,
-                .line = r.line,
-                .column = r.column,
-                .duration = std::chrono::duration_cast<std::chrono::milliseconds>(r.duration),
-            });
-        }
-
         jsonl_sink().summary(
-            statistics.successful_tests,
-            statistics.total_tests,
-            statistics.successful_assertions,
-            statistics.total_assertions,
+            stats,
             passed,
-            slow_json);
+            std::span<const test_result* const>{slowest.data(), slowest.size()});
 
         if(want_result_line())
         {
             result_os()
                 << "RESULT:"
-                << " tests_ok=" << statistics.successful_tests
-                << " tests_total=" << statistics.total_tests
-                << " assertions_ok=" << statistics.successful_assertions
-                << " assertions_total=" << statistics.total_assertions
+                << " tests_ok=" << stats.successful_tests
+                << " tests_total=" << stats.total_tests
+                << " assertions_ok=" << stats.successful_assertions
+                << " assertions_total=" << stats.total_assertions
                 << " passed=" << (passed ? "true" : "false")
                 << '\n';
         }
 
         // Emit deferred run_end exactly once, after summary.
-        if(!pending_run_end_passed().has_value())
-            pending_run_end_passed() = passed;
+        if(!pending_run_end_passed_ref.has_value())
+            pending_run_end_passed_ref = passed;
 
-        if(!run_end_emitted() && pending_run_end_passed().has_value())
+        if(!run_end_emitted_ref && pending_run_end_passed_ref.has_value())
         {
-            const auto passed_value = *pending_run_end_passed();
-            pending_run_end_passed() = std::nullopt;
+            const auto passed_value = *pending_run_end_passed_ref;
+            pending_run_end_passed_ref = std::nullopt;
 
             const auto ended_at = std::chrono::system_clock::now();
-            const auto dur = (run_started_unix_ms() != std::chrono::system_clock::time_point{})
-                ? std::chrono::duration_cast<std::chrono::milliseconds>(ended_at - run_started_unix_ms())
-                : std::chrono::milliseconds{0};
+            jsonl_sink().run_end(run_mode_param, stats.run_tags, passed_value, stats.run_started_unix_ms, ended_at);
 
-            jsonl_sink().run_end(run_mode(), run_tags(), passed_value, dur, ended_at);
-
-            run_end_emitted() = true;
+            run_end_emitted_ref = true;
         }
         return;
     }
 
-    human_os() << color::text::yellow
-               << "Test statistics:" << '\n'
-               << "tests:      " << statistics.successful_tests << "/" << statistics.total_tests
-               << " passed"
-               << " (" << std::fixed << std::setprecision(1) << pct(statistics.successful_tests, statistics.total_tests) << "%)"
-               << " | failed: " << failed_tests << '\n'
-               << "assertions: " << statistics.successful_assertions << "/" << statistics.total_assertions
-               << " passed"
-               << " (" << std::fixed << std::setprecision(1) << pct(statistics.successful_assertions, statistics.total_assertions) << "%)"
-               << " | failed: " << failed_assertions
-               << color::reset << std::endl;
-
-    // Record run end (for duration reporting in human output).
-    record_run_end();
-
-    if(run_has_started() && run_finished_monotonic() != std::chrono::steady_clock::time_point{})
-    {
-        const auto dur = std::chrono::duration_cast<std::chrono::milliseconds>(
-            run_finished_monotonic() - run_started_monotonic());
-        human_os() << color::text::yellow
-                   << "duration:  " << dur.count() << "ms"
-                   << color::reset << '\n';
-    }
-
-    if(!run_tags().empty())
-    {
-        human_os() << color::text::yellow
-                   << "filter:    " << run_tags()
-                   << color::reset << '\n';
-    }
-
-    if(slow_n > 0)
-    {
-        human_os() << color::text::yellow << "Slowest tests:" << color::reset << '\n';
-        for(const auto* r : slowest)
-        {
-            human_os()
-                << "  " << as_ms(r->duration) << "ms  "
-                << r->test_name
-                << " (" << r->file_name << " " << r->line << ":" << r->column << ")"
-                << '\n';
-        }
-    }
-
-    if(want_result_line())
-    {
-        result_os()
-            << "RESULT:"
-            << " tests_ok=" << statistics.successful_tests
-            << " tests_total=" << statistics.total_tests
-            << " assertions_ok=" << statistics.successful_assertions
-            << " assertions_total=" << statistics.total_assertions
-            << " passed=" << (passed ? "true" : "false")
-            << '\n';
-    }
+    console_sink().print_test_statistics(
+        slow_n,
+        stats.run_started,
+        stats.run_finished,
+        stats.run_tags,
+        want_result_line());
 }
 
-auto verbose = false;
-
-auto stream = std::ostringstream{};
-
-void reset()
-{
-    stream = std::ostringstream{};
-}
-
+// test_case and exception only output in human-readable mode (JSONL handles these differently)
 void test_case(const auto& tc)
 {
-    reset();
-
-    if(tc.test_name.starts_with("scenario") or tc.test_name.starts_with("test_case"))
-        stream << color::background::blue
-            << tc.test_set_name
-            << color::reset << '\n';
-
-    stream << color::text::blue
-           << tc.test_name << " "
-           << "(" << tc.file_name << " " <<  tc.line << ":" <<  tc.column << ")"
-           << color::reset << '\n';
+    if(!is_jsonl())
+        console_sink().on_test_case(tc);
 }
 
 void exception(const auto& tc, const auto& ex)
 {
-    stream << color::background::red
-           << ex.what()
-           << " " << tc.test_name << " "
-           << "(" << tc.file_name << " " <<  tc.line << ":" <<  tc.column << ")"
-           << color::reset << '\n';
-}
-
-auto demangle(std::string_view name)
-{
-#if TESTER_HAVE_CXXABI
-    int status = 0;
-    auto buffer = std::string{name};
-    auto demangled = abi::__cxa_demangle(buffer.c_str(), nullptr, nullptr, &status);
-    if(demangled != nullptr)
-    {
-        std::string result{demangled};
-        std::free(demangled);
-        return result;
-    }
-#endif
-    return std::string{name};
-}
-
-auto function_name(const std::source_location sl = std::source_location::current())
-{
-    using namespace std::literals;
-    auto name = std::string_view{sl.function_name()};
-
-    if(auto assertions_pos = name.find("assertions::"); assertions_pos != std::string_view::npos)
-        name.remove_prefix(assertions_pos + "assertions::"s.length());
-
-    auto base = name.substr(0, name.find_first_of("("));
-    auto display = std::string{base};
-
-    if(auto bracket = name.find('['); bracket != std::string_view::npos)
-    {
-        auto end = name.find(']', bracket);
-        auto parameters = end != std::string_view::npos
-                          ? name.substr(bracket + 1, end - bracket - 1)
-                          : name.substr(bracket + 1);
-
-        auto trim = [](std::string_view sv)
-        {
-            auto start = sv.find_first_not_of(" \t");
-            if(start == std::string_view::npos) return std::string_view{};
-            auto finish = sv.find_last_not_of(" \t");
-            return sv.substr(start, finish - start + 1);
-        };
-
-        auto clean = [](std::string text)
-        {
-            auto replace_all = [](std::string& target, std::string_view from, std::string_view to)
-            {
-                for(auto pos = target.find(from); pos != std::string::npos; pos = target.find(from, pos + to.size()))
-                    target.replace(pos, from.size(), to);
-            };
-
-            replace_all(text, "std::__1::", "std::");
-            replace_all(text, "std::basic_string<char>", "std::string");
-            replace_all(text, "std::basic_string<wchar_t>", "std::wstring");
-            replace_all(text, " >", ">");
-
-            return text;
-        };
-
-        display.push_back(' ');
-        display.push_back('[');
-
-        auto remaining = parameters;
-        auto first = true;
-        while(true)
-        {
-            auto pos = remaining.find(',');
-            auto token = trim(remaining.substr(0, pos));
-            if(not token.empty())
-            {
-                if(not first) display.append(", ");
-                auto eq = token.find('=');
-                if(eq != std::string_view::npos)
-                {
-                    auto key = trim(token.substr(0, eq));
-                    auto value = trim(token.substr(eq + 1));
-                    display.append(std::string{key});
-                    display.append("=");
-                    display.append(demangle(clean(std::string{value})));
-                }
-                else
-                {
-                    display.append(demangle(clean(std::string{token})));
-                }
-                first = false;
-            }
-            if(pos == std::string_view::npos) break;
-            remaining.remove_prefix(pos + 1);
-        }
-
-        display.push_back(']');
-    }
-
-    return display;
+    if(!is_jsonl())
+        console_sink().on_exception(tc, ex);
 }
 
 // Extract matcher name from function name (e.g., "require_eq", "check_contains")
@@ -705,18 +350,18 @@ std::string value_to_json_string(const V& val)
     using T = std::remove_cvref_t<V>;
     
     if constexpr (std::is_same_v<T, std::string>)
-        ss << '"' << escape(val) << '"';
+        ss << '"' << ::jsonl::escape(val) << '"';
     else if constexpr (std::is_same_v<T, std::string_view>)
-        ss << '"' << escape(val) << '"';
+        ss << '"' << ::jsonl::escape(val) << '"';
     else if constexpr (std::is_same_v<T, const char*> || std::is_same_v<T, char*>)
-        ss << '"' << escape(val != nullptr ? std::string_view{val} : std::string_view{"nullptr"}) << '"';
+        ss << '"' << ::jsonl::escape(val != nullptr ? std::string_view{val} : std::string_view{"nullptr"}) << '"';
     else if constexpr (std::is_pointer_v<T>)
     {
         if(val != nullptr)
         {
             auto temp = std::ostringstream{};
             temp << val;
-            ss << '"' << escape(temp.str()) << '"';
+            ss << '"' << ::jsonl::escape(temp.str()) << '"';
         }
         else
             ss << "\"nullptr\"";
@@ -735,71 +380,10 @@ std::string value_to_json_string(const V& val)
         // For complex types, format using ostringstream and escape as JSON string
         auto temp = std::ostringstream{};
         temp << val;
-        ss << '"' << escape(temp.str()) << '"';
+        ss << '"' << ::jsonl::escape(temp.str()) << '"';
     }
     
     return ss.str();
-}
-
-template<class T>
-concept chrono_clock = requires {
-    typename T::time_point;
-    T::now();
-};
-
-template <typename V>
-void value(const V& val)
-{
-    using T = std::remove_cvref_t<V>;
-
-    if constexpr (std::is_same_v<T, std::string>)
-        stream << demangle(val);
-    else if constexpr (std::is_same_v<T, std::string_view>)
-        stream << demangle(std::string{val});
-    else if constexpr (std::is_same_v<T, const char*> || std::is_same_v<T, char*>)
-        stream << demangle(val != nullptr ? std::string{val} : std::string{"nullptr"});
-    else if constexpr (std::is_pointer_v<T>)
-        stream << (val != nullptr ? val : "nullptr");
-    else if constexpr (std::is_enum_v<T>)
-        stream << std::to_underlying(val);
-    else if constexpr (chrono_clock<T>)
-        stream << std::format("{0:%F}T{0:%T}", val);
-    else if constexpr (std::is_arithmetic_v<T>)
-    {
-        if constexpr (std::is_same_v<T, bool>)
-            stream << std::boolalpha << val;
-        else
-            stream << val;
-    }
-
-    // ——— NEW: Support for common variant-based JSON/value types ———
-
-    else if constexpr (requires { val.index(); }) // has .index() → probably std::variant or similar
-    {
-        if (std::holds_alternative<std::monostate>(val) || val.valueless_by_exception())
-            stream << "null";
-        else
-            std::visit([&](const auto& alt) {
-                using Alt = std::decay_t<decltype(alt)>;
-                if constexpr (std::is_same_v<Alt, bool>)
-                    stream << std::boolalpha << alt;
-                else if constexpr (std::is_same_v<Alt, std::nullptr_t> || std::is_same_v<Alt, std::monostate>)
-                    stream << "null";
-                else if constexpr (std::is_same_v<Alt, std::string> || std::is_same_v<Alt, std::string_view>)
-                    stream << '"' << alt << '"';
-                else if constexpr (std::is_arithmetic_v<Alt>)
-                    stream << alt;
-                else if constexpr (requires { stream << alt; })
-                    stream << alt; // fallback: use existing operator<<
-                else
-                    stream << "..."; // unknown alternative
-            }, val);
-    }
-    // ——— Final fallback ———
-    else if constexpr (requires { stream << val; })
-        stream << std::boolalpha << val;
-    else
-        stream << "..."; // unknown type
 }
 
 // Wrapper function in module namespace that calls the anonymous namespace implementation
@@ -821,8 +405,7 @@ template<typename A,typename E>
 void assertion(const bool ok, const A& actual, const E& expected, const std::source_location location1, const std::source_location location2 = std::source_location::current())
 {
     // Emit structured JSONL assertion event if in JSONL mode
-    // Use exported wrapper functions to avoid TU-local entity warnings
-    if(jsonl_enabled() && !get_current_test_id().empty())
+    if(is_jsonl() && !get_current_test_id().empty())
     {
         const auto matcher = extract_matcher_name(location2);
         const auto actual_str = value_to_json_string(actual);
@@ -840,45 +423,15 @@ void assertion(const bool ok, const A& actual, const E& expected, const std::sou
             location1.column());
     }
     
-    // Always generate human-readable output
-    if(ok)
-        stream << color::text::green;
-    else
-        stream << color::text::red;
-
-    stream << function_name(location2) << '\n';
-
-    stream << "  actual:   ";
-    value(actual);
-    stream << '\n';
-
-    stream << "  expected: ";
-    value(expected);
-    stream << '\n';
-
-    stream << "  location: "
-           << location1.file_name() << " "
-           << location1.line() << ":" << location1.column()
-           << color::reset << '\n';
-
-    if(verbose) std::clog << stream.view();
+    // Generate human-readable output in human mode
+    if(!is_jsonl())
+        console_sink().assertion(ok, actual, expected, location1, location2);
 }
 
-void message(const bool ok, auto message, const std::source_location location1, const std::source_location location2 = std::source_location::current())
+void message(const bool ok, auto msg, const std::source_location location1, const std::source_location location2 = std::source_location::current())
 {
-    if(ok)
-        stream << color::text::yellow;
-    else
-        stream << color::text::red;
-
-    stream << function_name(location2) << '\n';
-    stream << "  message:  " << message << '\n';
-    stream << "  location: "
-           << location1.file_name() << " "
-           << location1.line() << ":" << location1.column()
-           << color::reset << '\n';
-
-    if(verbose) std::clog << stream.view();
+    if(!is_jsonl())
+        console_sink().message(ok, msg, location1, location2);
 }
 
 }

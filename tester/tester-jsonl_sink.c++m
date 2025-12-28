@@ -7,6 +7,8 @@ module;
 
 export module tester:jsonl_sink;
 
+import :data;
+import :ids;
 import std;
 
 namespace tester::output::jsonl
@@ -69,38 +71,6 @@ auto prepare_output(std::string_view raw, std::size_t max_bytes) -> prepared_out
 
 } // namespace
 
-export struct output_payload
-{
-    std::string_view raw{};
-    std::size_t max_bytes = 0;
-};
-
-export struct test_event
-{
-    std::string_view id{};
-    std::string_view set{};
-    std::string_view name{};
-    std::string_view file{};
-    std::uint_least32_t line{};
-    std::uint_least32_t column{};
-    bool success{};
-    std::chrono::milliseconds duration{};
-    std::size_t assertions_ok{};
-    std::size_t assertions_total{};
-    std::chrono::system_clock::time_point started_at{};
-    std::chrono::system_clock::time_point finished_at{};
-};
-
-struct slow_test
-{
-    std::string id{};
-    std::string_view name{};
-    std::string_view file{};
-    std::uint_least32_t line{};
-    std::uint_least32_t column{};
-    std::chrono::milliseconds duration{};
-};
-
 struct sink
 {
     io::mux& m;
@@ -111,63 +81,61 @@ struct sink
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("run_start", started_at) << [&](std::ostream& os){
-            os << ",\"mode\":\"" << jsonl_util::escape(mode) << "\"";
-            os << ",\"tags\":\"" << jsonl_util::escape(tags) << "\"";
+            os << ",\"mode\":\"" << ::jsonl::escape(mode) << "\"";
+            os << ",\"tags\":\"" << ::jsonl::escape(tags) << "\"";
         };
     }
 
-    void run_end(std::string_view mode, std::string_view tags, bool passed, std::chrono::milliseconds duration, std::chrono::system_clock::time_point ended_at)
+    void run_end(std::string_view mode, std::string_view tags, bool passed, std::chrono::system_clock::time_point started, std::chrono::system_clock::time_point ended)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
-        m.json << m.jsonl("run_end", ended_at) << [&](std::ostream& os){
-            os << ",\"mode\":\"" << jsonl_util::escape(mode) << "\"";
-            os << ",\"tags\":\"" << jsonl_util::escape(tags) << "\"";
+        const auto duration = (started != std::chrono::system_clock::time_point{})
+            ? std::chrono::duration_cast<std::chrono::milliseconds>(ended - started)
+            : std::chrono::milliseconds{0};
+        m.json << m.jsonl("run_end", ended) << [&](std::ostream& os){
+            os << ",\"mode\":\"" << ::jsonl::escape(mode) << "\"";
+            os << ",\"tags\":\"" << ::jsonl::escape(tags) << "\"";
             os << ",\"passed\":" << (passed ? "true" : "false");
             os << ",\"duration_ms\":" << duration.count();
         };
     }
 
-    void case_event(std::string_view id,
-                    std::string_view set,
-                    std::string_view name,
-                    std::string_view file,
-                    std::uint_least32_t line,
-                    std::uint_least32_t column)
+    void test_case(const data::test_case& tc)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("case") << [&](std::ostream& os){
-            os << ",\"id\":\"" << jsonl_util::escape(id) << "\"";
-            os << ",\"set\":\"" << jsonl_util::escape(set) << "\"";
-            os << ",\"name\":\"" << jsonl_util::escape(name) << "\"";
-            os << ",\"file\":\"" << jsonl_util::escape(file) << "\"";
-            os << ",\"line\":" << line;
-            os << ",\"column\":" << column;
+            os << ",\"id\":\"" << ::jsonl::escape(ids::stable_test_id(tc)) << "\"";
+            os << ",\"set\":\"" << ::jsonl::escape(tc.test_set_name) << "\"";
+            os << ",\"name\":\"" << ::jsonl::escape(tc.test_name) << "\"";
+            os << ",\"file\":\"" << ::jsonl::escape(tc.file_name) << "\"";
+            os << ",\"line\":" << tc.line;
+            os << ",\"column\":" << tc.column;
         };
     }
 
-    void test(const test_event& ev, std::optional<output_payload> output = std::nullopt)
+    void test(const data::test_result& r, bool include_output, std::size_t max_output_bytes)
     {
         auto prepared = prepared_output{};
-        if(output.has_value())
-            prepared = prepare_output(output->raw, output->max_bytes);
+        if(include_output)
+            prepared = prepare_output(r.output, max_output_bytes);
 
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("test") << [&](std::ostream& os){
-            os << ",\"id\":\"" << jsonl_util::escape(ev.id) << "\"";
-            os << ",\"set\":\"" << jsonl_util::escape(ev.set) << "\"";
-            os << ",\"name\":\"" << jsonl_util::escape(ev.name) << "\"";
-            os << ",\"file\":\"" << jsonl_util::escape(ev.file) << "\"";
-            os << ",\"line\":" << ev.line;
-            os << ",\"column\":" << ev.column;
-            os << ",\"success\":" << (ev.success ? "true" : "false");
-            os << ",\"duration_ms\":" << ev.duration.count();
-            os << ",\"assertions_ok\":" << ev.assertions_ok;
-            os << ",\"assertions_total\":" << ev.assertions_total;
-            os << ",\"started_unix_ms\":" << jsonl_util::unix_ms(ev.started_at).count();
-            os << ",\"finished_unix_ms\":" << jsonl_util::unix_ms(ev.finished_at).count();
-            if(output.has_value())
+            os << ",\"id\":\"" << ::jsonl::escape(ids::stable_test_id(r)) << "\"";
+            os << ",\"set\":\"" << ::jsonl::escape(r.test_set_name) << "\"";
+            os << ",\"name\":\"" << ::jsonl::escape(r.test_name) << "\"";
+            os << ",\"file\":\"" << ::jsonl::escape(r.file_name) << "\"";
+            os << ",\"line\":" << r.line;
+            os << ",\"column\":" << r.column;
+            os << ",\"success\":" << (r.success ? "true" : "false");
+            os << ",\"duration_ms\":" << std::chrono::duration_cast<std::chrono::milliseconds>(r.duration).count();
+            os << ",\"assertions_ok\":" << r.assertions_ok;
+            os << ",\"assertions_total\":" << r.assertions_total;
+            os << ",\"started_unix_ms\":" << ::jsonl::unix_ms(r.started_at).count();
+            os << ",\"finished_unix_ms\":" << ::jsonl::unix_ms(r.finished_at).count();
+            if(include_output)
             {
-                os << ",\"output\":\"" << jsonl_util::escape(prepared.out) << "\"";
+                os << ",\"output\":\"" << ::jsonl::escape(prepared.out) << "\"";
                 os << ",\"output_truncated\":" << (prepared.truncated ? "true" : "false");
                 os << ",\"output_bytes\":" << prepared.original_bytes;
             }
@@ -185,43 +153,40 @@ struct sink
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl(ok ? "assertion_passed" : "assertion_failed") << [&](std::ostream& os){
-            os << ",\"test_id\":\"" << jsonl_util::escape(test_id) << "\"";
-            os << ",\"matcher\":\"" << jsonl_util::escape(matcher) << "\"";
+            os << ",\"test_id\":\"" << ::jsonl::escape(test_id) << "\"";
+            os << ",\"matcher\":\"" << ::jsonl::escape(matcher) << "\"";
             os << ",\"actual\":" << actual_json;
             os << ",\"expected\":" << expected_json;
-            os << ",\"file\":\"" << jsonl_util::escape(file) << "\"";
+            os << ",\"file\":\"" << ::jsonl::escape(file) << "\"";
             os << ",\"line\":" << line;
             os << ",\"column\":" << column;
         };
     }
 
-    void summary(std::size_t tests_ok,
-                 std::size_t tests_total,
-                 std::size_t assertions_ok,
-                 std::size_t assertions_total,
+    void summary(const data::test_statistics& s,
                  bool passed,
-                 std::span<const slow_test> slowest)
+                 std::span<const data::test_result* const> slowest)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("summary") << [&](std::ostream& os){
-            os << ",\"tests_ok\":" << tests_ok;
-            os << ",\"tests_total\":" << tests_total;
-            os << ",\"assertions_ok\":" << assertions_ok;
-            os << ",\"assertions_total\":" << assertions_total;
+            os << ",\"tests_ok\":" << s.successful_tests;
+            os << ",\"tests_total\":" << s.total_tests;
+            os << ",\"assertions_ok\":" << s.successful_assertions;
+            os << ",\"assertions_total\":" << s.total_assertions;
             os << ",\"passed\":" << (passed ? "true" : "false");
             if(!slowest.empty())
             {
                 os << ",\"slowest\":[";
                 for(std::size_t i = 0; i < slowest.size(); ++i)
                 {
-                    const auto& r = slowest[i];
+                    const auto& r = *slowest[i];
                     if(i) os << ",";
-                    os << "{\"id\":\"" << jsonl_util::escape(r.id) << "\"";
-                    os << ",\"name\":\"" << jsonl_util::escape(r.name) << "\"";
-                    os << ",\"file\":\"" << jsonl_util::escape(r.file) << "\"";
+                    os << "{\"id\":\"" << ::jsonl::escape(ids::stable_test_id(r)) << "\"";
+                    os << ",\"name\":\"" << ::jsonl::escape(r.test_name) << "\"";
+                    os << ",\"file\":\"" << ::jsonl::escape(r.file_name) << "\"";
                     os << ",\"line\":" << r.line;
                     os << ",\"column\":" << r.column;
-                    os << ",\"duration_ms\":" << r.duration.count();
+                    os << ",\"duration_ms\":" << std::chrono::duration_cast<std::chrono::milliseconds>(r.duration).count();
                     os << "}";
                 }
                 os << "]";

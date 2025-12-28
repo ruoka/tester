@@ -14,7 +14,7 @@ import tester;
 
 static volatile sig_atomic_t g_jsonl_enabled = 0;
 using namespace std::literals;
-// Schema is defined in jsonl-format.h++ as jsonl_util::jsonl_context<std::ostream>::schema
+// Schema is defined in jsonl.h++ as jsonl::jsonl_context<std::ostream>::schema
 // We duplicate it here as a string literal to avoid header inclusion conflicts with the std module
 static constexpr auto g_schema = "tester-jsonl"sv;
 static auto g_schema_buf = std::array<char, 64>{};
@@ -59,7 +59,7 @@ int main(int argc, char** argv)
     {
         if(g_jsonl_enabled)
         {
-            jsonl_util::signal_safe::emit_crash_event_jsonl(
+            jsonl::signal_safe::emit_crash_event_jsonl(
                 STDOUT_FILENO,
                 STDERR_FILENO,
                 static_cast<unsigned>(signal),

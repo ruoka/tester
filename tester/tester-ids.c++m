@@ -1,0 +1,55 @@
+// Copyright (c) 2025 Kaius Ruokonen. All rights reserved.
+// SPDX-License-Identifier: MIT
+// See the LICENSE file in the project root for full license text.
+
+export module tester:ids;
+
+import :data;
+import std;
+
+namespace tester::ids
+{
+namespace {
+
+auto fnv1a64(std::string_view sv) -> std::uint64_t
+{
+    std::uint64_t h = 14695981039346656037ull;
+    for(const unsigned char c : sv)
+    {
+        h ^= static_cast<std::uint64_t>(c);
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+auto hex_u64(std::uint64_t v) -> std::string
+{
+    static constexpr char hex[] = "0123456789abcdef";
+    char buf[16];
+    for(int i = 15; i >= 0; --i)
+    {
+        buf[i] = hex[v & 0xF];
+        v >>= 4;
+    }
+    return std::string{buf, 16};
+}
+
+} // namespace
+
+export auto stable_test_id(const data::test_metadata& m) -> std::string
+{
+    auto s = std::string{};
+    s.reserve(m.test_name.size() + m.file_name.size() + 32);
+    s.append(m.file_name);
+    s.push_back(':');
+    s.append(std::to_string(m.line));
+    s.push_back(':');
+    s.append(std::to_string(m.column));
+    s.push_back('|');
+    s.append(m.test_name);
+    return hex_u64(fnv1a64(s));
+}
+
+} // namespace tester::ids
+
+

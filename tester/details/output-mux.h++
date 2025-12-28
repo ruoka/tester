@@ -26,7 +26,7 @@ struct mux
     std::ostream* human = nullptr;
     std::ostream* result = nullptr;
 
-    jsonl_util::jsonl_context<std::ostream> jsonl;
+    jsonl::jsonl_context<std::ostream> jsonl;
 
     std::mutex mutex{};
 

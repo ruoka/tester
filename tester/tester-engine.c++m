@@ -13,6 +13,7 @@ namespace tester::engine {
 using namespace data;
 using namespace std::literals;
 
+
 auto& make_test_case(std::string_view description, int priority, std::vector<std::string> depends_on, std::string id, const std::source_location location1, const std::source_location location2) noexcept
 {
     auto test_type = std::string_view{location2.function_name()};
@@ -123,7 +124,27 @@ auto sort_test_cases()
         test_cases.push_back(tc);
 }
 
-auto run_test_cases(auto filter)
+export void init_statistics(
+    std::chrono::steady_clock::time_point run_started,
+    std::chrono::system_clock::time_point run_started_unix_ms,
+    std::string_view run_tags)
+{
+    auto& stats = data::statistics();
+    stats.run_started = run_started;
+    stats.run_started_unix_ms = run_started_unix_ms;
+    stats.run_tags = std::string{run_tags};
+    stats.successful_tests = 0;
+    stats.total_tests = 0;
+    stats.successful_assertions = 0;
+    stats.total_assertions = 0;
+}
+
+export void finish_statistics(std::chrono::steady_clock::time_point run_finished)
+{
+    data::statistics().run_finished = run_finished;
+}
+
+auto run_test_cases(auto filter, auto set_test_id, auto clear_test_id, auto /*get_test_id*/)
 {
     sort_test_cases();
 
@@ -141,15 +162,15 @@ auto run_test_cases(auto filter)
 
         auto tr = test_result{*tc};
         const auto test_id = output::stable_test_id(*tc);
-        output::set_current_test_id(test_id);
+        set_test_id(test_id);
         
         const auto started = std::chrono::steady_clock::now();
         const auto started_sys = std::chrono::system_clock::now();
-        const auto assertions_total_before = statistics.total_assertions;
-        const auto assertions_ok_before = statistics.successful_assertions;
+        const auto assertions_total_before = statistics().total_assertions;
+        const auto assertions_ok_before = statistics().successful_assertions;
         try
         {
-            ++statistics.total_tests;
+            ++statistics().total_tests;
             // NOTE: When tc->run() executes a scenario/test_case lambda, it may add nested
             // test cases (given/when/then) to test_cases. Those nested test cases' lambdas
             // should capture parent-scope variables BY VALUE, not by reference, because:
@@ -168,7 +189,7 @@ auto run_test_cases(auto filter)
             //       given("Setup") = [&data] { ... };  // BUG: dangling reference
             //   };
             tc->run();
-            ++statistics.successful_tests;
+            ++statistics().successful_tests;
         }
         catch(const assertions::assertion_failure& ex)
         {
@@ -190,10 +211,10 @@ auto run_test_cases(auto filter)
         tr.duration = std::chrono::duration_cast<std::chrono::nanoseconds>(finished - started);
         tr.started_at = started_sys;
         tr.finished_at = finished_sys;
-        tr.assertions_total = statistics.total_assertions - assertions_total_before;
-        tr.assertions_ok = statistics.successful_assertions - assertions_ok_before;
+        tr.assertions_total = statistics().total_assertions - assertions_total_before;
+        tr.assertions_ok = statistics().successful_assertions - assertions_ok_before;
         
-        output::clear_current_test_id();
+        clear_test_id();
         
         // Erase the test case after execution. Note that if nested test cases were added
         // during tc->run(), they are already in test_cases and will be processed in
@@ -201,7 +222,7 @@ auto run_test_cases(auto filter)
         // because nested test cases store their own copies of the lambda (with captured
         // values), not references to this test_case object.
         test_cases.erase(tc);
-        tr.output = output::stream.view();
+        tr.output = output::stream();
         test_results.push_back(tr);
     }
 }
