@@ -105,11 +105,6 @@ auto& jsonl_sink()
     return sink;
 }
 
-auto& console_sink()
-{
-    return console::sink_instance();
-}
-
 auto& human_os() { return io_mux().human_os(); }     // human/log channel
 auto& result_os() { return io_mux().result_os(); }   // always non-JSON, keep off stdout
 
@@ -135,6 +130,12 @@ void emit_jsonl_assertion_event_impl(
 }
 
 } // namespace
+
+// Helper to get console sink - must be outside anonymous namespace to avoid TU-local entity warnings
+inline auto& console_sink()
+{
+    return console::sink_instance();
+}
 
 export auto stable_test_id(const test_metadata& m)
 {
@@ -359,9 +360,20 @@ std::string value_to_json_string(const V& val)
     {
         if(val != nullptr)
         {
-            auto temp = std::ostringstream{};
-            temp << val;
-            ss << '"' << ::jsonl::escape(temp.str()) << '"';
+            // For pointers, use a lambda to capture ADL
+            auto format_ptr = [&ss](const auto& v) {
+                if constexpr (requires(std::ostringstream& os, const std::decay_t<decltype(v)>& v2) { os << v2; })
+                {
+                    auto temp = std::ostringstream{};
+                    temp << v;
+                    ss << '"' << ::jsonl::escape(temp.str()) << '"';
+                }
+                else
+                {
+                    ss << '"' << ::jsonl::escape(std::string{typeid(std::decay_t<decltype(v)>).name()}) << '"';
+                }
+            };
+            format_ptr(*val);
         }
         else
             ss << "\"nullptr\"";
@@ -377,10 +389,9 @@ std::string value_to_json_string(const V& val)
     }
     else
     {
-        // For complex types, format using ostringstream and escape as JSON string
-        auto temp = std::ostringstream{};
-        temp << val;
-        ss << '"' << ::jsonl::escape(temp.str()) << '"';
+        // For complex types, use type name to avoid ambiguity with operator<<
+        // This handles types like xson::object that have multiple operator<< overloads
+        ss << '"' << ::jsonl::escape(std::string{typeid(T).name()}) << '"';
     }
     
     return ss.str();
