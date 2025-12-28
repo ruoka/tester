@@ -396,6 +396,7 @@ private:
     jsonl::phase current_phase = jsonl::phase::none;
     std::chrono::steady_clock::time_point phase_started{};
     bool build_end_emitted = false;
+    mutable bool pcm_recovery_attempted = false;
     
     void mark_build_end()
     {
@@ -720,7 +721,41 @@ private:
 
         if (cb::jsonl::enabled())
             cb::jsonl::sink().command_end(cmd_str, r == 0, r, started, finished);
-        if (r) {
+        if (r)
+        {
+            // Best-effort recovery from stale PCM / module cache issues:
+            // If a module-related command fails, clear the pcm directory and retry once.
+            auto looks_module_related = [](std::string_view s) {
+                return s.find("--precompile") != std::string_view::npos
+                    || s.find("-fmodule-file=") != std::string_view::npos
+                    || s.find("-fprebuilt-module-path=") != std::string_view::npos
+                    || s.find(".pcm") != std::string_view::npos;
+            };
+
+            if (!pcm_recovery_attempted && looks_module_related(cmd_str))
+            {
+                pcm_recovery_attempted = true;
+                const auto dir = module_cache_dir();
+                try
+                {
+                    if (fs::exists(dir))
+                        fs::remove_all(dir);
+                    fs::create_directories(dir);
+                }
+                catch (...) {}
+
+                if (!cb::jsonl::enabled())
+                    log::warning("Suspected stale module cache; cleared "s + dir + " and retrying once");
+
+                const auto retry_started = std::chrono::steady_clock::now();
+                auto retry_r = system(cmd_str.c_str());
+                const auto retry_finished = std::chrono::steady_clock::now();
+                if (cb::jsonl::enabled())
+                    cb::jsonl::sink().command_end(cmd_str, retry_r == 0, retry_r, retry_started, retry_finished);
+                if (retry_r == 0)
+                    return;
+            }
+
             handle_build_error("Command failed: "s + cmd_str);
             std::exit(1);
         }
