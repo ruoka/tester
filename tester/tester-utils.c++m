@@ -1,0 +1,86 @@
+// Copyright (c) 2025 Kaius Ruokonen. All rights reserved.
+// SPDX-License-Identifier: MIT
+// See the LICENSE file in the project root for full license text.
+
+module;
+#include "details/output-mux.h++"
+
+export module tester:utils;
+import :data;
+import std;
+
+namespace tester::output
+{
+
+// Extract matcher name from function name (e.g., "require_eq", "check_contains")
+export auto extract_matcher_name(const std::source_location sl)
+{
+    using namespace std::literals;
+    auto name = std::string_view{sl.function_name()};
+    
+    // Find "assertions::" prefix and extract the matcher name
+    if(auto assertions_pos = name.find("assertions::"); assertions_pos != std::string_view::npos)
+        name.remove_prefix(assertions_pos + "assertions::"s.length());
+    
+    // Extract base function name (before '(' or '<')
+    auto end = name.find_first_of("(<");
+    auto base = name.substr(0, end != std::string_view::npos ? end : name.size());
+    
+    return std::string{base};
+}
+
+// Format value as JSON string (for structured assertion events)
+export template <typename V>
+std::string value_to_json_string(const V& val)
+{
+    auto ss = std::ostringstream{};
+    using T = std::remove_cvref_t<V>;
+    
+    if constexpr (std::is_same_v<T, std::string>)
+        ss << '"' << ::jsonl::escape(val) << '"';
+    else if constexpr (std::is_same_v<T, std::string_view>)
+        ss << '"' << ::jsonl::escape(val) << '"';
+    else if constexpr (std::is_same_v<T, const char*> || std::is_same_v<T, char*>)
+        ss << '"' << ::jsonl::escape(val != nullptr ? std::string_view{val} : std::string_view{"nullptr"}) << '"';
+    else if constexpr (std::is_pointer_v<T>)
+    {
+        if(val != nullptr)
+        {
+            // For pointers, use a lambda to capture ADL
+            auto format_ptr = [&ss](const auto& v) {
+                if constexpr (requires(std::ostringstream& os, const std::decay_t<decltype(v)>& v2) { os << v2; })
+                {
+                    auto temp = std::ostringstream{};
+                    temp << v;
+                    ss << '"' << ::jsonl::escape(temp.str()) << '"';
+                }
+                else
+                {
+                    ss << '"' << ::jsonl::escape(std::string{typeid(std::decay_t<decltype(v)>).name()}) << '"';
+                }
+            };
+            format_ptr(*val);
+        }
+        else
+            ss << "\"nullptr\"";
+    }
+    else if constexpr (std::is_enum_v<T>)
+        ss << std::to_underlying(val);
+    else if constexpr (std::is_arithmetic_v<T>)
+    {
+        if constexpr (std::is_same_v<T, bool>)
+            ss << (val ? "true" : "false");
+        else
+            ss << val;
+    }
+    else
+    {
+        // For complex types, use type name to avoid ambiguity with operator<<
+        // This handles types like xson::object that have multiple operator<< overloads
+        ss << '"' << ::jsonl::escape(std::string{typeid(T).name()}) << '"';
+    }
+    
+    return ss.str();
+}
+
+}

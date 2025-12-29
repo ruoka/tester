@@ -163,17 +163,16 @@ int main(int argc, char** argv)
 
     try
     {
-        tester::output::output_config cfg{};
-        tester::output::set_output_config(cfg);
-
-        tester::output::set_output_format(output_mode);
-        tester::output::set_human_result_line(result_line);
-        tester::output::set_slowest(slowest);
-        tester::output::set_jsonl_output(jsonl_output);
-        tester::output::set_jsonl_output_max_bytes(jsonl_output_max_bytes);
+        // Use the public API of the tester module.
+        // It handles its own internal configuration.
+        tester::set_output_format(output_mode);
+        tester::set_human_result_line(result_line);
+        tester::set_slowest(slowest);
+        tester::set_jsonl_output(jsonl_output);
+        tester::set_jsonl_output_max_bytes(jsonl_output_max_bytes);
         state.jsonl_enabled = (output_mode == "jsonl" || output_mode == "JSONL");
 
-        auto tr = tester::runner{cfg, tags};
+        auto tr = tester::runner{tags};
 
         if(list_only)
         {

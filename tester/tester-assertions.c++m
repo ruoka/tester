@@ -115,7 +115,7 @@ namespace tester::assertions
         }
         else
         {
-            require(std::equal_to<std::common_type_t<A,E>>{},actual,expected,location);
+            return require(std::equal_to<std::common_type_t<A,E>>{},actual,expected,location);
         }
     };
 
@@ -150,7 +150,7 @@ namespace tester::assertions
     export template<typename A, typename E>
     auto check_lt(A actual, E expected, const std::source_location location = std::source_location::current())
     {
-        return check(std::less<std::common_type_t<A,E>>{},actual,expected,location);
+        return check(std::size_t{} ? std::less<std::common_type_t<A,E>>{} : std::less<std::common_type_t<A,E>>{},actual,expected,location);
     };
 
     export template<typename A, typename E>
@@ -388,22 +388,27 @@ namespace tester::assertions
         }
     }
 
-    export auto succeed(auto message, const std::source_location location = std::source_location::current())
+    export auto message(const bool ok, auto msg, const std::source_location location = std::source_location::current())
+    {
+        output::message(ok,msg,location);
+    }
+
+    export auto succeed(auto msg, const std::source_location location = std::source_location::current())
     {
         ++data::statistics().total_assertions;
         ++data::statistics().successful_assertions;
-        output::message(true,message,location);
+        message(true,msg,location);
     }
 
-    export auto failed(auto message, const std::source_location location = std::source_location::current())
+    export auto failed(auto msg, const std::source_location location = std::source_location::current())
     {
         ++data::statistics().total_assertions;
-        output::message(false,message,location);
+        message(false,msg,location);
     }
 
-    export auto warning(auto message, const std::source_location location = std::source_location::current())
+    export auto warning(auto msg, const std::source_location location = std::source_location::current())
     {
-        output::message(true,message,location);
+        message(true,msg,location);
     }
 
     // ============================================================================

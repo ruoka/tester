@@ -144,7 +144,7 @@ export void finish_statistics(std::chrono::steady_clock::time_point run_finished
     data::statistics().run_finished = run_finished;
 }
 
-auto run_test_cases(auto filter, auto set_test_id, auto clear_test_id, auto /*get_test_id*/)
+export auto run_test_cases(auto filter, auto set_test_id, auto clear_test_id, auto /*get_test_id*/)
 {
     sort_test_cases();
 
@@ -221,7 +221,7 @@ auto run_test_cases(auto filter, auto set_test_id, auto clear_test_id, auto /*ge
         // because nested test cases store their own copies of the lambda (with captured
         // values), not references to this test_case object.
         test_cases.erase(tc);
-        tr.output = output::stream();
+        tr.output = output::captured_output();
         test_results.push_back(tr);
     }
 }

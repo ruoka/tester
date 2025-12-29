@@ -17,8 +17,6 @@ namespace {
 
 auto strip_ansi(std::string_view sv) -> std::string
 {
-    // Strip common ANSI escape sequences so JSONL output stays clean.
-    // Best-effort filter for sequences like: ESC [ ... letter
     auto out = std::string{};
     out.reserve(sv.size());
 
@@ -31,7 +29,6 @@ auto strip_ansi(std::string_view sv) -> std::string
             while(i < sv.size())
             {
                 const unsigned char c = static_cast<unsigned char>(sv[i]);
-                // CSI final byte is in the range 0x40..0x7E.
                 if(c >= 0x40 && c <= 0x7E) { ++i; break; }
                 ++i;
             }
@@ -70,7 +67,7 @@ auto prepare_output(std::string_view raw, std::size_t max_bytes) -> prepared_out
 
 } // namespace
 
-struct sink
+export struct sink
 {
     io::mux& m;
 
@@ -141,24 +138,43 @@ struct sink
         };
     }
 
-    void assertion_event(bool ok,
-                         std::string_view matcher,
-                         std::string_view actual_json,
-                         std::string_view expected_json,
-                         std::string_view test_id,
-                         std::string_view file,
-                         std::uint_least32_t line,
-                         std::uint_least32_t column)
+    void assertion_event(const data::test_assertion& a)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
-        m.json << m.jsonl(ok ? "assertion_passed" : "assertion_failed") << [&](std::ostream& os){
-            os << ",\"test_id\":\"" << ::jsonl::escape(test_id) << "\"";
-            os << ",\"matcher\":\"" << ::jsonl::escape(matcher) << "\"";
-            os << ",\"actual\":" << actual_json;
-            os << ",\"expected\":" << expected_json;
-            os << ",\"file\":\"" << ::jsonl::escape(file) << "\"";
-            os << ",\"line\":" << line;
-            os << ",\"column\":" << column;
+        m.json << m.jsonl(a.ok ? "assertion_passed" : "assertion_failed") << [&](std::ostream& os){
+            os << ",\"test_id\":\"" << ::jsonl::escape(a.test_id) << "\"";
+            os << ",\"matcher\":\"" << ::jsonl::escape(a.matcher) << "\"";
+            os << ",\"actual\":" << a.actual;
+            os << ",\"expected\":" << a.expected;
+            os << ",\"file\":\"" << ::jsonl::escape(a.file) << "\"";
+            os << ",\"line\":" << a.line;
+            os << ",\"column\":" << a.column;
+        };
+    }
+
+    void message(bool ok, std::string_view msg, const std::source_location& location1, const std::source_location& location2)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("message") << [&](std::ostream& os){
+            os << ",\"ok\":" << (ok ? "true" : "false");
+            os << ",\"message\":\"" << ::jsonl::escape(msg) << "\"";
+            os << ",\"file\":\"" << ::jsonl::escape(location1.file_name()) << "\"";
+            os << ",\"line\":" << location1.line();
+            os << ",\"column\":" << location1.column();
+            os << ",\"caller_file\":\"" << ::jsonl::escape(location2.file_name()) << "\"";
+            os << ",\"caller_line\":" << location2.line();
+        };
+    }
+
+    void on_exception(const data::test_case& tc, const std::exception& ex)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("exception") << [&](std::ostream& os){
+            os << ",\"test_id\":\"" << ::jsonl::escape(tc.test_id) << "\"";
+            os << ",\"message\":\"" << ::jsonl::escape(ex.what()) << "\"";
+            os << ",\"file\":\"" << ::jsonl::escape(tc.file_name) << "\"";
+            os << ",\"line\":" << tc.line;
+            os << ",\"column\":" << tc.column;
         };
     }
 
@@ -195,5 +211,4 @@ struct sink
 };
 
 } // namespace tester::output::jsonl
-
 

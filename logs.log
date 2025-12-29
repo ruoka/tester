@@ -1,0 +1,166 @@
+Building C++ Builder & Tester with /usr/local/llvm/bin/clang++...
+C++ Builder & Tester compiled successfully → /Users/karu/Sources/fixer/deps/tester/tools/cb
+ld64.lld: error: undefined symbol: tester::data::statistics@tester
+>>> referenced by tester-assertions.c++m:80 (tester/tester-assertions.c++m:80)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::assertions::require@tester<std::__1::equal_to, int, int>(std::__1::equal_to<std::__1::common_type<int, int>::type>, int, int, std::__1::source_location)+0x30)
+>>> referenced by tester-assertions.c++m:80 (tester/tester-assertions.c++m:80)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::assertions::require@tester<std::__1::equal_to, int, int>(std::__1::equal_to<std::__1::common_type<int, int>::type>, int, int, std::__1::source_location)+0x2c)
+>>> referenced by tester-assertions.c++m:80 (tester/tester-assertions.c++m:80)
+>>>               build-darwin-debug/obj/foo-bar.test.o:(symbol void tester::assertions::require@tester<tester::assertions::floating_point_equal@tester, double, double>(tester::assertions::floating_point_equal@tester<std::__1::common_type<double, double>::type>, double, double, std::__1::source_location)+0x38)
+>>> referenced 83 more times
+>>> did you mean: tester::data::statistics@tester()
+>>> defined in: build-darwin-debug/obj/tester_console_sink.o
+
+ld64.lld: error: undefined symbol: tester::output::stream@tester
+>>> referenced by tester-output.c++m:271 (tester/tester-output.c++m:271)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0x1ac)
+>>> referenced by tester-output.c++m:271 (tester/tester-output.c++m:271)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0x1a8)
+>>> referenced by tester-output.c++m:256 (tester/tester-output.c++m:256)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0xb0)
+>>> referenced 111 more times
+>>> did you mean: tester::output::stream@tester()
+>>> defined in: build-darwin-debug/obj/tester_output.o
+
+ld64.lld: error: undefined symbol: tester::output::verbose@tester
+>>> referenced by tester-output.c++m:271 (tester/tester-output.c++m:271)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0x198)
+>>> referenced by tester-output.c++m:271 (tester/tester-output.c++m:271)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0x194)
+>>> referenced by tester-output.c++m:271 (tester/tester-output.c++m:271)
+>>>               build-darwin-debug/obj/foo-bar.test.o:(symbol void tester::output::assertion@tester<double, double>(bool, double const&, double const&, std::__1::source_location, std::__1::source_location)+0x198)
+>>> referenced 17 more times
+
+ld64.lld: error: undefined symbol: tester::output::color::reset@tester
+>>> referenced by tester-output.c++m:269 (tester/tester-output.c++m:269)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0x180)
+>>> referenced by tester-output.c++m:269 (tester/tester-output.c++m:269)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0x17c)
+>>> referenced by tester-output.c++m:269 (tester/tester-output.c++m:269)
+>>>               build-darwin-debug/obj/foo-bar.test.o:(symbol void tester::output::assertion@tester<double, double>(bool, double const&, double const&, std::__1::source_location, std::__1::source_location)+0x180)
+>>> referenced 17 more times
+
+ld64.lld: error: undefined symbol: tester::output::function_name@tester(std::__1::source_location)
+>>> referenced by tester-output.c++m:256 (tester/tester-output.c++m:256)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0x78)
+>>> referenced by tester-output.c++m:256 (tester/tester-output.c++m:256)
+>>>               build-darwin-debug/obj/foo-bar.test.o:(symbol void tester::output::assertion@tester<double, double>(bool, double const&, double const&, std::__1::source_location, std::__1::source_location)+0x78)
+>>> referenced by tester-output.c++m:256 (tester/tester-output.c++m:256)
+>>>               build-darwin-debug/obj/foo-bar.test.o:(symbol void tester::output::assertion@tester<char*, std::nullptr_t>(bool, char* const&, std::nullptr_t const&, std::__1::source_location, std::__1::source_location)+0x78)
+>>> referenced 7 more times
+
+ld64.lld: error: undefined symbol: tester::output::color::text::red@tester
+>>> referenced by tester-output.c++m:254 (tester/tester-output.c++m:254)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0x4c)
+>>> referenced by tester-output.c++m:254 (tester/tester-output.c++m:254)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0x48)
+>>> referenced by tester-output.c++m:254 (tester/tester-output.c++m:254)
+>>>               build-darwin-debug/obj/foo-bar.test.o:(symbol void tester::output::assertion@tester<double, double>(bool, double const&, double const&, std::__1::source_location, std::__1::source_location)+0x4c)
+>>> referenced 17 more times
+
+ld64.lld: error: undefined symbol: tester::output::color::text::green@tester
+>>> referenced by tester-output.c++m:252 (tester/tester-output.c++m:252)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0x30)
+>>> referenced by tester-output.c++m:252 (tester/tester-output.c++m:252)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0x2c)
+>>> referenced by tester-output.c++m:252 (tester/tester-output.c++m:252)
+>>>               build-darwin-debug/obj/foo-bar.test.o:(symbol void tester::output::assertion@tester<double, double>(bool, double const&, double const&, std::__1::source_location, std::__1::source_location)+0x30)
+>>> referenced 15 more times
+
+ld64.lld: error: undefined symbol: tester::output::demangle@tester(std::__1::basic_string_view<char, std::__1::char_traits<char>>)
+>>> referenced by tester-output.c++m:237 (tester/tester-output.c++m:237)
+>>>               build-darwin-debug/obj/foo-bar.test.o:(symbol void tester::output::value@tester<char*>(char* const&)+0x64)
+>>> referenced by tester-output.c++m:235 (tester/tester-output.c++m:235)
+>>>               build-darwin-debug/obj/foo-bar.test.o:(symbol void tester::output::value@tester<char const*>(char const* const&)+0x64)
+>>> referenced by tester-output.c++m:233 (tester/tester-output.c++m:233)
+>>>               build-darwin-debug/obj/foo-bar.test.o:(symbol void tester::output::value@tester<std::__1::basic_string_view<char, std::__1::char_traits<char>>>(std::__1::basic_string_view<char, std::__1::char_traits<char>> const&)+0x3c)
+>>> referenced 1 more times
+
+ld64.lld: error: undefined symbol: tester::output::color::text::yellow@tester
+>>> referenced by tester-output.c++m:277 (tester/tester-output.c++m:277)
+>>>               build-darwin-debug/obj/example_3.test.o:(symbol void tester::output::message@tester<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>>(bool, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, std::__1::source_location, std::__1::source_location)+0x30)
+>>> referenced by tester-output.c++m:277 (tester/tester-output.c++m:277)
+>>>               build-darwin-debug/obj/example_3.test.o:(symbol void tester::output::message@tester<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>>(bool, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, std::__1::source_location, std::__1::source_location)+0x2c)
+clang++: error: linker command failed with exit code 1 (use -v to see invocation)
+ld64.lld: error: undefined symbol: tester::data::statistics@tester
+>>> referenced by tester-assertions.c++m:80 (tester/tester-assertions.c++m:80)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::assertions::require@tester<std::__1::equal_to, int, int>(std::__1::equal_to<std::__1::common_type<int, int>::type>, int, int, std::__1::source_location)+0x30)
+>>> referenced by tester-assertions.c++m:80 (tester/tester-assertions.c++m:80)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::assertions::require@tester<std::__1::equal_to, int, int>(std::__1::equal_to<std::__1::common_type<int, int>::type>, int, int, std::__1::source_location)+0x2c)
+>>> referenced by tester-assertions.c++m:80 (tester/tester-assertions.c++m:80)
+>>>               build-darwin-debug/obj/foo-bar.test.o:(symbol void tester::assertions::require@tester<tester::assertions::floating_point_equal@tester, double, double>(tester::assertions::floating_point_equal@tester<std::__1::common_type<double, double>::type>, double, double, std::__1::source_location)+0x38)
+>>> referenced 83 more times
+>>> did you mean: tester::data::statistics@tester()
+>>> defined in: build-darwin-debug/obj/tester_console_sink.o
+
+ld64.lld: error: undefined symbol: tester::output::stream@tester
+>>> referenced by tester-output.c++m:271 (tester/tester-output.c++m:271)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0x1ac)
+>>> referenced by tester-output.c++m:271 (tester/tester-output.c++m:271)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0x1a8)
+>>> referenced by tester-output.c++m:256 (tester/tester-output.c++m:256)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0xb0)
+>>> referenced 111 more times
+>>> did you mean: tester::output::stream@tester()
+>>> defined in: build-darwin-debug/obj/tester_output.o
+
+ld64.lld: error: undefined symbol: tester::output::verbose@tester
+>>> referenced by tester-output.c++m:271 (tester/tester-output.c++m:271)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0x198)
+>>> referenced by tester-output.c++m:271 (tester/tester-output.c++m:271)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0x194)
+>>> referenced by tester-output.c++m:271 (tester/tester-output.c++m:271)
+>>>               build-darwin-debug/obj/foo-bar.test.o:(symbol void tester::output::assertion@tester<double, double>(bool, double const&, double const&, std::__1::source_location, std::__1::source_location)+0x198)
+>>> referenced 17 more times
+
+ld64.lld: error: undefined symbol: tester::output::color::reset@tester
+>>> referenced by tester-output.c++m:269 (tester/tester-output.c++m:269)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0x180)
+>>> referenced by tester-output.c++m:269 (tester/tester-output.c++m:269)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0x17c)
+>>> referenced by tester-output.c++m:269 (tester/tester-output.c++m:269)
+>>>               build-darwin-debug/obj/foo-bar.test.o:(symbol void tester::output::assertion@tester<double, double>(bool, double const&, double const&, std::__1::source_location, std::__1::source_location)+0x180)
+>>> referenced 17 more times
+
+ld64.lld: error: undefined symbol: tester::output::function_name@tester(std::__1::source_location)
+>>> referenced by tester-output.c++m:256 (tester/tester-output.c++m:256)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0x78)
+>>> referenced by tester-output.c++m:256 (tester/tester-output.c++m:256)
+>>>               build-darwin-debug/obj/foo-bar.test.o:(symbol void tester::output::assertion@tester<double, double>(bool, double const&, double const&, std::__1::source_location, std::__1::source_location)+0x78)
+>>> referenced by tester-output.c++m:256 (tester/tester-output.c++m:256)
+>>>               build-darwin-debug/obj/foo-bar.test.o:(symbol void tester::output::assertion@tester<char*, std::nullptr_t>(bool, char* const&, std::nullptr_t const&, std::__1::source_location, std::__1::source_location)+0x78)
+>>> referenced 7 more times
+
+ld64.lld: error: undefined symbol: tester::output::color::text::red@tester
+>>> referenced by tester-output.c++m:254 (tester/tester-output.c++m:254)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0x4c)
+>>> referenced by tester-output.c++m:254 (tester/tester-output.c++m:254)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0x48)
+>>> referenced by tester-output.c++m:254 (tester/tester-output.c++m:254)
+>>>               build-darwin-debug/obj/foo-bar.test.o:(symbol void tester::output::assertion@tester<double, double>(bool, double const&, double const&, std::__1::source_location, std::__1::source_location)+0x4c)
+>>> referenced 17 more times
+
+ld64.lld: error: undefined symbol: tester::output::color::text::green@tester
+>>> referenced by tester-output.c++m:252 (tester/tester-output.c++m:252)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0x30)
+>>> referenced by tester-output.c++m:252 (tester/tester-output.c++m:252)
+>>>               build-darwin-debug/obj/foo.test.o:(symbol void tester::output::assertion@tester<int, int>(bool, int const&, int const&, std::__1::source_location, std::__1::source_location)+0x2c)
+>>> referenced by tester-output.c++m:252 (tester/tester-output.c++m:252)
+>>>               build-darwin-debug/obj/foo-bar.test.o:(symbol void tester::output::assertion@tester<double, double>(bool, double const&, double const&, std::__1::source_location, std::__1::source_location)+0x30)
+>>> referenced 15 more times
+
+ld64.lld: error: undefined symbol: tester::output::demangle@tester(std::__1::basic_string_view<char, std::__1::char_traits<char>>)
+>>> referenced by tester-output.c++m:237 (tester/tester-output.c++m:237)
+>>>               build-darwin-debug/obj/foo-bar.test.o:(symbol void tester::output::value@tester<char*>(char* const&)+0x64)
+>>> referenced by tester-output.c++m:235 (tester/tester-output.c++m:235)
+>>>               build-darwin-debug/obj/foo-bar.test.o:(symbol void tester::output::value@tester<char const*>(char const* const&)+0x64)
+>>> referenced by tester-output.c++m:233 (tester/tester-output.c++m:233)
+>>>               build-darwin-debug/obj/foo-bar.test.o:(symbol void tester::output::value@tester<std::__1::basic_string_view<char, std::__1::char_traits<char>>>(std::__1::basic_string_view<char, std::__1::char_traits<char>> const&)+0x3c)
+>>> referenced 1 more times
+
+ld64.lld: error: undefined symbol: tester::output::color::text::yellow@tester
+>>> referenced by tester-output.c++m:277 (tester/tester-output.c++m:277)
+>>>               build-darwin-debug/obj/example_3.test.o:(symbol void tester::output::message@tester<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>>(bool, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, std::__1::source_location, std::__1::source_location)+0x30)
+>>> referenced by tester-output.c++m:277 (tester/tester-output.c++m:277)
+>>>               build-darwin-debug/obj/example_3.test.o:(symbol void tester::output::message@tester<std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>>(bool, std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>, std::__1::source_location, std::__1::source_location)+0x2c)
+clang++: error: linker command failed with exit code 1 (use -v to see invocation)

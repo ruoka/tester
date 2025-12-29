@@ -17,14 +17,9 @@ export class runner
 {
 public:
 
-    runner(std::string_view tags = "") : runner(output::output_config{}, tags) {}
-
-    explicit runner(output::output_config cfg, std::string_view tags = "")
-        : m_output_config{std::move(cfg)}, m_tags{tags}, m_run_mode{}, m_run_tags{}
+    runner(std::string_view tags = "")
+        : m_tags{tags}, m_run_mode{}, m_run_tags{}
     {
-        // Provide output module a view of this runner's config
-        output::set_output_config(m_output_config);
-
         if(not m_tags.empty())
         {
             if(auto tag_list = parse_tag_query(m_tags); not tag_list.empty())
@@ -34,15 +29,15 @@ public:
             }
             else
             {
-            try
-            {
-                m_regex = std::regex{m_tags.begin(), m_tags.end()};
-                m_use_regex = true;
-            }
-            catch(const std::regex_error&)
-            {
-                // Invalid regex, fall back to substring matching
-                m_use_regex = false;
+                try
+                {
+                    m_regex = std::regex{m_tags.begin(), m_tags.end()};
+                    m_use_regex = true;
+                }
+                catch(const std::regex_error&)
+                {
+                    // Invalid regex, fall back to substring matching
+                    m_use_regex = false;
                 }
             }
         }
@@ -91,11 +86,13 @@ public:
     void set_current_test_id(std::string_view id)
     {
         m_current_test_id.assign(id.begin(), id.end());
+        output::set_current_test_id(m_current_test_id);
     }
 
     void clear_current_test_id()
     {
         m_current_test_id.clear();
+        output::set_current_test_id("");
     }
 
     std::string_view get_current_test_id() const
@@ -181,7 +178,6 @@ public:
 
 private:
 
-    output::output_config m_output_config{};
     std::string_view m_tags;
     std::regex m_regex;
     bool m_use_regex = false;

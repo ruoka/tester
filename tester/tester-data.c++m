@@ -8,6 +8,18 @@ import std;
 namespace tester::data
 {
 
+export enum class output_format { human, jsonl };
+export enum class jsonl_output_policy { never, failures, always };
+
+export struct output_config
+{
+    output_format format = output_format::human;
+    bool human_result_line = false;
+    std::size_t slowest = 0;
+    jsonl_output_policy jsonl_output = jsonl_output_policy::failures;
+    std::size_t jsonl_output_max_bytes = 16384;
+};
+
 export struct test_metadata
 {
     const std::string test_set_name;
@@ -40,6 +52,18 @@ export struct test_result : public test_metadata
     std::size_t assertions_total = 0;
     std::chrono::system_clock::time_point started_at{};
     std::chrono::system_clock::time_point finished_at{};
+};
+
+export struct test_assertion
+{
+    bool ok;
+    std::string matcher;
+    std::string actual;
+    std::string expected;
+    std::string test_id;
+    std::string_view file;
+    std::uint_least32_t line;
+    std::uint_least32_t column;
 };
 
 export auto test_results = std::list<test_result>{};

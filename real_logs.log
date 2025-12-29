@@ -1,0 +1,5 @@
+error: use of undeclared identifier 'io_mux'; did you mean 'console::io_mux'?
+note: 'console::io_mux' declared here
+error: use of undeclared identifier 'io_mux'; did you mean 'console::io_mux'?
+note: 'console::io_mux' declared here
+fatal error: module file 'build-darwin-debug/pcm/tester_data.pcm' not found: module file not found

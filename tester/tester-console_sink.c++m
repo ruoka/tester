@@ -32,16 +32,16 @@ concept chrono_clock = requires {
 } // namespace
 
 // Helper function - must be outside anonymous namespace to avoid TU-local entity warnings
-inline auto& io_mux()
+export inline auto& io_mux()
 {
     static auto mux = io::mux{std::cout, std::clog, std::clog};
     return mux;
 }
 
-inline auto& human_os() { return io_mux().human_os(); }
-inline auto& result_os() { return io_mux().result_os(); }
+export inline auto& human_os() { return io_mux().human_os(); }
+export inline auto& result_os() { return io_mux().result_os(); }
 
-struct sink
+export struct sink
 {
     explicit sink(io::mux& /*mux*/) {}
     
@@ -177,10 +177,7 @@ struct sink
             else
                 stream << val;
         }
-
-        // ——— NEW: Support for common variant-based JSON/value types ———
-
-        else if constexpr (requires { val.index(); }) // has .index() → probably std::variant or similar
+        else if constexpr (requires { val.index(); })
         {
             if (std::holds_alternative<std::monostate>(val) || val.valueless_by_exception())
                 stream << "null";
@@ -196,16 +193,15 @@ struct sink
                     else if constexpr (std::is_arithmetic_v<Alt>)
                         this->stream << alt;
                     else if constexpr (requires { this->stream << alt; })
-                        this->stream << alt; // fallback: use existing operator<<
+                        this->stream << alt;
                     else
-                        this->stream << "..."; // unknown alternative
+                        this->stream << "...";
                 }, val);
         }
-        // ——— Final fallback ———
         else if constexpr (requires { stream << val; })
             stream << std::boolalpha << val;
         else
-            stream << "..."; // unknown type
+            stream << "...";
     }
 
     void on_test_case(const data::test_case& tc)
@@ -277,9 +273,8 @@ struct sink
 
     void print_test_cases(std::function<bool(const data::test_case&)> included)
     {
-        using namespace data;
         human_os() << "Test cases:\n";
-        for(auto tc : test_cases)
+        for(auto tc : data::test_cases)
             if(included(tc))
                 human_os() << color::text::yellow
                            << tc.test_name
@@ -289,19 +284,17 @@ struct sink
 
     void print_test_results()
     {
-        using namespace data;
         human_os() << color::text::yellow
                    << "Test results:"
                    << color::reset << '\n';
-        for(auto result : test_results)
+        for(auto result : data::test_results)
             human_os() << result.output;
     }
 
     void print_test_failures()
     {
-        using namespace data;
         auto any_failures = false;
-        for(const auto& result : test_results)
+        for(const auto& result : data::test_results)
             if(not result.success) { any_failures = true; break; }
 
         if(!any_failures)
@@ -316,7 +309,7 @@ struct sink
                    << "Test failures:"
                    << color::reset << '\n';
 
-        for(const auto& result : test_results)
+        for(const auto& result : data::test_results)
             if(not result.success)
                 human_os() << result.output;
     }
@@ -338,11 +331,11 @@ struct sink
 
         const auto passed = (failed_tests == 0 && failed_assertions == 0);
 
-        auto slowest = std::vector<const test_result*>{};
+        auto slowest = std::vector<const data::test_result*>{};
         if(slowest_n > 0)
         {
-            slowest.reserve(test_results.size());
-            for(const auto& r : test_results) slowest.push_back(&r);
+            slowest.reserve(data::test_results.size());
+            for(const auto& r : data::test_results) slowest.push_back(&r);
             auto compare = [](const data::test_result* a, const data::test_result* b) -> bool {
                 return a->duration > b->duration;
             };
@@ -384,7 +377,7 @@ struct sink
             for(const auto* r : slowest)
             {
                 human_os()
-                    << "  " << this->as_ms_impl(r->duration) << "ms  "
+                    << "  " << std::chrono::duration_cast<std::chrono::milliseconds>(r->duration).count() << "ms  "
                     << r->test_name
                     << " (" << r->file_name << " " << r->line << ":" << r->column << ")"
                     << '\n';
@@ -416,4 +409,3 @@ export inline auto& sink_instance()
 
 } // namespace tester::output::console
 
-#undef TESTER_HAVE_CXXABI

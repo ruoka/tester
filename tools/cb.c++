@@ -732,6 +732,7 @@ private:
                     || s.find(".pcm") != std::string_view::npos;
             };
 
+            /*
             if (!pcm_recovery_attempted && looks_module_related(cmd_str))
             {
                 pcm_recovery_attempted = true;
@@ -755,6 +756,7 @@ private:
                 if (retry_r == 0)
                     return;
             }
+            */
 
             handle_build_error("Command failed: "s + cmd_str);
             std::exit(1);

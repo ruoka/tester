@@ -3,13 +3,25 @@
 // See the LICENSE file in the project root for full license text.
 
 export module tester;
+export import :data;
+export import :utils;
 export import :basic;
 export import :runner;
-export import :output;
 export import :assertions;
 export import :behavior_driven_development;
+
+// The following are implementation details that we import but don't export as partitions.
+import :output;
+import std;
 
 namespace tester
 {
     export namespace bdd = behavior_driven_development;
+
+    // Public API for configuration (delegates to the output module)
+    export void set_output_format(std::string_view fmt) { output::set_output_format(fmt); }
+    export void set_human_result_line(bool enabled) { output::set_human_result_line(enabled); }
+    export void set_slowest(std::size_t n) { output::set_slowest(n); }
+    export void set_jsonl_output(std::string_view policy) { output::set_jsonl_output(policy); }
+    export void set_jsonl_output_max_bytes(std::size_t n) { output::set_jsonl_output_max_bytes(n); }
 }
