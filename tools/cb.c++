@@ -1195,8 +1195,8 @@ private:
             if (tu.has_main and not tu.filename.contains("test_runner")) {
                 auto signature = compute_link_signature(tu, shared_objects);
                 if (not needs_relinking(tu, signature, link_cache)) {
-                    log::info("Skipping link (up-to-date): "s + tu.executable_path);
-                    continue;
+                        log::info("Skipping link (up-to-date): "s + tu.executable_path);
+                        continue;
                 }
                 threads.emplace_back([this, tu, &shared_objects, signature, &link_cache]() {
                     link_executable(tu, shared_objects);
