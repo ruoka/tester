@@ -128,9 +128,9 @@ export void print_test_statistics(std::optional<bool>& pending_run_end_passed_re
             const auto ended_at = std::chrono::system_clock::now();
             jsonl_sink().run_end(run_mode_param, stats.run_tags, passed_value, stats.run_started_unix_ms, ended_at);
             run_end_emitted_ref = true;
-        }
-        return;
     }
+        return;
+}
     console_sink().print_test_statistics(slow_n, stats.run_started, stats.run_finished, stats.run_tags, cfg().human_result_line);
 }
 

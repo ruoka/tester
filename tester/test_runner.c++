@@ -182,7 +182,7 @@ int main(int argc, char** argv)
 
         // In JSONL mode, keep stdout machine-parseable: don't emit the human test list.
         if(!state.jsonl_enabled)
-            tr.print_test_cases();
+        tr.print_test_cases();
         tr.run_tests();
         tr.print_test_results();
         tr.print_test_failures();

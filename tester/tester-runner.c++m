@@ -29,15 +29,15 @@ public:
             }
             else
             {
-                try
-                {
-                    m_regex = std::regex{m_tags.begin(), m_tags.end()};
-                    m_use_regex = true;
-                }
-                catch(const std::regex_error&)
-                {
-                    // Invalid regex, fall back to substring matching
-                    m_use_regex = false;
+            try
+            {
+                m_regex = std::regex{m_tags.begin(), m_tags.end()};
+                m_use_regex = true;
+            }
+            catch(const std::regex_error&)
+            {
+                // Invalid regex, fall back to substring matching
+                m_use_regex = false;
                 }
             }
         }
