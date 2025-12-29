@@ -1228,6 +1228,54 @@ private:
         return f;
     }
 
+    std::string compute_test_runner_signature(const std::string& test_runner_path, const std::string& test_runner_obj) const {
+        auto signature = std::string{};
+        signature.reserve(512);
+        
+        // Include test_runner object if it exists
+        if (not test_runner_obj.empty()) {
+            signature += dependency_signature(test_runner_obj);
+        }
+        
+        // Include all test objects
+        for (const auto& tu : units_in_topological_order) {
+            if (tu.is_test and not tu.has_main) {
+                signature += "|";
+                signature += dependency_signature(tu.object_path);
+            }
+        }
+        
+        // Include all regular (non-main, non-test) objects
+        auto shared_objects = linkable_object_paths();
+        for (const auto& object_path : shared_objects) {
+            signature += "|";
+            signature += dependency_signature(object_path);
+        }
+        
+        signature += "|";
+        signature += dependency_signature(std_obj_path());
+        signature += "|flags=";
+        signature += compile_flags;
+        signature += "|link=";
+        signature += link_flags;
+        signature += "|modules=";
+        signature += module_flags;
+        
+        // Include module ldflags from test objects and test_runner
+        auto test_ldflags = collect_test_module_ldflags();
+        auto test_runner_it = std::find_if(units_in_topological_order.begin(), units_in_topological_order.end(),
+            [this](const translation_unit& tu) {
+                return tu.has_main and tu.base_name.contains("test_runner");
+            });
+        if (test_runner_it != units_in_topological_order.end()) {
+            test_ldflags += collect_module_ldflags(test_runner_it->imports);
+        }
+        signature += "|imports=";
+        signature += test_ldflags;
+        
+        return signature;
+    }
+
     void link_test_runner() {
         auto objects = collect_linkable_test_objects();
         if (objects.empty()) {
@@ -1235,12 +1283,34 @@ private:
             return;
         }
 
+        // Determine test_runner path and object
+        auto test_runner_path = binary_dir() + "/test_runner";
+        auto test_runner_obj = std::string{};
+        
         // Find test_runner translation unit if it exists
         auto test_runner_it = std::find_if(units_in_topological_order.begin(), units_in_topological_order.end(),
             [this](const translation_unit& tu) {
                 return tu.has_main and tu.base_name.contains("test_runner");
             });
 
+        if (test_runner_it != units_in_topological_order.end()) {
+            test_runner_path = test_runner_it->executable_path;
+            test_runner_obj = test_runner_it->object_path;
+        }
+
+        // Check if test_runner is up-to-date
+        auto link_cache = load_executable_cache();
+        auto signature = compute_test_runner_signature(test_runner_path, test_runner_obj);
+        
+        // Check if executable exists and signature matches
+        if (fs::exists(test_runner_path)) {
+            if (auto it = link_cache.find(test_runner_path); it != link_cache.end() and it->second == signature) {
+                log::info("Skipping link (up-to-date): "s + test_runner_path);
+                return;
+            }
+        }
+
+        // Link test_runner
         if (test_runner_it != units_in_topological_order.end()) {
             auto cmd = llvm_cxx + " " + compile_flags + " " +
                     collect_module_ldflags(test_runner_it->imports) + " " +
@@ -1260,10 +1330,17 @@ private:
                     collect_linkable_objects() + // Regular (non-main, non-test) objects
                     objects + // Test objects
                     std_obj_path() + " " + link_flags +
-                    " -o " + binary_dir() + "/test_runner";
+                    " -o " + test_runner_path;
             execute_system_command(cmd);
             log::success("test_runner linked successfully");
         }
+        
+        // Save signature to cache
+        {
+            auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
+            link_cache[test_runner_path] = signature;
+        }
+        save_executable_cache(link_cache);
     }
 
 public:
@@ -1455,10 +1532,6 @@ try {
 
     for (int i = arg_index; i < argc; ++i) {
         auto argument = std::string_view{argv[i]};
-        if (argument == "--jsonl" || argument == "--output=jsonl" || argument == "--output=JSONL") {
-            cb::jsonl::set_enabled(true);
-            continue;
-        }
         if (argument == "--") {
             // Everything after "--" is passed to test_runner (only meaningful with "test").
             for (int j = i + 1; j < argc; ++j)
@@ -1468,14 +1541,19 @@ try {
                     machine_output = true;
             break;
         }
-        if (argument == "release") {
+        if (argument == "--jsonl" || argument == "--output=jsonl" || argument == "--output=JSONL") {
+            cb::jsonl::set_enabled(true);
+            continue;
+        }
+        if (argument == "test") {
+            do_run_tests = true;
+            // Check if next arg exists and is not "--" (separator) before treating it as filter
+            if (i+1 < argc && argv[i+1] != std::string_view{"--"})
+                test_filter = argv[++i];
+        } else if (argument == "release") {
             config = cb::build_config::release;
         } else if (argument == "debug") {
             config = cb::build_config::debug;
-        } else if (argument == "test") {
-            do_run_tests = true;
-            if (i+1 < argc and argv[i+1][0] != '-')
-                test_filter = argv[++i];
         } else if (argument == "ci") {
             do_clean = true;
             do_run_tests = true;
