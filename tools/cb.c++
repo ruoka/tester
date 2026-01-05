@@ -225,6 +225,8 @@ private:
     inline static const std::regex fragment_regex{R"(\s*module\s*;)"};  // Global module fragment: just "module;"
     inline static const std::regex import_regex{R"(\s*(?:export\s+)?(?:import|module)\s+([\w:-]+)\s*;)"};
     inline static const std::regex main_regex{R"(\s*int\s+main\s*\()"};
+    inline static const std::regex keyword_regex{R"(\b(class|struct|namespace|constexpr|inline|static)\b)"};
+    inline static const std::regex using_namespace_regex{R"(\busing\s+namespace\b)"};
 };
 
 inline bool translation_unit::match_supported_suffix(std::string_view filename, std::string& out_suffix) {
@@ -304,15 +306,13 @@ inline translation_unit parse_translation_unit(const fs::path& project_root, con
         }
 
         // === If we're clearly past the preamble, stop scanning for module stuff ===
+        // Use regex word boundaries to avoid false matches (e.g., "struct" in "structured_log_stream")
         if (not seen_real_code) {
-            if (trimmed.find('{') != std::string::npos or
-                trimmed.find("class") != std::string::npos or
-                trimmed.find("struct") != std::string::npos or
-                trimmed.find("namespace") != std::string::npos or
-                trimmed.find("using namespace") != std::string::npos or
-                trimmed.find("constexpr") != std::string::npos or
-                trimmed.find("inline") != std::string::npos or
-                trimmed.find("static") != std::string::npos) {
+            // Convert string_view to string for regex_search
+            auto trimmed_str = std::string{trimmed};
+            if (trimmed_str.find('{') != std::string::npos or
+                std::regex_search(trimmed_str, translation_unit::keyword_regex) or
+                std::regex_search(trimmed_str, translation_unit::using_namespace_regex)) {
                 seen_real_code = true;
             }
         }
