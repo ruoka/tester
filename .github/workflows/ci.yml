@@ -29,11 +29,11 @@ jobs:
 
       - name: Verify std.cppm location
         run: |
-          if [ -f /usr/lib/llvm-20/share/libc++/v1/std.cppm ]; then
-            echo "std.cppm found at /usr/lib/llvm-20/share/libc++/v1/std.cppm"
+          if [ -f /usr/lib/llvm-21/share/libc++/v1/std.cppm ]; then
+            echo "std.cppm found at /usr/lib/llvm-21/share/libc++/v1/std.cppm"
           else
             echo "Warning: std.cppm not found at expected location"
-            find /usr/lib/llvm-20 -name "std.cppm" 2>/dev/null || echo "std.cppm not found anywhere"
+            find /usr/lib/llvm-21 -name "std.cppm" 2>/dev/null || echo "std.cppm not found anywhere"
           fi
 
       - name: Show compiler version
@@ -134,13 +134,13 @@ jobs:
       - name: Setup LLVM + analysis tools
         uses: ./.github/actions/setup-llvm
         with:
-          packages: "libc++-20-dev libc++abi-20-dev clang-20 lld-20 lldb-20 jq clang-tools-20 clang-tidy-20 cppcheck"
+          packages: "libc++-21-dev libc++abi-21-dev clang-21 lld-21 lldb-21 jq clang-tools-21 clang-tidy-21 cppcheck"
 
       - name: Run clang-tidy on core files
         run: |
           find tester -name "*.c++m" | head -10 | xargs -I {} sh -c '
             echo "Analyzing {}"
-            clang-tidy-20 {} -- -std=c++23 -I/usr/lib/llvm-20/include/c++/v1 2>/dev/null || true
+            clang-tidy-21 {} -- -std=c++23 -I/usr/lib/llvm-21/include/c++/v1 2>/dev/null || true
           '
 
       - name: Run cppcheck
