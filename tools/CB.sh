@@ -36,9 +36,9 @@ log() {
 UNAME_OUT="$(uname -s)"
 case "$UNAME_OUT" in
     Linux)
-    CXX_COMPILER="clang++-20"
-    LLVM_PREFIX="/usr/lib/llvm-20"
-        STD_CPPM_DEFAULT="/usr/lib/llvm-20/share/libc++/v1/std.cppm"
+    CXX_COMPILER="clang++-21"
+    LLVM_PREFIX="/usr/lib/llvm-21"
+        STD_CPPM_DEFAULT="/usr/lib/llvm-21/share/libc++/v1/std.cppm"
         ;;
     Darwin)
     CXX_COMPILER="/usr/local/llvm/bin/clang++"
