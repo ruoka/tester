@@ -104,10 +104,11 @@ Machine-parseable test and build output for CI and automation. Human output rema
 ### 3.6 CB JSONL (build phase)
 
 - 🔶 CB emits `build_start` / `build_end`, `command_start` / `command_end`, `test_start` / `test_end`, `eof`.
-- 📋 Per-translation-unit `compile_start` / `compile_end` with `ok`, `duration_ms`, `source_path`, `object_path`, `pcm_path`, `module_name`.
+- ✅ Per-translation-unit `compile_end` with `ok`, `duration_ms`, `source_path`, `object_path`, `pcm_path`, `module_name`, `cache_hit`.
+- 📋 Per-translation-unit `compile_start` (optional; `compile_end` is sufficient for triage today).
 - 📋 Per-binary `link_start` / `link_end`.
-- 📋 Structured `argv: ["clang++", "..."]` array alongside human `command` string for safe rerun without shell parsing.
-- 📋 Explicit `stale_skip` / `cache_hit` reason when link or compile is skipped (reduces “fixed code, old binary” confusion).
+- ✅ Structured `argv: ["clang++", "..."]` on `command_start` / `command_end` alongside human `cmd` string.
+- ✅ `cache_hit: true` on `compile_end` when incremental compile skips a translation unit.
 
 ### 3.7 Recommended automation invocation
 
@@ -233,7 +234,7 @@ When tester is used as `deps/tester` inside a larger repo:
 | — | `first_failure` + `failed_test_ids` in JSONL summary | ✅ Done |
 | — | CB forward `--tags` without `--` | ✅ Done |
 | — | Precise matcher names in assertion JSONL (`check_eq`, …) | ✅ Done |
-| Medium | `compile_end` + structured `argv` in CB JSONL | Autonomous build-fix loops |
+| — | `compile_end` + structured `argv` in CB JSONL | ✅ Done |
 | — | Unified `CB.sh` template | ✅ Done (`tools/CB.sh.core`) |
 | Low | Death tests, regex matchers, CMake export | Nice-to-have framework parity |
 

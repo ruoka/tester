@@ -404,6 +404,18 @@ Other JSONL event types: `run_start`, `run_end`, `case`, `test`, `message`, `exc
 
 **CB → test_runner forwarding:** After `test`, these flags are forwarded without `--`: `--tags=`, `--list`, `--output=jsonl`, `--jsonl-output=…`, `--slowest=…`, `--result`, `--help`, and global `--jsonl`. Example: `./tools/CB.sh debug test --jsonl --tags='\[net\]'`. A positional substring filter is also supported: `./tools/CB.sh debug test "scenario.*Happy"`.
 
+### CB build JSONL
+
+With global `--jsonl` on build commands (`./tools/CB.sh debug build --jsonl`), CB emits machine-readable build events on stdout:
+
+| Event | Purpose |
+|-------|---------|
+| `build_start` / `build_end` | Whole build phase |
+| `command_start` / `command_end` | Each subprocess (`cmd` + structured `argv` array) |
+| `compile_end` | Per translation unit (`source_path`, `object_path`, `pcm_path`, `module_name`, `cache_hit`) |
+
+Use `argv` for safe reruns without shell parsing; use `compile_end` with `cache_hit: false` to see what actually recompiled.
+
 ### Using Makefile
 
 Build the supplied runner (`make tests`) and drive it with tags:

@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <utility>
 #include <stdexcept>
+#include <cctype>
 #include <unistd.h>
 #include <sys/wait.h>
 #include "cb-jsonl_sink.h++"
@@ -118,6 +119,44 @@ enum class unit_kind : unsigned {
 
 using suffix_list = std::vector<std::string>;
 using string_list = std::vector<std::string>;
+
+inline void append_shell_words(string_list& argv, std::string_view text)
+{
+    auto i = std::size_t{0};
+    const auto n = text.size();
+    while(i < n)
+    {
+        while(i < n && std::isspace(static_cast<unsigned char>(text[i])))
+            ++i;
+        if(i >= n)
+            break;
+
+        auto j = i;
+        while(j < n && !std::isspace(static_cast<unsigned char>(text[j])))
+            ++j;
+        argv.emplace_back(text.substr(i, j - i));
+        i = j;
+    }
+}
+
+inline string_list shell_words(std::string_view text)
+{
+    auto argv = string_list{};
+    append_shell_words(argv, text);
+    return argv;
+}
+
+inline std::string join_argv(const string_list& argv)
+{
+    auto cmd = std::string{};
+    for(std::size_t i = 0; i < argv.size(); ++i)
+    {
+        if(i)
+            cmd.push_back(' ');
+        cmd += ::shell_quote(argv[i]);
+    }
+    return cmd;
+}
 
 inline const suffix_list supported_suffixes = {
     ".test.c++m",
@@ -706,12 +745,12 @@ private:
     // General Utilities
     // ============================================================================
 
-    void execute_system_command(std::string_view cmd) const
+    void execute_system_command(const string_list& argv) const
     {
-        auto cmd_str = std::string{cmd};
+        auto cmd_str = join_argv(argv);
         // Human logs are suppressed in JSONL mode; still emit machine-readable command events.
         if (cb::jsonl::enabled())
-            cb::jsonl::sink().command_start(cmd_str);
+            cb::jsonl::sink().command_start(cmd_str, argv);
         else
             log::command(cmd_str);
 
@@ -720,7 +759,7 @@ private:
         const auto finished = std::chrono::steady_clock::now();
 
         if (cb::jsonl::enabled())
-            cb::jsonl::sink().command_end(cmd_str, r == 0, r, started, finished);
+            cb::jsonl::sink().command_end(cmd_str, argv, r == 0, r, started, finished);
         if (r)
         {
             // Best-effort recovery from stale PCM / module cache issues:
@@ -752,7 +791,7 @@ private:
                 auto retry_r = system(cmd_str.c_str());
                 const auto retry_finished = std::chrono::steady_clock::now();
                 if (cb::jsonl::enabled())
-                    cb::jsonl::sink().command_end(cmd_str, retry_r == 0, retry_r, retry_started, retry_finished);
+                    cb::jsonl::sink().command_end(cmd_str, argv, retry_r == 0, retry_r, retry_started, retry_finished);
                 if (retry_r == 0)
                     return;
             }
@@ -761,6 +800,74 @@ private:
             handle_build_error("Command failed: "s + cmd_str);
             std::exit(1);
         }
+    }
+
+    void execute_system_command(std::string_view cmd) const
+    {
+        execute_system_command(shell_words(cmd));
+    }
+
+    void emit_compile_end(const translation_unit& tu, bool ok, bool cache_hit, std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished) const
+    {
+        if(!cb::jsonl::enabled())
+            return;
+        cb::jsonl::sink().compile_end(
+            tu.full_path,
+            tu.object_path,
+            tu.is_modular ? tu.pcm_path : std::string_view{},
+            tu.module,
+            ok,
+            cache_hit,
+            started,
+            finished);
+    }
+
+    string_list base_compile_argv() const
+    {
+        auto argv = string_list{};
+        argv.push_back(llvm_cxx);
+        append_shell_words(argv, compile_flags);
+        append_shell_words(argv, cpp_flags);
+        return argv;
+    }
+
+    string_list precompile_argv(const translation_unit& tu) const
+    {
+        auto argv = base_compile_argv();
+        append_shell_words(argv, module_flags);
+        argv.push_back(tu.full_path);
+        argv.push_back("--precompile");
+        argv.push_back("-o");
+        argv.push_back(tu.pcm_path);
+        return argv;
+    }
+
+    string_list pcm_object_argv(const translation_unit& tu) const
+    {
+        auto argv = string_list{};
+        argv.push_back(llvm_cxx);
+        append_shell_words(argv, compile_flags);
+        append_shell_words(argv, module_flags);
+        argv.push_back(tu.pcm_path);
+        argv.push_back("-c");
+        argv.push_back("-o");
+        argv.push_back(tu.object_path);
+        return argv;
+    }
+
+    string_list source_object_argv(const translation_unit& tu) const
+    {
+        auto argv = base_compile_argv();
+        append_shell_words(argv, module_flags);
+        if (tu.kind == unit_kind::implementation_unit) {
+            auto module_pcm = compute_pcm_path(tu);
+            argv.push_back("-fmodule-file=" + tu.module + "=" + module_pcm);
+        }
+        argv.push_back(tu.full_path);
+        argv.push_back("-c");
+        argv.push_back("-o");
+        argv.push_back(tu.object_path);
+        return argv;
     }
 
     std::string collect_module_ldflags(const string_list& imp) const {
@@ -1060,26 +1167,14 @@ private:
     // ============================================================================
 
     void compile_unit(const translation_unit& tu) {
+        const auto started = std::chrono::steady_clock::now();
         if (tu.is_modular) {
-            // Regular module interface/partition - create PCM file
-            execute_system_command(
-                llvm_cxx + " " + compile_flags + cpp_flags + " " + module_flags + " " + tu.full_path + " --precompile -o " + tu.pcm_path
-            );
-            execute_system_command(
-                llvm_cxx + " " + compile_flags + module_flags + " " + tu.pcm_path + " -c -o " + tu.object_path
-            );
+            execute_system_command(precompile_argv(tu));
+            execute_system_command(pcm_object_argv(tu));
         } else {
-            auto extra = ""s;
-            if (tu.kind == unit_kind::implementation_unit) {
-                // Implementation units need the module PCM file
-                auto module_pcm = compute_pcm_path(tu);
-                extra = "-fmodule-file=" + tu.module + "=" + module_pcm + " ";
-            }
-
-            execute_system_command(
-                llvm_cxx + " " + compile_flags + cpp_flags + " " + module_flags + " " + extra + tu.full_path + " -c -o " + tu.object_path
-            );
+            execute_system_command(source_object_argv(tu));
         }
+        emit_compile_end(tu, true, false, started, std::chrono::steady_clock::now());
     }
 
     void update_module_flags() {
@@ -1114,6 +1209,9 @@ private:
                         compile_unit(*tu);
                         auto lock = std::lock_guard<std::mutex>{cache_mutex};
                         cache[tu->full_path] = tu->last_modified;
+                    } else {
+                        const auto now = std::chrono::steady_clock::now();
+                        emit_compile_end(*tu, true, true, now, now);
                     }
                 });
             }

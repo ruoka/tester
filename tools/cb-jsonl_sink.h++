@@ -7,13 +7,27 @@
 #include <chrono>
 #include <mutex>
 #include <ostream>
+#include <span>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include "../tester/details/output-mux.h++"
 
 namespace cb_jsonl {
 
 using ::jsonl::escape;
+
+inline void write_argv(std::ostream& os, std::span<const std::string> argv)
+{
+    os << ",\"argv\":[";
+    for(std::size_t i = 0; i < argv.size(); ++i)
+    {
+        if(i) os << ',';
+        os << '"' << escape(argv[i]) << '"';
+    }
+    os << ']';
+}
 
 struct sink
 {
@@ -71,22 +85,48 @@ struct sink
         };
     }
 
-    void command_start(std::string_view cmd)
+    void command_start(std::string_view cmd, std::span<const std::string> argv)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("command_start") << [&](std::ostream& os){
             os << ",\"cmd\":\"" << escape(cmd) << "\"";
+            write_argv(os, argv);
         };
     }
 
-    void command_end(std::string_view cmd, bool ok, int exit_code, std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished)
+    void command_end(std::string_view cmd, std::span<const std::string> argv, bool ok, int exit_code, std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started);
         m.json << m.jsonl("command_end") << [&](std::ostream& os){
             os << ",\"cmd\":\"" << escape(cmd) << "\"";
+            write_argv(os, argv);
             os << ",\"ok\":" << (ok ? "true" : "false");
             os << ",\"exit_code\":" << exit_code;
+            os << ",\"duration_ms\":" << duration.count();
+        };
+    }
+
+    void compile_end(std::string_view source_path,
+                     std::string_view object_path,
+                     std::string_view pcm_path,
+                     std::string_view module_name,
+                     bool ok,
+                     bool cache_hit,
+                     std::chrono::steady_clock::time_point started,
+                     std::chrono::steady_clock::time_point finished)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started);
+        m.json << m.jsonl("compile_end") << [&](std::ostream& os){
+            os << ",\"source_path\":\"" << escape(source_path) << "\"";
+            os << ",\"object_path\":\"" << escape(object_path) << "\"";
+            if(!pcm_path.empty())
+                os << ",\"pcm_path\":\"" << escape(pcm_path) << "\"";
+            if(!module_name.empty())
+                os << ",\"module_name\":\"" << escape(module_name) << "\"";
+            os << ",\"ok\":" << (ok ? "true" : "false");
+            os << ",\"cache_hit\":" << (cache_hit ? "true" : "false");
             os << ",\"duration_ms\":" << duration.count();
         };
     }
