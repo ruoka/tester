@@ -114,7 +114,7 @@ Machine-parseable test and build output for CI and automation. Human output rema
 ./tools/CB.sh debug test --jsonl --jsonl-output=always -- --tags='\[module\]'
 ```
 
-`--tags` and `--list` must follow `--` when using CB (see §4.2). Invoke `test_runner` directly after build if you prefer a single process.
+`--tags` and `--list` may be passed directly after `test` (no `--` required). Use `--` only for uncommon `test_runner` flags.
 
 ---
 
@@ -135,8 +135,8 @@ Machine-parseable test and build output for CI and automation. Human output rema
 
 - ✅ Auto-link `test_runner` with discovered `*.test.c++` objects.
 - ✅ Positional filter after `test` (substring on test id).
-- 🔶 Convenience forwarding to `test_runner` without `--` for: `--output=jsonl`, `--jsonl-output=…`, `--slowest=…`, `--result`, and global `--jsonl`.
-- 📋 Also forward `--tags`, `--list`, and `--help` without requiring `--` (reduces silent “run all tests” mistakes).
+- ✅ Convenience forwarding to `test_runner` without `--` for: `--tags=`, `--list`, `--output=jsonl`, `--jsonl-output=…`, `--slowest=…`, `--result`, `--help`, and global `--jsonl`.
+- ✅ Positional filter after `test` no longer consumes flags that start with `-` or known test_runner tokens.
 - 📋 `test --watch` mode (rebuild + rerun on file change).
 
 ### 4.3 Discovery & layout
@@ -228,7 +228,7 @@ When tester is used as `deps/tester` inside a larger repo:
 | Priority | Item | Rationale |
 |----------|------|-----------|
 | High | `first_failure` + `failed_test_ids` in JSONL summary | Biggest remaining automation ergonomics win |
-| High | CB forward `--tags` without `--` | Prevents silent full-suite runs |
+| — | CB forward `--tags` without `--` | ✅ Done |
 | Medium | `compile_end` + structured `argv` in CB JSONL | Autonomous build-fix loops |
 | Medium | Precise matcher names in assertion JSONL | Better failure diagnosis |
 | Medium | Unified `CB.sh` template | Less drift across consuming repos |

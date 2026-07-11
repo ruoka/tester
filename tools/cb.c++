@@ -1506,6 +1506,37 @@ static std::string shell_quote(std::string_view arg)
     return out;
 }
 
+namespace {
+
+bool is_cb_token(std::string_view arg)
+{
+    return arg == "release" || arg == "debug" || arg == "ci" || arg == "clean"
+        || arg == "build" || arg == "list" || arg == "test" || arg == "static"
+        || arg == "help" || arg == "-h" || arg == "--help"
+        || arg == "--include-examples" || arg == "--build-tests"
+        || arg == "-I" || arg == "--include" || arg == "--link-flags"
+        || arg == "--compile-flags" || arg == "--extra-compile-flags"
+        || arg == "--jsonl" || arg == "--";
+}
+
+bool is_test_runner_token(std::string_view arg)
+{
+    return arg == "--list" || arg == "--jsonl" || arg == "--result" || arg == "--help"
+        || arg.starts_with("--tags=")
+        || arg.starts_with("--output=")
+        || arg.starts_with("--slowest=")
+        || arg.starts_with("--jsonl-output=")
+        || arg.starts_with("--jsonl-output-max-bytes=");
+}
+
+void note_test_runner_jsonl(std::string_view arg, bool& machine_output)
+{
+    if(arg == "--jsonl" || arg == "--output=jsonl" || arg == "--output=JSONL")
+        machine_output = true;
+}
+
+} // namespace
+
 int main(int argc, char* argv[])
 try {
     auto stdcppm = ""s;  // Empty string triggers auto-detection
@@ -1547,9 +1578,12 @@ try {
         }
         if (argument == "test") {
             do_run_tests = true;
-            // Check if next arg exists and is not "--" (separator) before treating it as filter
-            if (i+1 < argc && argv[i+1] != std::string_view{"--"})
-                test_filter = argv[++i];
+            // Optional positional filter (substring); do not consume test_runner/CB flags.
+            if (i + 1 < argc) {
+                const auto next = std::string_view{argv[i + 1]};
+                if (next != "--" && !is_test_runner_token(next) && !is_cb_token(next) && !next.starts_with("-"))
+                    test_filter = argv[++i];
+            }
         } else if (argument == "release") {
             config = cb::build_config::release;
         } else if (argument == "debug") {
@@ -1569,15 +1603,10 @@ try {
             include_examples = true;
         } else if (argument == "--build-tests") {
             build_tests = true;
-        } else if (do_run_tests && (argument.starts_with("--output=") ||
-                                   argument.starts_with("--slowest=") ||
-                                   argument.starts_with("--jsonl-output=") ||
-                                   argument.starts_with("--jsonl-output-max-bytes=") ||
-                                   argument == "--result")) {
-            // Convenience: allow passing common test_runner CLI flags directly
+        } else if (do_run_tests && is_test_runner_token(argument)) {
+            // Convenience: forward test_runner flags without requiring "--"
             test_runner_args.emplace_back(argv[i]);
-            if (argument == "--output=jsonl" || argument == "--output=JSONL")
-                machine_output = true;
+            note_test_runner_jsonl(argument, machine_output);
         } else if (argument == "-I" or argument == "--include") {
             if (i+1 < argc) {
                 include_paths.push_back(argv[++i]);
@@ -1609,8 +1638,8 @@ try {
                       << "  ci               Clean and run tests (shortcut for: clean test)\n"
                       << "  list             List all translation units\n"
                       << "  test [filter] [-- <args...>]  Build and run tests (optional filter)\n"
-                      << "                 Pass extra args to test_runner after '--' (recommended)\n"
-                      << "                 or pass common flags directly (e.g. --output=jsonl)\n"
+                      << "                 Forward test_runner flags directly (e.g. --tags=, --list)\n"
+                      << "                 or pass any args after '--'\n"
                       << "  static           Enable static linking (C++ stdlib static)\n"
                       << "  --include-examples Include examples directory in build (excluded by default)\n"
                       << "  --build-tests    Build tests in release mode (useful for CI to verify compilation)\n"
@@ -1628,6 +1657,8 @@ try {
                       << "  " << argv[0] << " clean build\n"
                       << "  " << argv[0] << " ci\n"
                       << "  " << argv[0] << " test\n"
+                      << "  " << argv[0] << " test --tags=[module]\n"
+                      << "  " << argv[0] << " test --jsonl --jsonl-output=always --tags=[module]\n"
                       << "  " << argv[0] << " test -- --output=jsonl --slowest=10\n"
                       << "  " << argv[0] << " clean\n";
             return 0;

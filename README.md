@@ -398,7 +398,7 @@ Other JSONL event types: `run_start`, `run_end`, `case`, `test`, `message`, `exc
 ./tools/CB.sh debug test -- --output=jsonl --jsonl-output=always
 ```
 
-**CB → test_runner forwarding:** `CB` accepts `--jsonl`, `--output=jsonl`, `--jsonl-output=…`, `--slowest=…`, and `--result` without a `--` separator. Flags such as `--tags` and `--list` must follow `--` (e.g. `./tools/CB.sh debug test --jsonl -- --tags='\[net\]'`). A positional filter after `test` is also supported: `./tools/CB.sh debug test "scenario.*Happy"`.
+**CB → test_runner forwarding:** After `test`, these flags are forwarded without `--`: `--tags=`, `--list`, `--output=jsonl`, `--jsonl-output=…`, `--slowest=…`, `--result`, `--help`, and global `--jsonl`. Example: `./tools/CB.sh debug test --jsonl --tags='\[net\]'`. A positional substring filter is also supported: `./tools/CB.sh debug test "scenario.*Happy"`.
 
 ### Using Makefile
 
