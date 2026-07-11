@@ -23,3 +23,7 @@ deps/
 
 # Makefile dependencies
 Makefile.deps
+
+# Captured build/test output (local debug artifacts)
+*.jsonl
+*.log
