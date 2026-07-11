@@ -388,7 +388,11 @@ Fields on assertion events:
 
 - `test_id`, `matcher`, `actual`, `expected`, `file`, `line`, `column`
 
+`matcher` is the public wrapper name (e.g. `require_eq`, `check_contains`), not the generic `check`/`require` hub. Wrappers pass an explicit `matcher_location` into the hub; `file`/`line`/`column` still refer to the test source line.
+
 `actual` and `expected` are JSON-encoded values (strings, numbers, booleans, etc.). Failed assertions are also summarized in the test's `output` field when `--jsonl-output=failures` or `always`.
+
+**Incremental builds:** after editing `tester-assertions.c++m`, CB must recompile affected `*.test.c++` objects (template matchers like `require_eq` are instantiated there). Rebuilding only `tester_assertions.pcm` is insufficient — run `./tools/CB.sh debug build` or delete stale `*.test.o` files if matcher names look wrong.
 
 Other JSONL event types: `run_start`, `run_end`, `case`, `test`, `message`, `exception`, `summary`.
 

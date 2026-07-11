@@ -61,7 +61,10 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 
 ### 2.4 Matcher naming in JSONL
 
-- ✅ `matcher` uses `extract_matcher_name(location2)` where `check`/`require` pass `matcher_location` (default `source_location::current()` at the `check_eq`/`require_eq` call site), not the inner `check`/`require` frame.
+- ✅ `matcher` uses `extract_matcher_name(location2)` on the public wrapper name (`require_eq`, `check_contains`, …), not the inner `check`/`require` hub.
+- ✅ Each `check_*` / `require_*` wrapper that delegates to `check`/`require` captures `const auto matcher_location = std::source_location::current()` at **wrapper entry** and passes it as `location2`. Relying on the hub’s default `matcher_location` is not enough for template wrappers (e.g. `require_eq` would emit `"require"`).
+- ✅ `location1` (file/line/column on assertion events) still comes from the test call site via the wrapper’s `location` parameter.
+- 📋 After changing `tester:assertions`, recompile **test** translation units (`*.test.c++`), not only `tester_assertions.pcm` — template wrappers are instantiated in each test object.
 - 📋 Extend the same naming to non-comparison paths (`message` events, `require_nothrow`, custom predicates) where `matcher` is absent or generic today.
 
 ---

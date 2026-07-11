@@ -35,9 +35,11 @@ Use **`--jsonl`**. Parse **stdout only** (one JSON object per line, `schema: "te
    - Read `first_failure` → open `file` at `line`, use `message`
    - Read `failed_test_ids` for the full failure set
 3. For diagnosis, grep stdout for `assertion_failed` (or `assertion_passed` when using `always`):
-   - `matcher` — e.g. `require_eq`, `check_contains` (not generic `require`)
+   - `matcher` — e.g. `require_eq`, `check_contains` (not generic `require` / `check`)
    - `actual`, `expected`, `file`, `line`, `column`
 4. Fix the source, then re-run the **same** tagged command.
+
+If `matcher` is `"require"` or `"check"` on a `require_eq` / `check_eq` line, stale test objects are likely — rebuild test TUs (`./tools/CB.sh debug build --jsonl`), not only `tester_assertions.pcm`.
 
 ## Triage workflow (build failure)
 
