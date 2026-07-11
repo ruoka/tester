@@ -167,6 +167,7 @@ export auto run_test_cases(auto filter, auto set_test_id, auto clear_test_id, au
         const auto started_sys = std::chrono::system_clock::now();
         const auto assertions_total_before = statistics().total_assertions;
         const auto assertions_ok_before = statistics().successful_assertions;
+        auto failure_message = std::string{};
         try
         {
             ++statistics().total_tests;
@@ -193,16 +194,19 @@ export auto run_test_cases(auto filter, auto set_test_id, auto clear_test_id, au
         catch(const assertions::assertion_failure& ex)
         {
             tr.success = false;
+            failure_message = ex.what();
             output::exception(*tc,ex);
         }
         catch(const std::exception& ex)
         {
             tr.success = false;
+            failure_message = ex.what();
             output::exception(*tc,ex);
         }
         catch(...)
         {
             tr.success = false;
+            failure_message = "Unknown exception";
             output::exception(*tc,std::runtime_error{"Unknown exception"});
         }
         const auto finished = std::chrono::steady_clock::now();
@@ -221,7 +225,7 @@ export auto run_test_cases(auto filter, auto set_test_id, auto clear_test_id, au
         // because nested test cases store their own copies of the lambda (with captured
         // values), not references to this test_case object.
         test_cases.erase(tc);
-        tr.output = output::captured_output();
+        tr.output = tr.success ? output::captured_output() : failure_message;
         test_results.push_back(tr);
     }
 }

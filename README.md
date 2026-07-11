@@ -390,6 +390,8 @@ Fields on assertion events:
 
 Other JSONL event types: `run_start`, `run_end`, `case`, `test`, `message`, `exception`, `summary`.
 
+`summary` and `run_end` include `failed_test_ids` (all failing test IDs) and, when any test failed, `first_failure` with `test_id`, `file`, `line`, and `message` for the first failure in run order.
+
 ```bash
 # Failures only (default): assertion_failed events + test output on failure
 ./tools/CB.sh debug test -- --output=jsonl

@@ -81,8 +81,8 @@ Machine-parseable test and build output for CI and automation. Human output rema
 
 - ✅ `run_start`, `run_end`, `case`, `test`, `summary`, `message`, `exception`, `eof`.
 - ✅ `summary` includes `tests_ok`, `tests_total`, `assertions_ok`, `assertions_total`, `passed`.
-- 📋 `failed_test_ids: [...]` in `summary` / `run_end`.
-- 📋 `first_failure: { test_id, file, line, message, matcher }` for direct navigation.
+- ✅ `failed_test_ids: [...]` in `summary` / `run_end`.
+- ✅ `first_failure: { test_id, file, line, message }` for direct navigation.
 - 📋 `slowest` list as structured array in `summary` (today partly human-oriented).
 
 ### 3.3 Exception metadata
@@ -227,7 +227,7 @@ When tester is used as `deps/tester` inside a larger repo:
 
 | Priority | Item | Rationale |
 |----------|------|-----------|
-| High | `first_failure` + `failed_test_ids` in JSONL summary | Biggest remaining automation ergonomics win |
+| — | `first_failure` + `failed_test_ids` in JSONL summary | ✅ Done |
 | — | CB forward `--tags` without `--` | ✅ Done |
 | Medium | `compile_end` + structured `argv` in CB JSONL | Autonomous build-fix loops |
 | Medium | Precise matcher names in assertion JSONL | Better failure diagnosis |

@@ -61,10 +61,10 @@ export void begin_run(std::string_view mode, std::string_view tags, std::chrono:
     jsonl_sink().run_start(mode, tags, started_at);
 }
 
-export void end_run(std::string_view mode, std::string_view tags, bool passed, std::chrono::system_clock::time_point started_at, std::chrono::system_clock::time_point ended_at)
+export void end_run(std::string_view mode, std::string_view tags, bool passed, std::chrono::system_clock::time_point started_at, std::chrono::system_clock::time_point ended_at, const jsonl::failure_index& failures = {})
 {
     if(!jsonl_enabled()) return;
-    jsonl_sink().run_end(mode, tags, passed, started_at, ended_at);
+    jsonl_sink().run_end(mode, tags, passed, started_at, ended_at, failures);
 }
 
 // Thread-local current test ID (set by runner)
@@ -86,7 +86,7 @@ export void print_test_results()
     if(jsonl_enabled()) {
         const auto policy = cfg().jsonl_output;
         for(const auto& result : data::test_results) {
-            const auto include_output = (policy == data::jsonl_output_policy::always) || (policy == data::jsonl_output_policy::failures && !result.success);
+            const auto include_output = (policy == data::jsonl_output_policy::always) || (policy == data::jsonl_output_policy::failures && jsonl::test_failed(result));
             jsonl_sink().test(result, include_output, cfg().jsonl_output_max_bytes);
         }
         return;
@@ -117,7 +117,8 @@ export void print_test_statistics(std::optional<bool>& pending_run_end_passed_re
     }
 
     if(jsonl_enabled()) {
-        jsonl_sink().summary(stats, passed, std::span<const data::test_result* const>{slowest.data(), slowest.size()});
+        const auto failures = jsonl::collect_failures(data::test_results);
+        jsonl_sink().summary(stats, passed, std::span<const data::test_result* const>{slowest.data(), slowest.size()}, failures);
         if(jsonl_enabled() || cfg().human_result_line) {
             console::result_os() << "RESULT:" << " tests_ok=" << stats.successful_tests << " tests_total=" << stats.total_tests << " assertions_ok=" << stats.successful_assertions << " assertions_total=" << stats.total_assertions << " passed=" << (passed ? "true" : "false") << '\n';
         }
@@ -126,7 +127,7 @@ export void print_test_statistics(std::optional<bool>& pending_run_end_passed_re
             const auto passed_value = *pending_run_end_passed_ref;
             pending_run_end_passed_ref = std::nullopt;
             const auto ended_at = std::chrono::system_clock::now();
-            jsonl_sink().run_end(run_mode_param, stats.run_tags, passed_value, stats.run_started_unix_ms, ended_at);
+            jsonl_sink().run_end(run_mode_param, stats.run_tags, passed_value, stats.run_started_unix_ms, ended_at, failures);
             run_end_emitted_ref = true;
     }
         return;

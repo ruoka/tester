@@ -65,6 +65,73 @@ auto prepare_output(std::string_view raw, std::size_t max_bytes) -> prepared_out
     return prepared_output{std::move(cleaned), truncated, original_bytes};
 }
 
+auto failure_message_for(const data::test_result& r) -> std::string
+{
+    if(!r.output.empty())
+        return r.output;
+    if(r.assertions_ok < r.assertions_total)
+        return "assertion failure";
+    return "test failed";
+}
+
+void write_failed_test_ids(std::ostream& os, const std::vector<std::string>& ids)
+{
+    os << ",\"failed_test_ids\":[";
+    for(std::size_t i = 0; i < ids.size(); ++i)
+    {
+        if(i) os << ',';
+        os << '"' << ::jsonl::escape(ids[i]) << '"';
+    }
+    os << ']';
+}
+
+void write_first_failure(std::ostream& os, const data::test_result& r)
+{
+    const auto message = failure_message_for(r);
+    os << ",\"first_failure\":{";
+    os << "\"test_id\":\"" << ::jsonl::escape(r.test_id) << '"';
+    os << ",\"file\":\"" << ::jsonl::escape(r.file_name) << '"';
+    os << ",\"line\":" << r.line;
+    os << ",\"message\":\"" << ::jsonl::escape(message) << '"';
+    os << '}';
+}
+
+} // namespace
+
+export auto test_failed(const data::test_result& r) -> bool
+{
+    return !r.success || r.assertions_ok < r.assertions_total;
+}
+
+export struct failure_index
+{
+    std::vector<std::string> failed_test_ids;
+    const data::test_result* first = nullptr;
+};
+
+export auto collect_failures(const std::list<data::test_result>& results) -> failure_index
+{
+    auto index = failure_index{};
+    for(const auto& r : results)
+    {
+        if(!test_failed(r))
+            continue;
+        index.failed_test_ids.push_back(r.test_id);
+        if(index.first == nullptr)
+            index.first = &r;
+    }
+    return index;
+}
+
+namespace {
+
+void write_failure_index(std::ostream& os, const failure_index& failures)
+{
+    write_failed_test_ids(os, failures.failed_test_ids);
+    if(failures.first != nullptr)
+        write_first_failure(os, *failures.first);
+}
+
 } // namespace
 
 export struct sink
@@ -82,7 +149,7 @@ export struct sink
         };
     }
 
-    void run_end(std::string_view mode, std::string_view tags, bool passed, std::chrono::system_clock::time_point started, std::chrono::system_clock::time_point ended)
+    void run_end(std::string_view mode, std::string_view tags, bool passed, std::chrono::system_clock::time_point started, std::chrono::system_clock::time_point ended, const failure_index& failures)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         const auto duration = (started != std::chrono::system_clock::time_point{})
@@ -93,6 +160,7 @@ export struct sink
             os << ",\"tags\":\"" << ::jsonl::escape(tags) << "\"";
             os << ",\"passed\":" << (passed ? "true" : "false");
             os << ",\"duration_ms\":" << duration.count();
+            write_failure_index(os, failures);
         };
     }
 
@@ -180,7 +248,8 @@ export struct sink
 
     void summary(const data::test_statistics& s,
                  bool passed,
-                 std::span<const data::test_result* const> slowest)
+                 std::span<const data::test_result* const> slowest,
+                 const failure_index& failures)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("summary") << [&](std::ostream& os){
@@ -189,6 +258,7 @@ export struct sink
             os << ",\"assertions_ok\":" << s.successful_assertions;
             os << ",\"assertions_total\":" << s.total_assertions;
             os << ",\"passed\":" << (passed ? "true" : "false");
+            write_failure_index(os, failures);
             if(!slowest.empty())
             {
                 os << ",\"slowest\":[";
