@@ -76,9 +76,9 @@ C++ Builder & Tester offers unique advantages for modern C++ development:
 ## Requirements
 
 ### Linux
-- Clang 20 (`clang++-20`)
-- LLVM 20 installation (for `std.cppm`)
-- libc++ development libraries
+- Clang 21 (`clang++-21`) — required for current CI and dev containers
+- LLVM 21 installation (for `std.cppm` at `/usr/lib/llvm-21/share/libc++/v1/std.cppm`)
+- libc++-21 development libraries
 
 ### macOS
 - **Requires locally built LLVM/clang** (not Homebrew)
@@ -373,6 +373,31 @@ const auto _ = feature();
 ./tools/CB.sh debug test -- --output=jsonl --result
 ```
 
+### JSONL assertion events
+
+With `--output=jsonl`, each `check_*` / `require_*` assertion emits a structured event on stdout (in addition to the per-test `test` record):
+
+| Event | When emitted |
+|-------|----------------|
+| `assertion_failed` | Every failed assertion (always) |
+| `assertion_passed` | Only when `--jsonl-output=always` (default is `failures`) |
+
+Fields on assertion events:
+
+- `test_id`, `matcher`, `actual`, `expected`, `file`, `line`, `column`
+
+`actual` and `expected` are JSON-encoded values (strings, numbers, booleans, etc.). Failed assertions are also summarized in the test's `output` field when `--jsonl-output=failures` or `always`.
+
+Other JSONL event types: `run_start`, `run_end`, `case`, `test`, `message`, `exception`, `summary`.
+
+```bash
+# Failures only (default): assertion_failed events + test output on failure
+./tools/CB.sh debug test -- --output=jsonl
+
+# All assertions, including passes
+./tools/CB.sh debug test -- --output=jsonl --jsonl-output=always
+```
+
 ### Using Makefile
 
 Build the supplied runner (`make tests`) and drive it with tags:
@@ -447,7 +472,7 @@ build-<os>/bin/tools/core_pc /path/to/core
 
 **Compiler not found**:
 - Set `CXX` environment variable to point to your clang++ compiler
-- Ensure clang++ supports C++23 modules (Clang 19+)
+- Ensure clang++ supports C++23 modules (Clang 21+ on Linux; locally built LLVM on macOS)
 
 **Module dependency errors**:
 - Clean and rebuild: `./tools/CB.sh debug clean && ./tools/CB.sh debug build`

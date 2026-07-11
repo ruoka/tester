@@ -31,10 +31,9 @@ These additions would close the feature gap with mainstream test frameworks whil
 These are focused on making test + build output easier to parse and act on by tools (including AI agents), while keeping human output readable.
 
 1. **Structured assertion events (JSONL)**
-   - TODO: Emit a dedicated `assertion_failed` (and optionally `assertion_passed`) JSONL event with structured fields:
-     - `matcher`, `actual`, `expected`, `file`, `line`, `column`, `expression`, `message`
-   - Currently assertions are only captured in the test's `output` field as text
-   - This would make it easier for tools to parse assertion failures without scraping text output
+   - ✅ `assertion_failed` / `assertion_passed` JSONL events with `matcher`, `actual`, `expected`, `file`, `line`, `column`, `test_id`
+   - `assertion_failed` is always emitted; `assertion_passed` when `--jsonl-output=always`
+   - Optional: add `expression` / free-form `message` fields for non-comparison assertions
 
 2. **First-failure + failure index**
    - In `summary` / `run_end`, include:
