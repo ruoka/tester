@@ -61,7 +61,7 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 
 ### 2.4 Matcher naming in JSONL
 
-- ✅ `matcher` field uses `extract_matcher_name()` from `std::source_location` in `tester-utils.c++m` (e.g. `check_eq`, `require_contains`, not generic `"check"`).
+- ✅ `matcher` uses `extract_matcher_name(location2)` where `check`/`require` pass `matcher_location` (default `source_location::current()` at the `check_eq`/`require_eq` call site), not the inner `check`/`require` frame.
 - 📋 Extend the same naming to non-comparison paths (`message` events, `require_nothrow`, custom predicates) where `matcher` is absent or generic today.
 
 ---

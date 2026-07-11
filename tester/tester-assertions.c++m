@@ -65,23 +65,23 @@ namespace tester::assertions
 
     // Non-fatal assertion helper (check_*)
     export template<template <typename> class M, typename A, typename E>
-    auto check(M<std::common_type_t<A,E>> match, A actual, E expected, const std::source_location location = std::source_location::current())
+    auto check(M<std::common_type_t<A,E>> match, A actual, E expected, const std::source_location location = std::source_location::current(), const std::source_location matcher_location = std::source_location::current())
     {
         ++data::statistics().total_assertions;
         const auto ok = match(actual,expected);
         data::statistics().successful_assertions += ok;
-        output::assertion(ok,actual,expected,location);
+        output::assertion(ok,actual,expected,location,matcher_location);
         return ok;
     };
 
     // Fatal assertion helper (require_*)
     export template<template <typename> class M, typename A, typename E>
-    void require(M<std::common_type_t<A,E>> match, A actual, E expected, const std::source_location location = std::source_location::current())
+    void require(M<std::common_type_t<A,E>> match, A actual, E expected, const std::source_location location = std::source_location::current(), const std::source_location matcher_location = std::source_location::current())
     {
         ++data::statistics().total_assertions;
         const auto ok = match(actual,expected);
         data::statistics().successful_assertions += ok;
-        output::assertion(ok,actual,expected,location);
+        output::assertion(ok,actual,expected,location,matcher_location);
         if(not ok)
         {
             throw assertion_failure{"Assertion failed"};

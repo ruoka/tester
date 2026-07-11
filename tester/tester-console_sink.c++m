@@ -261,7 +261,7 @@ export struct sink
         else
             stream << color::text::red;
 
-        stream << this->function_name_impl(location2) << '\n';
+        stream << this->function_name_impl(location1) << '\n';
         stream << "  message:  " << msg << '\n';
         stream << "  location: "
                << location1.file_name() << " "
