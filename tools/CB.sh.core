@@ -1,0 +1,245 @@
+# Copyright (c) 2025 Kaius Ruokonen. All rights reserved.
+# SPDX-License-Identifier: MIT
+# See the LICENSE file in the project root for full license text.
+#
+# Shared C++ Builder bootstrap logic. Source from a per-repo tools/CB.sh wrapper
+# after setting CB_* variables (see tools/CB.sh.template).
+
+: "${CB_TOOLS_DIR:?CB_TOOLS_DIR must be set by the wrapper}"
+: "${CB_PROJECT_ROOT:?CB_PROJECT_ROOT must be set by the wrapper}"
+
+CB_BIN="${CB_BIN:-$CB_TOOLS_DIR/cb}"
+
+# -----------------------------------------------------------------------------
+# JSONL-safe logging (wrapper chatter goes to stderr in JSONL test mode)
+# -----------------------------------------------------------------------------
+
+CB_JSONL_MODE=false
+for __cb_arg in "$@"; do
+  if [[ "$__cb_arg" == "--jsonl" || "$__cb_arg" == "--output=jsonl" || "$__cb_arg" == "--output=JSONL" ]]; then
+    CB_JSONL_MODE=true
+    break
+  fi
+done
+
+cb_log() {
+  if [[ "$CB_JSONL_MODE" == "true" ]]; then
+    echo "$@" >&2
+  else
+    echo "$@"
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# Optional sandbox hook (network-heavy repos only)
+# -----------------------------------------------------------------------------
+
+if [[ "${CB_SANDBOX_DISABLE_NETWORK_TESTS:-0}" == "1" ]]; then
+  if [[ -n "${CURSOR_SANDBOX:-}" && -z "${NET_DISABLE_NETWORK_TESTS+x}" ]]; then
+    export NET_DISABLE_NETWORK_TESTS=1
+  fi
+fi
+
+# -----------------------------------------------------------------------------
+# Resolve tester (source of cb.c++)
+# -----------------------------------------------------------------------------
+
+cb_resolve_tester_root() {
+  if [[ -n "${CB_TESTER_ROOT:-}" && -d "$CB_TESTER_ROOT/tools" ]]; then
+    return 0
+  fi
+  if [[ -d "$CB_PROJECT_ROOT/deps/tester/tools" ]]; then
+    CB_TESTER_ROOT="$(cd "$CB_PROJECT_ROOT/deps/tester" && pwd)"
+    return 0
+  fi
+  if [[ -d "$CB_PROJECT_ROOT/../tester/tools" ]]; then
+    CB_TESTER_ROOT="$(cd "$CB_PROJECT_ROOT/../tester" && pwd)"
+    return 0
+  fi
+  if [[ -d "$CB_TOOLS_DIR/../tester" && -f "$CB_TOOLS_DIR/cb.c++" ]]; then
+    CB_TESTER_ROOT="$(cd "$CB_TOOLS_DIR/.." && pwd)"
+    return 0
+  fi
+  return 1
+}
+
+if [[ -z "${CB_CB_SOURCE:-}" ]]; then
+  if cb_resolve_tester_root; then
+    CB_CB_SOURCE="$CB_TESTER_ROOT/tools/cb.c++"
+  elif [[ -f "$CB_TOOLS_DIR/cb.c++" ]]; then
+    CB_CB_SOURCE="$CB_TOOLS_DIR/cb.c++"
+    CB_TESTER_ROOT="${CB_TESTER_ROOT:-$CB_PROJECT_ROOT}"
+  elif [[ "${CB_FETCH_DEPS:-0}" == "1" ]]; then
+    mkdir -p "$CB_PROJECT_ROOT/deps"
+    cb_log "tester dependency missing; cloning into '$CB_PROJECT_ROOT/deps/tester'..."
+    git clone --depth 1 --branch grok "https://github.com/ruoka/tester.git" "$CB_PROJECT_ROOT/deps/tester"
+    CB_TESTER_ROOT="$(cd "$CB_PROJECT_ROOT/deps/tester" && pwd)"
+    CB_CB_SOURCE="$CB_TESTER_ROOT/tools/cb.c++"
+  else
+    cb_log "ERROR: tester dependency not found."
+    cb_log "Looked for:"
+    cb_log "  - $CB_PROJECT_ROOT/deps/tester"
+    cb_log "  - $CB_PROJECT_ROOT/../tester"
+    cb_log "  - $CB_TOOLS_DIR/cb.c++"
+    cb_log
+    cb_log "Fix by initializing submodules or cloning tester:"
+    cb_log "  git submodule update --init --recursive"
+    cb_log "or rerun with:"
+    cb_log "  CB_FETCH_DEPS=1 $0 $*"
+    exit 1
+  fi
+fi
+
+# -----------------------------------------------------------------------------
+# Optional submodule init (consumer repos)
+# -----------------------------------------------------------------------------
+
+if [[ -n "${CB_AUTO_SUBMODULES:-}" && -d "$CB_PROJECT_ROOT/.git" ]]; then
+  # shellcheck disable=SC2086
+  git -C "$CB_PROJECT_ROOT" submodule update --init $CB_AUTO_SUBMODULES
+fi
+
+# -----------------------------------------------------------------------------
+# Toolchain detection
+# -----------------------------------------------------------------------------
+
+CB_UNAME_OUT="$(uname -s)"
+CB_DARWIN_SDKROOT=""
+if [[ "$CB_UNAME_OUT" == "Darwin" ]] && command -v xcrun >/dev/null 2>&1; then
+  CB_DARWIN_SDKROOT="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+  if [[ -n "$CB_DARWIN_SDKROOT" && -d "$CB_DARWIN_SDKROOT" ]]; then
+    export SDKROOT="$CB_DARWIN_SDKROOT"
+  fi
+fi
+
+if [[ "${CB_RESPECT_CXX_ENV:-1}" == "1" && -n "${CXX:-}" ]]; then
+  CB_CXX_COMPILER="$CXX"
+  if [[ "$CB_CXX_COMPILER" == *"/llvm"* ]]; then
+    CB_LLVM_PREFIX="$(dirname "$(dirname "$CB_CXX_COMPILER")")"
+  elif [[ "$CB_CXX_COMPILER" == clang++-* ]]; then
+    CB_LLVM_VERSION="${CB_CXX_COMPILER#clang++-}"
+    CB_LLVM_PREFIX="/usr/lib/llvm-${CB_LLVM_VERSION}"
+  else
+    CB_LLVM_PREFIX="/usr/lib/llvm-21"
+  fi
+elif [[ "$CB_UNAME_OUT" == "Linux" ]]; then
+  CB_CXX_COMPILER="clang++-21"
+  CB_LLVM_PREFIX="/usr/lib/llvm-21"
+elif [[ "$CB_UNAME_OUT" == "Darwin" ]]; then
+  CB_CXX_COMPILER="/usr/local/llvm/bin/clang++"
+  CB_LLVM_PREFIX="/usr/local/llvm"
+else
+  cb_log "ERROR: Unsupported OS '$CB_UNAME_OUT'"
+  exit 1
+fi
+
+CB_STD_CPPM_DEFAULT="$CB_LLVM_PREFIX/share/libc++/v1/std.cppm"
+export LDFLAGS="-Wl,-rpath,$CB_LLVM_PREFIX/lib ${LDFLAGS}"
+
+# -----------------------------------------------------------------------------
+# Build CB binary when needed
+# -----------------------------------------------------------------------------
+
+CB_NEEDS_REBUILD=false
+if [[ ! -x "$CB_BIN" ]]; then
+  CB_NEEDS_REBUILD=true
+elif [[ "$CB_CB_SOURCE" -nt "$CB_BIN" ]]; then
+  CB_NEEDS_REBUILD=true
+elif [[ -f "$CB_BIN" ]] && command -v file >/dev/null 2>&1; then
+  CB_FILE_TYPE="$(file "$CB_BIN" 2>/dev/null || echo "")"
+  case "$CB_UNAME_OUT" in
+    Linux)
+      [[ "$CB_FILE_TYPE" == *"ELF"* ]] || CB_NEEDS_REBUILD=true
+      ;;
+    Darwin)
+      [[ "$CB_FILE_TYPE" == *"Mach-O"* ]] || CB_NEEDS_REBUILD=true
+      ;;
+  esac
+fi
+
+if [[ "$CB_NEEDS_REBUILD" == "true" ]]; then
+  cb_log "Building C++ Builder with $CB_CXX_COMPILER..."
+  CB_BUILD_CMD=(
+    "$CB_CXX_COMPILER"
+    -B"$CB_LLVM_PREFIX/bin"
+    -std=c++23 -O3 -pthread
+    -fuse-ld=lld
+    -stdlib=libc++
+    -I"$CB_LLVM_PREFIX/include/c++/v1"
+    -L"$CB_LLVM_PREFIX/lib"
+    -Wl,-rpath,"$CB_LLVM_PREFIX/lib"
+    -lc++abi
+  )
+  if [[ "$CB_UNAME_OUT" == "Darwin" && -n "$CB_DARWIN_SDKROOT" && -d "$CB_DARWIN_SDKROOT" ]]; then
+    CB_BUILD_CMD+=(-isysroot "$CB_DARWIN_SDKROOT")
+  fi
+  CB_BUILD_CMD+=("$CB_CB_SOURCE" -o "$CB_BIN")
+  "${CB_BUILD_CMD[@]}"
+  cb_log "C++ Builder compiled successfully → $CB_BIN"
+fi
+
+# -----------------------------------------------------------------------------
+# std.cppm resolution
+# -----------------------------------------------------------------------------
+
+CB_STD_CPPM=""
+if [[ -n "$1" && ("$1" == *.cppm || "$1" == */*) ]]; then
+  CB_STD_CPPM="$1"
+  shift
+fi
+
+if [[ -z "$CB_STD_CPPM" ]]; then
+  CB_STD_CPPM="${LLVM_PATH:-$CB_STD_CPPM_DEFAULT}"
+fi
+
+if [[ ! -f "$CB_STD_CPPM" ]]; then
+  cb_log "ERROR: std.cppm not found at '$CB_STD_CPPM'."
+  cb_log "Pass the path as the first argument or set LLVM_PATH."
+  exit 1
+fi
+
+# -----------------------------------------------------------------------------
+# Include paths and optional --include-examples
+# -----------------------------------------------------------------------------
+
+CB_INCLUDE_FLAGS=()
+if [[ -n "${CB_INCLUDE_DIRS:-}" ]]; then
+  for __cb_dir in "${CB_INCLUDE_DIRS[@]}"; do
+    if [[ -d "$__cb_dir" ]]; then
+      CB_INCLUDE_FLAGS+=(-I "$__cb_dir")
+    fi
+  done
+fi
+
+CB_INCLUDE_EXAMPLES_FLAG=()
+case "${CB_INCLUDE_EXAMPLES_MODE:-never}" in
+  always)
+    CB_INCLUDE_EXAMPLES_FLAG=(--include-examples)
+    ;;
+  on_test)
+    for __cb_arg in "$@"; do
+      if [[ "$__cb_arg" == "test" ]]; then
+        CB_INCLUDE_EXAMPLES_FLAG=(--include-examples)
+        break
+      fi
+    done
+    ;;
+esac
+
+if [[ -n "${CB_INCLUDE_FLAGS:-}" ]]; then
+  CB_INCLUDE_FLAGS=()
+  for __cb_path in $CB_INCLUDE_FLAGS; do
+    CB_INCLUDE_FLAGS+=(-I "$__cb_path")
+  done
+fi
+
+CB_FORWARD_ARGS=()
+if [[ -n "${CB_LINK_FLAGS:-}" ]]; then
+  CB_FORWARD_ARGS+=(--link-flags "$CB_LINK_FLAGS")
+fi
+if [[ -n "${CB_EXTRA_ARGS+x}" && ${#CB_EXTRA_ARGS[@]} -gt 0 ]]; then
+  CB_FORWARD_ARGS+=("${CB_EXTRA_ARGS[@]}")
+fi
+
+cd "$CB_PROJECT_ROOT"
+exec "$CB_BIN" "$CB_STD_CPPM" "${CB_INCLUDE_FLAGS[@]}" "${CB_INCLUDE_EXAMPLES_FLAG[@]}" "${CB_FORWARD_ARGS[@]}" "$@"

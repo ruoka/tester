@@ -61,8 +61,8 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 
 ### 2.4 Matcher naming in JSONL
 
-- 🔶 JSONL `matcher` field often reports generic `"check"` rather than the specific helper (`check_eq`, `require_throws`, …).
-- 📋 Emit precise matcher names in `assertion_passed` / `assertion_failed` events.
+- ✅ `matcher` field uses `extract_matcher_name()` from `std::source_location` in `tester-utils.c++m` (e.g. `check_eq`, `require_contains`, not generic `"check"`).
+- 📋 Extend the same naming to non-comparison paths (`message` events, `require_nothrow`, custom predicates) where `matcher` is absent or generic today.
 
 ---
 
@@ -97,6 +97,7 @@ Machine-parseable test and build output for CI and automation. Human output rema
 
 ### 3.5 Log artifacts
 
+- ✅ `.gitignore` excludes captured `*.jsonl` and `*.log` debug output — do not commit local JSONL captures (e.g. `assertions_*.jsonl`, `test_results_*.jsonl` from manual redirects); CI generates ephemeral artifacts instead.
 - 📋 Write large stderr/stdout to files; emit `stderr_path` / `stdout_path` in JSONL.
 - 📋 Bounded `*_head` snippet inline when artifacts are truncated (`--jsonl-output-max-bytes` already exists for test output).
 
@@ -155,14 +156,15 @@ Per-project wrappers compile `cb.c++` and invoke it with the right include paths
 ### 5.1 Toolchain alignment
 
 - ✅ Dev containers for tester, net, and xson on **Clang 21** / Debian bookworm.
-- 📋 Single shared `CB.sh` template (or documented diff table) across standalone repos to reduce drift.
+- ✅ Consuming repos (e.g. fixer): `post-create.sh` bootstrap stamp skips rebuild when `HEAD` + submodule pointers are unchanged.
+- ✅ Shared `CB.sh.core` + `CB.sh.template`; per-repo wrappers source the core (diff table in template header).
 - 📋 Align nested `deps/tester` copies when parent repos bump the tester submodule pointer.
 
 ### 5.2 Robustness
 
-- 🔶 Some `CB.sh` variants have cross-OS binary rebuild detection and `std.cppm` existence checks; others are simpler.
-- 📋 Port the robust rebuild / `std.cppm` checks to all `CB.sh` variants.
-- 📋 Remove or rename `NET_DISABLE_NETWORK_TESTS` in repos that copied it but have no network tests.
+- ✅ Cross-OS binary rebuild detection and `std.cppm` existence checks in `CB.sh.core` (all wrappers).
+- ✅ JSONL-safe wrapper logging (`cb_log` → stderr when `--jsonl` / `--output=jsonl`).
+- ✅ `NET_DISABLE_NETWORK_TESTS` sandbox hook only enabled in net wrapper (`CB_SANDBOX_DISABLE_NETWORK_TESTS=1`).
 
 ### 5.3 Sandbox & CI
 
@@ -218,6 +220,7 @@ Per-project wrappers compile `cb.c++` and invoke it with the right include paths
 When tester is used as `deps/tester` inside a larger repo:
 
 - ✅ CB resolves sibling `../tester` or local `deps/tester`.
+- ✅ Parent repos should bump the submodule pointer after tester fixes (e.g. JSONL capture cleanup, `first_failure`); nested `deps/*/tester` copies lag until each submodule updates.
 - 📋 Document resolution order in README (sibling vs nested vs `CB_FETCH_DEPS=1`).
 - 📋 Avoid duplicating stale tester docs inside nested `deps/tester` trees — bump the submodule pointer instead.
 
@@ -229,9 +232,9 @@ When tester is used as `deps/tester` inside a larger repo:
 |----------|------|-----------|
 | — | `first_failure` + `failed_test_ids` in JSONL summary | ✅ Done |
 | — | CB forward `--tags` without `--` | ✅ Done |
+| — | Precise matcher names in assertion JSONL (`check_eq`, …) | ✅ Done |
 | Medium | `compile_end` + structured `argv` in CB JSONL | Autonomous build-fix loops |
-| Medium | Precise matcher names in assertion JSONL | Better failure diagnosis |
-| Medium | Unified `CB.sh` template | Less drift across consuming repos |
+| — | Unified `CB.sh` template | ✅ Done (`tools/CB.sh.core`) |
 | Low | Death tests, regex matchers, CMake export | Nice-to-have framework parity |
 
 ---
@@ -239,6 +242,7 @@ When tester is used as `deps/tester` inside a larger repo:
 ## References (in this repo)
 
 - Assertion implementation: `tester/tester-assertions.c++m`
+- Matcher name extraction: `tester/tester-utils.c++m` (`extract_matcher_name`)
 - JSONL sink: `tester/tester-jsonl_sink.c++m`
 - Output routing: `tester/tester-output.c++m`
 - Build system: `tools/cb.c++`

@@ -126,7 +126,9 @@ tester/
 ├── examples/        # Sample tests & demo programs
 ├── tools/           # Helper utilities
 │   ├── cb.c++       # C++ Builder (single-file build system)
-│   ├── CB.sh        # Bootstrap script for C++ Builder
+│   ├── CB.sh        # Per-repo bootstrap wrapper (sources CB.sh.core)
+│   ├── CB.sh.core   # Shared bootstrap logic (toolchain, rebuild, std.cppm)
+│   ├── CB.sh.template # Copy/adapt when adding CB to a new repo
 │   └── core_pc.c++  # Core file analysis utility
 ├── docs/            # Design notes and improvement backlog
 ├── config/          # Compiler configuration (Makefile support)
