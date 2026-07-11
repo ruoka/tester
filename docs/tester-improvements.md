@@ -191,7 +191,7 @@ Per-project wrappers compile `cb.c++` and invoke it with the right include paths
 
 ### 6.3 Automation guide
 
-- 📋 Short “For automation / CI” section in README (canonical JSONL command, event types, tag syntax).
+- ✅ `AGENTS.md` at repo root (canonical JSONL commands, triage workflow, event reference for agents/CI).
 - 📋 JSONL assertion event table in README (see §3.1).
 
 ---
