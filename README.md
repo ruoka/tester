@@ -116,7 +116,7 @@ git submodule update --init --recursive
 
 ## Improvement ideas
 
-Ongoing enhancement notes live in [`docs/tester-improvements.md`](docs/tester-improvements.md). Whether you consume C++ Builder & Tester inside Fixer or as a standalone dependency, start there to see the current backlog and proposed assertion features.
+The full improvement backlog (assertions, JSONL output, CB build system, bootstrap scripts) lives in [`docs/tester-improvements.md`](docs/tester-improvements.md). Status markers: ✅ implemented · 🔶 partial · 📋 proposed.
 
 ## Repository Layout
 
