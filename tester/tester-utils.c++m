@@ -12,6 +12,25 @@ import std;
 namespace tester::output
 {
 
+// Bracket tags from scenario/test names, e.g. "scenario [fixer][board] ..." → ["fixer", "board"]
+export std::vector<std::string> extract_bracket_tags(std::string_view test_name)
+{
+    auto tags = std::vector<std::string>{};
+    auto pos = std::size_t{0};
+
+    while((pos = test_name.find('[', pos)) != std::string_view::npos)
+    {
+        auto end = test_name.find(']', pos + 1);
+        if(end == std::string_view::npos)
+            break;
+
+        tags.emplace_back(test_name.substr(pos + 1, end - pos - 1));
+        pos = end + 1;
+    }
+
+    return tags;
+}
+
 // Extract matcher name from function name (e.g., "require_eq", "check_contains")
 export auto extract_matcher_name(const std::source_location sl)
 {

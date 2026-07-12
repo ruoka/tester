@@ -18,7 +18,10 @@ Use **`--jsonl`**. Parse **stdout only** (one JSON object per line, `schema: "te
 # Full suite (examples included in standalone tester)
 ./tools/CB.sh debug test --jsonl --jsonl-output=always
 
-# List registered tests (human; test_runner JSONL catalogue is planned)
+# Test catalogue (machine-readable)
+./tools/CB.sh debug test --list --jsonl
+
+# List registered tests (human)
 ./tools/CB.sh debug test --list
 
 # Build with compile telemetry
@@ -62,6 +65,14 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 | `parent_run_id` | `test_runner` events only | CB’s `run_id`, passed via `TESTER_PARENT_RUN_ID` when CB spawns the child |
 | `pid` | Every event | OS process id (`test_runner` differs from CB) |
 | `ts_unix_ms` | Every event | Unix timestamp (ms) |
+
+### Test catalogue (`test --list --jsonl`)
+
+| Event | Use |
+|-------|-----|
+| `test_list_start` | Catalogue start (`tags_filter`) |
+| `registered_test` | Per test: `id`, `name`, `file`, `line`, `column`, `tags[]`, `depends_on[]`, `priority` |
+| `test_list_summary` | `registered_total`, `matched_total`, `tags_filter` |
 
 ### Test phase
 

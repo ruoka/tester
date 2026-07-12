@@ -6,6 +6,7 @@ export module tester:runner;
 import :output;
 import :engine;
 import :data;
+import :utils;
 import std;
 
 namespace tester
@@ -102,11 +103,16 @@ public:
 
     auto print_test_cases()
     {
-        begin_run("list");
+        if(output::jsonl_enabled())
+        {
+            output::print_test_catalogue(
+                std::function<bool(const test_case&)>{[this](const test_case& tc){ return this->included(tc); }},
+                m_tags);
+            output::emit_jsonl_eof();
+            return;
+        }
 
         output::print_test_cases(std::function<bool(const test_case&)>{[this](const test_case& tc){ return this->included(tc); }});
-
-        end_run(true);
     }
 
     auto run_tests()
@@ -221,7 +227,7 @@ private:
         if(m_literal_tags.empty())
             return true;
 
-        auto test_tags = extract_tags(test_name);
+        auto test_tags = output::extract_bracket_tags(test_name);
         if(test_tags.empty())
             return false;
 
@@ -233,24 +239,6 @@ private:
         }
 
         return true;
-    }
-
-    static std::vector<std::string> extract_tags(std::string_view test_name)
-    {
-        auto tags = std::vector<std::string>{};
-        auto pos = std::size_t{0};
-
-        while((pos = test_name.find('[', pos)) != std::string_view::npos)
-        {
-            auto end = test_name.find(']', pos + 1);
-            if(end == std::string_view::npos)
-                break;
-
-            tags.emplace_back(test_name.substr(pos + 1, end - pos - 1));
-            pos = end + 1;
-        }
-
-        return tags;
     }
 
     bool excluded(const test_case& tc) const

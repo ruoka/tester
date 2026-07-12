@@ -25,6 +25,7 @@ R"(test_runner [--help] [--list] [--tags=<tag>] [--output=<human|jsonl>] [--json
 Examples:
   test_runner
   test_runner --list
+  test_runner --list --jsonl
   test_runner --jsonl --jsonl-output=failures --slowest=10
   test_runner --output=jsonl --jsonl-output=failures --slowest=10
   test_runner --tags=scenario("My test")

@@ -45,7 +45,7 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 
 - ✅ Regex and substring tag filters via `--tags=`.
 - 📋 Document bracket-tag convention (`[module]` in scenario names) in one canonical example table.
-- 📋 `test_runner --list` JSONL mode (machine-readable test catalogue for agents).
+- ✅ `test_runner --list --jsonl`: `test_list_start`, `registered_test`, `test_list_summary`.
 
 ### 2.2 BDD ergonomics
 

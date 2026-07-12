@@ -74,6 +74,17 @@ auto failure_message_for(const data::test_result& r) -> std::string
     return "test failed";
 }
 
+void write_string_array(std::ostream& os, std::string_view field, std::span<const std::string> values)
+{
+    os << ",\"" << field << "\":[";
+    for(std::size_t i = 0; i < values.size(); ++i)
+    {
+        if(i) os << ',';
+        os << '"' << ::jsonl::escape(values[i]) << '"';
+    }
+    os << ']';
+}
+
 void write_failed_test_ids(std::ostream& os, const std::vector<std::string>& ids)
 {
     os << ",\"failed_test_ids\":[";
@@ -161,6 +172,42 @@ export struct sink
             os << ",\"passed\":" << (passed ? "true" : "false");
             os << ",\"duration_ms\":" << duration.count();
             write_failure_index(os, failures);
+        };
+    }
+
+    void test_list_start(std::string_view tags_filter)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("test_list_start") << [&](std::ostream& os){
+            os << ",\"tags_filter\":\"" << ::jsonl::escape(tags_filter) << "\"";
+        };
+    }
+
+    void test_list_summary(int registered_total, int matched_total, std::string_view tags_filter)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("test_list_summary") << [&](std::ostream& os){
+            os << ",\"registered_total\":" << registered_total;
+            os << ",\"matched_total\":" << matched_total;
+            os << ",\"tags_filter\":\"" << ::jsonl::escape(tags_filter) << "\"";
+        };
+    }
+
+    void registered_test(const data::test_case& tc, std::span<const std::string> tags)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("registered_test") << [&](std::ostream& os){
+            os << ",\"id\":\"" << ::jsonl::escape(tc.test_id) << "\"";
+            if(not tc.id.empty() && tc.id != tc.test_id)
+                os << ",\"dep_id\":\"" << ::jsonl::escape(tc.id) << "\"";
+            os << ",\"set\":\"" << ::jsonl::escape(tc.test_set_name) << "\"";
+            os << ",\"name\":\"" << ::jsonl::escape(tc.test_name) << "\"";
+            os << ",\"file\":\"" << ::jsonl::escape(tc.file_name) << "\"";
+            os << ",\"line\":" << tc.line;
+            os << ",\"column\":" << tc.column;
+            os << ",\"priority\":" << tc.priority;
+            write_string_array(os, "tags", tags);
+            write_string_array(os, "depends_on", tc.depends_on);
         };
     }
 
