@@ -194,15 +194,33 @@ inline std::string normalize_relative_dir(const fs::path& dir) {
     return str == "." ? "" : str;
 }
 
+inline bool is_tester_framework_path(std::string_view path) {
+    // Nested or top-level tester library trees (not *.test.c++ sources).
+    return path.contains("/tester/") or path.starts_with("tester/");
+}
+
+inline bool path_has_test_segment(std::string_view path) {
+    // Match path components named exactly "test" or "tests" (not "tester" / "test_exception_bug").
+    auto rest = path;
+    while (not rest.empty()) {
+        const auto slash = rest.find('/');
+        const auto segment = slash == std::string_view::npos ? rest : rest.substr(0, slash);
+        if (segment == "test" or segment == "tests")
+            return true;
+        if (slash == std::string_view::npos)
+            break;
+        rest.remove_prefix(slash + 1);
+    }
+    return false;
+}
+
 inline bool determine_is_test(std::string_view rel_dir, std::string_view name, std::string_view suffix_value) {
     if (suffix_value == ".test.c++" or suffix_value == ".test.c++m")
         return true;
-    auto combined = rel_dir.empty() ? std::string{name} : std::string{rel_dir} + "/" + std::string{name};
-    // Exclude "tester/" framework directory - it's the testing framework, not test files
-    if (combined.starts_with("tester/"))
+    const auto combined = rel_dir.empty() ? std::string{name} : std::string{rel_dir} + "/" + std::string{name};
+    if (is_tester_framework_path(combined))
         return false;
-    // Check for test files/directories (but not the tester framework)
-    return combined.contains("test");
+    return path_has_test_segment(combined);
 }
 
 inline std::string make_unit(std::string_view module_value, unit_kind kind, std::string_view filename_value) {
