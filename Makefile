@@ -52,10 +52,9 @@ binarydir = $(PREFIX)/bin
 # File Discovery
 ###############################################################################
 
-# Library files
+# Library files (framework modules only — not test_runner or *.test.c++)
 modules = $(wildcard $(sourcedir)/*.c++m)
-sources = $(wildcard $(sourcedir)/*.c++)
-objects = $(modules:$(sourcedir)%.c++m=$(objectdir)%.o) $(sources:$(sourcedir)%.c++=$(objectdir)%.o)
+library-objects = $(modules:$(sourcedir)%.c++m=$(objectdir)%.o)
 
 # Example files
 example-programs = example
@@ -73,13 +72,19 @@ test-program = test_runner
 test-target = $(test-program:%=$(binarydir)/%)
 test-source = $(sourcedir)/$(test-program).c++
 test-object = $(test-source:$(sourcedir)%.c++=$(objectdir)%.o)
+test-framework-sources = $(wildcard $(sourcedir)/*.test.c++)
+test-example-sources = $(wildcard $(exampledir)/*.test.c++)
+test-framework-objects = $(test-framework-sources:$(sourcedir)/%.test.c++=$(objectdir)/%.test.o)
+test-example-objects = $(test-example-sources:$(exampledir)/%.test.c++=$(objectdir)/%.test.o)
+test-objects = $(test-object) $(test-framework-objects) $(test-example-objects)
 
 # Library and dependencies
 library = $(addprefix $(librarydir)/, lib$(project).a)
 libraries =
 
 # Dependency files: header deps (.d) and module deps
-header_deps = $(objects:.o=.d) $(example-objects:.o=.d)
+header_deps = $(library-objects:.o=.d) $(example-objects:.o=.d) \
+	$(test-framework-objects:.o=.d) $(test-example-objects:.o=.d) $(test-object:.o=.d)
 
 # clang-scan-deps is required (comes with Clang 20+)
 # Use CLANG_SCAN_DEPS from config/compiler.mk if available, otherwise derive from compiler
@@ -89,7 +94,8 @@ clang_scan_deps := $(if $(CLANG_SCAN_DEPS),$(CLANG_SCAN_DEPS),$(shell dirname "$
 module_depfile = $(moduledir)/modules.dep
 
 # All source files for dependency scanning
-all_sources = $(modules) $(sources) $(example-modules) $(example-sources) $(wildcard $(exampledir)/*.test.c++)
+all_sources = $(modules) $(test-source) $(example-modules) $(example-sources) \
+	$(test-framework-sources) $(test-example-sources)
 
 ###############################################################################
 # Build Flags
@@ -176,13 +182,17 @@ $(objectdir)/%.o: $(exampledir)/%.c++ $(moduledir)/std.pcm $(module_depfile) | $
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(PCMFLAGS) -c $< -MD -MF $(@:.o=.d) -o $@
 
-# Rule for test units (.test.c++) → produces .o
+# Rule for test units (.test.c++) → produces .test.o
+$(objectdir)/%.test.o: $(sourcedir)/%.test.c++ $(moduledir)/std.pcm $(module_depfile) | $(objectdir) $(moduledir)
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(PCMFLAGS) -c $< -MD -MF $(@:.o=.d) -o $@
+
 $(objectdir)/%.test.o: $(exampledir)/%.test.c++ $(moduledir)/std.pcm $(module_depfile) | $(objectdir) $(moduledir)
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(PCMFLAGS) -c $< -MD -MF $(@:.o=.d) -o $@
 
 # Library creation
-$(library) : $(objects)
+$(library) : $(library-objects)
 	@mkdir -p $(@D)
 	$(AR) $(ARFLAGS) $@ $^
 
@@ -195,9 +205,9 @@ $(binarydir)/tools/%: $(toolsdir)/%.c++ $(library) $(libraries) $(BUILTIN_STD_OB
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $(LDFLAGS) $^ -o $@
 
-$(test-target): $(library) $(libraries) $(BUILTIN_STD_OBJECT) | $(binarydir)
+$(test-target): $(test-objects) $(example-objects) $(library) $(libraries) $(BUILTIN_STD_OBJECT) | $(binarydir)
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $(LDFLAGS) $(library) $(libraries) $(BUILTIN_STD_OBJECT) -o $@
+	$(CXX) $(CXXFLAGS) $(PCMFLAGS) $(LDFLAGS) $^ -o $@
 
 ###############################################################################
 # Dependency Generation
