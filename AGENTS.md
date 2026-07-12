@@ -68,10 +68,15 @@ If `matcher` is `"require"` or `"check"` on a `require_eq` / `check_eq` line, st
 
 | Event | Use |
 |-------|-----|
+| `list_start` | TU inventory start (`config`, `include_tests`, `include_examples`, `source_dir`) |
+| `unit` | Per translation unit (`path`, `module`, `kind`, `imports[]`, `level`, `has_main`, `is_test`, `is_modular`) |
+| `list_summary` | Inventory totals (`units_total`, `main_count`, `test_count`, `max_level`) |
 | `build_start` / `build_end` | Whole build |
 | `command_start` / `command_end` | Subprocesses (`cmd` + `argv`) |
 | `compile_end` | Per translation unit (`source_path`, `cache_hit`, paths) |
 | `cb_error` | CB fatal/diagnostic |
+
+**`unit.is_test`:** `true` for `*.test.c++` / `*.test.c++m`, or when a path segment is exactly `test/` or `tests/`. `false` for sources under a `tester/` framework tree (library modules, not project tests) — including nested paths like `deps/xson/deps/tester/`. Does not match the substring `test` inside names such as `tester` or `test_exception_bug`.
 
 ## Example agent loop
 

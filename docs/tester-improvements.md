@@ -108,6 +108,7 @@ Machine-parseable test and build output for CI and automation. Human output rema
 
 - 🔶 CB emits `build_start` / `build_end`, `command_start` / `command_end`, `test_start` / `test_end`, `eof`.
 - ✅ `list --jsonl`: `list_start`, per-TU `unit` (`path`, `module`, `kind`, `imports`, `level`, `is_test`, …), `list_summary`.
+- ✅ `unit.is_test`: `true` for `*.test.c++` / `*.test.c++m` or `test/` / `tests/` path segments; `false` for `tester/` framework trees (exact segment match — not substring `test` in `tester`).
 - ✅ Per-translation-unit `compile_end` with `ok`, `duration_ms`, `source_path`, `object_path`, `pcm_path`, `module_name`, `cache_hit`.
 - 📋 Per-translation-unit `compile_start` (optional; `compile_end` is sufficient for triage today).
 - 📋 Per-binary `link_start` / `link_end`.
