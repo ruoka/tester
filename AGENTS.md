@@ -9,26 +9,29 @@ Use **`--jsonl`**. Parse **stdout only** (one JSON object per line, `schema: "te
 ## Canonical commands
 
 ```bash
+# Framework contract tests (CI gate — preferred while fixing)
+./tools/CB.sh debug test --jsonl --jsonl-output=always --tags='\[self\]'
+
 # Translation-unit inventory (modules, imports, compile levels)
 ./tools/CB.sh debug list --jsonl
 
-# Scoped test run (preferred while fixing)
-./tools/CB.sh debug test --jsonl --jsonl-output=always --tags='\[module\]'
-
-# Full suite (examples included in standalone tester)
-./tools/CB.sh debug test --jsonl --jsonl-output=always
-
-# Test catalogue (machine-readable)
+# Test catalogue (ids, tags, depends_on for scoped runs)
 ./tools/CB.sh debug test --list --jsonl
 
-# List registered tests (human)
-./tools/CB.sh debug test --list
+# Full suite (standalone only — includes examples/)
+./tools/CB.sh debug test --jsonl --jsonl-output=always
 
 # Build with compile telemetry
 ./tools/CB.sh debug build --jsonl
 ```
 
-**Tag syntax:** bracket tags must be escaped in shell: `--tags='\[dashboard\]'`. Substring/regex filters also work: `--tags='Test case 3'`.
+**Tag syntax:** bracket tags must be escaped in shell: `--tags='\[self\]'`. Substring/regex filters also work: `--tags='Test case 3'`.
+
+**Hidden tags:** bracket tags starting with `.` (Catch2-style, e.g. `[.jsonl-probe]`) are **skipped on unfiltered runs**. Select explicitly: `--tags='\[.jsonl-probe\]'`.
+
+**Scoped runs:** Prefer `--tags='\[self\]'` for framework work. An unfiltered run includes `examples/` demos — several **intentionally fail** to show assertion output; do not expect `summary.passed: true` on the full suite.
+
+**Embedded in a parent repo** (fixer, YarDB, net, xson): the parent's `AGENTS.md` applies — scope with the parent project's tags (`[fixer]`, `[yardb]`, etc.), not `[self]`. See [docs/cb.md](docs/cb.md).
 
 **Flags:**
 - `--jsonl` — machine-readable stdout for CB and (on `test`) test_runner
@@ -37,13 +40,18 @@ Use **`--jsonl`**. Parse **stdout only** (one JSON object per line, `schema: "te
 ## Triage workflow (test failure)
 
 1. Find the last `summary` or `run_end` on stdout.
-2. If `passed` is `false`:
-   - Read `first_failure` → open `file` at `line`, use `message`
-   - Read `failed_test_ids` for the full failure set
-3. For diagnosis, grep stdout for `assertion_failed` (or `assertion_passed` when using `always`):
+
+2. Check the result:
+   - If `passed` (or `run_end.passed`) is `true` → this scoped run succeeded. You're done.
+   - If `false`:
+     - Read `first_failure` — `file`, `line`, `message`, and usually the failing `matcher` with `actual` / `expected`. Open the source at that location.
+     - Read `failed_test_ids` for the full failure set.
+
+3. For detailed diagnosis, grep stdout for `assertion_failed` (use `assertion_passed` as well when you passed `--jsonl-output=always`):
    - `matcher` — e.g. `require_eq`, `check_contains` (not generic `require` / `check`)
    - `actual`, `expected`, `file`, `line`, `column`
-4. Fix the source, then re-run the **same** tagged command.
+
+4. Fix the source, then re-run the **exact same scoped command**.
 
 If `matcher` is `"require"` or `"check"` on a `require_eq` / `check_eq` line, stale test objects are likely — rebuild test TUs (`./tools/CB.sh debug build --jsonl`), not only `tester_assertions.pcm`.
 
@@ -105,16 +113,18 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 
 ```text
 1. ./tools/CB.sh debug build --jsonl
-2. ./tools/CB.sh debug test --jsonl --jsonl-output=always --tags='\[module\]'
-3. Parse last summary → passed?
-4. If false: first_failure + assertion_failed → edit → goto 1 or 2
+2. ./tools/CB.sh debug test --jsonl --jsonl-output=always --tags='\[self\]'
+3. Parse last `summary` or `run_end` → check `passed`
+4. If false: follow triage workflow (`first_failure` + `assertion_failed`) → edit → re-run the same scoped command
 ```
 
 ## Do not
 
 - Infer pass/fail from exit code alone — read `summary.passed` or `run_end.passed`
-- Parse ANSI-colored stderr as structured data
-- Run the full suite on every iteration unless explicitly asked — scope with `--tags`
+- Parse stderr as structured JSONL
+- Use an unfiltered full-suite run as the default fix loop — scope with `--tags='\[self\]'` for framework work
+- Expect `summary.passed: true` on the full suite — `examples/` includes intentional failures
+- Run `[.tag]` probe fixtures unless explicitly selected (they are hidden by default)
 
 ## More detail
 
