@@ -54,7 +54,14 @@ If `matcher` is `"require"` or `"check"` on a `require_eq` / `check_eq` line, st
 
 ### Correlation
 
-Every JSONL event includes `run_id` (session id for the current process). When CB spawns `test_runner`, child events also include `parent_run_id` (CB’s `run_id`, via `TESTER_PARENT_RUN_ID`). Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` → `test` in one invocation.
+Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` → `test` in one `CB … --jsonl` invocation.
+
+| Field | On | Meaning |
+|-------|-----|---------|
+| `run_id` | Every event | Session id for the emitting process (32-char hex) |
+| `parent_run_id` | `test_runner` events only | CB’s `run_id`, passed via `TESTER_PARENT_RUN_ID` when CB spawns the child |
+| `pid` | Every event | OS process id (`test_runner` differs from CB) |
+| `ts_unix_ms` | Every event | Unix timestamp (ms) |
 
 ### Test phase
 
@@ -77,7 +84,7 @@ Every JSONL event includes `run_id` (session id for the current process). When C
 | `list_summary` | Inventory totals (`units_total`, `main_count`, `test_count`, `max_level`) |
 | `build_start` / `build_end` | Whole build |
 | `command_start` / `command_end` | Subprocesses (`cmd` + `argv`) |
-| `compile_end` | Per translation unit (`source_path`, `cache_hit`, paths) |
+| `compile_end` | Per TU (`source_path`, `cache_hit`, `rebuild_reason` when `cache_hit:false`, paths) |
 | `cb_error` | CB fatal/diagnostic |
 
 **`unit.is_test`:** `true` for `*.test.c++` / `*.test.c++m`, or when a path segment is exactly `test/` or `tests/`. `false` for sources under a `tester/` framework tree (library modules, not project tests) — including nested paths like `deps/xson/deps/tester/`. Does not match the substring `test` inside names such as `tester` or `test_exception_bug`.

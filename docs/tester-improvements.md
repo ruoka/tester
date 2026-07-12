@@ -86,7 +86,7 @@ Machine-parseable test and build output for CI and automation. Human output rema
 - ✅ `summary` includes `tests_ok`, `tests_total`, `assertions_ok`, `assertions_total`, `passed`.
 - ✅ `failed_test_ids: [...]` in `summary` / `run_end`.
 - ✅ `first_failure: { test_id, file, line, message }` for direct navigation.
-- 📋 `slowest` list as structured array in `summary` (today partly human-oriented).
+- ✅ `slowest` JSON array in `summary` when `--slowest=N` is set.
 
 ### 3.3 Exception metadata
 
@@ -114,6 +114,7 @@ Machine-parseable test and build output for CI and automation. Human output rema
 - 📋 Per-binary `link_start` / `link_end`.
 - ✅ Structured `argv: ["clang++", "..."]` on `command_start` / `command_end` alongside human `cmd` string.
 - ✅ `cache_hit: true` on `compile_end` when incremental compile skips a translation unit.
+- ✅ `rebuild_reason` on `compile_end` when `cache_hit:false` (e.g. `source_stale`, `pcm_stale:<module>`, `dependency_pcm_stale:<module>`).
 
 ### 3.7 Recommended automation invocation
 
