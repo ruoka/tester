@@ -60,6 +60,7 @@ export struct test_assertion
     std::string matcher;
     std::string actual;
     std::string expected;
+    std::string message;
     std::string test_id;
     std::string_view file;
     std::uint_least32_t line;

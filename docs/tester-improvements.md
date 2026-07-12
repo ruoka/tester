@@ -78,7 +78,8 @@ Machine-parseable test and build output for CI and automation. Human output rema
 
 - ✅ `assertion_failed` / `assertion_passed` with `test_id`, `matcher`, `actual`, `expected`, `file`, `line`, `column`.
 - ✅ `assertion_failed` always emitted in JSONL mode; `assertion_passed` when `--jsonl-output=always` (default policy: `failures`).
-- 📋 Add `expression` (source-level) and `message` fields for non-comparison assertions (`require_nothrow`, custom messages).
+- ✅ `message` on `assertion_failed` / `assertion_passed` for exception assertions (`require_nothrow`, `check_throws*`, …).
+- 📋 Add `expression` (source-level) field for non-comparison assertions (needs macro infrastructure).
 - 📋 Document event ordering: assertion events stream during execution; `test` records batch at finalize time.
 
 ### 3.2 Run lifecycle events

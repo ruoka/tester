@@ -307,6 +307,8 @@ export struct sink
             os << ",\"file\":\"" << ::jsonl::escape(a.file) << "\"";
             os << ",\"line\":" << a.line;
             os << ",\"column\":" << a.column;
+            if(not a.message.empty())
+                os << ",\"message\":\"" << ::jsonl::escape(a.message) << "\"";
         };
     }
 

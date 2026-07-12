@@ -219,10 +219,19 @@ export void emit_jsonl_assertion_event(const data::test_assertion& a)
 }
 
 export template<typename A,typename E>
-void assertion(const bool ok, const A& actual, const E& expected, const std::source_location location1, const std::source_location location2 = std::source_location::current())
+void assertion(const bool ok, const A& actual, const E& expected, const std::source_location location1, const std::source_location location2 = std::source_location::current(), std::string_view message = {})
 {
     if(jsonl_enabled() && !get_current_test_id().empty()) {
-        emit_jsonl_assertion_event({ ok, extract_matcher_name(location2), value_to_json_string(actual), value_to_json_string(expected), std::string{get_current_test_id()}, location1.file_name(), location1.line(), location1.column() });
+        emit_jsonl_assertion_event({
+            ok,
+            extract_matcher_name(location2),
+            value_to_json_string(actual),
+            value_to_json_string(expected),
+            std::string{message},
+            std::string{get_current_test_id()},
+            location1.file_name(),
+            location1.line(),
+            location1.column()});
     }
     if(!jsonl_enabled()) console_sink().assertion(ok, actual, expected, location1, location2);
 }

@@ -233,6 +233,20 @@ namespace tester::assertions
         require(std::equal_to<bool>{},actual,false,location,matcher_location);
     };
 
+    namespace {
+
+    constexpr auto msg_expected_no_exception = "expected no exception"sv;
+    constexpr auto msg_expected_exception = "expected exception"sv;
+    constexpr auto msg_expected_exception_type = "expected exception of specified type"sv;
+    constexpr auto msg_wrong_exception_type = "wrong exception type"sv;
+
+    auto throws_as_failure_message(std::string_view actual) -> std::string_view
+    {
+        return actual == "?"sv ? msg_expected_exception_type : msg_wrong_exception_type;
+    }
+
+    } // namespace
+
     // Non-fatal exception assertions (check_*)
     export auto check_nothrow(auto&& t, const std::source_location location = std::source_location::current())
     {
@@ -256,7 +270,7 @@ namespace tester::assertions
             actual = "?"sv;
         }
         data::statistics().successful_assertions += ok;
-        output::assertion(ok,actual,expected,location,matcher_location);
+        output::assertion(ok, actual, expected, location, matcher_location, ok ? ""sv : msg_expected_no_exception);
     }
 
     export auto check_throws(auto&& t, const std::source_location location = std::source_location::current())
@@ -281,7 +295,7 @@ namespace tester::assertions
             actual = "?"sv;
         }
         data::statistics().successful_assertions += ok;
-        output::assertion(ok,actual,expected,location,matcher_location);
+        output::assertion(ok, actual, expected, location, matcher_location, ok ? ""sv : msg_expected_exception);
     }
 
     export template<typename E>
@@ -312,7 +326,7 @@ namespace tester::assertions
             ok = not ok;
         }
         data::statistics().successful_assertions += ok;
-        output::assertion(ok,actual,expected,location,matcher_location);
+        output::assertion(ok, actual, expected, location, matcher_location, ok ? ""sv : throws_as_failure_message(actual));
     }
 
     // Fatal exception assertions (require_*)
@@ -331,13 +345,13 @@ namespace tester::assertions
         catch(const std::exception& e)
         {
             actual = typeid(e).name();
-            output::assertion(false,actual,expected,location,matcher_location);
+            output::assertion(false, actual, expected, location, matcher_location, msg_expected_no_exception);
             throw assertion_failure{"Assertion failed: expected no exception"};
         }
         catch(...)
         {
             actual = "?"sv;
-            output::assertion(false,actual,expected,location,matcher_location);
+            output::assertion(false, actual, expected, location, matcher_location, msg_expected_no_exception);
             throw assertion_failure{"Assertion failed: expected no exception"};
         }
     }
@@ -352,7 +366,7 @@ namespace tester::assertions
             ++data::statistics().total_assertions;
             t();
             actual = "none"sv;
-            output::assertion(false,actual,expected,location,matcher_location);
+            output::assertion(false, actual, expected, location, matcher_location, msg_expected_exception);
             throw assertion_failure{"Assertion failed: expected exception"};
         }
         catch(const assertion_failure&)
@@ -385,7 +399,7 @@ namespace tester::assertions
             ++data::statistics().total_assertions;
             t();
             actual = "none"sv;
-            output::assertion(false,actual,expected,location,matcher_location);
+            output::assertion(false, actual, expected, location, matcher_location, msg_expected_exception_type);
             throw assertion_failure{"Assertion failed: expected exception of type " + std::string{expected}};
         }
         catch(const assertion_failure&)
@@ -401,13 +415,13 @@ namespace tester::assertions
         catch(const std::exception& e)
         {
             actual = typeid(e).name();
-            output::assertion(false,actual,expected,location,matcher_location);
+            output::assertion(false, actual, expected, location, matcher_location, msg_wrong_exception_type);
             throw assertion_failure{"Assertion failed: expected exception of type " + std::string{expected} + " but got " + std::string{actual}};
         }
         catch(...)
         {
             actual = "?"sv;
-            output::assertion(false,actual,expected,location,matcher_location);
+            output::assertion(false, actual, expected, location, matcher_location, msg_wrong_exception_type);
             throw assertion_failure{"Assertion failed: expected exception of type " + std::string{expected}};
         }
     }
