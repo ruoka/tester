@@ -58,6 +58,7 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 - ✅ `priority` and `depends_on` fields on `test_case`.
 - 📋 Expose dependency graph in `--list` output.
 - 📋 Fail fast with a clear message when dependency cycle is detected.
+- ✅ Framework self-tests in `tester/*.test.c++` tagged `[self]`; CI runs `./tools/CB.sh debug test --jsonl --tags='\[self\]'` and requires `summary.passed`.
 
 ### 2.4 Matcher naming in JSONL
 

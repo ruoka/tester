@@ -43,10 +43,20 @@ jobs:
         run: ./tools/CB.sh ${{ matrix.config }} build
 
       - name: Build tests (${{ matrix.config }})
-        # Build tests to verify they compile, but don't run them (examples intentionally fail)
-        # This follows CI best practice: separate build and test steps
-        # Example tests are verified separately in the test-examples job
         run: ./tools/CB.sh ${{ matrix.config }} build --build-tests
+
+      - name: Run self tests (${{ matrix.config }})
+        run: |
+          ./tools/CB.sh ${{ matrix.config }} test --jsonl --tags='\[self\]' > "test_results_self_${{ matrix.config }}.jsonl"
+          if command -v jq >/dev/null 2>&1; then
+            passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' "test_results_self_${{ matrix.config }}.jsonl")
+            if [ "$passed" != "true" ]; then
+              echo "Self tests failed (summary.passed=$passed)"
+              tail -20 "test_results_self_${{ matrix.config }}.jsonl"
+              exit 1
+            fi
+            echo "✓ Self tests passed"
+          fi
 
       - name: Create empty test results
         # All tests are in examples/ and intentionally fail, so we don't run them here
@@ -79,7 +89,9 @@ jobs:
         if: always()
         with:
           name: test-results-${{ matrix.config }}
-          path: test_results_${{ matrix.config }}.jsonl
+          path: |
+            test_results_${{ matrix.config }}.jsonl
+            test_results_self_${{ matrix.config }}.jsonl
 
   test-examples:
     runs-on: ubuntu-latest
