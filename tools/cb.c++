@@ -223,11 +223,11 @@ inline bool path_has_test_segment(std::string_view path) {
 }
 
 inline bool determine_is_test(std::string_view rel_dir, std::string_view name, std::string_view suffix_value) {
-    if (suffix_value == ".test.c++" or suffix_value == ".test.c++m")
-        return true;
     const auto combined = rel_dir.empty() ? std::string{name} : std::string{rel_dir} + "/" + std::string{name};
     if (is_tester_framework_path(combined))
         return false;
+    if (suffix_value == ".test.c++" or suffix_value == ".test.c++m")
+        return true;
     return path_has_test_segment(combined);
 }
 

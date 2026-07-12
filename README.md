@@ -55,7 +55,7 @@ Most test frameworks assume headers, macros, and a separate build system. Tester
 - **Modules-first** — `import tester;`, no `TEST()` macros, no generated registration boilerplate
 - **Readable assertions** — `require_eq`, `require_throws_as`, `require_container_eq`, and matching non-fatal `check_*` variants
 - **Unit tests and BDD** — `test_case` for straightforward tests; `scenario` / `given` / `when` / `then` for behaviour-driven style
-- **Tag-based filtering** — bracket tags (`[self]`, `[api]`), substrings, or regex via `test_runner`
+- **Tag-based filtering** — bracket tags (`[self]`, `[api]`), hidden tags (`[.probe]` — Catch2-style, excluded unless explicitly selected), substrings, or regex via `test_runner`
 - **Machine-readable output** — JSONL on stdout for agents, dashboards, and CI triage
 - **Built-in builder** — CB resolves module dependencies, caches incrementally, and compiles in parallel
 
@@ -219,6 +219,7 @@ Pass options through to `test_runner` after `--`, or use CB shortcuts directly:
 
 **Tag filtering:**
 - **Bracket tags** — `test_case("… [api] …")` then `--tags='\[api\]'`
+- **Hidden tags** — `test_case("… [.integration] …")` is skipped on an unfiltered run; pass `--tags='\[.integration\]'` (or a matching substring) to run it
 - **Substring** — `--tags=simulator` matches any test name containing `simulator`
 - **Regex** — `--tags="scenario.*Happy"`; invalid regex falls back to substring matching
 
@@ -332,7 +333,8 @@ Tester fits module-native projects that want minimal glue and agent-friendly out
 - libc++-21 development libraries
 
 ### macOS
-- Locally built LLVM/clang at `/usr/local/llvm` (not Homebrew)
+- Locally built LLVM/clang at `/usr/local/llvm` — [`docs/clang-modules-macos.md`](docs/clang-modules-macos.md) (based on [LLVM Getting Started](https://llvm.org/docs/GettingStarted.html))
+- Homebrew `llvm` is unsupported: exception unwinding fails on Apple Silicon ([#92121](https://github.com/llvm/llvm-project/issues/92121), [#168287 comment](https://github.com/llvm/llvm-project/issues/168287#issuecomment-3712718691))
 - Xcode system clang does not fully support C++23 modules
 
 ### Optional environment variables (build bootstrap)

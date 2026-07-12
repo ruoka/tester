@@ -162,24 +162,19 @@ public:
 
     bool included(std::string_view test_name) const
     {
-        if(m_tags.empty())
-            return true;
-        
-        if(not (test_name.starts_with("scenario") or test_name.starts_with("test_case")))
+        if(not is_runnable_test_name(test_name))
             return true;
 
+        if(m_tags.empty())
+            return not has_hidden_tag(test_name);
+
         if(m_use_literal_tags)
-        {
             return match_literal_tags(test_name);
-        }
-        else if(m_use_regex)
-        {
+
+        if(m_use_regex)
             return std::regex_search(test_name.begin(), test_name.end(), m_regex);
-        }
-        else
-        {
-            return test_name.contains(m_tags);
-        }
+
+        return test_name.contains(m_tags);
     }
 
 private:
@@ -200,6 +195,22 @@ private:
     std::string m_current_test_id;
     std::optional<bool> m_pending_run_end_passed;
     bool m_run_end_emitted = false;
+
+    static bool is_runnable_test_name(std::string_view test_name)
+    {
+        return test_name.starts_with("scenario") or test_name.starts_with("test_case");
+    }
+
+    static bool has_hidden_tag(std::string_view test_name)
+    {
+        // Catch2-style hidden tags: bracket tags starting with '.' (e.g. [.], [.jsonl-probe]).
+        for(const auto& tag : output::extract_bracket_tags(test_name))
+        {
+            if(tag.starts_with("."))
+                return true;
+        }
+        return false;
+    }
 
     static std::vector<std::string> parse_tag_query(std::string_view query)
     {

@@ -57,7 +57,7 @@ auto register_tests()
         const auto result = run_test_runner({
             "--output=jsonl",
             "--jsonl-output=failures",
-            "--tags=[jsonl-probe]"});
+            "--tags=[.jsonl-probe]"});
 
         require_neq(result.exit_code, 0);
         require_true(jsonl_events_contain(result.stdout_text, "\"type\":\"assertion_failed\""));
@@ -65,7 +65,7 @@ auto register_tests()
         require_true(jsonl_events_contain(result.stdout_text, "\"message\":\"expected no exception\""));
     };
 
-    test_case("test_case [jsonl-probe] check_nothrow failure") = []
+    test_case("test_case [.jsonl-probe] check_nothrow failure") = []
     {
         check_nothrow([] { throw std::runtime_error{"probe"}; });
         require_eq(1, 1);

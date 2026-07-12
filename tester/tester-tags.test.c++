@@ -43,6 +43,29 @@ auto register_tests()
         require_true(summary_line.contains("\"matched_total\":1"));
     };
 
+    test_case("test_case [.hidden-probe] hidden from default run") = []
+    {
+        require_eq(1, 1);
+    };
+
+    test_case("test_case [self] hidden tag excluded unless requested") = []
+    {
+        const auto default_list = run_test_runner({
+            "--output=jsonl",
+            "--list"});
+
+        require_eq(default_list.exit_code, 0);
+        require_false(jsonl_events_contain(default_list.stdout_text, ".hidden-probe"));
+
+        const auto tagged_list = run_test_runner({
+            "--output=jsonl",
+            "--list",
+            "--tags=[.hidden-probe]"});
+
+        require_eq(tagged_list.exit_code, 0);
+        require_true(jsonl_events_contain(tagged_list.stdout_text, "\"tags\":[\".hidden-probe\"]"));
+    };
+
     return 0;
 }
 

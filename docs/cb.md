@@ -177,7 +177,7 @@ Pass `std.cppm` as the **first** argument when auto-detection fails: `./tools/CB
 
 CB forwards common `test_runner` flags without `--`: `--tags=`, `--list`, `--jsonl`, `--jsonl-output=…`, `--slowest=…`.
 
-Environment variables for **bootstrap** (not test output): `LLVM_PATH`, `CXX`, `CB_INCLUDE_FLAGS`. See [Requirements](../README.md#requirements) in the README.
+Environment variables for **bootstrap** (not test output): `LLVM_PATH`, `CXX`, `CB_INCLUDE_FLAGS`. See [Requirements](../README.md#requirements) in the README. macOS toolchain: [clang-modules-macos.md](clang-modules-macos.md) ([LLVM build docs](https://llvm.org/docs/GettingStarted.html)).
 
 ---
 

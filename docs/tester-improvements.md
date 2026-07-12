@@ -200,7 +200,7 @@ Per-project wrappers compile `cb.c++` and invoke it with the right include paths
 
 - 📋 Single table: which flags CB forwards without `--` vs which require `--`.
 - 📋 `test_runner` JSONL event schema reference (field glossary per `type`).
-- 📋 macOS `/usr/local/llvm` setup guide linked from Requirements.
+- ✅ macOS `/usr/local/llvm` setup guide — [clang-modules-macos.md](clang-modules-macos.md) ([LLVM Getting Started](https://llvm.org/docs/GettingStarted.html); [#92121](https://github.com/llvm/llvm-project/issues/92121), [#168287](https://github.com/llvm/llvm-project/issues/168287#issuecomment-3712718691)).
 
 ### 6.3 Automation guide
 
