@@ -49,6 +49,17 @@ auto& console_sink() { return console::sink_instance(); }
 
 export bool jsonl_enabled() { return cfg().format == data::output_format::jsonl; }
 
+export void initialize_jsonl_session()
+{
+    if(cfg().format != data::output_format::jsonl)
+        return;
+
+    auto& ctx = console::io_mux().jsonl;
+    ctx.assign_new_run_id();
+    if(const auto* parent = std::getenv("TESTER_PARENT_RUN_ID"); parent != nullptr && parent[0] != '\0')
+        ctx.set_parent_run_id(parent);
+}
+
 export std::string_view captured_output()
 {
     if(jsonl_enabled()) return {};

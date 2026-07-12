@@ -95,8 +95,8 @@ Machine-parseable test and build output for CI and automation. Human output rema
 
 ### 3.4 Correlation & multi-stream
 
-- 📋 Shared `run_id` on every CB and tester JSONL record for correlating build + test in one session.
-- 📋 Optional parent `run_id` when CB spawns `test_runner` as a child process.
+- ✅ `run_id` on every CB and tester JSONL record for correlating build + test in one session.
+- ✅ `parent_run_id` on `test_runner` events when CB spawns the child (`TESTER_PARENT_RUN_ID` env).
 
 ### 3.5 Log artifacts
 

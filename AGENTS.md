@@ -52,6 +52,10 @@ If `matcher` is `"require"` or `"check"` on a `require_eq` / `check_eq` line, st
 
 ## Event reference (stdout)
 
+### Correlation
+
+Every JSONL event includes `run_id` (session id for the current process). When CB spawns `test_runner`, child events also include `parent_run_id` (CB’s `run_id`, via `TESTER_PARENT_RUN_ID`). Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` → `test` in one invocation.
+
 ### Test phase
 
 | Event | Use |

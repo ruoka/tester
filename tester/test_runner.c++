@@ -171,6 +171,8 @@ int main(int argc, char** argv)
         tester::set_jsonl_output(jsonl_output);
         tester::set_jsonl_output_max_bytes(jsonl_output_max_bytes);
         state.jsonl_enabled = (output_mode == "jsonl" || output_mode == "JSONL");
+        if(state.jsonl_enabled)
+            tester::initialize_jsonl_session();
 
         auto tr = tester::runner{tags};
 

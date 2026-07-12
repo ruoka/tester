@@ -24,4 +24,5 @@ namespace tester
     export void set_slowest(std::size_t n) { output::set_slowest(n); }
     export void set_jsonl_output(std::string_view policy) { output::set_jsonl_output(policy); }
     export void set_jsonl_output_max_bytes(std::size_t n) { output::set_jsonl_output_max_bytes(n); }
+    export void initialize_jsonl_session() { output::initialize_jsonl_session(); }
 }

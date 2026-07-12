@@ -66,6 +66,12 @@ inline auto& ctx()
 inline bool enabled() { return ctx().is_enabled(); }
 inline void set_enabled(bool v) { io_mux().set_jsonl_enabled(v); }
 inline void reset() { io_mux().reset_jsonl_state(); }
+
+inline void initialize_session()
+{
+    if(enabled())
+        ctx().assign_new_run_id();
+}
 } // namespace jsonl
 
 static void jsonl_atexit_handler()
@@ -1618,6 +1624,11 @@ public:
         auto cmd = runner;
         for (const auto& a : args)
             cmd += " " + shell_quote(a);
+        if (cb::jsonl::enabled()) {
+            const auto parent = cb::jsonl::ctx().get_run_id();
+            if (not parent.empty())
+                cmd = "TESTER_PARENT_RUN_ID=" + shell_quote(std::string{parent}) + " " + cmd;
+        }
         log::command(cmd);
 
         const auto test_started = std::chrono::steady_clock::now();
@@ -1890,6 +1901,7 @@ try {
         cb::jsonl::set_enabled(machine_output);
     }
     cb::jsonl::reset();
+    cb::jsonl::initialize_session();
     if (cb::jsonl::enabled())
         std::atexit(cb::jsonl_atexit_handler);
 

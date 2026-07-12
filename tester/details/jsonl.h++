@@ -14,6 +14,7 @@
 #include <format>
 #include <iostream>
 #include <chrono>
+#include <random>
 #include <type_traits>
 #include <unistd.h>
 
@@ -61,14 +62,42 @@ inline unsigned pid()
     return static_cast<unsigned>(::getpid());
 }
 
+inline std::string generate_run_id()
+{
+    auto rd = std::random_device{};
+    auto out = std::string{};
+    out.reserve(32);
+    for(int i = 0; i < 16; ++i)
+        out += std::format("{:02x}", static_cast<unsigned>(rd() & 0xff));
+    return out;
+}
+
+template<typename Stream>
+inline void write_run_ids(Stream& os, std::string_view run_id, std::string_view parent_run_id)
+{
+    if(!run_id.empty())
+        os << ",\"run_id\":\"" << escape(run_id) << "\"";
+    if(!parent_run_id.empty())
+        os << ",\"parent_run_id\":\"" << escape(parent_run_id) << "\"";
+}
+
 template<typename Stream, typename F>
-void emit_event_raw(Stream& os, std::string_view type, std::string_view schema, int version, std::chrono::milliseconds ts_unix_ms, unsigned pid_value, F&& add_fields)
+void emit_event_raw(Stream& os,
+                    std::string_view type,
+                    std::string_view schema,
+                    int version,
+                    std::chrono::milliseconds ts_unix_ms,
+                    unsigned pid_value,
+                    std::string_view run_id,
+                    std::string_view parent_run_id,
+                    F&& add_fields)
 {
     os << "{\"type\":\"" << type << "\"";
     os << ",\"schema\":\"" << escape(schema) << "\"";
     os << ",\"version\":" << version;
     os << ",\"pid\":" << pid_value;
     os << ",\"ts_unix_ms\":" << ts_unix_ms.count();
+    write_run_ids(os, run_id, parent_run_id);
     add_fields(os);
     os << "}\n";
 }
@@ -85,6 +114,8 @@ struct jsonl_context
     bool enabled = false;
     bool meta_printed = false;
     bool eof_emitted = false;
+    std::string run_id{};
+    std::string parent_run_id{};
 
     struct event_builder
     {
@@ -130,11 +161,21 @@ struct jsonl_context
         eof_emitted = false;
     }
 
+    [[nodiscard]] std::string_view get_run_id() const { return run_id; }
+    [[nodiscard]] std::string_view get_parent_run_id() const { return parent_run_id; }
+
+    void assign_new_run_id() { run_id = generate_run_id(); }
+
+    void set_parent_run_id(std::string_view id)
+    {
+        parent_run_id.assign(id);
+    }
+
     void emit_meta()
     {
         if(!enabled || meta_printed) return;
         meta_printed = true;
-        emit_event_raw(stream, "meta", schema, version, unix_ms_now(), pid(), [](auto&){});
+        emit_event_raw(stream, "meta", schema, version, unix_ms_now(), pid(), run_id, parent_run_id, [](auto&){});
         stream << std::flush;
     }
 
@@ -143,7 +184,7 @@ struct jsonl_context
     {
         if(!enabled) return;
         emit_meta();
-        emit_event_raw(stream, type, schema, version, unix_ms_now(), pid(), std::forward<F>(add_fields));
+        emit_event_raw(stream, type, schema, version, unix_ms_now(), pid(), run_id, parent_run_id, std::forward<F>(add_fields));
         stream << std::flush;
     }
 
@@ -152,7 +193,7 @@ struct jsonl_context
     {
         if(!enabled) return;
         emit_meta();
-        emit_event_raw(stream, type, schema, version, ts, pid(), std::forward<F>(add_fields));
+        emit_event_raw(stream, type, schema, version, ts, pid(), run_id, parent_run_id, std::forward<F>(add_fields));
         stream << std::flush;
     }
 
@@ -171,7 +212,7 @@ struct jsonl_context
 
     event_builder event(std::string_view type) { return event_builder{this, type, std::chrono::milliseconds{0}, false}; }
     event_builder event_with_ts(std::string_view type, std::chrono::milliseconds ts) { return event_builder{this, type, ts, true}; }
-    event_builder event_at(std::string_view type, std::chrono::system_clock::time_point tp) { return event_builder{this, type, unix_ms(tp), true}; }
+    event_builder event_at(std::string_view type, std::chrono::system_clock::time_point tp) { return event_with_ts(type, unix_ms(tp)); }
 
     event_builder operator()(std::string_view type) { return event(type); }
     event_builder operator()(std::string_view type, std::chrono::milliseconds ts) { return event_with_ts(type, ts); }
@@ -179,5 +220,3 @@ struct jsonl_context
 };
 
 } // namespace jsonl
-
-
