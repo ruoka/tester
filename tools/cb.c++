@@ -13,7 +13,9 @@
 #include <regex>
 #include <fstream>
 #include <queue>
-#include <map>
+#include <flat_map>
+#include <flat_set>
+#include <optional>
 #include <array>
 #include <cstdlib>
 #include <thread>
@@ -433,16 +435,16 @@ inline translation_unit parse_translation_unit(const fs::path& project_root, con
     };
 }
 
-using dependency_graph = std::map<std::string, string_list>;
-using indegree_map = std::map<std::string, int>;
-using unit_to_tu_map = std::map<std::string, translation_unit*>;
-using object_cache_map = std::map<std::string, fs::file_time_type>;
+using dependency_graph = std::flat_map<std::string, string_list>;
+using indegree_map = std::flat_map<std::string, int>;
+using unit_to_tu_map = std::flat_map<std::string, translation_unit*>;
+using object_cache_map = std::flat_map<std::string, fs::file_time_type>;
 using translation_unit_list = std::vector<translation_unit>;
 using topo_sort_queue = std::queue<std::string>;
-using level_groups_map = std::map<int, std::vector<const translation_unit*>>;
+using level_groups_map = std::flat_map<int, std::vector<const translation_unit*>>;
 using thread_list = std::vector<std::thread>;
-using module_to_ldflags_map = std::map<std::string, std::string>;
-using executable_cache_map = std::map<std::string, std::string>;
+using module_to_ldflags_map = std::flat_map<std::string, std::string>;
+using executable_cache_map = std::flat_map<std::string, std::string>;
 
 class build_system {
 private:
@@ -838,7 +840,12 @@ private:
         execute_system_command(shell_words(cmd));
     }
 
-    void emit_compile_end(const translation_unit& tu, bool ok, bool cache_hit, std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished) const
+    void emit_compile_end(const translation_unit& tu,
+                          bool ok,
+                          bool cache_hit,
+                          std::chrono::steady_clock::time_point started,
+                          std::chrono::steady_clock::time_point finished,
+                          std::string_view rebuild_reason = {}) const
     {
         if(!cb::jsonl::enabled())
             return;
@@ -850,7 +857,8 @@ private:
             ok,
             cache_hit,
             started,
-            finished);
+            finished,
+            rebuild_reason);
     }
 
     string_list base_compile_argv() const
@@ -940,28 +948,65 @@ private:
         fs::rename(tmp, object_cache_path());
     }
 
-    bool needs_recompile(const translation_unit& tu, object_cache_map& c, const unit_to_tu_map& u2tu) const {
+    bool any_transitive_pcm_newer_than_object(const translation_unit& tu,
+                                              fs::file_time_type object_timestamp,
+                                              const unit_to_tu_map& u2tu,
+                                              std::flat_set<std::string>& visited,
+                                              std::string& stale_module) const
+    {
+        for (const auto& dependency_key : tu.imports) {
+            auto dependency = u2tu.find(dependency_key);
+            if (dependency == u2tu.end())
+                continue;
+
+            const auto& dep_tu = *dependency->second;
+
+            if (dep_tu.is_modular && fs::exists(dep_tu.pcm_path)) {
+                if (fs::last_write_time(dep_tu.pcm_path) > object_timestamp) {
+                    stale_module = dep_tu.module;
+                    return true;
+                }
+            }
+
+            if (visited.contains(dep_tu.unit))
+                continue;
+            visited.insert(dep_tu.unit);
+
+            if (any_transitive_pcm_newer_than_object(dep_tu, object_timestamp, u2tu, visited, stale_module))
+                return true;
+        }
+        return false;
+    }
+
+    std::optional<std::string> needs_recompile(const translation_unit& tu, object_cache_map& c, const unit_to_tu_map& u2tu) const {
         // If we have never seen the file (or it changed since last compile), rebuild.
         auto cached = c.find(tu.full_path);
         if (cached == c.end() or cached->second < tu.last_modified)
-            return true;
+            return "source_stale";
 
         // Ensure the object file exists and is up-to-date versus the source timestamp we cached.
         if (not fs::exists(tu.object_path))
-            return true;
+            return "object_missing";
 
         auto object_timestamp = fs::last_write_time(tu.object_path);
         if (object_timestamp < cached->second)
-            return true;
+            return "object_stale";
 
         // For modular units, also check if .pcm file is stale
         if (tu.is_modular) {
             if (not fs::exists(tu.pcm_path))
-                return true;
+                return "own_pcm_missing";
             auto pcm_timestamp = fs::last_write_time(tu.pcm_path);
             if (pcm_timestamp < tu.last_modified)
-                return true;
+                return "own_pcm_stale";
         }
+
+        // Rebuild when any transitive import PCM is newer than this object file.
+        // Catches partition updates (e.g. tester:assertions) for test TUs that import an umbrella module.
+        auto visited = std::flat_set<std::string>{};
+        auto stale_module = std::string{};
+        if (any_transitive_pcm_newer_than_object(tu, object_timestamp, u2tu, visited, stale_module))
+            return "pcm_stale:" + stale_module;
 
         // Rebuild if any imported modules have changed (their .pcm files are stale or they need recompiling)
         for (const auto& dependency_key : tu.imports) {
@@ -971,16 +1016,16 @@ private:
                 if (dep_tu.is_modular) {
                     if (not fs::exists(dep_tu.pcm_path) or 
                         fs::last_write_time(dep_tu.pcm_path) < dep_tu.last_modified) {
-                        return true;  // Imported module's .pcm is stale, rebuild this unit
+                        return "dependency_pcm_stale:" + dep_tu.module;
                     }
                 }
                 // Also recursively check if the imported module needs recompiling
-                if (needs_recompile(dep_tu, c, u2tu))
-                return true;
+                if (auto dep_reason = needs_recompile(dep_tu, c, u2tu))
+                    return *dep_reason;
             }
         }
 
-        return false;
+        return std::nullopt;
     }
 
     executable_cache_map load_executable_cache() const {
@@ -1197,7 +1242,7 @@ private:
     // Compilation
     // ============================================================================
 
-    void compile_unit(const translation_unit& tu) {
+    void compile_unit(const translation_unit& tu, std::string_view rebuild_reason) {
         const auto started = std::chrono::steady_clock::now();
         if (tu.is_modular) {
             execute_system_command(precompile_argv(tu));
@@ -1205,7 +1250,7 @@ private:
         } else {
             execute_system_command(source_object_argv(tu));
         }
-        emit_compile_end(tu, true, false, started, std::chrono::steady_clock::now());
+        emit_compile_end(tu, true, false, started, std::chrono::steady_clock::now(), rebuild_reason);
     }
 
     void update_module_flags() {
@@ -1232,12 +1277,12 @@ private:
         for (const auto& tu : units_in_topological_order)
             levels[tu.dependency_level >= 0 ? tu.dependency_level : INT_MAX].push_back(&tu);
 
-        for (auto& [lvl, group] : levels) {
+        for (const auto& [lvl, group] : levels) {
             auto threads = thread_list{};
                 for (const auto* tu : group) {
                 threads.emplace_back([this, tu, &cache, &u2tu]() {
-                    if (needs_recompile(*tu, cache, u2tu)) {
-                        compile_unit(*tu);
+                    if (auto reason = needs_recompile(*tu, cache, u2tu)) {
+                        compile_unit(*tu, *reason);
                         auto lock = std::lock_guard<std::mutex>{cache_mutex};
                         cache[tu->full_path] = tu->last_modified;
                     } else {

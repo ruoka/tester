@@ -125,7 +125,8 @@ struct sink
                      bool ok,
                      bool cache_hit,
                      std::chrono::steady_clock::time_point started,
-                     std::chrono::steady_clock::time_point finished)
+                     std::chrono::steady_clock::time_point finished,
+                     std::string_view rebuild_reason = {})
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started);
@@ -138,6 +139,8 @@ struct sink
                 os << ",\"module_name\":\"" << escape(module_name) << "\"";
             os << ",\"ok\":" << (ok ? "true" : "false");
             os << ",\"cache_hit\":" << (cache_hit ? "true" : "false");
+            if(!cache_hit && !rebuild_reason.empty())
+                os << ",\"rebuild_reason\":\"" << escape(rebuild_reason) << "\"";
             os << ",\"duration_ms\":" << duration.count();
         };
     }
