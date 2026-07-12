@@ -133,6 +133,8 @@ Machine-parseable test and build output for CI and automation. Human output rema
 
 ## 4. C++ Builder (cb.c++)
 
+Design rationale and comparison with CMake, Make, and other build tools: [`docs/cb.md`](cb.md).
+
 ### 4.1 Core build system
 
 - ✅ Incremental compile cache (`object_cache_map`) and link cache (`link_cache_map`).
@@ -253,6 +255,8 @@ When tester is used as `deps/tester` inside a larger repo:
 
 ## References (in this repo)
 
+- C++ Builder guide: `docs/cb.md`
+- Public consumer example: [YarDB](https://github.com/ruoka/YarDB)
 - Assertion implementation: `tester/tester-assertions.c++m`
 - Matcher name extraction: `tester/tester-utils.c++m` (`extract_matcher_name`)
 - JSONL sink: `tester/tester-jsonl_sink.c++m`

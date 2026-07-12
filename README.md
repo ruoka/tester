@@ -59,7 +59,7 @@ Most test frameworks assume headers, macros, and a separate build system. Tester
 - **Machine-readable output** — JSONL on stdout for agents, dashboards, and CI triage
 - **Built-in builder** — CB resolves module dependencies, caches incrementally, and compiles in parallel
 
-Tester embeds as a git submodule (`deps/tester`) in larger projects. Framework contract tests live in `tester/*.test.c++` under the `[self]` tag. The `examples/` directory holds demos — some intentionally fail to show assertion output.
+Tester embeds as a git submodule (`deps/tester`) in larger projects. For a public multi-module consumer using tester and CB, see [YarDB](https://github.com/ruoka/YarDB). Framework contract tests live in `tester/*.test.c++` under the `[self]` tag. The `examples/` directory holds demos — some intentionally fail to show assertion output.
 
 ## Quick Start
 
@@ -235,7 +235,7 @@ build-linux/bin/test_runner --tags="scenario.*Happy"
 
 ## Built-in Builder (CB)
 
-Tester ships with **CB** (`tools/cb.c++`), a module-aware build system in a single file. CB discovers translation units, topologically sorts module imports, compiles in parallel, and caches object files incrementally. **CB is the default path for standalone clones**; parent repos (fixer, net, xson) typically use their own `tools/CB.sh` wrapper and treat tester as `deps/tester`.
+Tester ships with **CB** (`tools/cb.c++`), a module-aware build system in a single file. CB discovers translation units, topologically sorts module imports, compiles in parallel, and caches object files incrementally. **CB is the default path for standalone clones**; parent repos embed tester under `deps/tester` and build through their own `tools/CB.sh` wrapper — [YarDB](https://github.com/ruoka/YarDB) is the public reference layout. For design rationale and comparison with CMake, Make, and other tools, see [`docs/cb.md`](docs/cb.md).
 
 ```bash
 ./tools/CB.sh debug build          # compile project + tests
@@ -420,6 +420,8 @@ MIT — see [LICENSE](LICENSE).
 
 ## Related Resources
 
+- [docs/cb.md](docs/cb.md) — C++ Builder design, workflows, and comparison with CMake/Make
 - [AGENTS.md](AGENTS.md) — JSONL automation guide for CI and AI agents
 - [docs/tester-improvements.md](docs/tester-improvements.md) — improvement backlog
+- [YarDB](https://github.com/ruoka/YarDB) — public reference project using tester + CB (P1204R0 layout)
 - [P1204R0](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1204r0.html) — canonical C++ project structure

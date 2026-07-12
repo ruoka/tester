@@ -50,7 +50,7 @@ CB works well when:
 - **CI and AI agents** need machine-parseable compile/test output on stdout
 - Incremental rebuild speed matters more than exotic target graphs
 
-ruoka projects (tester, net, xson, fixer) use this model. Parent repos source shared bootstrap logic from `tools/CB.sh.core` and customize include paths, examples mode, and sandbox hooks in a small `tools/CB.sh` config block (see `tools/CB.sh.template`).
+ruoka projects use this model — [YarDB](https://github.com/ruoka/YarDB) is the **public reference** for a multi-module app with `deps/tester`, `deps/net`, and `deps/xson`. Parent repos source shared bootstrap logic from `tools/CB.sh.core` and customize include paths, examples mode, and sandbox hooks in a small `tools/CB.sh` config block (see `tools/CB.sh.template`).
 
 **CB also handles automatically:**
 
@@ -144,14 +144,14 @@ cd tester
 
 ### Embedded (`deps/tester` in a parent repo)
 
-Parent projects (fixer, net, xson) provide their own `tools/CB.sh`:
+Parent projects provide their own `tools/CB.sh`. Clone [YarDB](https://github.com/ruoka/YarDB) for a working public example (`deps/tester`, co-located `*.test.c++`, `tools/CB.sh` over `CB.sh.core`):
 
 - Sources shared logic from `deps/tester/tools/CB.sh.core` (or a nested copy)
 - Sets `CB_INCLUDE_DIRS` to the parent library tree **and** tester
-- Typically sets `CB_INCLUDE_EXAMPLES_MODE=never` — examples are not built by default
-- May enable sandbox hooks (`CB_SANDBOX_DISABLE_NETWORK_TESTS` in net)
+- Typically sets `CB_INCLUDE_EXAMPLES_MODE=never` — tester examples are not built by default
+- May enable sandbox hooks (e.g. `CB_SANDBOX_DISABLE_NETWORK_TESTS` in net-based repos)
 
-Tester is a **dependency**, not the build entry point. The parent's wrapper owns include paths, link flags, and submodule auto-init (`CB_AUTO_SUBMODULES` in fixer).
+Tester is a **dependency**, not the build entry point. The parent's wrapper owns include paths, link flags, and submodule auto-init.
 
 **Nested copies:** some repos embed tester twice (e.g. `deps/tester` and `deps/xson/deps/tester`). Submodule pointers can lag; bump the parent pointer after tester fixes. See [tester-improvements.md §8](tester-improvements.md#8-submodule--monorepo-consumption).
 
@@ -217,6 +217,7 @@ Useful `compile_end` fields for debugging stale builds:
 ## See also
 
 - [README — Built-in Builder](../README.md#built-in-builder-cb) — quick start, commands, legacy Makefile
+- [YarDB](https://github.com/ruoka/YarDB) — public reference project (`deps/tester` + parent `tools/CB.sh`)
 - [AGENTS.md](../AGENTS.md) — JSONL events, triage, correlation
 - [tester-improvements.md §4–§5](tester-improvements.md#4-c-builder-cbc) — CB backlog and bootstrap scripts
 - [P1204R0](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1204r0.html) — canonical C++ project structure (co-located tests)
