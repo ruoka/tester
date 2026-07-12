@@ -228,13 +228,6 @@ case "${CB_INCLUDE_EXAMPLES_MODE:-never}" in
     ;;
 esac
 
-if [[ -n "${CB_INCLUDE_FLAGS:-}" ]]; then
-  CB_INCLUDE_FLAGS=()
-  for __cb_path in $CB_INCLUDE_FLAGS; do
-    CB_INCLUDE_FLAGS+=(-I "$__cb_path")
-  done
-fi
-
 CB_FORWARD_ARGS=()
 if [[ -n "${CB_LINK_FLAGS:-}" ]]; then
   CB_FORWARD_ARGS+=(--link-flags "$CB_LINK_FLAGS")

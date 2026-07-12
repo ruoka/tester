@@ -254,7 +254,7 @@ export struct sink
         if(verbose) std::clog << stream.view();
     }
 
-    void message(bool ok, auto msg, const std::source_location location1, const std::source_location location2 = std::source_location::current())
+    void message(bool ok, auto msg, const std::source_location location1, [[maybe_unused]] const std::source_location location2 = std::source_location::current())
     {
         if(ok)
             stream << color::text::yellow;
