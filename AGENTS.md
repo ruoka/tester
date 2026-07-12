@@ -84,7 +84,7 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 | `assertion_passed` | With `--jsonl-output=always` |
 | `test` | Per-test rollup (`success`, `output`, assertion counts) |
 | `summary` | `tests_ok`/`tests_total`, `failed_test_ids`, `first_failure` |
-| `exception` | Uncaught exceptions |
+| `exception` | Uncaught exceptions (`exception_type`, `message`, `file`, `line`) |
 | `eof` | End of JSONL stream |
 
 ### Build phase (CB)

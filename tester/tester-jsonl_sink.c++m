@@ -4,6 +4,9 @@
 
 module;
 #include "details/output-mux.h++"
+#if defined(__GNUG__) && __has_include(<cxxabi.h>)
+#   include <cxxabi.h>
+#endif
 
 export module tester:jsonl_sink;
 
@@ -72,6 +75,26 @@ auto failure_message_for(const data::test_result& r) -> std::string
     if(r.assertions_ok < r.assertions_total)
         return "assertion failure";
     return "test failed";
+}
+
+auto demangle_type_name(std::string_view mangled) -> std::string
+{
+#if defined(__GNUG__) && __has_include(<cxxabi.h>)
+    int status = 0;
+    auto buffer = std::string{mangled};
+    if(auto* demangled = abi::__cxa_demangle(buffer.c_str(), nullptr, nullptr, &status); demangled != nullptr)
+    {
+        std::string result{demangled};
+        std::free(demangled);
+        return result;
+    }
+#endif
+    return std::string{mangled};
+}
+
+auto exception_type_name(const std::exception& ex) -> std::string
+{
+    return demangle_type_name(typeid(ex).name());
 }
 
 void write_string_array(std::ostream& os, std::string_view field, std::span<const std::string> values)
@@ -304,8 +327,10 @@ export struct sink
     void on_exception(const data::test_case& tc, const std::exception& ex)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
+        const auto exception_type = exception_type_name(ex);
         m.json << m.jsonl("exception") << [&](std::ostream& os){
             os << ",\"test_id\":\"" << ::jsonl::escape(tc.test_id) << "\"";
+            os << ",\"exception_type\":\"" << ::jsonl::escape(exception_type) << "\"";
             os << ",\"message\":\"" << ::jsonl::escape(ex.what()) << "\"";
             os << ",\"file\":\"" << ::jsonl::escape(tc.file_name) << "\"";
             os << ",\"line\":" << tc.line;

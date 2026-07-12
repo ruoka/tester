@@ -65,7 +65,8 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 - ✅ Each `check_*` / `require_*` wrapper that delegates to `check`/`require` captures `const auto matcher_location = std::source_location::current()` at **wrapper entry** and passes it as `location2`. Relying on the hub’s default `matcher_location` is not enough for template wrappers (e.g. `require_eq` would emit `"require"`).
 - ✅ `location1` (file/line/column on assertion events) still comes from the test call site via the wrapper’s `location` parameter.
 - 📋 After changing `tester:assertions`, recompile **test** translation units (`*.test.c++`), not only `tester_assertions.pcm` — template wrappers are instantiated in each test object.
-- 📋 Extend the same naming to non-comparison paths (`message` events, `require_nothrow`, custom predicates) where `matcher` is absent or generic today.
+- ✅ Matcher naming on `check_nothrow` / `check_throws` / `check_throws_as` / `require_nothrow` / `require_throws` / `require_throws_as`.
+- 📋 Extend the same naming to non-comparison paths (`message` events, custom predicates) where `matcher` is absent or generic today.
 
 ---
 
@@ -92,8 +93,7 @@ Machine-parseable test and build output for CI and automation. Human output rema
 
 ### 3.3 Exception metadata
 
-- 🔶 `exception` event has `message` and `file` but not a separate type name.
-- 📋 Add `exception_type` (demangled or `typeid`) alongside `what`.
+- ✅ `exception` event has `message`, `file`, and `exception_type` (demangled `typeid`).
 
 ### 3.4 Correlation & multi-stream
 
