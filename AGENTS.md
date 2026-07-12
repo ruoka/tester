@@ -63,6 +63,7 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 |-------|-----|---------|
 | `run_id` | Every event | Session id for the emitting process (32-char hex) |
 | `parent_run_id` | `test_runner` events only | CB’s `run_id`, passed via `TESTER_PARENT_RUN_ID` when CB spawns the child |
+| `config` on `run_start` | `test_runner` when spawned by CB | CB build config (`debug` / `release`), via `TESTER_CONFIG` |
 | `pid` | Every event | OS process id (`test_runner` differs from CB) |
 | `ts_unix_ms` | Every event | Unix timestamp (ms) |
 
@@ -78,7 +79,7 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 
 | Event | Use |
 |-------|-----|
-| `run_start` / `run_end` | Run boundaries, `passed`, `duration_ms` |
+| `run_start` / `run_end` | Run boundaries; `run_start` has `cwd`, `argv`, `config` (from `TESTER_CONFIG` when CB spawns the child), `passed`, `duration_ms` on `run_end` |
 | `assertion_failed` | Always on failed assertions |
 | `assertion_passed` | With `--jsonl-output=always` |
 | `test` | Per-test rollup (`success`, `output`, assertion counts) |

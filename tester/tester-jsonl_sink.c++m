@@ -151,12 +151,17 @@ export struct sink
 
     explicit sink(io::mux& mux) : m(mux) {}
 
-    void run_start(std::string_view mode, std::string_view tags, std::chrono::system_clock::time_point started_at)
+    void run_start(std::string_view mode, std::string_view tags, std::chrono::system_clock::time_point started_at, std::string_view cwd, std::span<const std::string> argv, std::string_view config)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("run_start", started_at) << [&](std::ostream& os){
             os << ",\"mode\":\"" << ::jsonl::escape(mode) << "\"";
             os << ",\"tags\":\"" << ::jsonl::escape(tags) << "\"";
+            os << ",\"cwd\":\"" << ::jsonl::escape(cwd) << "\"";
+            if(not argv.empty())
+                write_string_array(os, "argv", argv);
+            if(not config.empty())
+                os << ",\"config\":\"" << ::jsonl::escape(config) << "\"";
         };
     }
 

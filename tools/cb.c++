@@ -1624,10 +1624,14 @@ public:
         auto cmd = runner;
         for (const auto& a : args)
             cmd += " " + shell_quote(a);
-        if (cb::jsonl::enabled()) {
-            const auto parent = cb::jsonl::ctx().get_run_id();
-            if (not parent.empty())
-                cmd = "TESTER_PARENT_RUN_ID=" + shell_quote(std::string{parent}) + " " + cmd;
+        {
+            auto env_prefix = "TESTER_CONFIG=" + shell_quote(std::string{config_name(config)}) + " ";
+            if (cb::jsonl::enabled()) {
+                const auto parent = cb::jsonl::ctx().get_run_id();
+                if (not parent.empty())
+                    env_prefix = "TESTER_PARENT_RUN_ID=" + shell_quote(std::string{parent}) + " " + env_prefix;
+            }
+            cmd = env_prefix + cmd;
         }
         log::command(cmd);
 

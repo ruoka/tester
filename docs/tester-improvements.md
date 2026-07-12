@@ -83,6 +83,7 @@ Machine-parseable test and build output for CI and automation. Human output rema
 ### 3.2 Run lifecycle events
 
 - ✅ `run_start`, `run_end`, `case`, `test`, `summary`, `message`, `exception`, `eof`.
+- ✅ `run_start` env metadata: `cwd`, structured `argv`, `config` (from `TESTER_CONFIG` when CB spawns `test_runner`).
 - ✅ `summary` includes `tests_ok`, `tests_total`, `assertions_ok`, `assertions_total`, `passed`.
 - ✅ `failed_test_ids: [...]` in `summary` / `run_end`.
 - ✅ `first_failure: { test_id, file, line, message }` for direct navigation.
@@ -97,6 +98,7 @@ Machine-parseable test and build output for CI and automation. Human output rema
 
 - ✅ `run_id` on every CB and tester JSONL record for correlating build + test in one session.
 - ✅ `parent_run_id` on `test_runner` events when CB spawns the child (`TESTER_PARENT_RUN_ID` env).
+- ✅ `TESTER_CONFIG` env (`debug` / `release`) surfaced as `config` on `run_start`.
 
 ### 3.5 Log artifacts
 

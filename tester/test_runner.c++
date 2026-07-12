@@ -166,6 +166,7 @@ int main(int argc, char** argv)
     {
         // Use the public API of the tester module.
         // It handles its own internal configuration.
+        tester::set_run_argv(argc, argv);
         tester::set_output_format(output_mode);
         tester::set_human_result_line(result_line);
         tester::set_slowest(slowest);

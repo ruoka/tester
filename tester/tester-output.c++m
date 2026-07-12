@@ -14,6 +14,7 @@ namespace tester::output
 
 // Per-run configuration (owned by the runner)
 inline data::output_config g_config{};
+inline std::vector<std::string> g_run_argv{};
 
 export const data::output_config& cfg()
 {
@@ -44,6 +45,17 @@ export void set_jsonl_output(std::string_view policy)
 }
 export void set_jsonl_output_max_bytes(std::size_t n) { g_config.jsonl_output_max_bytes = n; }
 
+export void set_run_argv(int argc, char** argv)
+{
+    g_run_argv.clear();
+    if(argc <= 0 || argv == nullptr)
+        return;
+
+    g_run_argv.reserve(static_cast<std::size_t>(argc));
+    for(int i = 0; i < argc; ++i)
+        g_run_argv.emplace_back(argv[i] != nullptr ? argv[i] : "");
+}
+
 auto& jsonl_sink() { static auto sink = jsonl::sink{console::io_mux()}; return sink; }
 auto& console_sink() { return console::sink_instance(); }
 
@@ -69,7 +81,13 @@ export std::string_view captured_output()
 export void begin_run(std::string_view mode, std::string_view tags, std::chrono::system_clock::time_point started_at)
 {
     if(!jsonl_enabled()) return;
-    jsonl_sink().run_start(mode, tags, started_at);
+
+    const auto cwd = std::filesystem::current_path().string();
+    auto config = std::string{};
+    if(const auto* env = std::getenv("TESTER_CONFIG"); env != nullptr && env[0] != '\0')
+        config.assign(env);
+
+    jsonl_sink().run_start(mode, tags, started_at, cwd, g_run_argv, config);
 }
 
 export void end_run(std::string_view mode, std::string_view tags, bool passed, std::chrono::system_clock::time_point started_at, std::chrono::system_clock::time_point ended_at, const jsonl::failure_index& failures = {})
