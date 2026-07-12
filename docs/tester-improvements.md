@@ -84,6 +84,7 @@ Machine-parseable test and build output for CI and automation. Human output rema
 
 - ✅ `run_start`, `run_end`, `case`, `test`, `summary`, `message`, `exception`, `eof`.
 - ✅ `run_start` env metadata: `cwd`, structured `argv`, `config` (from `TESTER_CONFIG` when CB spawns `test_runner`).
+- ✅ `run_start.env` object for curated test-relevant environment (`NET_DISABLE_NETWORK_TESTS`, `CURSOR_SANDBOX`) when set — omitted when empty.
 - ✅ `summary` includes `tests_ok`, `tests_total`, `assertions_ok`, `assertions_total`, `passed`.
 - ✅ `failed_test_ids: [...]` in `summary` / `run_end`.
 - ✅ `first_failure: { test_id, file, line, message }` for direct navigation.

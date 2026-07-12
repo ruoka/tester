@@ -396,7 +396,7 @@ Fields on assertion events:
 
 Other JSONL event types: `run_start`, `run_end`, `case`, `test`, `message`, `exception`, `summary`.
 
-`run_start` includes `cwd`, structured `argv` (when set via `tester::set_run_argv`), and `config` when CB sets `TESTER_CONFIG`.
+`run_start` includes `cwd`, structured `argv` (when set via `tester::set_run_argv`), `config` when CB sets `TESTER_CONFIG`, and `env` for curated test-relevant variables when set (`NET_DISABLE_NETWORK_TESTS`, `CURSOR_SANDBOX`).
 
 `summary` and `run_end` include `failed_test_ids` (all failing test IDs) and, when any test failed, `first_failure` with `test_id`, `file`, `line`, and `message` for the first failure in run order.
 

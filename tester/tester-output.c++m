@@ -78,6 +78,26 @@ export std::string_view captured_output()
     return console_sink().stream_view();
 }
 
+namespace {
+
+constexpr std::array g_run_env_keys = {
+    std::string_view{"NET_DISABLE_NETWORK_TESTS"},
+    std::string_view{"CURSOR_SANDBOX"},
+};
+
+auto collect_run_env() -> std::vector<std::pair<std::string, std::string>>
+{
+    auto out = std::vector<std::pair<std::string, std::string>>{};
+    for(const auto key : g_run_env_keys)
+    {
+        if(const auto* value = std::getenv(key.data()); value != nullptr && value[0] != '\0')
+            out.emplace_back(std::string{key}, value);
+    }
+    return out;
+}
+
+} // namespace
+
 export void begin_run(std::string_view mode, std::string_view tags, std::chrono::system_clock::time_point started_at)
 {
     if(!jsonl_enabled()) return;
@@ -87,7 +107,8 @@ export void begin_run(std::string_view mode, std::string_view tags, std::chrono:
     if(const auto* env = std::getenv("TESTER_CONFIG"); env != nullptr && env[0] != '\0')
         config.assign(env);
 
-    jsonl_sink().run_start(mode, tags, started_at, cwd, g_run_argv, config);
+    const auto run_env = collect_run_env();
+    jsonl_sink().run_start(mode, tags, started_at, cwd, g_run_argv, config, run_env);
 }
 
 export void end_run(std::string_view mode, std::string_view tags, bool passed, std::chrono::system_clock::time_point started_at, std::chrono::system_clock::time_point ended_at, const jsonl::failure_index& failures = {})

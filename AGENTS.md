@@ -79,7 +79,7 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 
 | Event | Use |
 |-------|-----|
-| `run_start` / `run_end` | Run boundaries; `run_start` has `cwd`, `argv`, `config` (from `TESTER_CONFIG` when CB spawns the child), `passed`, `duration_ms` on `run_end` |
+| `run_start` / `run_end` | Run boundaries; `run_start` has `cwd`, `argv`, `config` (from `TESTER_CONFIG` when CB spawns the child), `env` (curated test-relevant vars when set, e.g. `NET_DISABLE_NETWORK_TESTS`, `CURSOR_SANDBOX`), `passed`, `duration_ms` on `run_end` |
 | `assertion_failed` | Always on failed assertions |
 | `assertion_passed` | With `--jsonl-output=always` |
 | `test` | Per-test rollup (`success`, `output`, assertion counts) |

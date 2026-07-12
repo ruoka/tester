@@ -85,6 +85,20 @@ void write_string_array(std::ostream& os, std::string_view field, std::span<cons
     os << ']';
 }
 
+void write_string_map(std::ostream& os, std::string_view field, std::span<const std::pair<std::string, std::string>> entries)
+{
+    if(entries.empty())
+        return;
+
+    os << ",\"" << field << "\":{";
+    for(std::size_t i = 0; i < entries.size(); ++i)
+    {
+        if(i) os << ',';
+        os << '"' << ::jsonl::escape(entries[i].first) << "\":\"" << ::jsonl::escape(entries[i].second) << '"';
+    }
+    os << '}';
+}
+
 void write_failed_test_ids(std::ostream& os, const std::vector<std::string>& ids)
 {
     os << ",\"failed_test_ids\":[";
@@ -151,7 +165,7 @@ export struct sink
 
     explicit sink(io::mux& mux) : m(mux) {}
 
-    void run_start(std::string_view mode, std::string_view tags, std::chrono::system_clock::time_point started_at, std::string_view cwd, std::span<const std::string> argv, std::string_view config)
+    void run_start(std::string_view mode, std::string_view tags, std::chrono::system_clock::time_point started_at, std::string_view cwd, std::span<const std::string> argv, std::string_view config, std::span<const std::pair<std::string, std::string>> env)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("run_start", started_at) << [&](std::ostream& os){
@@ -162,6 +176,7 @@ export struct sink
                 write_string_array(os, "argv", argv);
             if(not config.empty())
                 os << ",\"config\":\"" << ::jsonl::escape(config) << "\"";
+            write_string_map(os, "env", env);
         };
     }
 
