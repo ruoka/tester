@@ -145,6 +145,8 @@ if [[ ! -x "$CB_BIN" ]]; then
   CB_NEEDS_REBUILD=true
 elif [[ "$CB_CB_SOURCE" -nt "$CB_BIN" ]]; then
   CB_NEEDS_REBUILD=true
+elif [[ -n "$(find "$(dirname "$CB_CB_SOURCE")" -maxdepth 1 -name '*.h++' -newer "$CB_BIN" -print -quit 2>/dev/null)" ]]; then
+  CB_NEEDS_REBUILD=true
 elif [[ -f "$CB_BIN" ]] && command -v file >/dev/null 2>&1; then
   CB_FILE_TYPE="$(file "$CB_BIN" 2>/dev/null || echo "")"
   case "$CB_UNAME_OUT" in

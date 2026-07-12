@@ -69,6 +69,14 @@ struct sink
             if (tu.is_test) os << " " << io::color::magenta << "[TEST]" << io::color::reset;
             if (tu.dependency_level >= 0) os << " " << io::color::gray << "level=" << tu.dependency_level << io::color::reset;
             os << "\n";
+            if (not tu.imports.empty()) {
+                os << io::color::gray << "   imports: ";
+                for (std::size_t i = 0; i < tu.imports.size(); ++i) {
+                    if (i) os << ", ";
+                    os << tu.imports[i];
+                }
+                os << io::color::reset << "\n";
+            }
         }
         os << io::color::cyan << "\n" << io::color::reset;
     }
