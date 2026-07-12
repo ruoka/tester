@@ -117,6 +117,19 @@ enum class unit_kind : unsigned {
     global_fragment      // global module fragment, only contains "module;"   (.c++m .cppm)
 };
 
+inline std::string_view unit_kind_name(unit_kind kind)
+{
+    switch(kind)
+    {
+        case unit_kind::non_module: return "non_module";
+        case unit_kind::interface_unit: return "interface";
+        case unit_kind::partition_unit: return "partition";
+        case unit_kind::implementation_unit: return "implementation";
+        case unit_kind::global_fragment: return "global_fragment";
+    }
+    return "unknown";
+}
+
 using suffix_list = std::vector<std::string>;
 using string_list = std::vector<std::string>;
 
@@ -1578,8 +1591,42 @@ public:
 
     void print_sources() {
         scan_and_order();
-        if(!cb::jsonl::enabled())
+        if(cb::jsonl::enabled()) {
+            auto main_count = 0;
+            auto test_count = 0;
+            auto max_level = 0;
+            for(const auto& tu : units_in_topological_order) {
+                if(tu.has_main) ++main_count;
+                if(tu.is_test) ++test_count;
+                if(tu.dependency_level >= 0)
+                    max_level = std::max(max_level, tu.dependency_level);
+            }
+            cb::jsonl::sink().list_start(
+                config_name(config),
+                include_tests,
+                include_examples,
+                source_dir);
+            for(const auto& tu : units_in_topological_order) {
+                const auto path = tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename;
+                cb::jsonl::sink().unit(
+                    tu.unit,
+                    path,
+                    tu.module,
+                    unit_kind_name(tu.kind),
+                    tu.imports,
+                    tu.dependency_level,
+                    tu.has_main,
+                    tu.is_test,
+                    tu.is_modular);
+            }
+            cb::jsonl::sink().list_summary(
+                static_cast<int>(units_in_topological_order.size()),
+                main_count,
+                test_count,
+                max_level);
+        } else {
             console_sink().print_sources(units_in_topological_order);
+        }
     }
 };
 

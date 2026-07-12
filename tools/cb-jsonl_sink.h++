@@ -29,6 +29,17 @@ inline void write_argv(std::ostream& os, std::span<const std::string> argv)
     os << ']';
 }
 
+inline void write_string_array(std::ostream& os, std::string_view field, std::span<const std::string> values)
+{
+    os << ",\"" << field << "\":[";
+    for(std::size_t i = 0; i < values.size(); ++i)
+    {
+        if(i) os << ',';
+        os << '"' << escape(values[i]) << '"';
+    }
+    os << ']';
+}
+
 struct sink
 {
     io::mux& m;
@@ -128,6 +139,54 @@ struct sink
             os << ",\"ok\":" << (ok ? "true" : "false");
             os << ",\"cache_hit\":" << (cache_hit ? "true" : "false");
             os << ",\"duration_ms\":" << duration.count();
+        };
+    }
+
+    void list_start(std::string_view config, bool include_tests, bool include_examples, std::string_view source_dir)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("list_start") << [&](std::ostream& os){
+            os << ",\"config\":\"" << escape(config) << "\"";
+            os << ",\"include_tests\":" << (include_tests ? "true" : "false");
+            os << ",\"include_examples\":" << (include_examples ? "true" : "false");
+            os << ",\"source_dir\":\"" << escape(source_dir) << "\"";
+        };
+    }
+
+    void unit(std::string_view unit_id,
+              std::string_view path,
+              std::string_view module_name,
+              std::string_view kind,
+              std::span<const std::string> imports,
+              int level,
+              bool has_main,
+              bool is_test,
+              bool is_modular)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("unit") << [&](std::ostream& os){
+            os << ",\"unit\":\"" << escape(unit_id) << "\"";
+            os << ",\"path\":\"" << escape(path) << "\"";
+            if(!module_name.empty())
+                os << ",\"module\":\"" << escape(module_name) << "\"";
+            os << ",\"kind\":\"" << escape(kind) << "\"";
+            write_string_array(os, "imports", imports);
+            if(level >= 0)
+                os << ",\"level\":" << level;
+            os << ",\"has_main\":" << (has_main ? "true" : "false");
+            os << ",\"is_test\":" << (is_test ? "true" : "false");
+            os << ",\"is_modular\":" << (is_modular ? "true" : "false");
+        };
+    }
+
+    void list_summary(int units_total, int main_count, int test_count, int max_level)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("list_summary") << [&](std::ostream& os){
+            os << ",\"units_total\":" << units_total;
+            os << ",\"main_count\":" << main_count;
+            os << ",\"test_count\":" << test_count;
+            os << ",\"max_level\":" << max_level;
         };
     }
 };

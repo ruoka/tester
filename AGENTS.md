@@ -9,13 +9,16 @@ Use **`--jsonl`**. Parse **stdout only** (one JSON object per line, `schema: "te
 ## Canonical commands
 
 ```bash
+# Translation-unit inventory (modules, imports, compile levels)
+./tools/CB.sh debug list --jsonl
+
 # Scoped test run (preferred while fixing)
 ./tools/CB.sh debug test --jsonl --jsonl-output=always --tags='\[module\]'
 
 # Full suite (examples included in standalone tester)
 ./tools/CB.sh debug test --jsonl --jsonl-output=always
 
-# List registered tests (human today; JSONL list is planned)
+# List registered tests (human; test_runner JSONL catalogue is planned)
 ./tools/CB.sh debug test --list
 
 # Build with compile telemetry
