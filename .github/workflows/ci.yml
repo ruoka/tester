@@ -93,6 +93,35 @@ jobs:
             test_results_${{ matrix.config }}.jsonl
             test_results_self_${{ matrix.config }}.jsonl
 
+  cb-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Setup LLVM (shared)
+        uses: ./.github/actions/setup-llvm
+
+      - name: Build CB (debug)
+        run: ./tools/CB.sh debug build
+
+      - name: Run CB smoke tests
+        run: |
+          set -euo pipefail
+          ./tests/cb/smoke.sh --jsonl | tee cb_smoke.jsonl
+          grep '"type":"smoke_end"' cb_smoke.jsonl | tail -1 | grep -q '"passed":true'
+
+      - name: Upload CB smoke results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cb-smoke-results
+          path: cb_smoke.jsonl
+
   test-examples:
     runs-on: ubuntu-latest
     timeout-minutes: 15

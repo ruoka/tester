@@ -1917,6 +1917,9 @@ try {
                 cb::log::error("Missing flags after --compile-flags");
                 std::exit(1);
             }
+        } else if (argument.starts_with("--compile-flags=") or argument.starts_with("--extra-compile-flags=")) {
+            const auto eq = argument.find('=');
+            extra_compile_flags = std::string{argument.substr(eq + 1)};
         } else if (argument == "help" or argument == "-h" or argument == "--help") {
             std::cout << "Usage: " << argv[0] << " [std.cppm] [options]\n\n"
                       << "Options:\n"

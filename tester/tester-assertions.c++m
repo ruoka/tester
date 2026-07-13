@@ -240,12 +240,13 @@ namespace tester::assertions
     constexpr auto msg_expected_exception_type = "expected exception of specified type"sv;
     constexpr auto msg_wrong_exception_type = "wrong exception type"sv;
 
-    auto throws_as_failure_message(std::string_view actual) -> std::string_view
-    {
-        return actual == "?"sv ? msg_expected_exception_type : msg_wrong_exception_type;
-    }
-
     } // namespace
+
+    // Outside anonymous namespace: check_throws_as is instantiated in test TUs.
+    inline auto throws_as_failure_message(std::string_view actual) -> std::string_view
+    {
+        return actual == "?"sv ? "expected exception of specified type"sv : "wrong exception type"sv;
+    }
 
     // Non-fatal exception assertions (check_*)
     export auto check_nothrow(auto&& t, const std::source_location location = std::source_location::current())
