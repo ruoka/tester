@@ -29,6 +29,7 @@
 #include <utility>
 #include <stdexcept>
 #include <cctype>
+#include <charconv>
 #include "cb-jsonl_sink.h++"
 #include "cb-console_sink.h++"
 
@@ -207,24 +208,9 @@ inline std::string decode_profile_value(std::string_view value)
     {
         if(value[i] == '%' && i + 2 < value.size())
         {
-            const auto hex = value.substr(i + 1, 2);
-            auto byte = 0;
-            for(const auto ch : hex)
-            {
-                byte *= 16;
-                if(ch >= '0' && ch <= '9')
-                    byte += ch - '0';
-                else if(ch >= 'a' && ch <= 'f')
-                    byte += ch - 'a' + 10;
-                else if(ch >= 'A' && ch <= 'F')
-                    byte += ch - 'A' + 10;
-                else
-                {
-                    byte = -1;
-                    break;
-                }
-            }
-            if(byte >= 0)
+            unsigned byte = 0;
+            const auto [ptr, ec] = std::from_chars(value.data() + i + 1, value.data() + i + 3, byte, 16);
+            if(ec == std::errc{} && ptr == value.data() + i + 3)
             {
                 out.push_back(static_cast<char>(byte));
                 i += 2;
@@ -245,18 +231,30 @@ inline void append_profile_field(std::string& profile, std::string_view key, std
     profile += encode_profile_value(value);
 }
 
+inline std::string_view view_from(auto&& part)
+{
+    const auto first = std::ranges::begin(part);
+    const auto last = std::ranges::end(part);
+    return {first, static_cast<std::size_t>(last - first)};
+}
+
+inline std::pair<std::string, std::string> parse_profile_field(std::string_view segment)
+{
+    const auto eq = segment.find('=');
+    return {
+        std::string{segment.substr(0, eq)},
+        decode_profile_value(segment.substr(eq + 1))};
+}
+
 inline profile_fields parse_object_cache_profile_fields(std::string_view profile)
 {
     auto fields = profile_fields{};
-    for(auto&& part : std::views::split(profile, '\t'))
+    for(std::string_view segment :
+        profile | std::views::split('\t')
+                | std::views::transform([](auto&& part) { return view_from(part); }))
     {
-        const auto segment = std::string_view{part.begin(), part.end()};
-        const auto eq = segment.find('=');
-        if(eq == std::string_view::npos)
-            continue;
-        fields.emplace(
-            std::string{segment.substr(0, eq)},
-            decode_profile_value(segment.substr(eq + 1)));
+        auto [key, value] = parse_profile_field(segment);
+        fields.emplace(std::move(key), std::move(value));
     }
     return fields;
 }
