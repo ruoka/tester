@@ -169,15 +169,40 @@ std::ranges::sort(tokens);
 std::ranges::set_difference(new_tokens, old_tokens, std::back_inserter(added));
 ```
 
-**Splitting / parsing** — prefer `std::views::split` for simple delimited fields:
+**Joining / formatting** — do **not** use index loops (`for (i = 0; i < n; ++i)` + delimiter checks). Use `std::ranges::fold_left` (C++23) or a small shared helper built on it:
 
 ```cpp
-for (auto&& part : std::views::split(line, '\t')) { ... }
+// shell command: join_argv → invoke_shell (sole system() boundary)
+return std::ranges::fold_left(argv, std::string{}, [](std::string cmd, const std::string& arg) {
+    if (not cmd.empty()) cmd.push_back(' ');
+    cmd += shell_quote(arg);
+    return cmd;
+});
+
+// human-readable lists: ", " or "; " between items
+return join_with(parts, ", "sv);   // join_with itself is fold_left
+
+// JSON string arrays: cb_jsonl::join_json_strings (fold_left + escape)
+os << '[' << cb_jsonl::join_json_strings(values) << ']';
 ```
+
+Prefer **one** reusable `join_with` / `join_json_strings` over per-call-site index loops. C++26 `std::views::join_with` may replace some of this later; until then, `fold_left` is the standard pattern.
+
+**Splitting / parsing** — prefer `std::views::split` + `std::views::transform` for delimited fields CB owns (e.g. object-cache profile `key=value` tabs). Pair with symmetric read/write helpers (`append_profile_field` / `parse_profile_field`), not ad-hoc parsers with silent `continue` on every segment:
+
+```cpp
+for (std::string_view segment :
+     profile | std::views::split('\t') | std::views::transform([](auto&& part) { return view_from(part); }))
+    fields.emplace(parse_profile_field(segment));
+```
+
+Use `std::from_chars` for fixed-width hex (`%XX` decode), not hand-rolled nibble loops. For two-field lines (`path\tticks`), `string_view::find('\t')` is fine — no need for a view pipeline.
+
+Do **not** add defensive parsers or legacy upgrade paths for on-disk formats that **only CB writes**; fresh builds use `clean` / `cache invalidate`. Trust the writer contract; invalidate the whole cache on header mismatch instead of skipping bad segments.
 
 **Subprocess I/O** — see [Implementation policy](#implementation-policy-standard-c-only) above. All toolchain commands go through `invoke_shell(argv)`; probes/self-tests use stamp/temp file + `std::ifstream`. Test env uses `putenv` + `invoke_shell` (not shell env prefixes). Never `popen` / `fork` / `exec`.
 
-**When custom code is fine** — shell-word tokenization (`append_shell_words`), topological sort, graph walks, and domain-specific cache logic. Do not reimplement `set_difference`, substring search, or map membership by hand.
+**When custom code is fine** — shell-word tokenization (`append_shell_words`), topological sort, module graph walks, percent-encoding, and domain-specific cache logic. Do not reimplement `set_difference`, substring search, map membership, or **delimiter-join loops** by hand.
 
 ## Do not
 
@@ -186,6 +211,8 @@ for (auto&& part : std::views::split(line, '\t')) { ... }
 - Use an unfiltered full-suite run as the default fix loop — scope with `--tags='\[self\]'` for framework work
 - Expect `summary.passed: true` on the full suite — `examples/` includes intentional failures
 - Run `[.tag]` probe fixtures unless explicitly selected (they are hidden by default)
+- Use index loops to join/format delimited strings — use `ranges::fold_left` or shared `join_with` / `join_json_strings`
+- Multiply one-off helper functions when a std algorithm or existing join helper already covers the case
 
 ## More detail
 

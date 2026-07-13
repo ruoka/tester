@@ -29,6 +29,7 @@ On first run, **`CB.sh.core` bootstraps CB itself** — it compiles `tools/cb.c+
 - **Subprocesses:** `std::system` only (until the standard provides something better). No `popen`, `fork`, `execve`, or `posix_spawn`. Build a `string_list argv`; `invoke_shell(argv)` is the sole `join_argv` → `system()` boundary (compile, link, `test_runner`).
 - **Probes / capture:** redirect child stdout to a file (`compiler-version.txt`, self-test temp files), read with `std::ifstream`.
 - **Invoked toolchain:** `clang++` and `lld` are external programs; calling them via `std::system` is expected.
+- **Algorithms:** prefer `ranges::fold_left`, `views::split`, `ranges::set_difference`, etc. over index loops and one-off join helpers — see [AGENTS.md — C++ style](../AGENTS.md).
 
 The **test runner** is separate: crash **stack traces** in `test_runner.c++` use `<execinfo.h>` (`backtrace`, `backtrace_symbols_fd`) — POSIX/glibc/macOS only, not ISO C++. That is the deliberate exception; see [AGENTS.md — Implementation policy](../AGENTS.md#implementation-policy-standard-c-only).
 
