@@ -108,6 +108,28 @@ run_cb_build() {
   return "${status}"
 }
 
+run_cb_cache_status() {
+  local work_dir=$1
+  shift
+  local status=0
+  LAST_JSONL="$(
+    cd "${work_dir}"
+    "${CB_BIN}" "${STD_CPPM}" debug cache status --jsonl "$@" 2>/dev/null
+  )" || status=$?
+  return "${status}"
+}
+
+write_legacy_object_cache() {
+  local cache_file=$1
+  local entry_line
+  entry_line="$(sed -n '2p' "${cache_file}")"
+  if [[ -z "${entry_line}" ]]; then
+    log "legacy cache seed failed: no entry line in ${cache_file}"
+    return 1
+  fi
+  printf '%s\n' "${entry_line}" >"${cache_file}"
+}
+
 object_cache_path() {
   local work_dir=$1
   printf '%s/%s/cache/object-cache.txt' "${work_dir}" "${BUILD_DIR}"
@@ -172,6 +194,65 @@ assert_profile_contains() {
   local first_line
   first_line="$(head -1 "${cache_file}")"
   assert_text_contains "${first_line}" "${needle}" "${label}"
+}
+
+assert_compile_end_has_no_profile_diff() {
+  local label=${1:-compile_end_no_profile_diff}
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if python3 - "${LAST_JSONL}" <<'PY'
+import json, sys
+text = sys.argv[1]
+for line in text.splitlines():
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        obj = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if obj.get("type") == "compile_end" and "profile_diff" in obj:
+        print("compile_end must not carry profile_diff (use profile_changed)", file=sys.stderr)
+        raise SystemExit(1)
+raise SystemExit(0)
+PY
+  then
+    jsonl_emit "{\"type\":\"smoke_assert_passed\",\"matcher\":\"${label}\"}"
+    return 0
+  fi
+  fail "compile_end events must not include profile_diff"
+  return 0
+}
+
+assert_link_cache_hits() {
+  local min_hits=$1
+  local label=${2:-link_cache_hits}
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if python3 - "${min_hits}" "${LAST_JSONL}" <<'PY'
+import json, sys
+min_hits = int(sys.argv[1])
+text = sys.argv[2]
+hits = 0
+for line in text.splitlines():
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        obj = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if obj.get("type") == "link_end" and obj.get("cache_hit") is True:
+        hits += 1
+if hits >= min_hits:
+    raise SystemExit(0)
+print(f"link_end cache_hit count {hits} < {min_hits}", file=sys.stderr)
+raise SystemExit(1)
+PY
+  then
+    jsonl_emit "{\"type\":\"smoke_assert_passed\",\"matcher\":\"${label}\"}"
+    return 0
+  fi
+  fail "expected at least ${min_hits} link_end with cache_hit:true"
+  return 0
 }
 
 assert_compile_cache_hits() {

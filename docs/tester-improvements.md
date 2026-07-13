@@ -116,11 +116,11 @@ Machine-parseable test and build output for CI and automation. Human output rema
 - ✅ `unit.is_test`: `true` for `*.test.c++` / `*.test.c++m` or `test/` / `tests/` path segments; `false` for `tester/` framework trees (exact segment match — not substring `test` in `tester`).
 - ✅ Per-translation-unit `compile_end` with `ok`, `duration_ms`, `source_path`, `object_path`, `pcm_path`, `module_name`, `cache_hit`.
 - 📋 Per-translation-unit `compile_start` (optional; `compile_end` is sufficient for triage today).
-- 📋 Per-binary `link_start` / `link_end`.
+- ✅ Per-binary `link_end` (`executable_path`, `cache_hit`, `ok`, `duration_ms`); `link_start` still optional.
 - ✅ Structured `argv: ["clang++", "..."]` on `command_start` / `command_end` alongside human `cmd` string.
 - ✅ `cache_hit: true` on `compile_end` when incremental compile skips a translation unit.
 - ✅ `rebuild_reason` on `compile_end` when `cache_hit:false` (e.g. `source_stale`, `pcm_stale:<module>`, `dependency_pcm_stale:<module>`, `flag_change`).
-- ✅ `profile_diff` on `compile_end` when `rebuild_reason:flag_change` (scalar fields + token diff on `compile`/`cpp`).
+- ✅ `profile_changed` event with `profile_diff` on flag mismatch (scalar fields + token diff on `compile`/`cpp`; not repeated on each `compile_end`).
 
 ### 3.7 Recommended automation invocation
 
@@ -140,7 +140,10 @@ Design rationale and comparison with CMake, Make, and other build tools: [`docs/
 
 - ✅ Incremental compile cache (`object_cache_map`) and link cache (`link_cache_map`).
 - ✅ Object-cache profile header (`format=cb-object-cache-v2`) with toolchain fields (`cxx`, `cxx_sig`, `clang_ver`, `std_cppm`, flags); invalidates on profile mismatch.
-- ✅ CB smoke harness (`tests/cb/`) and CI `cb-smoke` job (`profile_header`, `cache_hit`, `flag_change`).
+- ✅ CB smoke harness (`tests/cb/`) and CI `cb-smoke` job (`profile_header`, `cache_hit`, `link_cache_hit`, `flag_change`, `legacy_cache`, `cache_status`).
+- ✅ `cache status` subcommand (human + JSONL `cache_status`).
+- ✅ `profile_changed` JSONL event (single `profile_diff` on flag mismatch).
+- ✅ Profile value `%XX` escaping; legacy cache upgrade log + smoke.
 - ✅ Parallel compilation, topological module sort, `clang-scan-deps` integration.
 - ✅ `debug` / `release` configurations; `clean`, `list`, `ci`, `--build-tests`.
 - 📋 Multiple custom configurations beyond debug/release (e.g. `asan`, `coverage`).

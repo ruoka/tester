@@ -118,6 +118,54 @@ struct sink
         };
     }
 
+    void profile_changed(std::string_view reason, std::string_view profile_diff_json = {})
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("profile_changed") << [&](std::ostream& os){
+            os << ",\"reason\":\"" << escape(reason) << "\"";
+            if(!profile_diff_json.empty())
+                os << ",\"profile_diff\":" << profile_diff_json;
+        };
+    }
+
+    void cache_status(std::string_view object_cache_path,
+                      bool object_cache_exists,
+                      bool legacy_header,
+                      bool profile_match,
+                      int object_entries,
+                      int object_stale_entries,
+                      int executable_entries,
+                      std::string_view current_profile)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("cache_status") << [&](std::ostream& os){
+            os << ",\"object_cache_path\":\"" << escape(object_cache_path) << "\"";
+            os << ",\"object_cache_exists\":" << (object_cache_exists ? "true" : "false");
+            os << ",\"legacy_header\":" << (legacy_header ? "true" : "false");
+            os << ",\"profile_match\":" << (profile_match ? "true" : "false");
+            os << ",\"object_entries\":" << object_entries;
+            os << ",\"object_stale_entries\":" << object_stale_entries;
+            os << ",\"executable_entries\":" << executable_entries;
+            os << ",\"current_profile\":\"" << escape(current_profile) << "\"";
+        };
+    }
+
+    void link_end(std::string_view executable_path,
+                  bool ok,
+                  bool cache_hit,
+                  std::chrono::steady_clock::time_point started,
+                  std::chrono::steady_clock::time_point finished)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started);
+        m.json << m.jsonl("link_end") << [&](std::ostream& os){
+            os << ",\"executable_path\":\"" << escape(executable_path) << "\"";
+            os << ",\"ok\":" << (ok ? "true" : "false");
+            os << ",\"cache_hit\":" << (cache_hit ? "true" : "false");
+            os << ",\"duration_ms\":" << duration.count();
+        };
+    }
+
     void compile_end(std::string_view source_path,
                      std::string_view object_path,
                      std::string_view pcm_path,

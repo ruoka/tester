@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, flag_change"
+      echo "cases: profile_header, cache_hit, link_cache_hit, flag_change, legacy_cache, cache_status"
       exit 0
       ;;
     *)
@@ -74,6 +74,21 @@ test_cache_hit() {
   end_case cache_hit
 }
 
+test_link_cache_hit() {
+  should_run link_cache_hit || return 0
+  begin_case link_cache_hit
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_contains '"type":"link_end"' "link_end_event"
+  assert_jsonl_contains '"cache_hit":false' "first_link"
+
+  run_cb_build "${work_dir}"
+  assert_link_cache_hits 1 "second_build_link_cache_hit"
+  end_case link_cache_hit
+}
+
 test_flag_change() {
   should_run flag_change || return 0
   begin_case flag_change
@@ -85,12 +100,46 @@ test_flag_change() {
   assert_text_contains "${first_jsonl}" '"cache_hit":false' "seed_build"
 
   run_cb_build "${work_dir}" --compile-flags -DCB_SMOKE_FLAG=1
-  assert_jsonl_contains '"rebuild_reason":"flag_change"' "flag_change_reason"
+  assert_jsonl_contains '"type":"profile_changed"' "profile_changed_event"
+  assert_jsonl_contains '"reason":"flag_change"' "profile_changed_reason"
   assert_jsonl_contains '"profile_diff"' "profile_diff_present"
   assert_jsonl_contains '"compile"' "profile_diff_compile_field"
   assert_jsonl_contains 'DCB_SMOKE_FLAG=1' "profile_diff_added_flag"
+  assert_jsonl_contains '"rebuild_reason":"flag_change"' "compile_end_flag_change"
+  assert_compile_end_has_no_profile_diff
   assert_jsonl_contains '"cache_hit":false' "recompile_after_flag_change"
   end_case flag_change
+}
+
+test_legacy_cache() {
+  should_run legacy_cache || return 0
+  begin_case legacy_cache
+  local work_dir cache_file
+  work_dir="$(prepare_work_dir)"
+
+  run_cb_build "${work_dir}"
+  cache_file="$(object_cache_path "${work_dir}")"
+  write_legacy_object_cache "${cache_file}"
+
+  run_cb_build "${work_dir}"
+  assert_profile_header "${cache_file}"
+  assert_profile_contains "${cache_file}" 'format=cb-object-cache-v2' "legacy_upgraded_format"
+  end_case legacy_cache
+}
+
+test_cache_status() {
+  should_run cache_status || return 0
+  begin_case cache_status
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  run_cb_build "${work_dir}"
+  run_cb_cache_status "${work_dir}"
+  assert_jsonl_contains '"type":"cache_status"' "cache_status_event"
+  assert_jsonl_contains '"profile_match":true' "cache_status_profile_match"
+  assert_jsonl_contains '"legacy_header":false' "cache_status_not_legacy"
+  assert_jsonl_contains 'format=cb-object-cache-v2' "cache_status_current_profile"
+  end_case cache_status
 }
 
 main() {
@@ -102,7 +151,10 @@ main() {
 
   test_profile_header
   test_cache_hit
+  test_link_cache_hit
   test_flag_change
+  test_legacy_cache
+  test_cache_status
 
   local end_ms duration_ms passed
   end_ms=$(python3 - <<'PY'

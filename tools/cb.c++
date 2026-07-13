@@ -184,6 +184,70 @@ inline std::string join_argv(const string_list& argv)
 
 using profile_fields = std::flat_map<std::string, std::string, std::less<>>;
 
+inline std::string encode_profile_value(std::string_view value)
+{
+    auto out = ""s;
+    out.reserve(value.size());
+    for(const auto ch : value)
+    {
+        switch(ch)
+        {
+            case '%': out += "%25"; break;
+            case '\t': out += "%09"; break;
+            case '\n': out += "%0A"; break;
+            case '\r': out += "%0D"; break;
+            default: out.push_back(ch);
+        }
+    }
+    return out;
+}
+
+inline std::string decode_profile_value(std::string_view value)
+{
+    auto out = ""s;
+    out.reserve(value.size());
+    for(std::size_t i = 0; i < value.size(); ++i)
+    {
+        if(value[i] == '%' && i + 2 < value.size())
+        {
+            const auto hex = value.substr(i + 1, 2);
+            auto byte = 0;
+            for(const auto ch : hex)
+            {
+                byte *= 16;
+                if(ch >= '0' && ch <= '9')
+                    byte += ch - '0';
+                else if(ch >= 'a' && ch <= 'f')
+                    byte += ch - 'a' + 10;
+                else if(ch >= 'A' && ch <= 'F')
+                    byte += ch - 'A' + 10;
+                else
+                {
+                    byte = -1;
+                    break;
+                }
+            }
+            if(byte >= 0)
+            {
+                out.push_back(static_cast<char>(byte));
+                i += 2;
+                continue;
+            }
+        }
+        out.push_back(value[i]);
+    }
+    return out;
+}
+
+inline void append_profile_field(std::string& profile, std::string_view key, std::string_view value)
+{
+    if(not profile.empty())
+        profile += '\t';
+    profile += key;
+    profile += '=';
+    profile += encode_profile_value(value);
+}
+
 inline profile_fields parse_object_cache_profile_fields(std::string_view profile)
 {
     auto fields = profile_fields{};
@@ -193,7 +257,9 @@ inline profile_fields parse_object_cache_profile_fields(std::string_view profile
         const auto eq = segment.find('=');
         if(eq == std::string_view::npos)
             continue;
-        fields.emplace(std::string{segment.substr(0, eq)}, std::string{segment.substr(eq + 1)});
+        fields.emplace(
+            std::string{segment.substr(0, eq)},
+            decode_profile_value(segment.substr(eq + 1)));
     }
     return fields;
 }
@@ -743,6 +809,9 @@ private:
     std::string extra_link_flags;
     mutable std::optional<std::string> object_cache_miss_reason;
     mutable std::optional<object_cache_profile_diff> object_cache_profile_diff;
+    mutable bool object_cache_legacy_header = false;
+    mutable bool object_cache_profile_upgrade_pending = false;
+    mutable bool profile_changed_emitted = false;
     
     // JSONL phase tracking state
     jsonl::phase current_phase = jsonl::phase::none;
@@ -1147,10 +1216,6 @@ private:
         if(!cb::jsonl::enabled())
             return;
 
-        auto profile_diff_json = std::string{};
-        if(not cache_hit and rebuild_reason == "flag_change"sv and object_cache_profile_diff and not object_cache_profile_diff->empty())
-            profile_diff_json = serialize_object_cache_profile_diff(*object_cache_profile_diff);
-
         cb::jsonl::sink().compile_end(
             tu.full_path,
             tu.object_path,
@@ -1160,8 +1225,34 @@ private:
             cache_hit,
             started,
             finished,
-            rebuild_reason,
-            profile_diff_json);
+            rebuild_reason);
+    }
+
+    void emit_link_end(std::string_view executable_path,
+                       bool ok,
+                       bool cache_hit,
+                       std::chrono::steady_clock::time_point started,
+                       std::chrono::steady_clock::time_point finished) const
+    {
+        if(!cb::jsonl::enabled())
+            return;
+
+        cb::jsonl::sink().link_end(executable_path, ok, cache_hit, started, finished);
+    }
+
+    void emit_profile_changed() const
+    {
+        if(profile_changed_emitted || object_cache_miss_reason != "flag_change"sv)
+            return;
+        if(not cb::jsonl::enabled())
+            return;
+
+        auto profile_diff_json = std::string{};
+        if(object_cache_profile_diff and not object_cache_profile_diff->empty())
+            profile_diff_json = serialize_object_cache_profile_diff(*object_cache_profile_diff);
+
+        cb::jsonl::sink().profile_changed(*object_cache_miss_reason, profile_diff_json);
+        const_cast<build_system*>(this)->profile_changed_emitted = true;
     }
 
     string_list base_compile_argv() const
@@ -1229,29 +1320,17 @@ private:
 
         auto profile = ""s;
         profile.reserve(768);
-        profile += "format=";
-        profile += object_cache_format;
-        profile += "\tconfig=";
-        profile += config_name(config);
-        profile += "\tstatic_link=";
-        profile += static_link ? "1" : "0";
-        profile += "\tllvm=";
-        profile += llvm_prefix;
-        profile += "\tcxx=";
-        profile += llvm_cxx;
-        profile += "\tcxx_sig=";
-        profile += cxx_sig;
+        append_profile_field(profile, "format", object_cache_format);
+        append_profile_field(profile, "config", config_name(config));
+        append_profile_field(profile, "static_link", static_link ? "1" : "0");
+        append_profile_field(profile, "llvm", llvm_prefix);
+        append_profile_field(profile, "cxx", llvm_cxx);
+        append_profile_field(profile, "cxx_sig", cxx_sig);
         if(not clang_version.empty())
-        {
-            profile += "\tclang_ver=";
-            profile += clang_version;
-        }
-        profile += "\tstd_cppm=";
-        profile += std_cppm_profile;
-        profile += "\tcompile=";
-        profile += compile_flags;
-        profile += "\tcpp=";
-        profile += cpp_flags;
+            append_profile_field(profile, "clang_ver", clang_version);
+        append_profile_field(profile, "std_cppm", std_cppm_profile);
+        append_profile_field(profile, "compile", compile_flags);
+        append_profile_field(profile, "cpp", cpp_flags);
         return profile;
     }
 
@@ -1273,6 +1352,9 @@ private:
     object_cache_map load_object_cache() {
         object_cache_miss_reason.reset();
         object_cache_profile_diff.reset();
+        object_cache_legacy_header = false;
+        object_cache_profile_upgrade_pending = false;
+        profile_changed_emitted = false;
         auto cache = object_cache_map{};
         auto file = std::ifstream{object_cache_path()};
         if (not file)
@@ -1296,10 +1378,14 @@ private:
                     msg += ')';
                 }
                 log::info(msg);
+                emit_profile_changed();
                 return cache;
             }
         } else {
             // Legacy cache without a profile header — load entries, rewrite on next save.
+            object_cache_legacy_header = true;
+            object_cache_profile_upgrade_pending = true;
+            log::info("Legacy object cache without profile header; loaded entries, will upgrade on save"s);
             auto path = ""s;
             auto ticks = 0ll;
             if (parse_object_cache_entry(header, path, ticks) and fs::exists(path))
@@ -1317,6 +1403,7 @@ private:
     }
 
     void save_object_cache(const object_cache_map& c) {
+        const auto upgrading_legacy = object_cache_profile_upgrade_pending;
         auto tmp = object_cache_path() + ".tmp";
         auto file = std::ofstream{tmp};
         if (file) {
@@ -1330,6 +1417,44 @@ private:
             }
         }
         fs::rename(tmp, object_cache_path());
+        if(upgrading_legacy)
+        {
+            object_cache_profile_upgrade_pending = false;
+            object_cache_legacy_header = false;
+            log::info("Upgraded object cache to profile header (" + std::string{object_cache_format} + ")"s);
+        }
+    }
+
+    static void count_cache_entries(std::istream& file,
+                                    bool header_is_profile,
+                                    int& entries,
+                                    int& stale_entries,
+                                    object_cache_map* loaded = nullptr)
+    {
+        auto line = ""s;
+        auto first = true;
+        while(std::getline(file, line))
+        {
+            if(first && header_is_profile)
+            {
+                first = false;
+                continue;
+            }
+            first = false;
+
+            auto path = ""s;
+            auto ticks = 0ll;
+            if(not parse_object_cache_entry(line, path, ticks))
+                continue;
+            ++entries;
+            if(not fs::exists(path))
+            {
+                ++stale_entries;
+                continue;
+            }
+            if(loaded)
+                (*loaded)[path] = fs::file_time_type{std::chrono::nanoseconds{ticks}};
+        }
     }
 
     bool any_transitive_pcm_newer_than_object(const translation_unit& tu,
@@ -1757,10 +1882,15 @@ private:
                 auto signature = compute_link_signature(tu, shared_objects);
                 if (not needs_relinking(tu, signature, link_cache)) {
                         log::info("Skipping link (up-to-date): "s + tu.executable_path);
+                        const auto now = std::chrono::steady_clock::now();
+                        emit_link_end(tu.executable_path, true, true, now, now);
                         continue;
                 }
                 threads.emplace_back([this, tu, &shared_objects, signature, &link_cache]() {
+                    const auto started = std::chrono::steady_clock::now();
                     link_executable(tu, shared_objects);
+                    const auto finished = std::chrono::steady_clock::now();
+                    emit_link_end(tu.executable_path, true, false, started, finished);
                     auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
                     link_cache[tu.executable_path] = signature;
                 });
@@ -1865,10 +1995,13 @@ private:
         if (fs::exists(test_runner_path)) {
             if (link_cache.contains(test_runner_path) and link_cache.at(test_runner_path) == signature) {
                 log::info("Skipping link (up-to-date): "s + test_runner_path);
+                const auto now = std::chrono::steady_clock::now();
+                emit_link_end(test_runner_path, true, true, now, now);
                 return;
             }
         }
 
+        const auto link_started = std::chrono::steady_clock::now();
         // Link test_runner
         if (test_runner) {
             auto cmd = llvm_cxx + " " + compile_flags + " " +
@@ -1894,6 +2027,8 @@ private:
             log::success("test_runner linked successfully");
         }
         
+        emit_link_end(test_runner_path, true, false, link_started, std::chrono::steady_clock::now());
+
         // Save signature to cache
         {
             auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
@@ -1931,6 +2066,87 @@ public:
         } else {
             log::info("Nothing to clean for "s + dir);
         }
+    }
+
+    void cache_status() const
+    {
+        ensure_toolchain_profile();
+        fs::create_directories(cache_dir());
+
+        const auto current_profile = object_cache_profile();
+        const auto cache_path = object_cache_path();
+        const auto cache_exists = fs::exists(cache_path);
+
+        auto legacy_header = false;
+        auto profile_match = false;
+        auto object_entries = 0;
+        auto object_stale = 0;
+
+        if(cache_exists)
+        {
+            auto file = std::ifstream{cache_path};
+            auto header = ""s;
+            if(std::getline(file, header))
+            {
+                if(header.starts_with("profile\t"))
+                {
+                    const auto stored_profile = header.substr(std::string_view{"profile\t"}.size());
+                    profile_match = stored_profile == current_profile;
+                    count_cache_entries(file, true, object_entries, object_stale);
+                }
+                else
+                {
+                    legacy_header = true;
+                    auto path = ""s;
+                    auto ticks = 0ll;
+                    if(parse_object_cache_entry(header, path, ticks))
+                    {
+                        ++object_entries;
+                        if(not fs::exists(path))
+                            ++object_stale;
+                    }
+                    count_cache_entries(file, false, object_entries, object_stale);
+                }
+            }
+        }
+
+        auto executable_entries = 0;
+        if(fs::exists(executable_cache_path()))
+        {
+            auto file = std::ifstream{executable_cache_path()};
+            auto line = ""s;
+            while(std::getline(file, line))
+            {
+                const auto tab = line.find('\t');
+                if(tab != std::string::npos && not line.substr(0, tab).empty())
+                    ++executable_entries;
+            }
+        }
+
+        if(cb::jsonl::enabled())
+        {
+            cb::jsonl::sink().cache_status(
+                cache_path,
+                cache_exists,
+                legacy_header,
+                profile_match,
+                object_entries,
+                object_stale,
+                executable_entries,
+                current_profile);
+            return;
+        }
+
+        log::info("Object cache: "s + cache_path);
+        log::info("  exists: "s + (cache_exists ? "yes" : "no"));
+        if(cache_exists)
+        {
+            log::info("  legacy_header: "s + (legacy_header ? "yes" : "no"));
+            log::info("  profile_match: "s + (profile_match ? "yes" : "no"));
+            log::info("  object_entries: " + std::to_string(object_entries));
+            log::info("  object_stale_entries: " + std::to_string(object_stale));
+        }
+        log::info("  executable_entries: " + std::to_string(executable_entries));
     }
 
     void set_include_tests(bool value) {
@@ -2113,7 +2329,7 @@ namespace {
 bool is_cb_token(std::string_view arg)
 {
     return arg == "release" || arg == "debug" || arg == "ci" || arg == "clean"
-        || arg == "build" || arg == "list" || arg == "test" || arg == "static"
+        || arg == "build" || arg == "list" || arg == "test" || arg == "cache" || arg == "status" || arg == "static"
         || arg == "help" || arg == "-h" || arg == "--help"
         || arg == "--include-examples" || arg == "--build-tests"
         || arg == "-I" || arg == "--include" || arg == "--link-flags"
@@ -2152,7 +2368,7 @@ try {
     }
 
     auto config = cb::build_config::debug;  // default to debug
-    auto do_clean = false, do_list = false, do_build = false, do_run_tests = false;
+    auto do_clean = false, do_list = false, do_build = false, do_run_tests = false, do_cache_status = false;
     auto test_filter = std::string{};
     auto test_runner_args = std::vector<std::string>{};
     auto machine_output = false;
@@ -2199,6 +2415,14 @@ try {
             do_build = true;
         } else if (argument == "list") {
             do_list = true;
+        } else if (argument == "cache") {
+            if (i + 1 < argc && std::string_view{argv[i + 1]} == "status") {
+                do_cache_status = true;
+                ++i;
+            } else {
+                cb::log::error("Usage: cache status — inspect object-cache profile and entry counts");
+                std::exit(1);
+            }
         } else if (argument == "static") {
             static_linking = true;
         } else if (argument == "--include-examples") {
@@ -2242,6 +2466,7 @@ try {
                       << "  clean            Remove build directories\n"
                       << "  ci               Clean and run tests (shortcut for: clean test)\n"
                       << "  list             List all translation units\n"
+                      << "  cache status     Inspect object-cache profile and entry counts\n"
                       << "  test [filter] [-- <args...>]  Build and run tests (optional filter)\n"
                       << "                 Forward test_runner flags directly (e.g. --tags=, --list)\n"
                       << "                 or pass any args after '--'\n"
@@ -2303,6 +2528,10 @@ try {
     auto build_system = cb::build_system{config, include_flags, {}, ".", stdcppm, static_linking, include_examples, extra_compile_flags, extra_link_flags};
 
     if (do_list) build_system.print_sources();
+    if (do_cache_status) {
+        build_system.cache_status();
+        return 0;
+    }
     if (do_clean) build_system.clean();
     if (do_build) {
         if (build_tests) {
@@ -2340,7 +2569,7 @@ try {
         // Build include_tests etc inside run_tests(), but pass args as tokens.
         build_system.run_tests(args);
     }
-    if (not do_clean and not do_list and not do_run_tests and not do_build) build_system.build();
+    if (not do_clean and not do_list and not do_run_tests and not do_build and not do_cache_status) build_system.build();
 
     return 0;
 } catch (const std::exception& e) {

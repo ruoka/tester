@@ -58,7 +58,7 @@ If `matcher` is `"require"` or `"check"` on a `require_eq` / `check_eq` line, st
 ## Triage workflow (build failure)
 
 1. Find `command_end` with `"ok":false` — use the `argv` array to rerun without shell parsing.
-2. Check `compile_end` events: `cache_hit:false` means that translation unit recompiled; `cache_hit:true` means incremental skip. When `rebuild_reason` is `flag_change`, read `profile_diff` on the same line for field/token deltas (flags, compiler, `std_cppm`, …).
+2. Check `compile_end` events: `cache_hit:false` means that translation unit recompiled; `cache_hit:true` means incremental skip. When `rebuild_reason` is `flag_change`, read the single `profile_changed` event for `profile_diff` (not repeated on each `compile_end`).
 3. Rebuild: `./tools/CB.sh debug build --jsonl`, then re-run tests.
 
 ## Event reference (stdout)
@@ -104,7 +104,10 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 | `list_summary` | Inventory totals (`units_total`, `main_count`, `test_count`, `max_level`) |
 | `build_start` / `build_end` | Whole build |
 | `command_start` / `command_end` | Subprocesses (`cmd` + `argv`) |
-| `compile_end` | Per TU (`source_path`, `cache_hit`, `rebuild_reason` when `cache_hit:false`, optional `profile_diff` when `flag_change`, paths) |
+| `profile_changed` | Once per build when object-cache profile mismatches (`reason`, `profile_diff`) |
+| `cache_status` | `cache status` subcommand (`object_cache_path`, `profile_match`, `legacy_header`, entry counts, `current_profile`) |
+| `compile_end` | Per TU (`source_path`, `cache_hit`, `rebuild_reason` when `cache_hit:false`, paths) |
+| `link_end` | Per executable (`executable_path`, `cache_hit`, `ok`, `duration_ms`) |
 | `cb_error` | CB fatal/diagnostic |
 
 **`unit.is_test`:** `true` for `*.test.c++` / `*.test.c++m`, or when a path segment is exactly `test/` or `tests/`. `false` for sources under a `tester/` framework tree (library modules, not project tests) — including nested paths like `deps/xson/deps/tester/`. Does not match the substring `test` inside names such as `tester` or `test_exception_bug`.

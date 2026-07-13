@@ -200,9 +200,13 @@ Environment variables for **bootstrap** (not test output): `LLVM_PATH`, `CXX`, `
 
 Legacy caches without a `profile\t` header still load; the header is rewritten on the next save. Bumping `format` or adding fields intentionally invalidates old caches once.
 
-**Human logs** (stderr, non-JSONL): `Object cache profile changed; invalidating compile cache (compile: + -DFOO)`.
+**Value encoding:** profile field values use `%XX` escaping for `%`, tab, and newlines (so `clang_ver` and paths are safe in the tab-separated line).
 
-**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job) — `profile_header`, `cache_hit`, `flag_change`.
+**Human logs** (stderr, non-JSONL): `Object cache profile changed; invalidating compile cache (compile: + -DFOO)`; legacy caches log upgrade on load/save.
+
+**Inspect cache:** `./tools/CB.sh debug cache status` (human) or `… cache status --jsonl` (`cache_status` event).
+
+**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job) — `profile_header`, `cache_hit`, `link_cache_hit`, `flag_change`, `legacy_cache`, `cache_status`.
 
 **Optional follow-up:** a `cache` subcommand (`status`, `invalidate`, `prune`) for disk/orphan cleanup without full `clean` — backlog only; see [tester-improvements.md §4.4](tester-improvements.md#44-cache-maintenance-optional--add-if-operational-issues-appear).
 
@@ -216,8 +220,9 @@ Full event reference and triage workflow: [AGENTS.md](../AGENTS.md).
 
 Useful `compile_end` fields for debugging stale builds:
 
-- `cache_hit: false` + `rebuild_reason: "flag_change"` — profile header changed (flags, compiler, `std.cppm`, …). Check optional `profile_diff` on the same event.
-- `profile_diff` — field-level delta when `rebuild_reason` is `flag_change`. Scalars use `{"old":"…","new":"…"}`; `compile` / `cpp` use `{"added":[…],"removed":[…]}` (sorted token diff via `std::ranges::set_difference` on shell words).
+- `profile_changed` — emitted **once** when the profile header mismatches (`reason: "flag_change"`, optional `profile_diff`). Scalars use `{"old":"…","new":"…"}`; `compile` / `cpp` use `{"added":[…],"removed":[…]}` (sorted token diff via `std::ranges::set_difference` on shell words).
+- `cache_hit: false` + `rebuild_reason: "flag_change"` on each recompiled TU — correlate with the single `profile_changed` event for the diff.
+- `link_end` — per executable after link or skip (`executable_path`, `cache_hit`, `ok`, `duration_ms`). Skipped links emit `cache_hit: true` with `duration_ms: 0`.
 - `cache_hit: false` + `rebuild_reason: "pcm_stale:tester:assertions"` — transitive PCM invalidation; rebuilds test objects when assertion templates change
 - `rebuild_reason: "source_stale"` — TU source newer than cached object
 
