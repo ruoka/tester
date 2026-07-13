@@ -1,0 +1,218 @@
+name: C/C++ CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    strategy:
+      matrix:
+        config: [debug, release]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Setup LLVM (shared)
+        uses: ./.github/actions/setup-llvm
+
+      - name: Verify std.cppm location
+        run: |
+          if [ -f /usr/lib/llvm-21/share/libc++/v1/std.cppm ]; then
+            echo "std.cppm found at /usr/lib/llvm-21/share/libc++/v1/std.cppm"
+          else
+            echo "Warning: std.cppm not found at expected location"
+            find /usr/lib/llvm-21 -name "std.cppm" 2>/dev/null || echo "std.cppm not found anywhere"
+          fi
+
+      - name: Show compiler version
+        run: clang++ --version
+
+      - name: Build project (${{ matrix.config }})
+        run: ./tools/CB.sh ${{ matrix.config }} build
+
+      - name: Build tests (${{ matrix.config }})
+        run: ./tools/CB.sh ${{ matrix.config }} build --build-tests
+
+      - name: Run self tests (${{ matrix.config }})
+        run: |
+          ./tools/CB.sh ${{ matrix.config }} test --jsonl --tags='\[self\]' > "test_results_self_${{ matrix.config }}.jsonl"
+          if command -v jq >/dev/null 2>&1; then
+            passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' "test_results_self_${{ matrix.config }}.jsonl")
+            if [ "$passed" != "true" ]; then
+              echo "Self tests failed (summary.passed=$passed)"
+              tail -20 "test_results_self_${{ matrix.config }}.jsonl"
+              exit 1
+            fi
+            echo "✓ Self tests passed"
+          fi
+
+      - name: Create empty test results
+        # All tests are in examples/ and intentionally fail, so we don't run them here
+        # Compilation is verified by the previous step
+        run: |
+          echo '{"type":"eof","schema":"cb-jsonl","version":1,"pid":0,"ts_unix_ms":0}' > test_results_${{ matrix.config }}.jsonl
+
+      - name: Validate JSONL output
+        run: |
+          if [ ! -f "test_results_${{ matrix.config }}.jsonl" ]; then
+            echo "ERROR: JSONL output file not found!"
+            exit 1
+          fi
+          line_count=$(wc -l < "test_results_${{ matrix.config }}.jsonl")
+          echo "JSONL lines: $line_count"
+          if command -v jq >/dev/null 2>&1; then
+            echo "Validating JSONL structure..."
+            jq -r '.type' "test_results_${{ matrix.config }}.jsonl" | head -10
+            last_line=$(tail -1 "test_results_${{ matrix.config }}.jsonl")
+            if echo "$last_line" | jq -e '.type == "eof"' >/dev/null 2>&1; then
+              echo "✓ EOF marker found"
+            else
+              echo "✗ EOF marker missing!"
+              exit 1
+            fi
+          fi
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.config }}
+          path: |
+            test_results_${{ matrix.config }}.jsonl
+            test_results_self_${{ matrix.config }}.jsonl
+
+  cb-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Setup LLVM (shared)
+        uses: ./.github/actions/setup-llvm
+
+      - name: Build CB (debug)
+        run: ./tools/CB.sh debug build
+
+      - name: Run CB smoke tests
+        run: |
+          set -euo pipefail
+          ./tests/cb/smoke.sh --jsonl | tee cb_smoke.jsonl
+          grep '"type":"smoke_end"' cb_smoke.jsonl | tail -1 | grep -q '"passed":true'
+
+      - name: Upload CB smoke results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cb-smoke-results
+          path: cb_smoke.jsonl
+
+  test-examples:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Setup LLVM (for examples)
+        uses: ./.github/actions/setup-llvm
+
+      - name: Build project with examples
+        run: ./tools/CB.sh debug --include-examples build
+
+      - name: Run tests with examples (expect failures)
+        run: |
+          ./tools/CB.sh debug --include-examples test --output=jsonl > test_results_examples.jsonl || true
+
+      - name: Verify expected failures
+        run: |
+          if command -v jq >/dev/null 2>&1; then
+            passed=$(jq -r 'select(.type == "result") | .passed' "test_results_examples.jsonl" | head -1)
+            if [ "$passed" = "false" ]; then
+              echo "✓ Examples failed as expected"
+              jq 'select(.type == "result")' "test_results_examples.jsonl"
+            else
+              echo "⚠ Unexpected: Examples passed (they should fail to demonstrate failure scenarios)"
+            fi
+          fi
+
+      - name: Upload example test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-examples
+          path: test_results_examples.jsonl
+
+  static-analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Setup LLVM + analysis tools
+        uses: ./.github/actions/setup-llvm
+        with:
+          packages: "libc++-21-dev libc++abi-21-dev clang-21 lld-21 lldb-21 jq clang-tools-21 clang-tidy-21 cppcheck"
+
+      - name: Run clang-tidy on core files
+        run: |
+          find tester -name "*.c++m" | head -10 | xargs -I {} sh -c '
+            echo "Analyzing {}"
+            clang-tidy-21 {} -- -std=c++23 -I/usr/lib/llvm-21/include/c++/v1 2>/dev/null || true
+          '
+
+      - name: Run cppcheck
+        run: |
+          cppcheck --enable=all --std=c++23 --language=c++ \
+            --suppress=missingIncludeSystem \
+            --suppress=unusedFunction \
+            --inline-suppr \
+            --quiet \
+            tester/ tools/ 2>/dev/null || true
+
+  submodule-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Check submodule status
+        run: |
+          echo "=== Submodule Status ==="
+          git submodule status || echo "No submodules"
+          echo ""
+          echo "=== Checking for uncommitted changes ==="
+          if git status --porcelain | grep -q .; then
+            echo "✗ Uncommitted changes found in main repo"
+            git status --porcelain
+            exit 1
+          else
+            echo "✓ Main repo is clean"
+          fi

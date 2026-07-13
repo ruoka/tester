@@ -1,0 +1,248 @@
+// Copyright (c) 2025 Kaius Ruokonen. All rights reserved.
+// SPDX-License-Identifier: MIT
+// See the LICENSE file in the project root for full license text.
+
+export module tester:output;
+import :data;
+import :jsonl_sink;
+import :console_sink;
+import :utils;
+import std;
+
+namespace tester::output
+{
+
+// Per-run configuration (owned by the runner)
+inline data::output_config g_config{};
+inline std::vector<std::string> g_run_argv{};
+
+export const data::output_config& cfg()
+{
+    return g_config;
+}
+
+export void set_output_format(std::string_view fmt)
+{
+    if(fmt == "jsonl" || fmt == "JSONL")
+    {
+        g_config.format = data::output_format::jsonl;
+        console::io_mux().set_jsonl_enabled(true);
+    }
+    else
+    {
+        g_config.format = data::output_format::human;
+        console::io_mux().set_jsonl_enabled(false);
+    }
+}
+
+export void set_human_result_line(bool enabled) { g_config.human_result_line = enabled; }
+export void set_slowest(std::size_t n) { g_config.slowest = n; }
+export void set_jsonl_output(std::string_view policy)
+{
+    if(policy == "never") g_config.jsonl_output = data::jsonl_output_policy::never;
+    else if(policy == "always") g_config.jsonl_output = data::jsonl_output_policy::always;
+    else g_config.jsonl_output = data::jsonl_output_policy::failures;
+}
+export void set_jsonl_output_max_bytes(std::size_t n) { g_config.jsonl_output_max_bytes = n; }
+
+export void set_run_argv(int argc, char** argv)
+{
+    g_run_argv.clear();
+    if(argc <= 0 || argv == nullptr)
+        return;
+
+    g_run_argv.reserve(static_cast<std::size_t>(argc));
+    for(int i = 0; i < argc; ++i)
+        g_run_argv.emplace_back(argv[i] != nullptr ? argv[i] : "");
+}
+
+auto& jsonl_sink() { static auto sink = jsonl::sink{console::io_mux()}; return sink; }
+auto& console_sink() { return console::sink_instance(); }
+
+export bool jsonl_enabled() { return cfg().format == data::output_format::jsonl; }
+
+export void initialize_jsonl_session()
+{
+    if(cfg().format != data::output_format::jsonl)
+        return;
+
+    auto& ctx = console::io_mux().jsonl;
+    ctx.assign_new_run_id();
+    if(const auto* parent = std::getenv("TESTER_PARENT_RUN_ID"); parent != nullptr && parent[0] != '\0')
+        ctx.set_parent_run_id(parent);
+}
+
+export std::string_view captured_output()
+{
+    if(jsonl_enabled()) return {};
+    return console_sink().stream_view();
+}
+
+namespace {
+
+constexpr std::array g_run_env_keys = {
+    std::string_view{"NET_DISABLE_NETWORK_TESTS"},
+    std::string_view{"CURSOR_SANDBOX"},
+};
+
+auto collect_run_env() -> std::vector<std::pair<std::string, std::string>>
+{
+    auto out = std::vector<std::pair<std::string, std::string>>{};
+    for(const auto key : g_run_env_keys)
+    {
+        if(const auto* value = std::getenv(key.data()); value != nullptr && value[0] != '\0')
+            out.emplace_back(std::string{key}, value);
+    }
+    return out;
+}
+
+} // namespace
+
+export void begin_run(std::string_view mode, std::string_view tags, std::chrono::system_clock::time_point started_at)
+{
+    if(!jsonl_enabled()) return;
+
+    const auto cwd = std::filesystem::current_path().string();
+    auto config = std::string{};
+    if(const auto* env = std::getenv("TESTER_CONFIG"); env != nullptr && env[0] != '\0')
+        config.assign(env);
+
+    const auto run_env = collect_run_env();
+    jsonl_sink().run_start(mode, tags, started_at, cwd, g_run_argv, config, run_env);
+}
+
+export void end_run(std::string_view mode, std::string_view tags, bool passed, std::chrono::system_clock::time_point started_at, std::chrono::system_clock::time_point ended_at, const jsonl::failure_index& failures = {})
+{
+    if(!jsonl_enabled()) return;
+    jsonl_sink().run_end(mode, tags, passed, started_at, ended_at, failures);
+}
+
+// Thread-local current test ID (set by runner)
+inline thread_local std::string g_current_test_id;
+export void set_current_test_id(std::string_view test_id) { g_current_test_id = std::string{test_id}; }
+export std::string_view get_current_test_id() { return std::string_view{g_current_test_id}; }
+
+export void emit_jsonl_eof()
+{
+    if(jsonl_enabled())
+        console::io_mux().jsonl.emit_eof();
+}
+
+export void print_test_catalogue(std::function<bool(const data::test_case&)> included, std::string_view tags_filter)
+{
+    auto registered_total = 0;
+    auto matched_total = 0;
+    for(const auto& tc : data::test_cases)
+    {
+        ++registered_total;
+        if(included(tc))
+            ++matched_total;
+    }
+
+    jsonl_sink().test_list_start(tags_filter);
+    for(const auto& tc : data::test_cases)
+    {
+        if(not included(tc))
+            continue;
+        const auto tags = extract_bracket_tags(tc.test_name);
+        jsonl_sink().registered_test(tc, tags);
+    }
+    jsonl_sink().test_list_summary(registered_total, matched_total, tags_filter);
+}
+
+export void print_test_cases(std::function<bool(const data::test_case&)> included)
+{
+    console_sink().print_test_cases(included);
+}
+
+export void print_test_results()
+{
+    if(jsonl_enabled()) {
+        const auto policy = cfg().jsonl_output;
+        for(const auto& result : data::test_results) {
+            const auto include_output = (policy == data::jsonl_output_policy::always) || (policy == data::jsonl_output_policy::failures && jsonl::test_failed(result));
+            jsonl_sink().test(result, include_output, cfg().jsonl_output_max_bytes);
+        }
+        return;
+    }
+    console_sink().print_test_results();
+}
+
+export void print_test_failures()
+{
+    if(jsonl_enabled()) return;
+    console_sink().print_test_failures();
+}
+
+export void print_test_statistics(std::optional<bool>& pending_run_end_passed_ref, bool& run_end_emitted_ref, std::string_view run_mode_param)
+{
+    const auto& stats = data::statistics();
+    const auto failed_tests = stats.total_tests - stats.successful_tests;
+    const auto failed_assertions = stats.total_assertions - stats.successful_assertions;
+    const auto passed = (failed_tests == 0 && failed_assertions == 0);
+    const auto slow_n = cfg().slowest;
+
+    auto slowest = std::vector<const data::test_result*>{};
+    if(slow_n > 0) {
+        slowest.reserve(data::test_results.size());
+        for(const auto& r : data::test_results) slowest.push_back(&r);
+        std::ranges::sort(slowest, [](const data::test_result* a, const data::test_result* b) { return a->duration > b->duration; });
+        if(slowest.size() > slow_n) slowest.resize(slow_n);
+    }
+
+    if(jsonl_enabled()) {
+        const auto failures = jsonl::collect_failures(data::test_results);
+        jsonl_sink().summary(stats, passed, std::span<const data::test_result* const>{slowest.data(), slowest.size()}, failures);
+        if(jsonl_enabled() || cfg().human_result_line) {
+            console::result_os() << "RESULT:" << " tests_ok=" << stats.successful_tests << " tests_total=" << stats.total_tests << " assertions_ok=" << stats.successful_assertions << " assertions_total=" << stats.total_assertions << " passed=" << (passed ? "true" : "false") << '\n';
+        }
+        if(!pending_run_end_passed_ref.has_value()) pending_run_end_passed_ref = passed;
+        if(!run_end_emitted_ref && pending_run_end_passed_ref.has_value()) {
+            const auto passed_value = *pending_run_end_passed_ref;
+            pending_run_end_passed_ref = std::nullopt;
+            const auto ended_at = std::chrono::system_clock::now();
+            jsonl_sink().run_end(run_mode_param, stats.run_tags, passed_value, stats.run_started_unix_ms, ended_at, failures);
+            run_end_emitted_ref = true;
+    }
+        return;
+}
+    console_sink().print_test_statistics(slow_n, stats.run_started, stats.run_finished, stats.run_tags, cfg().human_result_line);
+}
+
+export void test_case(const data::test_case& tc) { if(jsonl_enabled()) jsonl_sink().test_case(tc); else console_sink().on_test_case(tc); }
+export void exception(const data::test_case& tc, const std::exception& ex) { if(jsonl_enabled()) jsonl_sink().on_exception(tc, ex); else console_sink().on_exception(tc, ex); }
+
+export void emit_jsonl_assertion_event(const data::test_assertion& a)
+{
+    const auto policy = cfg().jsonl_output;
+    if(!a.ok || (policy == data::jsonl_output_policy::always)) jsonl_sink().assertion_event(a);
+}
+
+export template<typename A,typename E>
+void assertion(const bool ok, const A& actual, const E& expected, const std::source_location location1, const std::source_location location2 = std::source_location::current(), std::string_view message = {})
+{
+    if(jsonl_enabled() && !get_current_test_id().empty()) {
+        emit_jsonl_assertion_event({
+            ok,
+            extract_matcher_name(location2),
+            value_to_json_string(actual),
+            value_to_json_string(expected),
+            std::string{message},
+            std::string{get_current_test_id()},
+            location1.file_name(),
+            location1.line(),
+            location1.column()});
+    }
+    if(!jsonl_enabled()) console_sink().assertion(ok, actual, expected, location1, location2);
+}
+
+export void message(const bool ok, auto msg, const std::source_location location1, const std::source_location location2 = std::source_location::current())
+{
+    if(jsonl_enabled()) {
+        if constexpr (std::is_convertible_v<decltype(msg), std::string_view>) jsonl_sink().message(ok, msg, location1, location2);
+        else { auto ss = std::ostringstream{}; ss << msg; jsonl_sink().message(ok, ss.str(), location1, location2); }
+    } else console_sink().message(ok, msg, location1, location2);
+}
+
+}
+

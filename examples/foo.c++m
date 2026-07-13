@@ -1,0 +1,12 @@
+// Copyright (c) 2025 Kaius Ruokonen. All rights reserved.
+// SPDX-License-Identifier: MIT
+// See the LICENSE file in the project root for full license text.
+
+export module foo;
+export import :bar;
+
+namespace foo
+{
+    export auto x = 1;
+    auto y = 2;
+}

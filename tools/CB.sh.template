@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Copyright (c) 2025 Kaius Ruokonen. All rights reserved.
+# SPDX-License-Identifier: MIT
+#
+# Per-repo CB.sh wrapper template. Copy to tools/CB.sh and customize the
+# CONFIG section below. Shared logic lives in CB.sh.core (same directory).
+#
+# Diff table (what each repo sets):
+#
+# | Variable                         | tester      | net/xson    | fixer        |
+# |----------------------------------|-------------|-------------|--------------|
+# | CB_INCLUDE_DIRS                  | tester/     | lib + tester| net+xson+tester |
+# | CB_INCLUDE_EXAMPLES_MODE         | always      | never       | never        |
+# | CB_SANDBOX_DISABLE_NETWORK_TESTS | 0           | 1 (net only)| 0            |
+# | CB_AUTO_SUBMODULES               | —           | —           | deps/*       |
+# | CB_LINK_FLAGS                    | —           | net: homebrew| —            |
+# | CB_RESPECT_CXX_ENV               | 0           | 0           | 1            |
+
+set -e
+
+TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$TOOLS_DIR/.." && pwd)"
+
+# --- CONFIG: customize per repo ------------------------------------------------
+
+CB_TOOLS_DIR="$TOOLS_DIR"
+CB_PROJECT_ROOT="$PROJECT_ROOT"
+
+CB_INCLUDE_DIRS=(
+  "$PROJECT_ROOT/REPLACE_LIB_DIR"
+  # "$TESTER_ROOT/tester"  # when using external tester
+)
+
+# CB_INCLUDE_EXAMPLES_MODE=never   # never | on_test | always
+# CB_SANDBOX_DISABLE_NETWORK_TESTS=0
+# CB_AUTO_SUBMODULES="deps/tester"
+# CB_RESPECT_CXX_ENV=0
+# CB_LINK_FLAGS="-L/opt/homebrew/lib"
+# CB_EXTRA_ARGS=()
+
+# --- END CONFIG ----------------------------------------------------------------
+
+source "$TOOLS_DIR/CB.sh.core"

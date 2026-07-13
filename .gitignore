@@ -1,0 +1,29 @@
+# Build artifacts
+build/
+build-*/
+obj/
+pcm/
+lib/
+bin/
+cache/
+
+# Compiled binaries
+tools/cb
+tools/builder
+
+# Compiled object files
+*.o
+*.a
+*.pcm
+*.d
+*.deps
+
+# Dependencies (for standalone builds)
+deps/
+
+# Makefile dependencies
+Makefile.deps
+
+# Captured build/test output (local debug artifacts)
+*.jsonl
+*.log

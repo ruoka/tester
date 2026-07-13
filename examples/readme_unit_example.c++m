@@ -1,0 +1,10 @@
+// Copyright (c) 2025 Kaius Ruokonen. All rights reserved.
+// SPDX-License-Identifier: MIT
+// See the LICENSE file in the project root for full license text.
+
+export module readme_unit_example;
+
+namespace readme_unit_example {
+    export int add(int lhs, int rhs) { return lhs + rhs; }
+}
+

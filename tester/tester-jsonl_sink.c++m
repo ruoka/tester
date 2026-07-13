@@ -1,0 +1,378 @@
+// Copyright (c) 2025 Kaius Ruokonen. All rights reserved.
+// SPDX-License-Identifier: MIT
+// See the LICENSE file in the project root for full license text.
+
+module;
+#include "details/output-mux.h++"
+#if defined(__GNUG__) && __has_include(<cxxabi.h>)
+#   include <cxxabi.h>
+#endif
+
+export module tester:jsonl_sink;
+
+import :data;
+import std;
+
+namespace tester::output::jsonl
+{
+
+namespace {
+
+auto strip_ansi(std::string_view sv) -> std::string
+{
+    auto out = std::string{};
+    out.reserve(sv.size());
+
+    for(std::size_t i = 0; i < sv.size(); )
+    {
+        const unsigned char ch = static_cast<unsigned char>(sv[i]);
+        if(ch == 0x1B && (i + 1) < sv.size() && sv[i + 1] == '[') // ESC [
+        {
+            i += 2;
+            while(i < sv.size())
+            {
+                const unsigned char c = static_cast<unsigned char>(sv[i]);
+                if(c >= 0x40 && c <= 0x7E) { ++i; break; }
+                ++i;
+            }
+            continue;
+        }
+
+        out.push_back(static_cast<char>(ch));
+        ++i;
+    }
+
+    return out;
+}
+
+struct prepared_output
+{
+    std::string out{};
+    bool truncated = false;
+    std::size_t original_bytes = 0;
+};
+
+auto prepare_output(std::string_view raw, std::size_t max_bytes) -> prepared_output
+{
+    auto cleaned = strip_ansi(raw);
+    const auto original_bytes = cleaned.size();
+
+    auto truncated = false;
+    if(max_bytes > 0 && cleaned.size() > max_bytes)
+    {
+        cleaned.resize(max_bytes);
+        cleaned.append("...(truncated)");
+        truncated = true;
+    }
+
+    return prepared_output{std::move(cleaned), truncated, original_bytes};
+}
+
+auto failure_message_for(const data::test_result& r) -> std::string
+{
+    if(!r.output.empty())
+        return r.output;
+    if(r.assertions_ok < r.assertions_total)
+        return "assertion failure";
+    return "test failed";
+}
+
+auto demangle_type_name(std::string_view mangled) -> std::string
+{
+#if defined(__GNUG__) && __has_include(<cxxabi.h>)
+    int status = 0;
+    auto buffer = std::string{mangled};
+    if(auto* demangled = abi::__cxa_demangle(buffer.c_str(), nullptr, nullptr, &status); demangled != nullptr)
+    {
+        std::string result{demangled};
+        std::free(demangled);
+        return result;
+    }
+#endif
+    return std::string{mangled};
+}
+
+auto exception_type_name(const std::exception& ex) -> std::string
+{
+    return demangle_type_name(typeid(ex).name());
+}
+
+void write_string_array(std::ostream& os, std::string_view field, std::span<const std::string> values)
+{
+    os << ",\"" << field << "\":[";
+    for(std::size_t i = 0; i < values.size(); ++i)
+    {
+        if(i) os << ',';
+        os << '"' << ::jsonl::escape(values[i]) << '"';
+    }
+    os << ']';
+}
+
+void write_string_map(std::ostream& os, std::string_view field, std::span<const std::pair<std::string, std::string>> entries)
+{
+    if(entries.empty())
+        return;
+
+    os << ",\"" << field << "\":{";
+    for(std::size_t i = 0; i < entries.size(); ++i)
+    {
+        if(i) os << ',';
+        os << '"' << ::jsonl::escape(entries[i].first) << "\":\"" << ::jsonl::escape(entries[i].second) << '"';
+    }
+    os << '}';
+}
+
+void write_failed_test_ids(std::ostream& os, const std::vector<std::string>& ids)
+{
+    os << ",\"failed_test_ids\":[";
+    for(std::size_t i = 0; i < ids.size(); ++i)
+    {
+        if(i) os << ',';
+        os << '"' << ::jsonl::escape(ids[i]) << '"';
+    }
+    os << ']';
+}
+
+void write_first_failure(std::ostream& os, const data::test_result& r)
+{
+    const auto message = failure_message_for(r);
+    os << ",\"first_failure\":{";
+    os << "\"test_id\":\"" << ::jsonl::escape(r.test_id) << '"';
+    os << ",\"file\":\"" << ::jsonl::escape(r.file_name) << '"';
+    os << ",\"line\":" << r.line;
+    os << ",\"message\":\"" << ::jsonl::escape(message) << '"';
+    os << '}';
+}
+
+} // namespace
+
+export auto test_failed(const data::test_result& r) -> bool
+{
+    return !r.success || r.assertions_ok < r.assertions_total;
+}
+
+export struct failure_index
+{
+    std::vector<std::string> failed_test_ids;
+    const data::test_result* first = nullptr;
+};
+
+export auto collect_failures(const std::list<data::test_result>& results) -> failure_index
+{
+    auto index = failure_index{};
+    for(const auto& r : results)
+    {
+        if(!test_failed(r))
+            continue;
+        index.failed_test_ids.push_back(r.test_id);
+        if(index.first == nullptr)
+            index.first = &r;
+    }
+    return index;
+}
+
+namespace {
+
+void write_failure_index(std::ostream& os, const failure_index& failures)
+{
+    write_failed_test_ids(os, failures.failed_test_ids);
+    if(failures.first != nullptr)
+        write_first_failure(os, *failures.first);
+}
+
+} // namespace
+
+export struct sink
+{
+    io::mux& m;
+
+    explicit sink(io::mux& mux) : m(mux) {}
+
+    void run_start(std::string_view mode, std::string_view tags, std::chrono::system_clock::time_point started_at, std::string_view cwd, std::span<const std::string> argv, std::string_view config, std::span<const std::pair<std::string, std::string>> env)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("run_start", started_at) << [&](std::ostream& os){
+            os << ",\"mode\":\"" << ::jsonl::escape(mode) << "\"";
+            os << ",\"tags\":\"" << ::jsonl::escape(tags) << "\"";
+            os << ",\"cwd\":\"" << ::jsonl::escape(cwd) << "\"";
+            if(not argv.empty())
+                write_string_array(os, "argv", argv);
+            if(not config.empty())
+                os << ",\"config\":\"" << ::jsonl::escape(config) << "\"";
+            write_string_map(os, "env", env);
+        };
+    }
+
+    void run_end(std::string_view mode, std::string_view tags, bool passed, std::chrono::system_clock::time_point started, std::chrono::system_clock::time_point ended, const failure_index& failures)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        const auto duration = (started != std::chrono::system_clock::time_point{})
+            ? std::chrono::duration_cast<std::chrono::milliseconds>(ended - started)
+            : std::chrono::milliseconds{0};
+        m.json << m.jsonl("run_end", ended) << [&](std::ostream& os){
+            os << ",\"mode\":\"" << ::jsonl::escape(mode) << "\"";
+            os << ",\"tags\":\"" << ::jsonl::escape(tags) << "\"";
+            os << ",\"passed\":" << (passed ? "true" : "false");
+            os << ",\"duration_ms\":" << duration.count();
+            write_failure_index(os, failures);
+        };
+    }
+
+    void test_list_start(std::string_view tags_filter)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("test_list_start") << [&](std::ostream& os){
+            os << ",\"tags_filter\":\"" << ::jsonl::escape(tags_filter) << "\"";
+        };
+    }
+
+    void test_list_summary(int registered_total, int matched_total, std::string_view tags_filter)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("test_list_summary") << [&](std::ostream& os){
+            os << ",\"registered_total\":" << registered_total;
+            os << ",\"matched_total\":" << matched_total;
+            os << ",\"tags_filter\":\"" << ::jsonl::escape(tags_filter) << "\"";
+        };
+    }
+
+    void registered_test(const data::test_case& tc, std::span<const std::string> tags)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("registered_test") << [&](std::ostream& os){
+            os << ",\"id\":\"" << ::jsonl::escape(tc.test_id) << "\"";
+            if(not tc.id.empty() && tc.id != tc.test_id)
+                os << ",\"dep_id\":\"" << ::jsonl::escape(tc.id) << "\"";
+            os << ",\"set\":\"" << ::jsonl::escape(tc.test_set_name) << "\"";
+            os << ",\"name\":\"" << ::jsonl::escape(tc.test_name) << "\"";
+            os << ",\"file\":\"" << ::jsonl::escape(tc.file_name) << "\"";
+            os << ",\"line\":" << tc.line;
+            os << ",\"column\":" << tc.column;
+            os << ",\"priority\":" << tc.priority;
+            write_string_array(os, "tags", tags);
+            write_string_array(os, "depends_on", tc.depends_on);
+        };
+    }
+
+    void test_case(const data::test_case& tc)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("case") << [&](std::ostream& os){
+            os << ",\"id\":\"" << ::jsonl::escape(tc.test_id) << "\"";
+            os << ",\"set\":\"" << ::jsonl::escape(tc.test_set_name) << "\"";
+            os << ",\"name\":\"" << ::jsonl::escape(tc.test_name) << "\"";
+            os << ",\"file\":\"" << ::jsonl::escape(tc.file_name) << "\"";
+            os << ",\"line\":" << tc.line;
+            os << ",\"column\":" << tc.column;
+        };
+    }
+
+    void test(const data::test_result& r, bool include_output, std::size_t max_output_bytes)
+    {
+        auto prepared = prepared_output{};
+        if(include_output)
+            prepared = prepare_output(r.output, max_output_bytes);
+
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("test") << [&](std::ostream& os){
+            os << ",\"id\":\"" << ::jsonl::escape(r.test_id) << "\"";
+            os << ",\"set\":\"" << ::jsonl::escape(r.test_set_name) << "\"";
+            os << ",\"name\":\"" << ::jsonl::escape(r.test_name) << "\"";
+            os << ",\"file\":\"" << ::jsonl::escape(r.file_name) << "\"";
+            os << ",\"line\":" << r.line;
+            os << ",\"column\":" << r.column;
+            os << ",\"success\":" << (r.success ? "true" : "false");
+            os << ",\"duration_ms\":" << std::chrono::duration_cast<std::chrono::milliseconds>(r.duration).count();
+            os << ",\"assertions_ok\":" << r.assertions_ok;
+            os << ",\"assertions_total\":" << r.assertions_total;
+            os << ",\"started_unix_ms\":" << ::jsonl::unix_ms(r.started_at).count();
+            os << ",\"finished_unix_ms\":" << ::jsonl::unix_ms(r.finished_at).count();
+            if(include_output)
+            {
+                os << ",\"output\":\"" << ::jsonl::escape(prepared.out) << "\"";
+                os << ",\"output_truncated\":" << (prepared.truncated ? "true" : "false");
+                os << ",\"output_bytes\":" << prepared.original_bytes;
+            }
+        };
+    }
+
+    void assertion_event(const data::test_assertion& a)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl(a.ok ? "assertion_passed" : "assertion_failed") << [&](std::ostream& os){
+            os << ",\"test_id\":\"" << ::jsonl::escape(a.test_id) << "\"";
+            os << ",\"matcher\":\"" << ::jsonl::escape(a.matcher) << "\"";
+            os << ",\"actual\":" << a.actual;
+            os << ",\"expected\":" << a.expected;
+            os << ",\"file\":\"" << ::jsonl::escape(a.file) << "\"";
+            os << ",\"line\":" << a.line;
+            os << ",\"column\":" << a.column;
+            if(not a.message.empty())
+                os << ",\"message\":\"" << ::jsonl::escape(a.message) << "\"";
+        };
+    }
+
+    void message(bool ok, std::string_view msg, const std::source_location& location1, const std::source_location& location2)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("message") << [&](std::ostream& os){
+            os << ",\"ok\":" << (ok ? "true" : "false");
+            os << ",\"message\":\"" << ::jsonl::escape(msg) << "\"";
+            os << ",\"file\":\"" << ::jsonl::escape(location1.file_name()) << "\"";
+            os << ",\"line\":" << location1.line();
+            os << ",\"column\":" << location1.column();
+            os << ",\"caller_file\":\"" << ::jsonl::escape(location2.file_name()) << "\"";
+            os << ",\"caller_line\":" << location2.line();
+        };
+    }
+
+    void on_exception(const data::test_case& tc, const std::exception& ex)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        const auto exception_type = exception_type_name(ex);
+        m.json << m.jsonl("exception") << [&](std::ostream& os){
+            os << ",\"test_id\":\"" << ::jsonl::escape(tc.test_id) << "\"";
+            os << ",\"exception_type\":\"" << ::jsonl::escape(exception_type) << "\"";
+            os << ",\"message\":\"" << ::jsonl::escape(ex.what()) << "\"";
+            os << ",\"file\":\"" << ::jsonl::escape(tc.file_name) << "\"";
+            os << ",\"line\":" << tc.line;
+            os << ",\"column\":" << tc.column;
+        };
+    }
+
+    void summary(const data::test_statistics& s,
+                 bool passed,
+                 std::span<const data::test_result* const> slowest,
+                 const failure_index& failures)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("summary") << [&](std::ostream& os){
+            os << ",\"tests_ok\":" << s.successful_tests;
+            os << ",\"tests_total\":" << s.total_tests;
+            os << ",\"assertions_ok\":" << s.successful_assertions;
+            os << ",\"assertions_total\":" << s.total_assertions;
+            os << ",\"passed\":" << (passed ? "true" : "false");
+            write_failure_index(os, failures);
+            if(!slowest.empty())
+            {
+                os << ",\"slowest\":[";
+                for(std::size_t i = 0; i < slowest.size(); ++i)
+                {
+                    const auto& r = *slowest[i];
+                    if(i) os << ",";
+                    os << "{\"id\":\"" << ::jsonl::escape(r.test_id) << "\"";
+                    os << ",\"name\":\"" << ::jsonl::escape(r.test_name) << "\"";
+                    os << ",\"file\":\"" << ::jsonl::escape(r.file_name) << "\"";
+                    os << ",\"line\":" << r.line;
+                    os << ",\"column\":" << r.column;
+                    os << ",\"duration_ms\":" << std::chrono::duration_cast<std::chrono::milliseconds>(r.duration).count();
+                    os << "}";
+                }
+                os << "]";
+            }
+        };
+    }
+};
+
+} // namespace tester::output::jsonl
+

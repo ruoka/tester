@@ -1,0 +1,233 @@
+// Copyright (c) 2025 Kaius Ruokonen. All rights reserved.
+// SPDX-License-Identifier: MIT
+// See the LICENSE file in the project root for full license text.
+
+export module tester:engine;
+import :output;
+import :data;
+import :assertions;
+import std;
+
+namespace tester::engine {
+
+using namespace data;
+using namespace std::literals;
+
+
+auto& make_test_case(std::string_view description, int priority, std::vector<std::string> depends_on, std::string id, const std::source_location location1, const std::source_location location2) noexcept
+{
+    auto test_type = std::string_view{location2.function_name()};
+
+    auto drop_prefix = [&](std::string_view marker)
+    {
+        if(auto pos = test_type.find(marker); pos != std::string_view::npos)
+        {
+            test_type.remove_prefix(pos + marker.size());
+            return true;
+        }
+        return false;
+    };
+
+    if(drop_prefix("behavior_driven_development::"))
+        ;
+    else if(drop_prefix("basic::"))
+        ;
+    else
+        std::terminate();
+
+    if(const auto paren = test_type.find('('); paren != std::string_view::npos)
+        test_type.remove_suffix(test_type.length() - paren);
+
+    auto test_name = std::string{test_type} + " -> "s + std::string{description};
+    auto assigned_id = id.empty() ? test_name : std::move(id);
+    auto test_case = data::test_case{
+        {location1.function_name(),test_name,location1.file_name(),location1.line(),location1.column(),location2.function_name(), assigned_id},
+        data::test{},
+        priority,
+        std::move(depends_on),
+        std::move(assigned_id)
+    };
+
+    if(test_type.contains("scenario") or test_type.contains("test_case"))
+    {
+        test_cases.push_back(test_case);
+        return test_cases.back().run;
+    }
+    else
+    {
+        auto itr = test_cases.begin();
+        if(test_type.starts_with("and_"))
+            test_type.remove_prefix(4); // remove "and_"
+        while(itr != test_cases.end() and
+              (itr->test_name.starts_with("then") or
+               itr->test_name.starts_with("and_then") or
+               itr->test_name.contains(test_type))) // given, and_given, when, and_when, section
+           ++itr;
+        return test_cases.insert(itr,test_case)->run;
+    }
+}
+
+auto sort_test_cases()
+{
+    // Build a map of test IDs to test cases for dependency resolution
+    auto id_to_test = std::map<std::string, test_case*, std::less<>>{};
+    for(auto& tc : test_cases)
+    {
+        if(not tc.id.empty())
+            id_to_test[tc.id] = &tc;
+    }
+
+    // Calculate dependency levels (tests with no dependencies = level 0, etc.)
+    auto levels = std::map<test_case*, int>{};
+    auto calculate_level = [&](test_case* tc, auto& self) -> int
+    {
+        if(levels.contains(tc))
+            return levels[tc];
+        
+        int max_dep_level = -1;
+        for(const auto& dep_id : tc->depends_on)
+        {
+            if(id_to_test.contains(dep_id))
+                max_dep_level = std::max(max_dep_level, self(id_to_test.at(dep_id), self));
+        }
+        levels[tc] = max_dep_level + 1;
+        return levels[tc];
+    };
+
+    for(auto& tc : test_cases)
+        calculate_level(&tc, calculate_level);
+
+    // Sort: first by dependency level, then by priority
+    auto sorted = std::vector<test_case*>{};
+    for(auto& tc : test_cases)
+        sorted.push_back(&tc);
+
+    auto compare = [&levels](const test_case* a, const test_case* b) -> bool
+    {
+        const auto level_a = levels[const_cast<test_case*>(a)];
+        const auto level_b = levels[const_cast<test_case*>(b)];
+        if(level_a != level_b)
+            return level_a < level_b;  // Lower level (dependencies) first
+        return a->priority < b->priority;  // Within same level, lower priority first
+    };
+    std::stable_sort(sorted.begin(), sorted.end(), compare);
+
+    // Copy test cases before clearing the list (to avoid invalidating pointers)
+    auto test_cases_copy = std::vector<test_case>{};
+    test_cases_copy.reserve(sorted.size());
+    for(auto* tc : sorted)
+        test_cases_copy.push_back(*tc);
+
+    // Rebuild test_cases list in sorted order
+    test_cases.clear();
+    for(auto& tc : test_cases_copy)
+        test_cases.push_back(tc);
+}
+
+export void init_statistics(
+    std::chrono::steady_clock::time_point run_started,
+    std::chrono::system_clock::time_point run_started_unix_ms,
+    std::string_view run_tags)
+{
+    auto& stats = data::statistics();
+    stats.run_started = run_started;
+    stats.run_started_unix_ms = run_started_unix_ms;
+    stats.run_tags = std::string{run_tags};
+    stats.successful_tests = 0;
+    stats.total_tests = 0;
+    stats.successful_assertions = 0;
+    stats.total_assertions = 0;
+}
+
+export void finish_statistics(std::chrono::steady_clock::time_point run_finished)
+{
+    data::statistics().run_finished = run_finished;
+}
+
+export auto run_test_cases(auto filter, auto set_test_id, auto clear_test_id, auto /*get_test_id*/)
+{
+    sort_test_cases();
+
+    while(not test_cases.empty())
+    {
+        auto tc = test_cases.begin();
+
+        if(filter(*tc))
+        {
+            test_cases.erase(tc);
+            continue;
+        }
+
+        output::test_case(*tc);
+
+        auto tr = test_result{*tc};
+        set_test_id(tc->test_id);
+        
+        const auto started = std::chrono::steady_clock::now();
+        const auto started_sys = std::chrono::system_clock::now();
+        const auto assertions_total_before = statistics().total_assertions;
+        const auto assertions_ok_before = statistics().successful_assertions;
+        auto failure_message = std::string{};
+        try
+        {
+            ++statistics().total_tests;
+            // NOTE: When tc->run() executes a scenario/test_case lambda, it may add nested
+            // test cases (given/when/then) to test_cases. Those nested test cases' lambdas
+            // should capture parent-scope variables BY VALUE, not by reference, because:
+            // 1. The parent lambda's local variables are destroyed when tc->run() returns
+            // 2. The nested test cases are executed later in subsequent loop iterations
+            // 3. If nested lambdas capture by reference ([&var]), they will have dangling
+            //    references when they execute.
+            // Example of CORRECT usage:
+            //   scenario("Test") = [] {
+            //       auto data = std::make_shared<Data>();  // or capture by value
+            //       given("Setup") = [data] { ... };  // capture by value
+            //   };
+            // Example of INCORRECT usage (will cause undefined behavior):
+            //   scenario("Test") = [] {
+            //       auto data = Data{};
+            //       given("Setup") = [&data] { ... };  // BUG: dangling reference
+            //   };
+            tc->run();
+            ++statistics().successful_tests;
+        }
+        catch(const assertions::assertion_failure& ex)
+        {
+            tr.success = false;
+            failure_message = ex.what();
+            output::exception(*tc,ex);
+        }
+        catch(const std::exception& ex)
+        {
+            tr.success = false;
+            failure_message = ex.what();
+            output::exception(*tc,ex);
+        }
+        catch(...)
+        {
+            tr.success = false;
+            failure_message = "Unknown exception";
+            output::exception(*tc,std::runtime_error{"Unknown exception"});
+        }
+        const auto finished = std::chrono::steady_clock::now();
+        const auto finished_sys = std::chrono::system_clock::now();
+        tr.duration = std::chrono::duration_cast<std::chrono::nanoseconds>(finished - started);
+        tr.started_at = started_sys;
+        tr.finished_at = finished_sys;
+        tr.assertions_total = statistics().total_assertions - assertions_total_before;
+        tr.assertions_ok = statistics().successful_assertions - assertions_ok_before;
+        
+        clear_test_id();
+        
+        // Erase the test case after execution. Note that if nested test cases were added
+        // during tc->run(), they are already in test_cases and will be processed in
+        // subsequent loop iterations. The test_case object itself is safe to erase here
+        // because nested test cases store their own copies of the lambda (with captured
+        // values), not references to this test_case object.
+        test_cases.erase(tc);
+        tr.output = tr.success ? output::captured_output() : failure_message;
+        test_results.push_back(tr);
+    }
+}
+
+}
