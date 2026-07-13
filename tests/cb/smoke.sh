@@ -49,6 +49,11 @@ test_profile_header() {
   run_cb_build "${work_dir}"
   cache_file="$(object_cache_path "${work_dir}")"
   assert_profile_header "${cache_file}"
+  assert_profile_contains "${cache_file}" 'format=cb-object-cache-v2' "profile_format_v2"
+  assert_profile_contains "${cache_file}" $'\tstd_cppm=' "profile_std_cppm"
+  assert_profile_contains "${cache_file}" $'\tcxx=' "profile_cxx"
+  assert_profile_contains "${cache_file}" $'\tcxx_sig=' "profile_cxx_sig"
+  assert_profile_contains "${cache_file}" $'\tclang_ver=' "profile_clang_ver"
   assert_jsonl_contains '"type":"compile_end"' "compile_end_event"
   end_case profile_header
 }

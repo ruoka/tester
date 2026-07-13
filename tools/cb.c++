@@ -218,12 +218,18 @@ struct object_cache_profile_diff
     std::optional<profile_scalar_change> config;
     std::optional<profile_scalar_change> static_link;
     std::optional<profile_scalar_change> llvm;
+    std::optional<profile_scalar_change> cxx;
+    std::optional<profile_scalar_change> cxx_sig;
+    std::optional<profile_scalar_change> clang_ver;
+    std::optional<profile_scalar_change> std_cppm;
     std::optional<profile_token_change> compile;
     std::optional<profile_token_change> cpp;
 
     bool empty() const
     {
-        return not format and not config and not static_link and not llvm and not compile and not cpp;
+        return not format and not config and not static_link and not llvm
+            and not cxx and not cxx_sig and not clang_ver and not std_cppm
+            and not compile and not cpp;
     }
 };
 
@@ -263,6 +269,10 @@ inline object_cache_profile_diff diff_object_cache_profiles(std::string_view old
     diff_scalar("config", diff.config);
     diff_scalar("static_link", diff.static_link);
     diff_scalar("llvm", diff.llvm);
+    diff_scalar("cxx", diff.cxx);
+    diff_scalar("cxx_sig", diff.cxx_sig);
+    diff_scalar("clang_ver", diff.clang_ver);
+    diff_scalar("std_cppm", diff.std_cppm);
 
     const auto diff_tokens = [&](std::string_view key, std::optional<profile_token_change>& out) {
         auto change = diff_profile_tokens(field_value(old_fields, key), field_value(new_fields, key));
@@ -325,6 +335,10 @@ inline std::string format_profile_diff_message(const object_cache_profile_diff& 
     if(diff.config) append_scalar("config", *diff.config);
     if(diff.static_link) append_scalar("static_link", *diff.static_link);
     if(diff.llvm) append_scalar("llvm", *diff.llvm);
+    if(diff.cxx) append_scalar("cxx", *diff.cxx);
+    if(diff.cxx_sig) append_scalar("cxx_sig", *diff.cxx_sig);
+    if(diff.clang_ver) append_scalar("clang_ver", *diff.clang_ver);
+    if(diff.std_cppm) append_scalar("std_cppm", *diff.std_cppm);
     if(diff.compile)
     {
         if(auto summary = format_token_change_summary("compile", *diff.compile, max_tokens); not summary.empty())
@@ -389,6 +403,14 @@ inline std::string serialize_object_cache_profile_diff(const object_cache_profil
         field("static_link", [&]{ write_profile_diff_scalar(os, *diff.static_link); });
     if(diff.llvm)
         field("llvm", [&]{ write_profile_diff_scalar(os, *diff.llvm); });
+    if(diff.cxx)
+        field("cxx", [&]{ write_profile_diff_scalar(os, *diff.cxx); });
+    if(diff.cxx_sig)
+        field("cxx_sig", [&]{ write_profile_diff_scalar(os, *diff.cxx_sig); });
+    if(diff.clang_ver)
+        field("clang_ver", [&]{ write_profile_diff_scalar(os, *diff.clang_ver); });
+    if(diff.std_cppm)
+        field("std_cppm", [&]{ write_profile_diff_scalar(os, *diff.std_cppm); });
     if(diff.compile)
         field("compile", [&]{ write_profile_diff_tokens(os, *diff.compile); });
     if(diff.cpp)
@@ -670,7 +692,33 @@ using thread_list = std::vector<std::thread>;
 using module_to_ldflags_map = std::flat_map<std::string, std::string, std::less<>>;
 using executable_cache_map = std::flat_map<std::string, std::string, std::less<>>;
 
-inline constexpr std::string_view object_cache_format = "cb-object-cache-v1"sv;
+inline std::string binary_signature(const std::string& path)
+{
+    if(not fs::exists(path))
+        return {};
+
+    const auto size = fs::file_size(path);
+    const auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        fs::last_write_time(path).time_since_epoch()).count();
+    return std::to_string(size) + ':' + std::to_string(ticks);
+}
+
+inline std::string read_first_line(const std::string& path)
+{
+    auto file = std::ifstream{path};
+    if(not file)
+        return {};
+
+    auto line = ""s;
+    if(not std::getline(file, line))
+        return {};
+
+    if(not line.empty() and line.back() == '\r')
+        line.pop_back();
+    return line;
+}
+
+inline constexpr std::string_view object_cache_format = "cb-object-cache-v2"sv;
 
 class build_system {
 private:
@@ -680,6 +728,10 @@ private:
     std::string module_flags;
     std::string std_module_source;
     std::string llvm_prefix, llvm_cxx;
+    std::string std_cppm_profile;
+    std::string cxx_sig;
+    std::string clang_version;
+    mutable bool toolchain_profile_probed = false;
     translation_unit_list units_in_topological_order;
     std::mutex cache_mutex;
     std::mutex link_cache_mutex;
@@ -766,14 +818,31 @@ private:
             }
             return false;
         };
-        if (try_env_compiler())
-            return;
-
-        llvm_cxx = llvm_prefix + "/bin/clang++";
-        if (!command_available(llvm_cxx)) {
-            log::error("clang++ not found. Expected: " + llvm_cxx + " (set LLVM_CXX to override).");
-            std::exit(1);
+        if (not try_env_compiler()) {
+            llvm_cxx = llvm_prefix + "/bin/clang++";
+            if (!command_available(llvm_cxx)) {
+                log::error("clang++ not found. Expected: " + llvm_cxx + " (set LLVM_CXX to override).");
+                std::exit(1);
+            }
         }
+
+        std_cppm_profile = fs::weakly_canonical(std_module_path).string();
+        cxx_sig = binary_signature(llvm_cxx);
+    }
+
+    void ensure_toolchain_profile() const
+    {
+        if(toolchain_profile_probed)
+            return;
+        toolchain_profile_probed = true;
+
+        auto self = const_cast<build_system*>(this);
+        fs::create_directories(cache_dir());
+
+        const auto stamp = cache_dir() + "/compiler-version.txt";
+        const auto cmd = ::shell_quote(llvm_cxx) + " --version > " + ::shell_quote(stamp) + " 2>/dev/null";
+        if(std::system(cmd.c_str()) == 0)
+            self->clang_version = read_first_line(stamp);
     }
 
     void initialize_build_flags()
@@ -1156,8 +1225,10 @@ private:
     // ============================================================================
 
     std::string object_cache_profile() const {
+        ensure_toolchain_profile();
+
         auto profile = ""s;
-        profile.reserve(512);
+        profile.reserve(768);
         profile += "format=";
         profile += object_cache_format;
         profile += "\tconfig=";
@@ -1166,6 +1237,17 @@ private:
         profile += static_link ? "1" : "0";
         profile += "\tllvm=";
         profile += llvm_prefix;
+        profile += "\tcxx=";
+        profile += llvm_cxx;
+        profile += "\tcxx_sig=";
+        profile += cxx_sig;
+        if(not clang_version.empty())
+        {
+            profile += "\tclang_ver=";
+            profile += clang_version;
+        }
+        profile += "\tstd_cppm=";
+        profile += std_cppm_profile;
         profile += "\tcompile=";
         profile += compile_flags;
         profile += "\tcpp=";

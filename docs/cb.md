@@ -13,7 +13,7 @@ CB is optimized for **pure C++23 module projects** that follow ruoka layout conv
 - **Discovery** — scans `*.c++m`, `*.c++`, `*.impl.c++`, and `*.test.c++` under configured include roots
 - **Module graph** — uses `clang-scan-deps` to parse `import` lines and build a dependency graph
 - **Topological compile order** — compiles module interfaces and partitions before importers; emits PCM files under `build-<os>-<config>/pcm/`
-- **Incremental caching** — skips recompilation when source timestamps and transitive PCM dependencies are unchanged (`cache_hit`, `rebuild_reason` in JSONL); link step skipped when object signature unchanged
+- **Incremental caching** — skips recompilation when source timestamps and transitive PCM dependencies are unchanged (`cache_hit`, `rebuild_reason` in JSONL); compile cache invalidated when the **toolchain profile** changes (flags, compiler path, `std.cppm`, …); link step skipped when object signature unchanged
 - **Parallel builds** — compiles independent translation units concurrently
 - **Test integration** — auto-discovers `*.test.c++`, links `test_runner`, forwards `test` / `--tags` / `--list` to the framework
 - **JSONL telemetry** — `list --jsonl`, `build --jsonl` with `compile_end`, structured `argv`, and `run_id` correlation with test runs
@@ -181,6 +181,31 @@ Environment variables for **bootstrap** (not test output): `LLVM_PATH`, `CXX`, `
 
 ---
 
+## Object cache profile
+
+`build-<os>-<config>/cache/object-cache.txt` starts with a readable **profile header** (not a hash). CB compares the full profile string on load; a mismatch clears the in-memory object cache and sets `rebuild_reason: "flag_change"` on every recompiled TU.
+
+**Format:** `format=cb-object-cache-v2` (tab-separated `key=value` fields after the `profile\t` prefix).
+
+| Field | Meaning |
+|-------|---------|
+| `config` | `debug` or `release` |
+| `static_link` | `0` / `1` |
+| `llvm` | LLVM prefix derived from `std.cppm` |
+| `cxx` | Resolved `clang++` path (`LLVM_CXX` / `CXX` override or `llvm/bin/clang++`) |
+| `cxx_sig` | Compiler binary `size:mtime_ns` (detects toolchain binary swaps) |
+| `clang_ver` | First line of `clang++ --version` (probed once per CB run via `std::system`, written to `cache/compiler-version.txt`, read with `std::ifstream`) |
+| `std_cppm` | Canonical path to `std.cppm` |
+| `compile` / `cpp` | Effective compile / per-TU C++ flags (includes `--compile-flags`) |
+
+Legacy caches without a `profile\t` header still load; the header is rewritten on the next save. Bumping `format` or adding fields intentionally invalidates old caches once.
+
+**Human logs** (stderr, non-JSONL): `Object cache profile changed; invalidating compile cache (compile: + -DFOO)`.
+
+**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job) — `profile_header`, `cache_hit`, `flag_change`.
+
+---
+
 ## JSONL and correlation
 
 Build-phase JSONL events (`build_start`, `compile_end`, `command_start`, `list_start`, `unit`, …) share `run_id` with test-phase events when CB spawns `test_runner`. Filter by `run_id` or `parent_run_id` to correlate `list` → `build` → `test` from one `./tools/CB.sh … --jsonl` invocation.
@@ -189,8 +214,19 @@ Full event reference and triage workflow: [AGENTS.md](../AGENTS.md).
 
 Useful `compile_end` fields for debugging stale builds:
 
+- `cache_hit: false` + `rebuild_reason: "flag_change"` — profile header changed (flags, compiler, `std.cppm`, …). Check optional `profile_diff` on the same event.
+- `profile_diff` — field-level delta when `rebuild_reason` is `flag_change`. Scalars use `{"old":"…","new":"…"}`; `compile` / `cpp` use `{"added":[…],"removed":[…]}` (sorted token diff via `std::ranges::set_difference` on shell words).
 - `cache_hit: false` + `rebuild_reason: "pcm_stale:tester:assertions"` — transitive PCM invalidation; rebuilds test objects when assertion templates change
 - `rebuild_reason: "source_stale"` — TU source newer than cached object
+
+Example `profile_diff` fragment:
+
+```json
+"rebuild_reason": "flag_change",
+"profile_diff": {
+  "compile": { "added": ["-DCB_SMOKE_FLAG=1"], "removed": [] }
+}
+```
 
 ---
 

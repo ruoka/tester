@@ -165,6 +165,15 @@ assert_profile_header() {
   return 0
 }
 
+assert_profile_contains() {
+  local cache_file=$1
+  local needle=$2
+  local label=${3:-profile_contains}
+  local first_line
+  first_line="$(head -1 "${cache_file}")"
+  assert_text_contains "${first_line}" "${needle}" "${label}"
+}
+
 assert_compile_cache_hits() {
   local min_hits=$1
   local label=${2:-compile_cache_hits}

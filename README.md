@@ -308,7 +308,7 @@ Other test events: `run_start`, `run_end`, `case`, `test`, `message`, `exception
 |-------|---------|
 | `build_start` / `build_end` | Whole build phase |
 | `command_start` / `command_end` | Each subprocess (`cmd` + structured `argv`) |
-| `compile_end` | Per TU (`source_path`, `cache_hit`, `rebuild_reason`, paths) |
+| `compile_end` | Per TU (`source_path`, `cache_hit`, `rebuild_reason`, optional `profile_diff` on `flag_change`, paths) |
 | `list_start` / `unit` / `list_summary` | TU inventory (`module`, `imports[]`, `level`, `is_test`, …) |
 
 ## How Tester Compares

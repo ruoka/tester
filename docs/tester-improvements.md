@@ -119,7 +119,8 @@ Machine-parseable test and build output for CI and automation. Human output rema
 - 📋 Per-binary `link_start` / `link_end`.
 - ✅ Structured `argv: ["clang++", "..."]` on `command_start` / `command_end` alongside human `cmd` string.
 - ✅ `cache_hit: true` on `compile_end` when incremental compile skips a translation unit.
-- ✅ `rebuild_reason` on `compile_end` when `cache_hit:false` (e.g. `source_stale`, `pcm_stale:<module>`, `dependency_pcm_stale:<module>`).
+- ✅ `rebuild_reason` on `compile_end` when `cache_hit:false` (e.g. `source_stale`, `pcm_stale:<module>`, `dependency_pcm_stale:<module>`, `flag_change`).
+- ✅ `profile_diff` on `compile_end` when `rebuild_reason:flag_change` (scalar fields + token diff on `compile`/`cpp`).
 
 ### 3.7 Recommended automation invocation
 
@@ -138,6 +139,8 @@ Design rationale and comparison with CMake, Make, and other build tools: [`docs/
 ### 4.1 Core build system
 
 - ✅ Incremental compile cache (`object_cache_map`) and link cache (`link_cache_map`).
+- ✅ Object-cache profile header (`format=cb-object-cache-v2`) with toolchain fields (`cxx`, `cxx_sig`, `clang_ver`, `std_cppm`, flags); invalidates on profile mismatch.
+- ✅ CB smoke harness (`tests/cb/`) and CI `cb-smoke` job (`profile_header`, `cache_hit`, `flag_change`).
 - ✅ Parallel compilation, topological module sort, `clang-scan-deps` integration.
 - ✅ `debug` / `release` configurations; `clean`, `list`, `ci`, `--build-tests`.
 - 📋 Multiple custom configurations beyond debug/release (e.g. `asan`, `coverage`).
