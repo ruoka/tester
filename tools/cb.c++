@@ -33,8 +33,6 @@
 
 namespace fs = std::filesystem;
 
-static std::string shell_quote(std::string_view arg);
-
 namespace cb {
 
 using namespace std::string_literals;
@@ -71,15 +69,15 @@ inline void initialize_session()
     if(enabled())
         ctx().assign_new_run_id();
 }
-} // namespace jsonl
 
-static void jsonl_atexit_handler()
+inline void atexit_handler()
 {
     // Keep stdout parseable: only JSONL here.
     // Lock to avoid interleaving with other threads that may be emitting events at exit.
-    auto lock = std::lock_guard<std::mutex>{cb::jsonl::io_mux().mutex};
-    cb::jsonl::ctx().emit_eof();
+    auto lock = std::lock_guard<std::mutex>{io_mux().mutex};
+    ctx().emit_eof();
 }
+} // namespace jsonl
 
 inline auto& console_sink()
 {
@@ -106,6 +104,40 @@ inline void command(std::string_view cmd) { if(!cb::jsonl::enabled()) console_si
 
 enum class build_config { debug, release };
 
+enum class unit_kind : unsigned {
+    non_module,          // non-modular source, no module declaration at all  (.c++ .cpp)
+    interface_unit,      // module interface, export module name;             (.c++m .cppm)
+    partition_unit,      // module partition, export module name:part;        (.c++m .cppm)
+    implementation_unit, // module implementation, module name;               (.impl.c++)
+    global_fragment      // global module fragment, only contains "module;"   (.c++m .cppm)
+};
+
+using suffix_list = std::vector<std::string>;
+using string_list = std::vector<std::string>;
+
+using profile_scalar_change = cb_jsonl::profile_scalar_change;
+using profile_token_change = cb_jsonl::profile_token_change;
+using object_cache_profile_diff = cb_jsonl::object_cache_profile_diff;
+
+namespace detail {
+
+inline std::string shell_quote(std::string_view arg)
+{
+    // POSIX shell single-quote escaping: ' -> '\''
+    auto out = std::string{};
+    out.reserve(arg.size() + 2);
+    out.push_back('\'');
+    for(const char ch : arg)
+    {
+        if(ch == '\'')
+            out.append("'\\''");
+        else
+            out.push_back(ch);
+    }
+    out.push_back('\'');
+    return out;
+}
+
 inline std::string_view config_name(build_config cfg)
 {
     switch(cfg)
@@ -115,14 +147,6 @@ inline std::string_view config_name(build_config cfg)
     }
     return "debug";
 }
-
-enum class unit_kind : unsigned {
-    non_module,          // non-modular source, no module declaration at all  (.c++ .cpp)
-    interface_unit,      // module interface, export module name;             (.c++m .cppm)
-    partition_unit,      // module partition, export module name:part;        (.c++m .cppm)
-    implementation_unit, // module implementation, module name;               (.impl.c++)
-    global_fragment      // global module fragment, only contains "module;"   (.c++m .cppm)
-};
 
 inline std::string_view unit_kind_name(unit_kind kind)
 {
@@ -136,9 +160,6 @@ inline std::string_view unit_kind_name(unit_kind kind)
     }
     return "unknown";
 }
-
-using suffix_list = std::vector<std::string>;
-using string_list = std::vector<std::string>;
 
 inline std::string_view view_from(auto&& part)
 {
@@ -216,7 +237,7 @@ inline std::string join_argv(const string_list& argv)
         [](std::string cmd, const std::string& arg) {
             if(not cmd.empty())
                 cmd.push_back(' ');
-            cmd += ::shell_quote(arg);
+            cmd += shell_quote(arg);
             return cmd;
         });
 }
@@ -253,10 +274,6 @@ inline profile_fields parse_object_cache_profile_fields(std::string_view profile
     }
     return fields;
 }
-
-using profile_scalar_change = cb_jsonl::profile_scalar_change;
-using profile_token_change = cb_jsonl::profile_token_change;
-using object_cache_profile_diff = cb_jsonl::object_cache_profile_diff;
 
 inline profile_token_change diff_profile_tokens(std::string_view old_text, std::string_view new_text)
 {
@@ -439,6 +456,36 @@ inline std::string make_full_path(const fs::path& file_path) {
     return absolute.string();
 }
 
+inline std::string binary_signature(const std::string& path)
+{
+    if(not fs::exists(path))
+        return {};
+
+    const auto size = fs::file_size(path);
+    const auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        fs::last_write_time(path).time_since_epoch()).count();
+    return std::to_string(size) + ':' + std::to_string(ticks);
+}
+
+inline std::string read_first_line(const std::string& path)
+{
+    auto file = std::ifstream{path};
+    if(not file)
+        return {};
+
+    auto line = ""s;
+    if(not std::getline(file, line))
+        return {};
+
+    if(not line.empty() and line.back() == '\r')
+        line.pop_back();
+    return line;
+}
+
+inline constexpr std::string_view object_cache_format = "cb-object-cache-v2"sv;
+
+} // namespace detail
+
 class translation_unit {
 public:
     static bool match_supported_suffix(std::string_view filename, std::string& out_suffix);
@@ -492,7 +539,7 @@ private:
 };
 
 inline bool translation_unit::match_supported_suffix(std::string_view filename, std::string& out_suffix) {
-    for (const auto& suffix : supported_suffixes) {
+    for (const auto& suffix : detail::supported_suffixes) {
         if (filename.ends_with(suffix)) {
             out_suffix.assign(suffix.data(), suffix.size());
             return true;
@@ -501,12 +548,16 @@ inline bool translation_unit::match_supported_suffix(std::string_view filename, 
     return false;
 }
 
+namespace detail {
+
 inline std::string extract_suffix(std::string_view filename) {
     auto suffix = std::string{};
     if (not translation_unit::match_supported_suffix(filename, suffix))
         throw std::runtime_error{"unsupported source suffix"};
     return suffix;
 }
+
+} // namespace detail
 
 inline bool translation_unit::is_supported(const fs::path& file_path) {
     auto name = file_path.filename().string();
@@ -521,16 +572,16 @@ inline translation_unit::translation_unit(const fs::path& relative,
                                           unit_kind kind_value,
                                           bool has_main_flag)
     : filename(relative.filename().string()),
-      path(normalize_relative_dir(relative.parent_path())),
-      suffix(extract_suffix(relative.filename().string())),
-      base_name(make_base_name(this->filename)),
-      full_path(make_full_path(full_path)),
-      unit(make_unit(module_value, kind_value, this->filename)),
+      path(detail::normalize_relative_dir(relative.parent_path())),
+      suffix(detail::extract_suffix(relative.filename().string())),
+      base_name(detail::make_base_name(this->filename)),
+      full_path(detail::make_full_path(full_path)),
+      unit(detail::make_unit(module_value, kind_value, this->filename)),
       module(std::move(module_value)),
       imports(std::move(imports_value)),
       kind(kind_value),
       has_main(has_main_flag),
-      is_test(determine_is_test(this->path, this->filename, this->suffix)),
+      is_test(detail::determine_is_test(this->path, this->filename, this->suffix)),
       is_modular(kind_value == unit_kind::interface_unit or kind_value == unit_kind::partition_unit),
       last_modified(fs::last_write_time(full_path)) {}
 
@@ -635,34 +686,6 @@ using level_groups_map = std::flat_map<int, std::vector<const translation_unit*>
 using thread_list = std::vector<std::thread>;
 using module_to_ldflags_map = std::flat_map<std::string, std::string, std::less<>>;
 using executable_cache_map = std::flat_map<std::string, std::string, std::less<>>;
-
-inline std::string binary_signature(const std::string& path)
-{
-    if(not fs::exists(path))
-        return {};
-
-    const auto size = fs::file_size(path);
-    const auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        fs::last_write_time(path).time_since_epoch()).count();
-    return std::to_string(size) + ':' + std::to_string(ticks);
-}
-
-inline std::string read_first_line(const std::string& path)
-{
-    auto file = std::ifstream{path};
-    if(not file)
-        return {};
-
-    auto line = ""s;
-    if(not std::getline(file, line))
-        return {};
-
-    if(not line.empty() and line.back() == '\r')
-        line.pop_back();
-    return line;
-}
-
-inline constexpr std::string_view object_cache_format = "cb-object-cache-v2"sv;
 
 class build_system {
 private:
@@ -771,7 +794,7 @@ private:
         }
 
         std_cppm_profile = fs::weakly_canonical(std_module_path).string();
-        cxx_sig = binary_signature(llvm_cxx);
+        cxx_sig = detail::binary_signature(llvm_cxx);
     }
 
     void ensure_toolchain_profile() const
@@ -784,9 +807,9 @@ private:
         fs::create_directories(cache_dir());
 
         const auto stamp = cache_dir() + "/compiler-version.txt";
-        const auto cmd = ::shell_quote(llvm_cxx) + " --version > " + ::shell_quote(stamp) + " 2>/dev/null";
+        const auto cmd = detail::shell_quote(llvm_cxx) + " --version > " + detail::shell_quote(stamp) + " 2>/dev/null";
         if(std::system(cmd.c_str()) == 0)
-            self->clang_version = read_first_line(stamp);
+            self->clang_version = detail::read_first_line(stamp);
     }
 
     void initialize_build_flags()
@@ -813,7 +836,7 @@ private:
             compile_flags.push_back("-I" + llvm_prefix + "/include/c++/v1");
         else
         {
-            append_argv(compile_flags, {
+            detail::append_argv(compile_flags, {
                 "-nostdinc++",
                 "-isystem",
                 llvm_prefix + "/include/c++/v1",
@@ -824,18 +847,18 @@ private:
 
         if(config == build_config::release)
         {
-            append_argv(compile_flags, {"-O3", "-DNDEBUG"});
+            detail::append_argv(compile_flags, {"-O3", "-DNDEBUG"});
             log::info("Building RELEASE configuration"s + (static_link ? " (static C++ stdlib)"s : ""s));
         }
         else
         {
-            append_argv(compile_flags, {"-O0", "-g3"});
+            detail::append_argv(compile_flags, {"-O0", "-g3"});
             log::info("Building DEBUG configuration"s + (static_link ? " (static C++ stdlib)"s : ""s));
         }
 
         if(cb::jsonl::enabled())
         {
-            append_argv(compile_flags, {
+            detail::append_argv(compile_flags, {
                 "-fno-caret-diagnostics",
                 "-fno-show-column",
                 "-fno-show-source-location",
@@ -907,14 +930,14 @@ private:
 
         if(not extra_link_flag_tokens.empty())
         {
-            append_argv(link_flags, extra_link_flag_tokens);
-            log::info("Added extra linker flags: "s + flags_profile_string(extra_link_flag_tokens));
+            detail::append_argv(link_flags, extra_link_flag_tokens);
+            log::info("Added extra linker flags: "s + detail::flags_profile_string(extra_link_flag_tokens));
         }
 
         if(not extra_compile_flag_tokens.empty())
         {
-            append_argv(compile_flags, extra_compile_flag_tokens);
-            log::info("Added extra compile flags: "s + flags_profile_string(extra_compile_flag_tokens));
+            detail::append_argv(compile_flags, extra_compile_flag_tokens);
+            log::info("Added extra compile flags: "s + detail::flags_profile_string(extra_compile_flag_tokens));
         }
 
         module_flags = {
@@ -1047,7 +1070,7 @@ private:
             std::exit(1);
         }
 
-        auto cmd_str = join_argv(argv);
+        auto cmd_str = detail::join_argv(argv);
         // Human logs are suppressed in JSONL mode; still emit machine-readable command events.
         if (cb::jsonl::enabled())
             cb::jsonl::sink().command_start(cmd_str, argv);
@@ -1067,7 +1090,7 @@ private:
     {
         if(const auto r = invoke_shell(argv); r)
         {
-            auto cmd_str = join_argv(argv);
+            auto cmd_str = detail::join_argv(argv);
             handle_build_error("Command failed: "s + cmd_str);
             std::exit(1);
         }
@@ -1139,15 +1162,15 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        append_argv(argv, compile_flags);
-        append_argv(argv, cpp_flags);
+        detail::append_argv(argv, compile_flags);
+        detail::append_argv(argv, cpp_flags);
         return argv;
     }
 
     string_list precompile_argv(const translation_unit& tu) const
     {
         auto argv = base_compile_argv();
-        append_argv(argv, module_flags);
+        detail::append_argv(argv, module_flags);
         argv.push_back(tu.full_path);
         argv.push_back("--precompile");
         argv.push_back("-o");
@@ -1159,8 +1182,8 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        append_argv(argv, compile_flags);
-        append_argv(argv, module_flags);
+        detail::append_argv(argv, compile_flags);
+        detail::append_argv(argv, module_flags);
         argv.push_back(tu.pcm_path);
         argv.push_back("-c");
         argv.push_back("-o");
@@ -1171,7 +1194,7 @@ private:
     string_list source_object_argv(const translation_unit& tu) const
     {
         auto argv = base_compile_argv();
-        append_argv(argv, module_flags);
+        detail::append_argv(argv, module_flags);
         if (tu.kind == unit_kind::implementation_unit) {
             auto module_pcm = compute_pcm_path(tu);
             argv.push_back("-fmodule-file=" + tu.module + "=" + module_pcm);
@@ -1187,8 +1210,8 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        append_argv(argv, compile_flags);
-        append_argv(argv, cpp_flags);
+        detail::append_argv(argv, compile_flags);
+        detail::append_argv(argv, cpp_flags);
         argv.push_back("-nostdinc++");
         argv.push_back("-isystem");
         argv.push_back(llvm_prefix + "/include/c++/v1");
@@ -1207,7 +1230,7 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        append_argv(argv, {
+        detail::append_argv(argv, {
             "-std=c++23",
             "-pthread",
             "-fPIC",
@@ -1218,9 +1241,9 @@ private:
         if(os_name() == "darwin")
             argv.push_back("-fapplication-extension");
         if(config == build_config::release)
-            append_argv(argv, {"-O3", "-DNDEBUG"});
+            detail::append_argv(argv, {"-O3", "-DNDEBUG"});
         else
-            append_argv(argv, {"-O0", "-g"});
+            detail::append_argv(argv, {"-O0", "-g"});
         argv.push_back("-fno-implicit-modules");
         argv.push_back("-fno-implicit-module-maps");
         argv.push_back("-fmodule-file=std=" + std_pcm_path());
@@ -1235,14 +1258,14 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        append_argv(argv, compile_flags);
-        append_argv(argv, collect_module_ldflags(tu.imports));
-        append_argv(argv, module_flags);
+        detail::append_argv(argv, compile_flags);
+        detail::append_argv(argv, collect_module_ldflags(tu.imports));
+        detail::append_argv(argv, module_flags);
         argv.push_back(tu.object_path);
         for(const auto& object_path : shared_objects)
             argv.push_back(object_path);
         argv.push_back(std_obj_path());
-        append_argv(argv, link_flags);
+        detail::append_argv(argv, link_flags);
         argv.push_back("-o");
         argv.push_back(tu.executable_path);
         return argv;
@@ -1254,12 +1277,12 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        append_argv(argv, compile_flags);
+        detail::append_argv(argv, compile_flags);
         if(test_runner)
-            append_argv(argv, collect_module_ldflags(test_runner->imports));
+            detail::append_argv(argv, collect_module_ldflags(test_runner->imports));
         else
-            append_argv(argv, collect_test_module_ldflags());
-        append_argv(argv, module_flags);
+            detail::append_argv(argv, collect_test_module_ldflags());
+        detail::append_argv(argv, module_flags);
         if(not test_runner_obj.empty())
             argv.push_back(test_runner_obj);
         for(const auto& object_path : linkable_object_paths())
@@ -1268,7 +1291,7 @@ private:
             if(tu.is_test and not tu.has_main)
                 argv.push_back(tu.object_path);
         argv.push_back(std_obj_path());
-        append_argv(argv, link_flags);
+        detail::append_argv(argv, link_flags);
         argv.push_back("-o");
         argv.push_back(output_path);
         return argv;
@@ -1288,7 +1311,7 @@ private:
         auto flags = string_list{};
         for(const auto& m : imp)
             if(module_ldflags.contains(m))
-                append_argv(flags, parse_external_flag_text(module_ldflags.at(m)));
+                detail::append_argv(flags, detail::parse_external_flag_text(module_ldflags.at(m)));
         return flags;
     }
 
@@ -1301,17 +1324,17 @@ private:
 
         auto profile = ""s;
         profile.reserve(768);
-        append_profile_field(profile, "format", object_cache_format);
-        append_profile_field(profile, "config", config_name(config));
-        append_profile_field(profile, "static_link", static_link ? "1" : "0");
-        append_profile_field(profile, "llvm", llvm_prefix);
-        append_profile_field(profile, "cxx", llvm_cxx);
-        append_profile_field(profile, "cxx_sig", cxx_sig);
+        detail::append_profile_field(profile, "format", detail::object_cache_format);
+        detail::append_profile_field(profile, "config", detail::config_name(config));
+        detail::append_profile_field(profile, "static_link", static_link ? "1" : "0");
+        detail::append_profile_field(profile, "llvm", llvm_prefix);
+        detail::append_profile_field(profile, "cxx", llvm_cxx);
+        detail::append_profile_field(profile, "cxx_sig", cxx_sig);
         if(not clang_version.empty())
-            append_profile_field(profile, "clang_ver", clang_version);
-        append_profile_field(profile, "std_cppm", std_cppm_profile);
-        append_profile_field(profile, "compile", flags_profile_string(compile_flags));
-        append_profile_field(profile, "cpp", flags_profile_string(cpp_flags));
+            detail::append_profile_field(profile, "clang_ver", clang_version);
+        detail::append_profile_field(profile, "std_cppm", std_cppm_profile);
+        detail::append_profile_field(profile, "compile", detail::flags_profile_string(compile_flags));
+        detail::append_profile_field(profile, "cpp", detail::flags_profile_string(cpp_flags));
         return profile;
     }
 
@@ -1348,12 +1371,12 @@ private:
             const auto stored_profile = header.substr(std::string_view{"profile\t"}.size());
             if (stored_profile != current_profile) {
                 object_cache_miss_reason = "flag_change";
-                object_cache_profile_diff = diff_object_cache_profiles(stored_profile, current_profile);
+                object_cache_profile_diff = detail::diff_object_cache_profiles(stored_profile, current_profile);
                 auto msg = "Object cache profile changed; invalidating compile cache"s;
                 if(object_cache_profile_diff and not object_cache_profile_diff->empty())
                 {
                     msg += " (";
-                    msg += format_profile_diff_message(*object_cache_profile_diff);
+                    msg += detail::format_profile_diff_message(*object_cache_profile_diff);
                     msg += ')';
                 }
                 log::info(msg);
@@ -1788,13 +1811,13 @@ private:
         signature += "|";
         signature += dependency_signature(std_obj_path());
         signature += "|flags=";
-        signature += flags_profile_string(compile_flags);
+        signature += detail::flags_profile_string(compile_flags);
         signature += "|link=";
-        signature += flags_profile_string(link_flags);
+        signature += detail::flags_profile_string(link_flags);
         signature += "|modules=";
-        signature += flags_profile_string(module_flags);
+        signature += detail::flags_profile_string(module_flags);
         signature += "|imports=";
-        signature += flags_profile_string(collect_module_ldflags(tu.imports));
+        signature += detail::flags_profile_string(collect_module_ldflags(tu.imports));
         return signature;
     }
 
@@ -1841,7 +1864,7 @@ private:
         auto flags = string_list{};
         for(const auto& tu : units_in_topological_order)
             if(tu.is_test and not tu.has_main)
-                append_argv(flags, collect_module_ldflags(tu.imports));
+                detail::append_argv(flags, collect_module_ldflags(tu.imports));
         return flags;
     }
 
@@ -1880,17 +1903,17 @@ private:
         signature += "|";
         signature += dependency_signature(std_obj_path());
         signature += "|flags=";
-        signature += flags_profile_string(compile_flags);
+        signature += detail::flags_profile_string(compile_flags);
         signature += "|link=";
-        signature += flags_profile_string(link_flags);
+        signature += detail::flags_profile_string(link_flags);
         signature += "|modules=";
-        signature += flags_profile_string(module_flags);
+        signature += detail::flags_profile_string(module_flags);
 
         auto import_flags = collect_test_module_ldflags();
         if(const auto* test_runner = find_test_runner_unit())
-            append_argv(import_flags, collect_module_ldflags(test_runner->imports));
+            detail::append_argv(import_flags, collect_module_ldflags(test_runner->imports));
         signature += "|imports=";
-        signature += flags_profile_string(import_flags);
+        signature += detail::flags_profile_string(import_flags);
         
         return signature;
     }
@@ -2075,7 +2098,7 @@ public:
         build_end_emitted = false;
 
         if (cb::jsonl::enabled()) {
-            cb::jsonl::sink().build_start(config_name(config), false, include_examples);
+            cb::jsonl::sink().build_start(detail::config_name(config), false, include_examples);
         }
 
         // Ensure build directories exist (they may have been removed by clean())
@@ -2113,7 +2136,7 @@ public:
         phase_started = build_started;
         build_end_emitted = false;
         if(cb::jsonl::enabled())
-            cb::jsonl::sink().build_start(config_name(config), true, include_examples);
+            cb::jsonl::sink().build_start(detail::config_name(config), true, include_examples);
 
         include_tests = true;
         build();
@@ -2136,7 +2159,7 @@ public:
             env_storage.push_back(std::string{key} + '=' + std::string{value});
             ::putenv(env_storage.back().data());
         };
-        set_env("TESTER_CONFIG", config_name(config));
+        set_env("TESTER_CONFIG", detail::config_name(config));
         if(cb::jsonl::enabled())
         {
             const auto parent = cb::jsonl::ctx().get_run_id();
@@ -2171,7 +2194,7 @@ public:
                     max_level = std::max(max_level, tu.dependency_level);
             }
             cb::jsonl::sink().list_start(
-                config_name(config),
+                detail::config_name(config),
                 include_tests,
                 include_examples,
                 source_dir);
@@ -2181,7 +2204,7 @@ public:
                     tu.unit,
                     path,
                     tu.module,
-                    unit_kind_name(tu.kind),
+                    detail::unit_kind_name(tu.kind),
                     tu.imports,
                     tu.dependency_level,
                     tu.has_main,
@@ -2200,25 +2223,6 @@ public:
 };
 
 } // namespace cb
-
-using namespace std::string_literals;
-
-static std::string shell_quote(std::string_view arg)
-{
-    // POSIX shell single-quote escaping: ' -> '\'' 
-    auto out = std::string{};
-    out.reserve(arg.size() + 2);
-    out.push_back('\'');
-    for(const char ch : arg)
-    {
-        if(ch == '\'')
-            out.append("'\\''");
-        else
-            out.push_back(ch);
-    }
-    out.push_back('\'');
-    return out;
-}
 
 namespace {
 
@@ -2250,6 +2254,8 @@ void note_test_runner_jsonl(std::string_view arg, bool& machine_output)
 }
 
 } // namespace
+
+using namespace std::string_literals;
 
 int main(int argc, char* argv[])
 try {
@@ -2345,21 +2351,21 @@ try {
             }
         } else if (argument == "--link-flags") {
             if (i+1 < argc) {
-                extra_link_flags = cb::parse_external_flag_text(argv[++i]);
+                extra_link_flags = cb::detail::parse_external_flag_text(argv[++i]);
             } else {
                 cb::log::error("Missing flags after --link-flags");
                 std::exit(1);
             }
         } else if (argument == "--compile-flags" or argument == "--extra-compile-flags") {
             if (i+1 < argc) {
-                extra_compile_flags = cb::parse_external_flag_text(argv[++i]);
+                extra_compile_flags = cb::detail::parse_external_flag_text(argv[++i]);
             } else {
                 cb::log::error("Missing flags after --compile-flags");
                 std::exit(1);
             }
         } else if (argument.starts_with("--compile-flags=") or argument.starts_with("--extra-compile-flags=")) {
             const auto eq = argument.find('=');
-            extra_compile_flags = cb::parse_external_flag_text(argument.substr(eq + 1));
+            extra_compile_flags = cb::detail::parse_external_flag_text(argument.substr(eq + 1));
         } else if (argument == "help" or argument == "-h" or argument == "--help") {
             std::cout << "Usage: " << argv[0] << " [std.cppm] [options]\n\n"
                       << "Options:\n"
@@ -2418,7 +2424,7 @@ try {
     cb::jsonl::reset();
     cb::jsonl::initialize_session();
     if (cb::jsonl::enabled())
-        std::atexit(cb::jsonl_atexit_handler);
+        std::atexit(cb::jsonl::atexit_handler);
 
     auto include_flags = cb::string_list{};
     for(const auto& path : include_paths)
