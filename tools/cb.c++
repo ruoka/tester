@@ -168,6 +168,20 @@ inline string_list shell_words(std::string_view text)
     return argv;
 }
 
+template<std::ranges::input_range R>
+inline std::string join_with(R&& items, std::string_view sep)
+{
+    return std::ranges::fold_left(
+        std::forward<R>(items),
+        std::string{},
+        [sep](std::string out, const auto& item) {
+            if(not out.empty())
+                out += sep;
+            out += item;
+            return out;
+        });
+}
+
 inline std::string join_argv(const string_list& argv)
 {
     return std::ranges::fold_left(
@@ -352,14 +366,7 @@ inline std::string format_token_list(const string_list& tokens, std::size_t max_
     if(tokens.empty())
         return {};
 
-    auto out = ""s;
-    const auto limit = std::min(tokens.size(), max_tokens);
-    for(std::size_t i = 0; i < limit; ++i)
-    {
-        if(i)
-            out += ", ";
-        out += tokens[i];
-    }
+    auto out = join_with(tokens | std::views::take(max_tokens), ", "sv);
     if(tokens.size() > max_tokens)
         out += ", ... (" + std::to_string(tokens.size() - max_tokens) + " more)";
     return out;
@@ -375,15 +382,7 @@ inline std::string format_token_change_summary(std::string_view name, const prof
     if(parts.empty())
         return {};
 
-    auto out = std::string{name};
-    out += ": ";
-    for(std::size_t i = 0; i < parts.size(); ++i)
-    {
-        if(i)
-            out += ", ";
-        out += parts[i];
-    }
-    return out;
+    return std::string{name} + ": " + join_with(parts, ", "sv);
 }
 
 inline std::string format_profile_diff_message(const object_cache_profile_diff& diff, std::size_t max_tokens = 8)
@@ -412,14 +411,7 @@ inline std::string format_profile_diff_message(const object_cache_profile_diff& 
             parts.push_back(std::move(summary));
     }
 
-    auto out = ""s;
-    for(std::size_t i = 0; i < parts.size(); ++i)
-    {
-        if(i)
-            out += "; ";
-        out += parts[i];
-    }
-    return out;
+    return join_with(parts, "; "sv);
 }
 
 inline void write_profile_diff_scalar(std::ostream& os, const profile_scalar_change& change)
@@ -429,19 +421,8 @@ inline void write_profile_diff_scalar(std::ostream& os, const profile_scalar_cha
 
 inline void write_profile_diff_tokens(std::ostream& os, const profile_token_change& change)
 {
-    os << "{\"added\":[";
-    for(std::size_t i = 0; i < change.added.size(); ++i)
-    {
-        if(i) os << ',';
-        os << '"' << cb_jsonl::escape(change.added[i]) << '"';
-    }
-    os << "],\"removed\":[";
-    for(std::size_t i = 0; i < change.removed.size(); ++i)
-    {
-        if(i) os << ',';
-        os << '"' << cb_jsonl::escape(change.removed[i]) << '"';
-    }
-    os << "]}";
+    os << "{\"added\":[" << cb_jsonl::join_json_strings(change.added)
+       << "],\"removed\":[" << cb_jsonl::join_json_strings(change.removed) << "]}";
 }
 
 inline std::string serialize_object_cache_profile_diff(const object_cache_profile_diff& diff)

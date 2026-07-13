@@ -4,9 +4,11 @@
 
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <mutex>
 #include <ostream>
+#include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
@@ -18,26 +20,29 @@ namespace cb_jsonl {
 
 using ::jsonl::escape;
 
+inline std::string join_json_strings(std::span<const std::string> values)
+{
+    return std::ranges::fold_left(
+        values,
+        std::string{},
+        [](std::string acc, const std::string& value) {
+            if(not acc.empty())
+                acc += ',';
+            acc += '"';
+            acc += escape(value);
+            acc += '"';
+            return acc;
+        });
+}
+
 inline void write_argv(std::ostream& os, std::span<const std::string> argv)
 {
-    os << ",\"argv\":[";
-    for(std::size_t i = 0; i < argv.size(); ++i)
-    {
-        if(i) os << ',';
-        os << '"' << escape(argv[i]) << '"';
-    }
-    os << ']';
+    os << ",\"argv\":[" << join_json_strings(argv) << ']';
 }
 
 inline void write_string_array(std::ostream& os, std::string_view field, std::span<const std::string> values)
 {
-    os << ",\"" << field << "\":[";
-    for(std::size_t i = 0; i < values.size(); ++i)
-    {
-        if(i) os << ',';
-        os << '"' << escape(values[i]) << '"';
-    }
-    os << ']';
+    os << ",\"" << field << "\":[" << join_json_strings(values) << ']';
 }
 
 struct sink
