@@ -26,7 +26,7 @@ On first run, **`CB.sh.core` bootstraps CB itself** — it compiles `tools/cb.c+
 
 `tools/cb.c++` and `tools/cb-*.h++` use **ISO C++23 and the standard library** — not POSIX APIs in the build path.
 
-- **Subprocesses:** `std::system` only (until the standard provides something better). No `popen`, `fork`, `execve`, or `posix_spawn`.
+- **Subprocesses:** `std::system` only (until the standard provides something better). No `popen`, `fork`, `execve`, or `posix_spawn`. Build a `string_list argv`; `invoke_shell(argv)` is the sole `join_argv` → `system()` boundary (compile, link, `test_runner`).
 - **Probes / capture:** redirect child stdout to a file (`compiler-version.txt`, self-test temp files), read with `std::ifstream`.
 - **Invoked toolchain:** `clang++` and `lld` are external programs; calling them via `std::system` is expected.
 

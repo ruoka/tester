@@ -1142,8 +1142,15 @@ private:
     // General Utilities
     // ============================================================================
 
-    void execute_system_command(const string_list& argv) const
+    // Sole shell boundary: argv is the source of truth; join_argv + system() only here.
+    int invoke_shell(const string_list& argv) const
     {
+        if(argv.empty())
+        {
+            handle_build_error("invoke_shell: empty argv");
+            std::exit(1);
+        }
+
         auto cmd_str = join_argv(argv);
         // Human logs are suppressed in JSONL mode; still emit machine-readable command events.
         if (cb::jsonl::enabled())
@@ -1157,8 +1164,14 @@ private:
 
         if (cb::jsonl::enabled())
             cb::jsonl::sink().command_end(cmd_str, argv, r == 0, r, started, finished);
-        if (r)
+        return r;
+    }
+
+    void execute_system_command(const string_list& argv) const
+    {
+        if(const auto r = invoke_shell(argv); r)
         {
+            auto cmd_str = join_argv(argv);
             // Best-effort recovery from stale PCM / module cache issues:
             // If a module-related command fails, clear the pcm directory and retry once.
             auto looks_module_related = [](std::string_view s) {
@@ -1197,11 +1210,6 @@ private:
             handle_build_error("Command failed: "s + cmd_str);
             std::exit(1);
         }
-    }
-
-    void execute_system_command(std::string_view cmd) const
-    {
-        execute_system_command(shell_words(cmd));
     }
 
     void emit_compile_start(const translation_unit& tu,
@@ -1312,6 +1320,99 @@ private:
         argv.push_back("-c");
         argv.push_back("-o");
         argv.push_back(tu.object_path);
+        return argv;
+    }
+
+    string_list build_std_pcm_argv() const
+    {
+        auto argv = string_list{};
+        argv.push_back(llvm_cxx);
+        append_shell_words(argv, compile_flags);
+        append_shell_words(argv, cpp_flags);
+        argv.push_back("-nostdinc++");
+        argv.push_back("-isystem");
+        argv.push_back(llvm_prefix + "/include/c++/v1");
+        argv.push_back("-Wno-unused-command-line-argument");
+        argv.push_back("-fno-implicit-modules");
+        argv.push_back("-fno-implicit-module-maps");
+        argv.push_back("-Wno-reserved-module-identifier");
+        argv.push_back(std_module_source);
+        argv.push_back("--precompile");
+        argv.push_back("-o");
+        argv.push_back(std_pcm_path());
+        return argv;
+    }
+
+    string_list build_std_o_argv() const
+    {
+        auto argv = string_list{};
+        argv.push_back(llvm_cxx);
+        append_shell_words(argv, "-std=c++23 -pthread -fPIC -fexperimental-library -Wall -Wextra");
+        if(os_name() == "darwin")
+            argv.push_back("-fapplication-extension");
+        if(config == build_config::release)
+            append_shell_words(argv, "-O3 -DNDEBUG");
+        else
+            append_shell_words(argv, "-O0 -g");
+        argv.push_back("-fno-implicit-modules");
+        argv.push_back("-fno-implicit-module-maps");
+        argv.push_back("-fmodule-file=std=" + std_pcm_path());
+        argv.push_back(std_pcm_path());
+        argv.push_back("-c");
+        argv.push_back("-o");
+        argv.push_back(std_obj_path());
+        return argv;
+    }
+
+    string_list link_executable_argv(const translation_unit& tu, const string_list& shared_objects) const
+    {
+        auto argv = string_list{};
+        argv.push_back(llvm_cxx);
+        append_shell_words(argv, compile_flags);
+        append_shell_words(argv, collect_module_ldflags(tu.imports));
+        append_shell_words(argv, module_flags);
+        argv.push_back(tu.object_path);
+        for(const auto& object_path : shared_objects)
+            argv.push_back(object_path);
+        argv.push_back(std_obj_path());
+        append_shell_words(argv, link_flags);
+        argv.push_back("-o");
+        argv.push_back(tu.executable_path);
+        return argv;
+    }
+
+    string_list link_test_runner_argv(const std::string& output_path,
+                                      const std::string& test_runner_obj,
+                                      const translation_unit* test_runner) const
+    {
+        auto argv = string_list{};
+        argv.push_back(llvm_cxx);
+        append_shell_words(argv, compile_flags);
+        if(test_runner)
+            append_shell_words(argv, collect_module_ldflags(test_runner->imports));
+        else
+            append_shell_words(argv, collect_test_module_ldflags());
+        append_shell_words(argv, module_flags);
+        if(not test_runner_obj.empty())
+            argv.push_back(test_runner_obj);
+        for(const auto& object_path : linkable_object_paths())
+            argv.push_back(object_path);
+        for(const auto& tu : units_in_topological_order)
+            if(tu.is_test and not tu.has_main)
+                argv.push_back(tu.object_path);
+        argv.push_back(std_obj_path());
+        append_shell_words(argv, link_flags);
+        argv.push_back("-o");
+        argv.push_back(output_path);
+        return argv;
+    }
+
+    string_list test_runner_argv(const std::string& runner, const std::vector<std::string>& args) const
+    {
+        auto argv = string_list{};
+        argv.push_back(runner);
+        for(const auto& arg : args)
+            argv.push_back(arg);
         return argv;
     }
 
@@ -1728,12 +1829,7 @@ private:
             fs::last_write_time(std_pcm) >= fs::last_write_time(std_module_source))
             return;
 
-        auto cmd = llvm_cxx + " " + compile_flags + cpp_flags +
-                   " -nostdinc++ -isystem " + llvm_prefix + "/include/c++/v1 "
-                   " -Wno-unused-command-line-argument -fno-implicit-modules "
-                   " -fno-implicit-module-maps -Wno-reserved-module-identifier "
-                   + std_module_source + " --precompile -o " + std_pcm;
-        execute_system_command(cmd);
+        execute_system_command(build_std_pcm_argv());
     }
 
     void build_std_o() {
@@ -1743,23 +1839,7 @@ private:
         if (fs::exists(std_obj) and fs::last_write_time(std_obj) >= fs::last_write_time(std_pcm))
             return;
 
-        auto os = os_name();
-        auto is_darwin = (os == "darwin");
-        
-        std::string std_obj_flags = "-std=c++23 -pthread -fPIC -fexperimental-library -Wall -Wextra ";
-        if (is_darwin)
-            std_obj_flags += "-fapplication-extension ";
-        if (config == build_config::release) {
-            std_obj_flags += "-O3 -DNDEBUG ";
-        } else {
-            std_obj_flags += "-O0 -g ";
-        }
-        
-        std_obj_flags += "-fno-implicit-modules -fno-implicit-module-maps ";
-        std_obj_flags += "-fmodule-file=std=" + std_pcm + " ";
-        
-        auto cmd = llvm_cxx + " " + std_obj_flags + std_pcm + " -c -o " + std_obj;
-        execute_system_command(cmd);
+        execute_system_command(build_std_o_argv());
     }
 
     // ============================================================================
@@ -1843,19 +1923,7 @@ private:
 
     void link_executable(const translation_unit& tu, const string_list& shared_objects) {
         if (not tu.has_main) return;
-
-        auto objects = tu.object_path + " ";
-        for (const auto& object_path : shared_objects)
-            objects += object_path + " ";
-
-        auto cmd = llvm_cxx + " " + compile_flags + " " +
-                collect_module_ldflags(tu.imports) + " " +
-                module_flags + " " +
-                objects +
-                std_obj_path() + " " +
-                link_flags + " -o " + tu.executable_path;
-
-        execute_system_command(cmd);
+        execute_system_command(link_executable_argv(tu, shared_objects));
     }
 
     std::string dependency_signature(const std::string& path) const {
@@ -2016,30 +2084,11 @@ private:
         }
 
         const auto link_started = std::chrono::steady_clock::now();
-        // Link test_runner
-        if (test_runner) {
-            auto cmd = llvm_cxx + " " + compile_flags + " " +
-                    collect_module_ldflags(test_runner->imports) + " " +
-                    module_flags + " " +
-                    test_runner->object_path + " " +
-                    collect_linkable_objects() + // Regular (non-main, non-test) objects
-                    objects + // Test objects
-                    std_obj_path()  + " " + link_flags +
-                    " -o " + test_runner->executable_path;
-            execute_system_command(cmd);
+        execute_system_command(link_test_runner_argv(test_runner_path, test_runner_obj, test_runner));
+        if(test_runner)
             log::success("test_runner linked with test objects");
-        } else {
-            // Auto-create test_runner (no source file, so compute path directly)
-            auto cmd = llvm_cxx + " " + compile_flags + " " +
-                    collect_test_module_ldflags() + " " +
-                    module_flags + " " +
-                    collect_linkable_objects() + // Regular (non-main, non-test) objects
-                    objects + // Test objects
-                    std_obj_path() + " " + link_flags +
-                    " -o " + test_runner_path;
-            execute_system_command(cmd);
+        else
             log::success("test_runner linked successfully");
-        }
         
         emit_link_end(test_runner_path, true, false, link_started, std::chrono::steady_clock::now());
 
@@ -2258,26 +2307,25 @@ public:
         build_end_emitted = true;
         current_phase = jsonl::phase::none;
 
-        auto cmd = runner;
-        for (const auto& a : args)
-            cmd += " " + shell_quote(a);
+        auto env_storage = std::vector<std::string>{};
+        auto set_env = [&](std::string_view key, std::string_view value) {
+            env_storage.push_back(std::string{key} + '=' + std::string{value});
+            ::putenv(env_storage.back().data());
+        };
+        set_env("TESTER_CONFIG", config_name(config));
+        if(cb::jsonl::enabled())
         {
-            auto env_prefix = "TESTER_CONFIG=" + shell_quote(std::string{config_name(config)}) + " ";
-            if (cb::jsonl::enabled()) {
-                const auto parent = cb::jsonl::ctx().get_run_id();
-                if (not parent.empty())
-                    env_prefix = "TESTER_PARENT_RUN_ID=" + shell_quote(std::string{parent}) + " " + env_prefix;
-            }
-            cmd = env_prefix + cmd;
+            const auto parent = cb::jsonl::ctx().get_run_id();
+            if(not parent.empty())
+                set_env("TESTER_PARENT_RUN_ID", parent);
         }
-        log::command(cmd);
 
         const auto test_started = std::chrono::steady_clock::now();
         current_phase = jsonl::phase::test;
         phase_started = test_started;
         cb::jsonl::sink().test_start(runner);
 
-        const auto r = system(cmd.c_str());
+        const auto r = invoke_shell(test_runner_argv(runner, args));
         const auto test_finished = std::chrono::steady_clock::now();
         cb::jsonl::sink().test_end(r == 0, r, r, false, 0, test_started, test_finished);
         current_phase = jsonl::phase::none;

@@ -133,7 +133,7 @@ Code under `tools/` (CB) and `tester/` must use **ISO C++ and the standard libra
 
 | Area | Rule |
 |------|------|
-| **Subprocesses** | `std::system` only (`<cstdlib>`) until the standard ships a better process API. No `popen`, `fork`, `execve`, or `posix_spawn`. |
+| **Subprocesses** | `std::system` only (`<cstdlib>`) until the standard ships a better process API. No `popen`, `fork`, `execve`, or `posix_spawn`. Build a `string_list argv`; **`invoke_shell(argv)`** is the sole `join_argv` → `system()` boundary (compile, link, test_runner). |
 | **Child output** | Shell redirect to a stamp/temp file, then `std::ifstream` / `std::getline` (e.g. `cache/compiler-version.txt`, `selftest_spawn.h++`). |
 | **External toolchain** | CB invokes installed `clang++` / `lld` as external programs; that is not a deviation — the constraint applies to **our** source, not which compiler you install. |
 | **Stack traces (exception)** | `test_runner.c++` uses `<execinfo.h>` (`backtrace`, `backtrace_symbols_fd`) on `SIGSEGV` / `SIGABRT`. glibc / macOS only — not portable ISO C++. No standard equivalent today. |
@@ -175,7 +175,7 @@ std::ranges::set_difference(new_tokens, old_tokens, std::back_inserter(added));
 for (auto&& part : std::views::split(line, '\t')) { ... }
 ```
 
-**Subprocess I/O** — see [Implementation policy](#implementation-policy-standard-c-only) above. `std::system` + stamp/temp file + `std::ifstream` for probes and self-test capture; never `popen` / `fork` / `exec`.
+**Subprocess I/O** — see [Implementation policy](#implementation-policy-standard-c-only) above. All toolchain commands go through `invoke_shell(argv)`; probes/self-tests use stamp/temp file + `std::ifstream`. Test env uses `putenv` + `invoke_shell` (not shell env prefixes). Never `popen` / `fork` / `exec`.
 
 **When custom code is fine** — shell-word tokenization (`append_shell_words`), topological sort, graph walks, and domain-specific cache logic. Do not reimplement `set_difference`, substring search, or map membership by hand.
 
