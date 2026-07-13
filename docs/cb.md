@@ -11,7 +11,7 @@ This document explains **what CB is for**, **when to use it**, and **how it comp
 CB is optimized for **pure C++23 module projects** that follow ruoka layout conventions:
 
 - **Discovery** — scans `*.c++m`, `*.c++`, `*.impl.c++`, and `*.test.c++` under configured include roots
-- **Module graph** — uses `clang-scan-deps` to parse `import` lines and build a dependency graph
+- **Module graph** — scans source preambles for `import` / `export module` and builds a dependency graph (no `clang-scan-deps` in `cb.c++`)
 - **Topological compile order** — compiles module interfaces and partitions before importers; emits PCM files under `build-<os>-<config>/pcm/`
 - **Incremental caching** — skips recompilation when source timestamps and transitive PCM dependencies are unchanged (`cache_hit`, `rebuild_reason` in JSONL); compile cache invalidated when the **toolchain profile** changes (flags, compiler path, `std.cppm`, …); link step skipped when object signature unchanged
 - **Parallel builds** — compiles independent translation units concurrently
@@ -21,6 +21,16 @@ CB is optimized for **pure C++23 module projects** that follow ruoka layout conv
 Artifacts land in `build-<os>-<config>/` (`pcm/`, `obj/`, `bin/`, `cache/`). Examples: `build-linux-debug/`, `build-darwin-release/`.
 
 On first run, **`CB.sh.core` bootstraps CB itself** — it compiles `tools/cb.c++` into `build-*/bin/cb`. No separate build-tool install beyond a capable `clang++` and `std.cppm`.
+
+### Implementation: standard C++ only
+
+`tools/cb.c++` and `tools/cb-*.h++` use **ISO C++23 and the standard library** — not POSIX APIs in the build path.
+
+- **Subprocesses:** `std::system` only (until the standard provides something better). No `popen`, `fork`, `execve`, or `posix_spawn`.
+- **Probes / capture:** redirect child stdout to a file (`compiler-version.txt`, self-test temp files), read with `std::ifstream`.
+- **Invoked toolchain:** `clang++` and `lld` are external programs; calling them via `std::system` is expected.
+
+The **test runner** is separate: crash **stack traces** in `test_runner.c++` use `<execinfo.h>` (`backtrace`, `backtrace_symbols_fd`) — POSIX/glibc/macOS only, not ISO C++. That is the deliberate exception; see [AGENTS.md — Implementation policy](../AGENTS.md#implementation-policy-standard-c-only).
 
 ---
 

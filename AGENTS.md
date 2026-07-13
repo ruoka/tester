@@ -127,6 +127,19 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 
 Prefer the **standard library** over hand-rolled loops and iterator idioms. The project targets **C++23**.
 
+### Implementation policy (standard C++ only)
+
+Code under `tools/` (CB) and `tester/` must use **ISO C++ and the standard library** — not POSIX-specific APIs — except where noted below.
+
+| Area | Rule |
+|------|------|
+| **Subprocesses** | `std::system` only (`<cstdlib>`) until the standard ships a better process API. No `popen`, `fork`, `execve`, or `posix_spawn`. |
+| **Child output** | Shell redirect to a stamp/temp file, then `std::ifstream` / `std::getline` (e.g. `cache/compiler-version.txt`, `selftest_spawn.h++`). |
+| **External toolchain** | CB invokes installed `clang++` / `lld` as external programs; that is not a deviation — the constraint applies to **our** source, not which compiler you install. |
+| **Stack traces (exception)** | `test_runner.c++` uses `<execinfo.h>` (`backtrace`, `backtrace_symbols_fd`) on `SIGSEGV` / `SIGABRT`. glibc / macOS only — not portable ISO C++. No standard equivalent today. |
+
+Do not add new POSIX-only paths when a `std::system` + file-read pattern or pure stdlib code suffices.
+
 **Associative containers** — use `contains` / `at`, not `find(...) != end()`:
 
 ```cpp
@@ -162,7 +175,7 @@ std::ranges::set_difference(new_tokens, old_tokens, std::back_inserter(added));
 for (auto&& part : std::views::split(line, '\t')) { ... }
 ```
 
-**Subprocess I/O** — `std::system` is standard C++ (`<cstdlib>`). For toolchain probes, redirect once to a stamp file under `cache/` and read with `std::ifstream` / `std::getline` (see `compiler-version.txt` + `clang_ver` profile field). Do not use `popen` when this pattern suffices.
+**Subprocess I/O** — see [Implementation policy](#implementation-policy-standard-c-only) above. `std::system` + stamp/temp file + `std::ifstream` for probes and self-test capture; never `popen` / `fork` / `exec`.
 
 **When custom code is fine** — shell-word tokenization (`append_shell_words`), topological sort, graph walks, and domain-specific cache logic. Do not reimplement `set_difference`, substring search, or map membership by hand.
 

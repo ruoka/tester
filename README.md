@@ -236,7 +236,7 @@ build-linux/bin/test_runner --tags="scenario.*Happy"
 
 ## Built-in Builder (CB)
 
-Tester ships with **CB** (`tools/cb.c++`), a module-aware build system in a single file. CB discovers translation units, topologically sorts module imports, compiles in parallel, and caches object files incrementally. **CB is the default path for standalone clones**; parent repos embed tester under `deps/tester` and build through their own `tools/CB.sh` wrapper — [YarDB](https://github.com/ruoka/YarDB) is the public reference layout. For design rationale and comparison with CMake, Make, and other tools, see [`docs/cb.md`](docs/cb.md).
+Tester ships with **CB** (`tools/cb.c++`), a module-aware build system in a single file. CB discovers translation units, topologically sorts module imports, compiles in parallel, and caches object files incrementally. **CB is the default path for standalone clones**; parent repos embed tester under `deps/tester` and build through their own `tools/CB.sh` wrapper — [YarDB](https://github.com/ruoka/YarDB) is the public reference layout. For design rationale and comparison with CMake, Make, and other tools, see [`docs/cb.md`](docs/cb.md). Implementation uses **standard C++ only** (`std::system` for subprocesses); crash stack traces in `test_runner` are the POSIX `<execinfo.h>` exception — see [AGENTS.md — Implementation policy](AGENTS.md#implementation-policy-standard-c-only).
 
 ```bash
 ./tools/CB.sh debug build          # compile project + tests

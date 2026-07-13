@@ -145,7 +145,8 @@ Design rationale and comparison with CMake, Make, and other build tools: [`docs/
 - ✅ `cache invalidate` subcommand (human + JSONL `cache_invalidate_end`).
 - ✅ `profile_changed` JSONL event (single `profile_diff` on flag mismatch).
 - ✅ Profile value `%XX` escaping; legacy cache upgrade log + smoke.
-- ✅ Parallel compilation, topological module sort, `clang-scan-deps` integration.
+- ✅ Parallel compilation, topological module sort, preamble `import` scan in `cb.c++`.
+- ✅ CB / tester implementation policy: standard C++ + `std::system` only; stack traces in `test_runner` via `<execinfo.h>` (POSIX exception).
 - ✅ `debug` / `release` configurations; `clean`, `list`, `ci`, `--build-tests`.
 - 📋 Multiple custom configurations beyond debug/release (e.g. `asan`, `coverage`).
 - 📋 Export compile/link graph as JSON for external tools.
