@@ -202,7 +202,7 @@ Do **not** add defensive parsers or legacy upgrade paths for on-disk formats tha
 
 **Subprocess I/O** — see [Implementation policy](#implementation-policy-standard-c-only) above. All toolchain commands go through `invoke_shell(argv)`; probes/self-tests use stamp/temp file + `std::ifstream`. Test env uses `putenv` + `invoke_shell` (not shell env prefixes). Never `popen` / `fork` / `exec`.
 
-**When custom code is fine** — shell-word tokenization (`append_shell_words`), topological sort, module graph walks, percent-encoding, and domain-specific cache logic. Do not reimplement `set_difference`, substring search, map membership, or **delimiter-join loops** by hand.
+**When custom code is fine** — whitespace flag tokenization (`append_whitespace_tokens` for CB-built flag strings; not POSIX shell quoting), topological sort, module graph walks, percent-encoding, and domain-specific cache logic. Do not reimplement `set_difference`, substring search, map membership, or **delimiter-join loops** by hand.
 
 ## Do not
 

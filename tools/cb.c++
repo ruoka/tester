@@ -27,7 +27,6 @@
 #include <ranges>
 #include <utility>
 #include <stdexcept>
-#include <cctype>
 #include <charconv>
 #include "cb-jsonl_sink.h++"
 #include "cb-console_sink.h++"
@@ -141,29 +140,29 @@ inline std::string_view unit_kind_name(unit_kind kind)
 using suffix_list = std::vector<std::string>;
 using string_list = std::vector<std::string>;
 
-inline void append_shell_words(string_list& argv, std::string_view text)
+// Whitespace-separated flag tokens (CB-built strings and --compile-flags).
+// Not POSIX shell parsing — no quotes, escapes, or $ expansion.
+inline void append_whitespace_tokens(string_list& argv, std::string_view text)
 {
-    auto i = std::size_t{0};
-    const auto n = text.size();
-    while(i < n)
+    constexpr auto whitespace = " \t\n\r"sv;
+    while(not text.empty())
     {
-        while(i < n && std::isspace(static_cast<unsigned char>(text[i])))
-            ++i;
-        if(i >= n)
+        const auto start = text.find_first_not_of(whitespace);
+        if(start == std::string_view::npos)
             break;
-
-        auto j = i;
-        while(j < n && !std::isspace(static_cast<unsigned char>(text[j])))
-            ++j;
-        argv.emplace_back(text.substr(i, j - i));
-        i = j;
+        text.remove_prefix(start);
+        const auto end = text.find_first_of(whitespace);
+        argv.emplace_back(text.substr(0, end));
+        if(end == std::string_view::npos)
+            break;
+        text.remove_prefix(end);
     }
 }
 
-inline string_list shell_words(std::string_view text)
+inline string_list whitespace_tokens(std::string_view text)
 {
     auto argv = string_list{};
-    append_shell_words(argv, text);
+    append_whitespace_tokens(argv, text);
     return argv;
 }
 
@@ -279,8 +278,8 @@ using object_cache_profile_diff = cb_jsonl::object_cache_profile_diff;
 
 inline profile_token_change diff_profile_tokens(std::string_view old_text, std::string_view new_text)
 {
-    auto old_tokens = shell_words(old_text);
-    auto new_tokens = shell_words(new_text);
+    auto old_tokens = whitespace_tokens(old_text);
+    auto new_tokens = whitespace_tokens(new_text);
     std::ranges::sort(old_tokens);
     std::ranges::sort(new_tokens);
 
@@ -1139,15 +1138,15 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        append_shell_words(argv, compile_flags);
-        append_shell_words(argv, cpp_flags);
+        append_whitespace_tokens(argv, compile_flags);
+        append_whitespace_tokens(argv, cpp_flags);
         return argv;
     }
 
     string_list precompile_argv(const translation_unit& tu) const
     {
         auto argv = base_compile_argv();
-        append_shell_words(argv, module_flags);
+        append_whitespace_tokens(argv, module_flags);
         argv.push_back(tu.full_path);
         argv.push_back("--precompile");
         argv.push_back("-o");
@@ -1159,8 +1158,8 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        append_shell_words(argv, compile_flags);
-        append_shell_words(argv, module_flags);
+        append_whitespace_tokens(argv, compile_flags);
+        append_whitespace_tokens(argv, module_flags);
         argv.push_back(tu.pcm_path);
         argv.push_back("-c");
         argv.push_back("-o");
@@ -1171,7 +1170,7 @@ private:
     string_list source_object_argv(const translation_unit& tu) const
     {
         auto argv = base_compile_argv();
-        append_shell_words(argv, module_flags);
+        append_whitespace_tokens(argv, module_flags);
         if (tu.kind == unit_kind::implementation_unit) {
             auto module_pcm = compute_pcm_path(tu);
             argv.push_back("-fmodule-file=" + tu.module + "=" + module_pcm);
@@ -1187,8 +1186,8 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        append_shell_words(argv, compile_flags);
-        append_shell_words(argv, cpp_flags);
+        append_whitespace_tokens(argv, compile_flags);
+        append_whitespace_tokens(argv, cpp_flags);
         argv.push_back("-nostdinc++");
         argv.push_back("-isystem");
         argv.push_back(llvm_prefix + "/include/c++/v1");
@@ -1207,13 +1206,13 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        append_shell_words(argv, "-std=c++23 -pthread -fPIC -fexperimental-library -Wall -Wextra");
+        append_whitespace_tokens(argv, "-std=c++23 -pthread -fPIC -fexperimental-library -Wall -Wextra");
         if(os_name() == "darwin")
             argv.push_back("-fapplication-extension");
         if(config == build_config::release)
-            append_shell_words(argv, "-O3 -DNDEBUG");
+            append_whitespace_tokens(argv, "-O3 -DNDEBUG");
         else
-            append_shell_words(argv, "-O0 -g");
+            append_whitespace_tokens(argv, "-O0 -g");
         argv.push_back("-fno-implicit-modules");
         argv.push_back("-fno-implicit-module-maps");
         argv.push_back("-fmodule-file=std=" + std_pcm_path());
@@ -1228,14 +1227,14 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        append_shell_words(argv, compile_flags);
-        append_shell_words(argv, collect_module_ldflags(tu.imports));
-        append_shell_words(argv, module_flags);
+        append_whitespace_tokens(argv, compile_flags);
+        append_whitespace_tokens(argv, collect_module_ldflags(tu.imports));
+        append_whitespace_tokens(argv, module_flags);
         argv.push_back(tu.object_path);
         for(const auto& object_path : shared_objects)
             argv.push_back(object_path);
         argv.push_back(std_obj_path());
-        append_shell_words(argv, link_flags);
+        append_whitespace_tokens(argv, link_flags);
         argv.push_back("-o");
         argv.push_back(tu.executable_path);
         return argv;
@@ -1247,12 +1246,12 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        append_shell_words(argv, compile_flags);
+        append_whitespace_tokens(argv, compile_flags);
         if(test_runner)
-            append_shell_words(argv, collect_module_ldflags(test_runner->imports));
+            append_whitespace_tokens(argv, collect_module_ldflags(test_runner->imports));
         else
-            append_shell_words(argv, collect_test_module_ldflags());
-        append_shell_words(argv, module_flags);
+            append_whitespace_tokens(argv, collect_test_module_ldflags());
+        append_whitespace_tokens(argv, module_flags);
         if(not test_runner_obj.empty())
             argv.push_back(test_runner_obj);
         for(const auto& object_path : linkable_object_paths())
@@ -1261,7 +1260,7 @@ private:
             if(tu.is_test and not tu.has_main)
                 argv.push_back(tu.object_path);
         argv.push_back(std_obj_path());
-        append_shell_words(argv, link_flags);
+        append_whitespace_tokens(argv, link_flags);
         argv.push_back("-o");
         argv.push_back(output_path);
         return argv;
