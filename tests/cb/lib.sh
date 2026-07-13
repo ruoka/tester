@@ -130,17 +130,6 @@ run_cb_cache_invalidate() {
   return "${status}"
 }
 
-write_legacy_object_cache() {
-  local cache_file=$1
-  local entry_line
-  entry_line="$(sed -n '2p' "${cache_file}")"
-  if [[ -z "${entry_line}" ]]; then
-    log "legacy cache seed failed: no entry line in ${cache_file}"
-    return 1
-  fi
-  printf '%s\n' "${entry_line}" >"${cache_file}"
-}
-
 object_cache_path() {
   local work_dir=$1
   printf '%s/%s/cache/object-cache.txt' "${work_dir}" "${BUILD_DIR}"

@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, cache_invalidate, flag_change, legacy_cache, cache_status"
+      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, cache_invalidate, flag_change, cache_status"
       exit 0
       ;;
     *)
@@ -152,22 +152,6 @@ test_flag_change() {
   end_case flag_change
 }
 
-test_legacy_cache() {
-  should_run legacy_cache || return 0
-  begin_case legacy_cache
-  local work_dir cache_file
-  work_dir="$(prepare_work_dir)"
-
-  run_cb_build "${work_dir}"
-  cache_file="$(object_cache_path "${work_dir}")"
-  write_legacy_object_cache "${cache_file}"
-
-  run_cb_build "${work_dir}"
-  assert_profile_header "${cache_file}"
-  assert_profile_contains "${cache_file}" 'format=cb-object-cache-v2' "legacy_upgraded_format"
-  end_case legacy_cache
-}
-
 test_cache_status() {
   should_run cache_status || return 0
   begin_case cache_status
@@ -178,7 +162,6 @@ test_cache_status() {
   run_cb_cache_status "${work_dir}"
   assert_jsonl_contains '"type":"cache_status"' "cache_status_event"
   assert_jsonl_contains '"profile_match":true' "cache_status_profile_match"
-  assert_jsonl_contains '"legacy_header":false' "cache_status_not_legacy"
   assert_jsonl_contains 'format=cb-object-cache-v2' "cache_status_current_profile"
   end_case cache_status
 }
@@ -196,7 +179,6 @@ main() {
   test_compile_start
   test_cache_invalidate
   test_flag_change
-  test_legacy_cache
   test_cache_status
 
   local end_ms duration_ms passed

@@ -140,11 +140,11 @@ Design rationale and comparison with CMake, Make, and other build tools: [`docs/
 
 - ✅ Incremental compile cache (`object_cache_map`) and link cache (`link_cache_map`).
 - ✅ Object-cache profile header (`format=cb-object-cache-v2`) with toolchain fields (`cxx`, `cxx_sig`, `clang_ver`, `std_cppm`, flags); invalidates on profile mismatch.
-- ✅ CB smoke harness (`tests/cb/`) and CI `cb-smoke` job (`profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `cache_invalidate`, `flag_change`, `legacy_cache`, `cache_status`).
+- ✅ CB smoke harness (`tests/cb/`) and CI `cb-smoke` job (`profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `cache_invalidate`, `flag_change`, `cache_status`).
 - ✅ `cache status` subcommand (human + JSONL `cache_status`).
 - ✅ `cache invalidate` subcommand (human + JSONL `cache_invalidate_end`).
 - ✅ `profile_changed` JSONL event (single `profile_diff` on flag mismatch).
-- ✅ Profile value `%XX` escaping; legacy cache upgrade log + smoke.
+- ✅ Profile value `%XX` escaping.
 - ✅ Parallel compilation, topological module sort, preamble `import` scan in `cb.c++`.
 - ✅ CB / tester implementation policy: standard C++ + `std::system` only; stack traces in `test_runner` via `<execinfo.h>` (POSIX exception).
 - ✅ `debug` / `release` configurations; `clean`, `list`, `ci`, `--build-tests`.
@@ -185,7 +185,7 @@ Not required for correctness today: profile v2 + timestamp rules already drive r
 
 **Implementation sketch:** scan current TU graph → expected `{obj, pcm}` set; walk `obj/` and `pcm/`; delete files not in set; reconcile `object-cache.txt`. Reuse existing `object_cache_profile()` / `parse_object_cache_profile_fields()` for `status`.
 
-**Smoke / CI:** add `legacy_cache` and `cache_prune` cases only if the subcommand ships.
+**Smoke / CI:** add `cache_prune` cases only if the subcommand ships.
 
 ---
 

@@ -130,7 +130,6 @@ struct sink
 
     void cache_status(std::string_view object_cache_path,
                       bool object_cache_exists,
-                      bool legacy_header,
                       bool profile_match,
                       int object_entries,
                       int object_stale_entries,
@@ -141,7 +140,6 @@ struct sink
         m.json << m.jsonl("cache_status") << [&](std::ostream& os){
             os << ",\"object_cache_path\":\"" << escape(object_cache_path) << "\"";
             os << ",\"object_cache_exists\":" << (object_cache_exists ? "true" : "false");
-            os << ",\"legacy_header\":" << (legacy_header ? "true" : "false");
             os << ",\"profile_match\":" << (profile_match ? "true" : "false");
             os << ",\"object_entries\":" << object_entries;
             os << ",\"object_stale_entries\":" << object_stale_entries;

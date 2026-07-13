@@ -806,7 +806,6 @@ private:
     std::string extra_link_flags;
     mutable std::optional<std::string> object_cache_miss_reason;
     mutable std::optional<object_cache_profile_diff> object_cache_profile_diff;
-    mutable bool object_cache_profile_upgrade_pending = false;
     mutable bool profile_changed_emitted = false;
     
     // JSONL phase tracking state
@@ -1427,7 +1426,6 @@ private:
     object_cache_map load_object_cache() {
         object_cache_miss_reason.reset();
         object_cache_profile_diff.reset();
-        object_cache_profile_upgrade_pending = false;
         profile_changed_emitted = false;
         auto cache = object_cache_map{};
         auto file = std::ifstream{object_cache_path()};
@@ -1456,13 +1454,8 @@ private:
                 return cache;
             }
         } else {
-            // Legacy cache without a profile header — load entries, rewrite on next save.
-            object_cache_profile_upgrade_pending = true;
-            log::info("Legacy object cache without profile header; loaded entries, will upgrade on save"s);
-            auto path = ""s;
-            auto ticks = 0ll;
-            if (parse_object_cache_entry(header, path, ticks) and fs::exists(path))
-                cache[path] = fs::file_time_type{std::chrono::nanoseconds{ticks}};
+            log::info("Object cache missing profile header; ignoring"s);
+            return cache;
         }
 
         auto line = ""s;
@@ -1476,7 +1469,6 @@ private:
     }
 
     void save_object_cache(const object_cache_map& c) {
-        const auto upgrading_legacy = object_cache_profile_upgrade_pending;
         auto tmp = object_cache_path() + ".tmp";
         auto file = std::ofstream{tmp};
         if (file) {
@@ -1490,30 +1482,16 @@ private:
             }
         }
         fs::rename(tmp, object_cache_path());
-        if(upgrading_legacy)
-        {
-            object_cache_profile_upgrade_pending = false;
-            log::info("Upgraded object cache to profile header (" + std::string{object_cache_format} + ")"s);
-        }
     }
 
     static void count_cache_entries(std::istream& file,
-                                    bool header_is_profile,
                                     int& entries,
                                     int& stale_entries,
                                     object_cache_map* loaded = nullptr)
     {
         auto line = ""s;
-        auto first = true;
         while(std::getline(file, line))
         {
-            if(first && header_is_profile)
-            {
-                first = false;
-                continue;
-            }
-            first = false;
-
             auto path = ""s;
             auto ticks = 0ll;
             if(not parse_object_cache_entry(line, path, ticks))
@@ -2099,7 +2077,6 @@ public:
         const auto cache_path = object_cache_path();
         const auto cache_exists = fs::exists(cache_path);
 
-        auto legacy_header = false;
         auto profile_match = false;
         auto object_entries = 0;
         auto object_stale = 0;
@@ -2108,27 +2085,11 @@ public:
         {
             auto file = std::ifstream{cache_path};
             auto header = ""s;
-            if(std::getline(file, header))
+            if(std::getline(file, header) && header.starts_with("profile\t"))
             {
-                if(header.starts_with("profile\t"))
-                {
-                    const auto stored_profile = header.substr(std::string_view{"profile\t"}.size());
-                    profile_match = stored_profile == current_profile;
-                    count_cache_entries(file, true, object_entries, object_stale);
-                }
-                else
-                {
-                    legacy_header = true;
-                    auto path = ""s;
-                    auto ticks = 0ll;
-                    if(parse_object_cache_entry(header, path, ticks))
-                    {
-                        ++object_entries;
-                        if(not fs::exists(path))
-                            ++object_stale;
-                    }
-                    count_cache_entries(file, false, object_entries, object_stale);
-                }
+                const auto stored_profile = header.substr(std::string_view{"profile\t"}.size());
+                profile_match = stored_profile == current_profile;
+                count_cache_entries(file, object_entries, object_stale);
             }
         }
 
@@ -2150,7 +2111,6 @@ public:
             cb::jsonl::sink().cache_status(
                 cache_path,
                 cache_exists,
-                legacy_header,
                 profile_match,
                 object_entries,
                 object_stale,
@@ -2163,7 +2123,6 @@ public:
         log::info("  exists: "s + (cache_exists ? "yes" : "no"));
         if(cache_exists)
         {
-            log::info("  legacy_header: "s + (legacy_header ? "yes" : "no"));
             log::info("  profile_match: "s + (profile_match ? "yes" : "no"));
             log::info("  object_entries: " + std::to_string(object_entries));
             log::info("  object_stale_entries: " + std::to_string(object_stale));
