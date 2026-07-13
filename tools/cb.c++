@@ -170,14 +170,15 @@ inline string_list shell_words(std::string_view text)
 
 inline std::string join_argv(const string_list& argv)
 {
-    auto cmd = std::string{};
-    for(std::size_t i = 0; i < argv.size(); ++i)
-    {
-        if(i)
-            cmd.push_back(' ');
-        cmd += ::shell_quote(argv[i]);
-    }
-    return cmd;
+    return std::ranges::fold_left(
+        argv,
+        std::string{},
+        [](std::string cmd, const std::string& arg) {
+            if(not cmd.empty())
+                cmd.push_back(' ');
+            cmd += ::shell_quote(arg);
+            return cmd;
+        });
 }
 
 using profile_fields = std::flat_map<std::string, std::string, std::less<>>;
