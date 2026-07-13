@@ -452,6 +452,8 @@ using thread_list = std::vector<std::thread>;
 using module_to_ldflags_map = std::flat_map<std::string, std::string>;
 using executable_cache_map = std::flat_map<std::string, std::string>;
 
+inline constexpr std::string_view object_cache_format = "cb-object-cache-v1"sv;
+
 class build_system {
 private:
     std::string source_dir;
@@ -469,6 +471,7 @@ private:
     bool include_examples = false;
     std::string extra_compile_flags;
     std::string extra_link_flags;
+    mutable std::optional<std::string> object_cache_miss_reason;
     
     // JSONL phase tracking state
     jsonl::phase current_phase = jsonl::phase::none;
@@ -927,16 +930,71 @@ private:
     // Cache Management
     // ============================================================================
 
+    std::string object_cache_profile() const {
+        auto profile = ""s;
+        profile.reserve(512);
+        profile += "format=";
+        profile += object_cache_format;
+        profile += "\tconfig=";
+        profile += config_name(config);
+        profile += "\tstatic_link=";
+        profile += static_link ? "1" : "0";
+        profile += "\tllvm=";
+        profile += llvm_prefix;
+        profile += "\tcompile=";
+        profile += compile_flags;
+        profile += "\tcpp=";
+        profile += cpp_flags;
+        return profile;
+    }
+
+    static bool parse_object_cache_entry(const std::string& line, std::string& path, long long& ticks) {
+        if (line.empty() or line.starts_with("profile\t"))
+            return false;
+        const auto tab = line.find('\t');
+        if (tab == std::string::npos)
+            return false;
+        path = line.substr(0, tab);
+        try {
+            ticks = std::stoll(line.substr(tab + 1));
+        } catch (...) {
+            return false;
+        }
+        return not path.empty();
+    }
+
     object_cache_map load_object_cache() {
+        object_cache_miss_reason.reset();
         auto cache = object_cache_map{};
         auto file = std::ifstream{object_cache_path()};
-        if (file) {
-            auto path = ""s;
-            long long ticks = 0;
-            while (std::getline(file, path, '\t') and file >> ticks) {
-                cache[path] = fs::file_time_type{std::chrono::nanoseconds{ticks}};
-                file.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+        if (not file)
+            return cache;
+
+        auto header = ""s;
+        if (not std::getline(file, header))
+            return cache;
+
+        const auto current_profile = object_cache_profile();
+        if (header.starts_with("profile\t")) {
+            if (header.substr(std::string_view{"profile\t"}.size()) != current_profile) {
+                object_cache_miss_reason = "flag_change";
+                log::info("Object cache profile changed; invalidating compile cache"s);
+                return cache;
             }
+        } else {
+            // Legacy cache without a profile header — load entries, rewrite on next save.
+            auto path = ""s;
+            auto ticks = 0ll;
+            if (parse_object_cache_entry(header, path, ticks) and fs::exists(path))
+                cache[path] = fs::file_time_type{std::chrono::nanoseconds{ticks}};
+        }
+
+        auto line = ""s;
+        while (std::getline(file, line)) {
+            auto path = ""s;
+            auto ticks = 0ll;
+            if (parse_object_cache_entry(line, path, ticks) and fs::exists(path))
+                cache[path] = fs::file_time_type{std::chrono::nanoseconds{ticks}};
         }
         return cache;
     }
@@ -945,7 +1003,10 @@ private:
         auto tmp = object_cache_path() + ".tmp";
         auto file = std::ofstream{tmp};
         if (file) {
+            file << "profile\t" << object_cache_profile() << "\n";
             for (const auto& [path, timestamp] : c) {
+                if (not fs::exists(path))
+                    continue;
                 auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(
                     timestamp.time_since_epoch()).count();
                 file << path << "\t" << ticks << "\n";
@@ -987,7 +1048,12 @@ private:
     std::optional<std::string> needs_recompile(const translation_unit& tu, object_cache_map& c, const unit_to_tu_map& u2tu) const {
         // If we have never seen the file (or it changed since last compile), rebuild.
         auto cached = c.find(tu.full_path);
-        if (cached == c.end() or cached->second < tu.last_modified)
+        if (cached == c.end()) {
+            if (object_cache_miss_reason)
+                return *object_cache_miss_reason;
+            return "source_stale";
+        }
+        if (cached->second < tu.last_modified)
             return "source_stale";
 
         // Ensure the object file exists and is up-to-date versus the source timestamp we cached.
