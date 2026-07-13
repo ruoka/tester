@@ -21,7 +21,6 @@
 #include <thread>
 #include <mutex>
 #include <chrono>
-#include <limits>
 #include <iostream>
 #include <algorithm>
 #include <iterator>
@@ -44,7 +43,7 @@ using namespace std::string_view_literals;
 
 namespace jsonl {
 // JSONL state is owned by jsonl_context (no global flags)
-enum class phase { none, build, test };
+enum class phase { none, build };
 
 inline auto& io_mux()
 {
@@ -807,7 +806,6 @@ private:
     std::string extra_link_flags;
     mutable std::optional<std::string> object_cache_miss_reason;
     mutable std::optional<object_cache_profile_diff> object_cache_profile_diff;
-    mutable bool object_cache_legacy_header = false;
     mutable bool object_cache_profile_upgrade_pending = false;
     mutable bool profile_changed_emitted = false;
     
@@ -815,7 +813,6 @@ private:
     jsonl::phase current_phase = jsonl::phase::none;
     std::chrono::steady_clock::time_point phase_started{};
     bool build_end_emitted = false;
-    mutable bool pcm_recovery_attempted = false;
     
     void mark_build_end()
     {
@@ -1172,41 +1169,6 @@ private:
         if(const auto r = invoke_shell(argv); r)
         {
             auto cmd_str = join_argv(argv);
-            // Best-effort recovery from stale PCM / module cache issues:
-            // If a module-related command fails, clear the pcm directory and retry once.
-            auto looks_module_related = [](std::string_view s) {
-                return s.contains("--precompile")
-                    || s.contains("-fmodule-file=")
-                    || s.contains("-fprebuilt-module-path=")
-                    || s.contains(".pcm");
-            };
-
-            /*
-            if (!pcm_recovery_attempted && looks_module_related(cmd_str))
-            {
-                pcm_recovery_attempted = true;
-                const auto dir = module_cache_dir();
-                try
-                {
-                    if (fs::exists(dir))
-                        fs::remove_all(dir);
-                    fs::create_directories(dir);
-                }
-                catch (...) {}
-
-                if (!cb::jsonl::enabled())
-                    log::warning("Suspected stale module cache; cleared "s + dir + " and retrying once");
-
-                const auto retry_started = std::chrono::steady_clock::now();
-                auto retry_r = system(cmd_str.c_str());
-                const auto retry_finished = std::chrono::steady_clock::now();
-                if (cb::jsonl::enabled())
-                    cb::jsonl::sink().command_end(cmd_str, argv, retry_r == 0, retry_r, retry_started, retry_finished);
-                if (retry_r == 0)
-                    return;
-            }
-            */
-
             handle_build_error("Command failed: "s + cmd_str);
             std::exit(1);
         }
@@ -1465,7 +1427,6 @@ private:
     object_cache_map load_object_cache() {
         object_cache_miss_reason.reset();
         object_cache_profile_diff.reset();
-        object_cache_legacy_header = false;
         object_cache_profile_upgrade_pending = false;
         profile_changed_emitted = false;
         auto cache = object_cache_map{};
@@ -1496,7 +1457,6 @@ private:
             }
         } else {
             // Legacy cache without a profile header — load entries, rewrite on next save.
-            object_cache_legacy_header = true;
             object_cache_profile_upgrade_pending = true;
             log::info("Legacy object cache without profile header; loaded entries, will upgrade on save"s);
             auto path = ""s;
@@ -1533,7 +1493,6 @@ private:
         if(upgrading_legacy)
         {
             object_cache_profile_upgrade_pending = false;
-            object_cache_legacy_header = false;
             log::info("Upgraded object cache to profile header (" + std::string{object_cache_format} + ")"s);
         }
     }
@@ -2321,8 +2280,6 @@ public:
         }
 
         const auto test_started = std::chrono::steady_clock::now();
-        current_phase = jsonl::phase::test;
-        phase_started = test_started;
         cb::jsonl::sink().test_start(runner);
 
         const auto r = invoke_shell(test_runner_argv(runner, args));
