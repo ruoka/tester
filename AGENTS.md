@@ -118,6 +118,47 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 4. If false: follow triage workflow (`first_failure` + `assertion_failed`) → edit → re-run the same scoped command
 ```
 
+## C++ style (`tools/` and `tester/`)
+
+Prefer the **standard library** over hand-rolled loops and iterator idioms. The project targets **C++23**.
+
+**Associative containers** — use `contains` / `at`, not `find(...) != end()`:
+
+```cpp
+// map / flat_map lookup
+if (cache.contains(key))
+    use(cache.at(key));
+
+// heterogeneous lookup when keys are compared via string_view
+using fields = std::flat_map<std::string, std::string, std::less<>>;
+if (fields.contains(key))   // key may be std::string_view
+    return fields.at(key);
+```
+
+**Strings** — use `std::string` / `std::string_view` member algorithms:
+
+```cpp
+if (text.contains("needle")) { ... }
+if (name.contains(':')) { ... }
+```
+
+**Sequences** — use `<algorithm>` / `<ranges>`:
+
+```cpp
+std::ranges::contains(tags, required);
+std::ranges::find_if(units, predicate);
+std::ranges::sort(tokens);
+std::ranges::set_difference(new_tokens, old_tokens, std::back_inserter(added));
+```
+
+**Splitting / parsing** — prefer `std::views::split` for simple delimited fields:
+
+```cpp
+for (auto&& part : std::views::split(line, '\t')) { ... }
+```
+
+**When custom code is fine** — shell-word tokenization (`append_shell_words`), topological sort, graph walks, and domain-specific cache logic. Do not reimplement `set_difference`, substring search, or map membership by hand.
+
 ## Do not
 
 - Infer pass/fail from exit code alone — read `summary.passed` or `run_end.passed`

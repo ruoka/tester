@@ -70,7 +70,7 @@ auto& make_test_case(std::string_view description, int priority, std::vector<std
 auto sort_test_cases()
 {
     // Build a map of test IDs to test cases for dependency resolution
-    auto id_to_test = std::map<std::string, test_case*>{};
+    auto id_to_test = std::map<std::string, test_case*, std::less<>>{};
     for(auto& tc : test_cases)
     {
         if(not tc.id.empty())
@@ -87,8 +87,8 @@ auto sort_test_cases()
         int max_dep_level = -1;
         for(const auto& dep_id : tc->depends_on)
         {
-            if(auto it = id_to_test.find(dep_id); it != id_to_test.end())
-                max_dep_level = std::max(max_dep_level, self(it->second, self));
+            if(id_to_test.contains(dep_id))
+                max_dep_level = std::max(max_dep_level, self(id_to_test.at(dep_id), self));
         }
         levels[tc] = max_dep_level + 1;
         return levels[tc];

@@ -244,8 +244,7 @@ private:
 
         for(const auto& required : m_literal_tags)
         {
-            auto found = std::find(test_tags.begin(), test_tags.end(), required) != test_tags.end();
-            if(not found)
+            if(not std::ranges::contains(test_tags, required))
                 return false;
         }
 

@@ -24,6 +24,9 @@
 #include <limits>
 #include <iostream>
 #include <algorithm>
+#include <iterator>
+#include <ranges>
+#include <sstream>
 #include <utility>
 #include <stdexcept>
 #include <cctype>
@@ -177,6 +180,221 @@ inline std::string join_argv(const string_list& argv)
         cmd += ::shell_quote(argv[i]);
     }
     return cmd;
+}
+
+using profile_fields = std::flat_map<std::string, std::string, std::less<>>;
+
+inline profile_fields parse_object_cache_profile_fields(std::string_view profile)
+{
+    auto fields = profile_fields{};
+    for(auto&& part : std::views::split(profile, '\t'))
+    {
+        const auto segment = std::string_view{part.begin(), part.end()};
+        const auto eq = segment.find('=');
+        if(eq == std::string_view::npos)
+            continue;
+        fields.emplace(std::string{segment.substr(0, eq)}, std::string{segment.substr(eq + 1)});
+    }
+    return fields;
+}
+
+struct profile_scalar_change
+{
+    std::string old_value;
+    std::string new_value;
+};
+
+struct profile_token_change
+{
+    string_list added;
+    string_list removed;
+
+    bool changed() const { return not added.empty() or not removed.empty(); }
+};
+
+struct object_cache_profile_diff
+{
+    std::optional<profile_scalar_change> format;
+    std::optional<profile_scalar_change> config;
+    std::optional<profile_scalar_change> static_link;
+    std::optional<profile_scalar_change> llvm;
+    std::optional<profile_token_change> compile;
+    std::optional<profile_token_change> cpp;
+
+    bool empty() const
+    {
+        return not format and not config and not static_link and not llvm and not compile and not cpp;
+    }
+};
+
+inline profile_token_change diff_profile_tokens(std::string_view old_text, std::string_view new_text)
+{
+    auto old_tokens = shell_words(old_text);
+    auto new_tokens = shell_words(new_text);
+    std::ranges::sort(old_tokens);
+    std::ranges::sort(new_tokens);
+
+    auto change = profile_token_change{};
+    std::ranges::set_difference(new_tokens, old_tokens, std::back_inserter(change.added));
+    std::ranges::set_difference(old_tokens, new_tokens, std::back_inserter(change.removed));
+    return change;
+}
+
+inline object_cache_profile_diff diff_object_cache_profiles(std::string_view old_profile, std::string_view new_profile)
+{
+    const auto old_fields = parse_object_cache_profile_fields(old_profile);
+    const auto new_fields = parse_object_cache_profile_fields(new_profile);
+    auto diff = object_cache_profile_diff{};
+
+    const auto field_value = [](const profile_fields& fields, std::string_view key) -> std::string {
+        if(fields.contains(key))
+            return fields.at(key);
+        return {};
+    };
+
+    const auto diff_scalar = [&](std::string_view key, std::optional<profile_scalar_change>& out) {
+        const auto old_value = field_value(old_fields, key);
+        const auto new_value = field_value(new_fields, key);
+        if(old_value != new_value)
+            out = profile_scalar_change{old_value, new_value};
+    };
+
+    diff_scalar("format", diff.format);
+    diff_scalar("config", diff.config);
+    diff_scalar("static_link", diff.static_link);
+    diff_scalar("llvm", diff.llvm);
+
+    const auto diff_tokens = [&](std::string_view key, std::optional<profile_token_change>& out) {
+        auto change = diff_profile_tokens(field_value(old_fields, key), field_value(new_fields, key));
+        if(change.changed())
+            out = std::move(change);
+    };
+
+    diff_tokens("compile", diff.compile);
+    diff_tokens("cpp", diff.cpp);
+    return diff;
+}
+
+inline std::string format_token_list(const string_list& tokens, std::size_t max_tokens = 8)
+{
+    if(tokens.empty())
+        return {};
+
+    auto out = ""s;
+    const auto limit = std::min(tokens.size(), max_tokens);
+    for(std::size_t i = 0; i < limit; ++i)
+    {
+        if(i)
+            out += ", ";
+        out += tokens[i];
+    }
+    if(tokens.size() > max_tokens)
+        out += ", ... (" + std::to_string(tokens.size() - max_tokens) + " more)";
+    return out;
+}
+
+inline std::string format_token_change_summary(std::string_view name, const profile_token_change& change, std::size_t max_tokens = 8)
+{
+    auto parts = string_list{};
+    if(not change.added.empty())
+        parts.push_back("+ " + format_token_list(change.added, max_tokens));
+    if(not change.removed.empty())
+        parts.push_back("- " + format_token_list(change.removed, max_tokens));
+    if(parts.empty())
+        return {};
+
+    auto out = std::string{name};
+    out += ": ";
+    for(std::size_t i = 0; i < parts.size(); ++i)
+    {
+        if(i)
+            out += ", ";
+        out += parts[i];
+    }
+    return out;
+}
+
+inline std::string format_profile_diff_message(const object_cache_profile_diff& diff, std::size_t max_tokens = 8)
+{
+    auto parts = string_list{};
+    const auto append_scalar = [&](std::string_view name, const profile_scalar_change& change) {
+        parts.push_back(std::string{name} + ": " + change.old_value + " -> " + change.new_value);
+    };
+
+    if(diff.format) append_scalar("format", *diff.format);
+    if(diff.config) append_scalar("config", *diff.config);
+    if(diff.static_link) append_scalar("static_link", *diff.static_link);
+    if(diff.llvm) append_scalar("llvm", *diff.llvm);
+    if(diff.compile)
+    {
+        if(auto summary = format_token_change_summary("compile", *diff.compile, max_tokens); not summary.empty())
+            parts.push_back(std::move(summary));
+    }
+    if(diff.cpp)
+    {
+        if(auto summary = format_token_change_summary("cpp", *diff.cpp, max_tokens); not summary.empty())
+            parts.push_back(std::move(summary));
+    }
+
+    auto out = ""s;
+    for(std::size_t i = 0; i < parts.size(); ++i)
+    {
+        if(i)
+            out += "; ";
+        out += parts[i];
+    }
+    return out;
+}
+
+inline void write_profile_diff_scalar(std::ostream& os, const profile_scalar_change& change)
+{
+    os << "{\"old\":\"" << cb_jsonl::escape(change.old_value) << "\",\"new\":\"" << cb_jsonl::escape(change.new_value) << "\"}";
+}
+
+inline void write_profile_diff_tokens(std::ostream& os, const profile_token_change& change)
+{
+    os << "{\"added\":[";
+    for(std::size_t i = 0; i < change.added.size(); ++i)
+    {
+        if(i) os << ',';
+        os << '"' << cb_jsonl::escape(change.added[i]) << '"';
+    }
+    os << "],\"removed\":[";
+    for(std::size_t i = 0; i < change.removed.size(); ++i)
+    {
+        if(i) os << ',';
+        os << '"' << cb_jsonl::escape(change.removed[i]) << '"';
+    }
+    os << "]}";
+}
+
+inline std::string serialize_object_cache_profile_diff(const object_cache_profile_diff& diff)
+{
+    auto os = std::ostringstream{};
+    os << '{';
+    auto first = true;
+    const auto field = [&](std::string_view name, const auto& write_value) {
+        if(not first)
+            os << ',';
+        first = false;
+        os << '"' << name << "\":";
+        write_value();
+    };
+
+    if(diff.format)
+        field("format", [&]{ write_profile_diff_scalar(os, *diff.format); });
+    if(diff.config)
+        field("config", [&]{ write_profile_diff_scalar(os, *diff.config); });
+    if(diff.static_link)
+        field("static_link", [&]{ write_profile_diff_scalar(os, *diff.static_link); });
+    if(diff.llvm)
+        field("llvm", [&]{ write_profile_diff_scalar(os, *diff.llvm); });
+    if(diff.compile)
+        field("compile", [&]{ write_profile_diff_tokens(os, *diff.compile); });
+    if(diff.cpp)
+        field("cpp", [&]{ write_profile_diff_tokens(os, *diff.cpp); });
+    os << '}';
+    return os.str();
 }
 
 inline const suffix_list supported_suffixes = {
@@ -388,7 +606,7 @@ inline translation_unit parse_translation_unit(const fs::path& project_root, con
         if (not seen_real_code) {
             // Convert string_view to string for regex_search
             auto trimmed_str = std::string{trimmed};
-            if (trimmed_str.find('{') != std::string::npos or
+            if (trimmed.contains('{') or
                 std::regex_search(trimmed_str, translation_unit::keyword_regex) or
                 std::regex_search(trimmed_str, translation_unit::using_namespace_regex)) {
                 seen_real_code = true;
@@ -405,7 +623,7 @@ inline translation_unit parse_translation_unit(const fs::path& project_root, con
         else if (std::regex_search(line, m, translation_unit::export_module_regex) and m.size() > 1) {
             module_name = m[1].str();
             // Allow dots in module names
-            kind = module_name.find(':') != std::string::npos ? unit_kind::partition_unit : unit_kind::interface_unit;
+            kind = module_name.contains(':') ? unit_kind::partition_unit : unit_kind::interface_unit;
         }
         else if (std::regex_search(line, m, translation_unit::module_regex) and m.size() > 1) {
             auto mod = m[1].str();
@@ -441,16 +659,16 @@ inline translation_unit parse_translation_unit(const fs::path& project_root, con
     };
 }
 
-using dependency_graph = std::flat_map<std::string, string_list>;
-using indegree_map = std::flat_map<std::string, int>;
-using unit_to_tu_map = std::flat_map<std::string, translation_unit*>;
-using object_cache_map = std::flat_map<std::string, fs::file_time_type>;
+using dependency_graph = std::flat_map<std::string, string_list, std::less<>>;
+using indegree_map = std::flat_map<std::string, int, std::less<>>;
+using unit_to_tu_map = std::flat_map<std::string, translation_unit*, std::less<>>;
+using object_cache_map = std::flat_map<std::string, fs::file_time_type, std::less<>>;
 using translation_unit_list = std::vector<translation_unit>;
 using topo_sort_queue = std::queue<std::string>;
 using level_groups_map = std::flat_map<int, std::vector<const translation_unit*>>;
 using thread_list = std::vector<std::thread>;
-using module_to_ldflags_map = std::flat_map<std::string, std::string>;
-using executable_cache_map = std::flat_map<std::string, std::string>;
+using module_to_ldflags_map = std::flat_map<std::string, std::string, std::less<>>;
+using executable_cache_map = std::flat_map<std::string, std::string, std::less<>>;
 
 inline constexpr std::string_view object_cache_format = "cb-object-cache-v1"sv;
 
@@ -472,6 +690,7 @@ private:
     std::string extra_compile_flags;
     std::string extra_link_flags;
     mutable std::optional<std::string> object_cache_miss_reason;
+    mutable std::optional<object_cache_profile_diff> object_cache_profile_diff;
     
     // JSONL phase tracking state
     jsonl::phase current_phase = jsonl::phase::none;
@@ -532,7 +751,7 @@ private:
         // Find clang++ compiler binary
         // This is the C++ compiler we'll use for all compilation and linking
         auto command_available = [](const std::string& candidate) {
-            if (candidate.find('/') == std::string::npos) {
+            if (not candidate.contains('/')) {
                 auto test_cmd = "command -v " + candidate + " >/dev/null 2>&1";
                 return system(test_cmd.c_str()) == 0;
             }
@@ -807,10 +1026,10 @@ private:
             // Best-effort recovery from stale PCM / module cache issues:
             // If a module-related command fails, clear the pcm directory and retry once.
             auto looks_module_related = [](std::string_view s) {
-                return s.find("--precompile") != std::string_view::npos
-                    || s.find("-fmodule-file=") != std::string_view::npos
-                    || s.find("-fprebuilt-module-path=") != std::string_view::npos
-                    || s.find(".pcm") != std::string_view::npos;
+                return s.contains("--precompile")
+                    || s.contains("-fmodule-file=")
+                    || s.contains("-fprebuilt-module-path=")
+                    || s.contains(".pcm");
             };
 
             /*
@@ -858,6 +1077,11 @@ private:
     {
         if(!cb::jsonl::enabled())
             return;
+
+        auto profile_diff_json = std::string{};
+        if(not cache_hit and rebuild_reason == "flag_change"sv and object_cache_profile_diff and not object_cache_profile_diff->empty())
+            profile_diff_json = serialize_object_cache_profile_diff(*object_cache_profile_diff);
+
         cb::jsonl::sink().compile_end(
             tu.full_path,
             tu.object_path,
@@ -867,7 +1091,8 @@ private:
             cache_hit,
             started,
             finished,
-            rebuild_reason);
+            rebuild_reason,
+            profile_diff_json);
     }
 
     string_list base_compile_argv() const
@@ -921,8 +1146,8 @@ private:
     std::string collect_module_ldflags(const string_list& imp) const {
         auto f = ""s;
         for (const auto& m : imp)
-            if (auto it = module_ldflags.find(m); it != module_ldflags.end())
-                f += it->second + " ";
+            if (module_ldflags.contains(m))
+                f += module_ldflags.at(m) + " ";
         return f;
     }
 
@@ -965,6 +1190,7 @@ private:
 
     object_cache_map load_object_cache() {
         object_cache_miss_reason.reset();
+        object_cache_profile_diff.reset();
         auto cache = object_cache_map{};
         auto file = std::ifstream{object_cache_path()};
         if (not file)
@@ -976,9 +1202,18 @@ private:
 
         const auto current_profile = object_cache_profile();
         if (header.starts_with("profile\t")) {
-            if (header.substr(std::string_view{"profile\t"}.size()) != current_profile) {
+            const auto stored_profile = header.substr(std::string_view{"profile\t"}.size());
+            if (stored_profile != current_profile) {
                 object_cache_miss_reason = "flag_change";
-                log::info("Object cache profile changed; invalidating compile cache"s);
+                object_cache_profile_diff = diff_object_cache_profiles(stored_profile, current_profile);
+                auto msg = "Object cache profile changed; invalidating compile cache"s;
+                if(object_cache_profile_diff and not object_cache_profile_diff->empty())
+                {
+                    msg += " (";
+                    msg += format_profile_diff_message(*object_cache_profile_diff);
+                    msg += ')';
+                }
+                log::info(msg);
                 return cache;
             }
         } else {
@@ -1022,11 +1257,10 @@ private:
                                               std::string& stale_module) const
     {
         for (const auto& dependency_key : tu.imports) {
-            auto dependency = u2tu.find(dependency_key);
-            if (dependency == u2tu.end())
+            if (not u2tu.contains(dependency_key))
                 continue;
 
-            const auto& dep_tu = *dependency->second;
+            const auto& dep_tu = *u2tu.at(dependency_key);
 
             if (dep_tu.is_modular && fs::exists(dep_tu.pcm_path)) {
                 if (fs::last_write_time(dep_tu.pcm_path) > object_timestamp) {
@@ -1047,13 +1281,12 @@ private:
 
     std::optional<std::string> needs_recompile(const translation_unit& tu, object_cache_map& c, const unit_to_tu_map& u2tu) const {
         // If we have never seen the file (or it changed since last compile), rebuild.
-        auto cached = c.find(tu.full_path);
-        if (cached == c.end()) {
+        if (not c.contains(tu.full_path)) {
             if (object_cache_miss_reason)
                 return *object_cache_miss_reason;
             return "source_stale";
         }
-        if (cached->second < tu.last_modified)
+        if (c.at(tu.full_path) < tu.last_modified)
             return "source_stale";
 
         // Ensure the object file exists and is up-to-date versus the source timestamp we cached.
@@ -1061,7 +1294,7 @@ private:
             return "object_missing";
 
         auto object_timestamp = fs::last_write_time(tu.object_path);
-        if (object_timestamp < cached->second)
+        if (object_timestamp < c.at(tu.full_path))
             return "object_stale";
 
         // For modular units, also check if .pcm file is stale
@@ -1082,8 +1315,8 @@ private:
 
         // Rebuild if any imported modules have changed (their .pcm files are stale or they need recompiling)
         for (const auto& dependency_key : tu.imports) {
-            if (auto dependency = u2tu.find(dependency_key); dependency != u2tu.end()) {
-                const auto& dep_tu = *dependency->second;
+            if (u2tu.contains(dependency_key)) {
+                const auto& dep_tu = *u2tu.at(dependency_key);
                 // Check if the imported module's .pcm is stale compared to its source
                 if (dep_tu.is_modular) {
                     if (not fs::exists(dep_tu.pcm_path) or 
@@ -1131,7 +1364,7 @@ private:
         if (not fs::exists(tu.executable_path))
             return true;
 
-        if (auto it = link_cache.find(tu.executable_path); it != link_cache.end() and it->second == signature)
+        if (link_cache.contains(tu.executable_path) and link_cache.at(tu.executable_path) == signature)
             return false;
 
         return true;
@@ -1474,6 +1707,14 @@ private:
         return f;
     }
 
+    const translation_unit* find_test_runner_unit() const
+    {
+        const auto it = std::ranges::find_if(units_in_topological_order, [](const translation_unit& tu) {
+            return tu.has_main and tu.base_name.contains("test_runner");
+        });
+        return it != units_in_topological_order.end() ? &*it : nullptr;
+    }
+
     std::string compute_test_runner_signature(const std::string& test_runner_path, const std::string& test_runner_obj) const {
         auto signature = std::string{};
         signature.reserve(512);
@@ -1509,13 +1750,8 @@ private:
         
         // Include module ldflags from test objects and test_runner
         auto test_ldflags = collect_test_module_ldflags();
-        auto test_runner_it = std::find_if(units_in_topological_order.begin(), units_in_topological_order.end(),
-            [this](const translation_unit& tu) {
-                return tu.has_main and tu.base_name.contains("test_runner");
-            });
-        if (test_runner_it != units_in_topological_order.end()) {
-            test_ldflags += collect_module_ldflags(test_runner_it->imports);
-        }
+        if (const auto* test_runner = find_test_runner_unit())
+            test_ldflags += collect_module_ldflags(test_runner->imports);
         signature += "|imports=";
         signature += test_ldflags;
         
@@ -1532,16 +1768,11 @@ private:
         // Determine test_runner path and object
         auto test_runner_path = binary_dir() + "/test_runner";
         auto test_runner_obj = std::string{};
-        
-        // Find test_runner translation unit if it exists
-        auto test_runner_it = std::find_if(units_in_topological_order.begin(), units_in_topological_order.end(),
-            [this](const translation_unit& tu) {
-                return tu.has_main and tu.base_name.contains("test_runner");
-            });
+        const auto* test_runner = find_test_runner_unit();
 
-        if (test_runner_it != units_in_topological_order.end()) {
-            test_runner_path = test_runner_it->executable_path;
-            test_runner_obj = test_runner_it->object_path;
+        if (test_runner) {
+            test_runner_path = test_runner->executable_path;
+            test_runner_obj = test_runner->object_path;
         }
 
         // Check if test_runner is up-to-date
@@ -1550,22 +1781,22 @@ private:
         
         // Check if executable exists and signature matches
         if (fs::exists(test_runner_path)) {
-            if (auto it = link_cache.find(test_runner_path); it != link_cache.end() and it->second == signature) {
+            if (link_cache.contains(test_runner_path) and link_cache.at(test_runner_path) == signature) {
                 log::info("Skipping link (up-to-date): "s + test_runner_path);
                 return;
             }
         }
 
         // Link test_runner
-        if (test_runner_it != units_in_topological_order.end()) {
+        if (test_runner) {
             auto cmd = llvm_cxx + " " + compile_flags + " " +
-                    collect_module_ldflags(test_runner_it->imports) + " " +
+                    collect_module_ldflags(test_runner->imports) + " " +
                     module_flags + " " +
-                    test_runner_it->object_path + " " +
+                    test_runner->object_path + " " +
                     collect_linkable_objects() + // Regular (non-main, non-test) objects
                     objects + // Test objects
                     std_obj_path()  + " " + link_flags +
-                    " -o " + test_runner_it->executable_path;
+                    " -o " + test_runner->executable_path;
             execute_system_command(cmd);
             log::success("test_runner linked with test objects");
         } else {

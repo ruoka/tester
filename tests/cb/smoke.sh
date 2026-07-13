@@ -81,6 +81,9 @@ test_flag_change() {
 
   run_cb_build "${work_dir}" --compile-flags -DCB_SMOKE_FLAG=1
   assert_jsonl_contains '"rebuild_reason":"flag_change"' "flag_change_reason"
+  assert_jsonl_contains '"profile_diff"' "profile_diff_present"
+  assert_jsonl_contains '"compile"' "profile_diff_compile_field"
+  assert_jsonl_contains 'DCB_SMOKE_FLAG=1' "profile_diff_added_flag"
   assert_jsonl_contains '"cache_hit":false' "recompile_after_flag_change"
   end_case flag_change
 }
