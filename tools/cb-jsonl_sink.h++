@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <mutex>
+#include <optional>
 #include <ostream>
 #include <ranges>
 #include <span>
@@ -43,6 +44,87 @@ inline void write_argv(std::ostream& os, std::span<const std::string> argv)
 inline void write_string_array(std::ostream& os, std::string_view field, std::span<const std::string> values)
 {
     os << ",\"" << field << "\":[" << join_json_strings(values) << ']';
+}
+
+struct profile_scalar_change
+{
+    std::string old_value;
+    std::string new_value;
+};
+
+struct profile_token_change
+{
+    std::vector<std::string> added;
+    std::vector<std::string> removed;
+
+    bool changed() const { return not added.empty() or not removed.empty(); }
+};
+
+struct object_cache_profile_diff
+{
+    std::optional<profile_scalar_change> format;
+    std::optional<profile_scalar_change> config;
+    std::optional<profile_scalar_change> static_link;
+    std::optional<profile_scalar_change> llvm;
+    std::optional<profile_scalar_change> cxx;
+    std::optional<profile_scalar_change> cxx_sig;
+    std::optional<profile_scalar_change> clang_ver;
+    std::optional<profile_scalar_change> std_cppm;
+    std::optional<profile_token_change> compile;
+    std::optional<profile_token_change> cpp;
+
+    bool empty() const
+    {
+        return not format and not config and not static_link and not llvm
+            and not cxx and not cxx_sig and not clang_ver and not std_cppm
+            and not compile and not cpp;
+    }
+};
+
+inline void write_profile_diff_scalar(std::ostream& os, const profile_scalar_change& change)
+{
+    os << "{\"old\":\"" << escape(change.old_value) << "\",\"new\":\"" << escape(change.new_value) << "\"}";
+}
+
+inline void write_profile_diff_tokens(std::ostream& os, const profile_token_change& change)
+{
+    os << "{\"added\":[" << join_json_strings(change.added)
+       << "],\"removed\":[" << join_json_strings(change.removed) << "]}";
+}
+
+inline void write_profile_diff(std::ostream& os, const object_cache_profile_diff& diff)
+{
+    os << '{';
+    auto first = true;
+    const auto field = [&](std::string_view name, const auto& write_value) {
+        if(not first)
+            os << ',';
+        first = false;
+        os << '"' << name << "\":";
+        write_value();
+    };
+
+    if(diff.format)
+        field("format", [&]{ write_profile_diff_scalar(os, *diff.format); });
+    if(diff.config)
+        field("config", [&]{ write_profile_diff_scalar(os, *diff.config); });
+    if(diff.static_link)
+        field("static_link", [&]{ write_profile_diff_scalar(os, *diff.static_link); });
+    if(diff.llvm)
+        field("llvm", [&]{ write_profile_diff_scalar(os, *diff.llvm); });
+    if(diff.cxx)
+        field("cxx", [&]{ write_profile_diff_scalar(os, *diff.cxx); });
+    if(diff.cxx_sig)
+        field("cxx_sig", [&]{ write_profile_diff_scalar(os, *diff.cxx_sig); });
+    if(diff.clang_ver)
+        field("clang_ver", [&]{ write_profile_diff_scalar(os, *diff.clang_ver); });
+    if(diff.std_cppm)
+        field("std_cppm", [&]{ write_profile_diff_scalar(os, *diff.std_cppm); });
+    if(diff.compile)
+        field("compile", [&]{ write_profile_diff_tokens(os, *diff.compile); });
+    if(diff.cpp)
+        field("cpp", [&]{ write_profile_diff_tokens(os, *diff.cpp); });
+    os << '}';
 }
 
 struct sink
@@ -123,13 +205,16 @@ struct sink
         };
     }
 
-    void profile_changed(std::string_view reason, std::string_view profile_diff_json = {})
+    void profile_changed(std::string_view reason, const object_cache_profile_diff* diff = nullptr)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("profile_changed") << [&](std::ostream& os){
             os << ",\"reason\":\"" << escape(reason) << "\"";
-            if(!profile_diff_json.empty())
-                os << ",\"profile_diff\":" << profile_diff_json;
+            if(diff && !diff->empty())
+            {
+                os << ",\"profile_diff\":";
+                write_profile_diff(os, *diff);
+            }
         };
     }
 

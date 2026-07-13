@@ -25,7 +25,6 @@
 #include <algorithm>
 #include <iterator>
 #include <ranges>
-#include <sstream>
 #include <utility>
 #include <stdexcept>
 #include <cctype>
@@ -274,40 +273,9 @@ inline profile_fields parse_object_cache_profile_fields(std::string_view profile
     return fields;
 }
 
-struct profile_scalar_change
-{
-    std::string old_value;
-    std::string new_value;
-};
-
-struct profile_token_change
-{
-    string_list added;
-    string_list removed;
-
-    bool changed() const { return not added.empty() or not removed.empty(); }
-};
-
-struct object_cache_profile_diff
-{
-    std::optional<profile_scalar_change> format;
-    std::optional<profile_scalar_change> config;
-    std::optional<profile_scalar_change> static_link;
-    std::optional<profile_scalar_change> llvm;
-    std::optional<profile_scalar_change> cxx;
-    std::optional<profile_scalar_change> cxx_sig;
-    std::optional<profile_scalar_change> clang_ver;
-    std::optional<profile_scalar_change> std_cppm;
-    std::optional<profile_token_change> compile;
-    std::optional<profile_token_change> cpp;
-
-    bool empty() const
-    {
-        return not format and not config and not static_link and not llvm
-            and not cxx and not cxx_sig and not clang_ver and not std_cppm
-            and not compile and not cpp;
-    }
-};
+using profile_scalar_change = cb_jsonl::profile_scalar_change;
+using profile_token_change = cb_jsonl::profile_token_change;
+using object_cache_profile_diff = cb_jsonl::object_cache_profile_diff;
 
 inline profile_token_change diff_profile_tokens(std::string_view old_text, std::string_view new_text)
 {
@@ -412,54 +380,6 @@ inline std::string format_profile_diff_message(const object_cache_profile_diff& 
     }
 
     return join_with(parts, "; "sv);
-}
-
-inline void write_profile_diff_scalar(std::ostream& os, const profile_scalar_change& change)
-{
-    os << "{\"old\":\"" << cb_jsonl::escape(change.old_value) << "\",\"new\":\"" << cb_jsonl::escape(change.new_value) << "\"}";
-}
-
-inline void write_profile_diff_tokens(std::ostream& os, const profile_token_change& change)
-{
-    os << "{\"added\":[" << cb_jsonl::join_json_strings(change.added)
-       << "],\"removed\":[" << cb_jsonl::join_json_strings(change.removed) << "]}";
-}
-
-inline std::string serialize_object_cache_profile_diff(const object_cache_profile_diff& diff)
-{
-    auto os = std::ostringstream{};
-    os << '{';
-    auto first = true;
-    const auto field = [&](std::string_view name, const auto& write_value) {
-        if(not first)
-            os << ',';
-        first = false;
-        os << '"' << name << "\":";
-        write_value();
-    };
-
-    if(diff.format)
-        field("format", [&]{ write_profile_diff_scalar(os, *diff.format); });
-    if(diff.config)
-        field("config", [&]{ write_profile_diff_scalar(os, *diff.config); });
-    if(diff.static_link)
-        field("static_link", [&]{ write_profile_diff_scalar(os, *diff.static_link); });
-    if(diff.llvm)
-        field("llvm", [&]{ write_profile_diff_scalar(os, *diff.llvm); });
-    if(diff.cxx)
-        field("cxx", [&]{ write_profile_diff_scalar(os, *diff.cxx); });
-    if(diff.cxx_sig)
-        field("cxx_sig", [&]{ write_profile_diff_scalar(os, *diff.cxx_sig); });
-    if(diff.clang_ver)
-        field("clang_ver", [&]{ write_profile_diff_scalar(os, *diff.clang_ver); });
-    if(diff.std_cppm)
-        field("std_cppm", [&]{ write_profile_diff_scalar(os, *diff.std_cppm); });
-    if(diff.compile)
-        field("compile", [&]{ write_profile_diff_tokens(os, *diff.compile); });
-    if(diff.cpp)
-        field("cpp", [&]{ write_profile_diff_tokens(os, *diff.cpp); });
-    os << '}';
-    return os.str();
 }
 
 inline const suffix_list supported_suffixes = {
@@ -1208,11 +1128,10 @@ private:
         if(not cb::jsonl::enabled())
             return;
 
-        auto profile_diff_json = std::string{};
-        if(object_cache_profile_diff and not object_cache_profile_diff->empty())
-            profile_diff_json = serialize_object_cache_profile_diff(*object_cache_profile_diff);
-
-        cb::jsonl::sink().profile_changed(*object_cache_miss_reason, profile_diff_json);
+        const auto* diff = (object_cache_profile_diff and not object_cache_profile_diff->empty())
+            ? &*object_cache_profile_diff
+            : nullptr;
+        cb::jsonl::sink().profile_changed(*object_cache_miss_reason, diff);
         const_cast<build_system*>(this)->profile_changed_emitted = true;
     }
 
