@@ -150,6 +150,37 @@ struct sink
         };
     }
 
+    void cache_invalidate_end(bool object_cache_removed,
+                              bool executable_cache_removed,
+                              bool compiler_stamp_removed)
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("cache_invalidate_end") << [&](std::ostream& os){
+            os << ",\"object_cache_removed\":" << (object_cache_removed ? "true" : "false");
+            os << ",\"executable_cache_removed\":" << (executable_cache_removed ? "true" : "false");
+            os << ",\"compiler_stamp_removed\":" << (compiler_stamp_removed ? "true" : "false");
+        };
+    }
+
+    void compile_start(std::string_view source_path,
+                       std::string_view object_path,
+                       std::string_view pcm_path,
+                       std::string_view module_name,
+                       std::string_view rebuild_reason = {})
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("compile_start") << [&](std::ostream& os){
+            os << ",\"source_path\":\"" << escape(source_path) << "\"";
+            os << ",\"object_path\":\"" << escape(object_path) << "\"";
+            if(!pcm_path.empty())
+                os << ",\"pcm_path\":\"" << escape(pcm_path) << "\"";
+            if(!module_name.empty())
+                os << ",\"module_name\":\"" << escape(module_name) << "\"";
+            if(!rebuild_reason.empty())
+                os << ",\"rebuild_reason\":\"" << escape(rebuild_reason) << "\"";
+        };
+    }
+
     void link_end(std::string_view executable_path,
                   bool ok,
                   bool cache_hit,

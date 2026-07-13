@@ -115,7 +115,7 @@ Machine-parseable test and build output for CI and automation. Human output rema
 - ✅ `list --jsonl`: `list_start`, per-TU `unit` (`path`, `module`, `kind`, `imports`, `level`, `is_test`, …), `list_summary`.
 - ✅ `unit.is_test`: `true` for `*.test.c++` / `*.test.c++m` or `test/` / `tests/` path segments; `false` for `tester/` framework trees (exact segment match — not substring `test` in `tester`).
 - ✅ Per-translation-unit `compile_end` with `ok`, `duration_ms`, `source_path`, `object_path`, `pcm_path`, `module_name`, `cache_hit`.
-- 📋 Per-translation-unit `compile_start` (optional; `compile_end` is sufficient for triage today).
+- ✅ Per-translation-unit `compile_start` (paired with `compile_end`; `duration_ms` on `compile_end` measures compile wall time).
 - ✅ Per-binary `link_end` (`executable_path`, `cache_hit`, `ok`, `duration_ms`); `link_start` still optional.
 - ✅ Structured `argv: ["clang++", "..."]` on `command_start` / `command_end` alongside human `cmd` string.
 - ✅ `cache_hit: true` on `compile_end` when incremental compile skips a translation unit.
@@ -140,8 +140,9 @@ Design rationale and comparison with CMake, Make, and other build tools: [`docs/
 
 - ✅ Incremental compile cache (`object_cache_map`) and link cache (`link_cache_map`).
 - ✅ Object-cache profile header (`format=cb-object-cache-v2`) with toolchain fields (`cxx`, `cxx_sig`, `clang_ver`, `std_cppm`, flags); invalidates on profile mismatch.
-- ✅ CB smoke harness (`tests/cb/`) and CI `cb-smoke` job (`profile_header`, `cache_hit`, `link_cache_hit`, `flag_change`, `legacy_cache`, `cache_status`).
+- ✅ CB smoke harness (`tests/cb/`) and CI `cb-smoke` job (`profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `cache_invalidate`, `flag_change`, `legacy_cache`, `cache_status`).
 - ✅ `cache status` subcommand (human + JSONL `cache_status`).
+- ✅ `cache invalidate` subcommand (human + JSONL `cache_invalidate_end`).
 - ✅ `profile_changed` JSONL event (single `profile_diff` on flag mismatch).
 - ✅ Profile value `%XX` escaping; legacy cache upgrade log + smoke.
 - ✅ Parallel compilation, topological module sort, `clang-scan-deps` integration.
@@ -177,8 +178,8 @@ Not required for correctness today: profile v2 + timestamp rules already drive r
 
 | Verb | Purpose |
 |------|---------|
-| `cache status` | Decode profile header, index entry counts, disk usage (`obj/`, `pcm/`, `cache/`), orphan/stale rows (cache points at missing paths; artifacts with no matching source/TU). JSONL: `cache_status` event. |
-| `cache invalidate` | Delete or rewrite `object-cache.txt` / `executable-cache.txt` only — lighter than `clean`; next build treats everything as uncached without wiping artifacts. |
+| `cache status` | Decode profile header, index entry counts, disk usage (`obj/`, `pcm/`, `cache/`), orphan/stale rows (cache points at missing paths; artifacts with no matching source/TU). JSONL: `cache_status` event. ✅ |
+| `cache invalidate` | Delete `object-cache.txt` / `executable-cache.txt` / `compiler-version.txt` only — lighter than `clean`; next build treats everything as uncached without wiping artifacts. JSONL: `cache_invalidate_end`. ✅ |
 | `cache prune` | Garbage-collect artifacts the current module graph no longer references; trim cache index rows for missing paths. Optional `--aggressive` after `flag_change` to drop all `obj/` / `pcm/` under the config. JSONL: `cache_prune_end` with counts. |
 
 **Implementation sketch:** scan current TU graph → expected `{obj, pcm}` set; walk `obj/` and `pcm/`; delete files not in set; reconcile `object-cache.txt`. Reuse existing `object_cache_profile()` / `parse_object_cache_profile_fields()` for `status`.

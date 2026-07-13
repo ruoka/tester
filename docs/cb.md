@@ -206,20 +206,23 @@ Legacy caches without a `profile\t` header still load; the header is rewritten o
 
 **Inspect cache:** `./tools/CB.sh debug cache status` (human) or `… cache status --jsonl` (`cache_status` event).
 
-**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job) — `profile_header`, `cache_hit`, `link_cache_hit`, `flag_change`, `legacy_cache`, `cache_status`.
+**Invalidate indexes:** `./tools/CB.sh debug cache invalidate` removes `object-cache.txt`, `executable-cache.txt`, and `compiler-version.txt` only — lighter than `clean`; artifacts in `obj/` / `pcm/` remain. JSONL: `cache_invalidate_end`.
 
-**Optional follow-up:** a `cache` subcommand (`status`, `invalidate`, `prune`) for disk/orphan cleanup without full `clean` — backlog only; see [tester-improvements.md §4.4](tester-improvements.md#44-cache-maintenance-optional--add-if-operational-issues-appear).
+**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job) — `profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `cache_invalidate`, `flag_change`, `legacy_cache`, `cache_status`.
+
+**Optional follow-up:** `cache prune` for disk/orphan cleanup — backlog only; see [tester-improvements.md §4.4](tester-improvements.md#44-cache-maintenance-optional--add-if-operational-issues-appear).
 
 ---
 
 ## JSONL and correlation
 
-Build-phase JSONL events (`build_start`, `compile_end`, `command_start`, `list_start`, `unit`, …) share `run_id` with test-phase events when CB spawns `test_runner`. Filter by `run_id` or `parent_run_id` to correlate `list` → `build` → `test` from one `./tools/CB.sh … --jsonl` invocation.
+Build-phase JSONL events (`build_start`, `compile_start`, `compile_end`, `command_start`, `list_start`, `unit`, …) share `run_id` with test-phase events when CB spawns `test_runner`. Filter by `run_id` or `parent_run_id` to correlate `list` → `build` → `test` from one `./tools/CB.sh … --jsonl` invocation.
 
 Full event reference and triage workflow: [AGENTS.md](../AGENTS.md).
 
-Useful `compile_end` fields for debugging stale builds:
+Useful compile/link fields for debugging stale builds:
 
+- `compile_start` / `compile_end` — paired per TU. `compile_end.duration_ms` is wall time from compile start to finish (0 on cache hit). `rebuild_reason` appears on `compile_start` when recompiling and on `compile_end` when `cache_hit: false`.
 - `profile_changed` — emitted **once** when the profile header mismatches (`reason: "flag_change"`, optional `profile_diff`). Scalars use `{"old":"…","new":"…"}`; `compile` / `cpp` use `{"added":[…],"removed":[…]}` (sorted token diff via `std::ranges::set_difference` on shell words).
 - `cache_hit: false` + `rebuild_reason: "flag_change"` on each recompiled TU — correlate with the single `profile_changed` event for the diff.
 - `link_end` — per executable after link or skip (`executable_path`, `cache_hit`, `ok`, `duration_ms`). Skipped links emit `cache_hit: true` with `duration_ms: 0`.

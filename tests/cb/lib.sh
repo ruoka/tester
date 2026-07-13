@@ -119,6 +119,17 @@ run_cb_cache_status() {
   return "${status}"
 }
 
+run_cb_cache_invalidate() {
+  local work_dir=$1
+  shift
+  local status=0
+  LAST_JSONL="$(
+    cd "${work_dir}"
+    "${CB_BIN}" "${STD_CPPM}" debug cache invalidate --jsonl "$@" 2>/dev/null
+  )" || status=$?
+  return "${status}"
+}
+
 write_legacy_object_cache() {
   local cache_file=$1
   local entry_line
@@ -252,6 +263,47 @@ PY
     return 0
   fi
   fail "expected at least ${min_hits} link_end with cache_hit:true"
+  return 0
+}
+
+assert_compile_start_end_pairs() {
+  local label=${1:-compile_start_end_pairs}
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if python3 - "${LAST_JSONL}" <<'PY'
+import json, sys
+text = sys.argv[1]
+starts = {}
+ends = {}
+for line in text.splitlines():
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        obj = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    t = obj.get("type")
+    src = obj.get("source_path")
+    if not src:
+        continue
+    if t == "compile_start":
+        starts[src] = starts.get(src, 0) + 1
+    elif t == "compile_end":
+        ends[src] = ends.get(src, 0) + 1
+if not starts:
+    print("no compile_start events", file=sys.stderr)
+    raise SystemExit(1)
+for src, count in starts.items():
+    if ends.get(src, 0) < count:
+        print(f"missing compile_end for {src}", file=sys.stderr)
+        raise SystemExit(1)
+raise SystemExit(0)
+PY
+  then
+    jsonl_emit "{\"type\":\"smoke_assert_passed\",\"matcher\":\"${label}\"}"
+    return 0
+  fi
+  fail "every compile_start must have a matching compile_end"
   return 0
 }
 

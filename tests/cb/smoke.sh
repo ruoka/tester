@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, flag_change, legacy_cache, cache_status"
+      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, cache_invalidate, flag_change, legacy_cache, cache_status"
       exit 0
       ;;
     *)
@@ -87,6 +87,47 @@ test_link_cache_hit() {
   run_cb_build "${work_dir}"
   assert_link_cache_hits 1 "second_build_link_cache_hit"
   end_case link_cache_hit
+}
+
+test_compile_start() {
+  should_run compile_start || return 0
+  begin_case compile_start
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_contains '"type":"compile_start"' "compile_start_event"
+  assert_jsonl_contains '"type":"compile_end"' "compile_end_event"
+  assert_compile_start_end_pairs
+  assert_jsonl_contains '"rebuild_reason":"source_stale"' "compile_start_rebuild_reason"
+  end_case compile_start
+}
+
+test_cache_invalidate() {
+  should_run cache_invalidate || return 0
+  begin_case cache_invalidate
+  local work_dir cache_file
+  work_dir="$(prepare_work_dir)"
+
+  run_cb_build "${work_dir}"
+  run_cb_build "${work_dir}"
+  assert_compile_cache_hits 1 "seed_cache_hit"
+
+  run_cb_cache_invalidate "${work_dir}"
+  assert_jsonl_contains '"type":"cache_invalidate_end"' "cache_invalidate_event"
+  assert_jsonl_contains '"object_cache_removed":true' "object_cache_removed"
+
+  cache_file="$(object_cache_path "${work_dir}")"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ ! -f "${cache_file}" ]]; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"object_cache_absent"}'
+  else
+    fail "object cache file should be absent after invalidate"
+  fi
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_contains '"cache_hit":false' "recompile_after_invalidate"
+  end_case cache_invalidate
 }
 
 test_flag_change() {
@@ -152,6 +193,8 @@ main() {
   test_profile_header
   test_cache_hit
   test_link_cache_hit
+  test_compile_start
+  test_cache_invalidate
   test_flag_change
   test_legacy_cache
   test_cache_status

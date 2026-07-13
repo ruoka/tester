@@ -1206,6 +1206,20 @@ private:
         execute_system_command(shell_words(cmd));
     }
 
+    void emit_compile_start(const translation_unit& tu,
+                            std::string_view rebuild_reason = {}) const
+    {
+        if(!cb::jsonl::enabled())
+            return;
+
+        cb::jsonl::sink().compile_start(
+            tu.full_path,
+            tu.object_path,
+            tu.is_modular ? tu.pcm_path : std::string_view{},
+            tu.module,
+            rebuild_reason);
+    }
+
     void emit_compile_end(const translation_unit& tu,
                           bool ok,
                           bool cache_hit,
@@ -1755,6 +1769,7 @@ private:
     // ============================================================================
 
     void compile_unit(const translation_unit& tu, std::string_view rebuild_reason) {
+        emit_compile_start(tu, rebuild_reason);
         const auto started = std::chrono::steady_clock::now();
         if (tu.is_modular) {
             execute_system_command(precompile_argv(tu));
@@ -1799,6 +1814,7 @@ private:
                         cache[tu->full_path] = tu->last_modified;
                     } else {
                         const auto now = std::chrono::steady_clock::now();
+                        emit_compile_start(*tu);
                         emit_compile_end(*tu, true, true, now, now);
                     }
                 });
@@ -2149,6 +2165,34 @@ public:
         log::info("  executable_entries: " + std::to_string(executable_entries));
     }
 
+    static bool remove_if_exists(const std::string& path)
+    {
+        if(not fs::exists(path))
+            return false;
+        fs::remove(path);
+        return true;
+    }
+
+    void cache_invalidate() const
+    {
+        fs::create_directories(cache_dir());
+
+        const auto object_removed = remove_if_exists(object_cache_path());
+        const auto executable_removed = remove_if_exists(executable_cache_path());
+        const auto stamp_removed = remove_if_exists(cache_dir() + "/compiler-version.txt");
+
+        if(cb::jsonl::enabled())
+        {
+            cb::jsonl::sink().cache_invalidate_end(object_removed, executable_removed, stamp_removed);
+            return;
+        }
+
+        log::info("Invalidated compile/link cache indexes:"s);
+        log::info("  object_cache: "s + (object_removed ? "removed" : "absent"));
+        log::info("  executable_cache: "s + (executable_removed ? "removed" : "absent"));
+        log::info("  compiler_stamp: "s + (stamp_removed ? "removed" : "absent"));
+    }
+
     void set_include_tests(bool value) {
         include_tests = value;
     }
@@ -2329,7 +2373,7 @@ namespace {
 bool is_cb_token(std::string_view arg)
 {
     return arg == "release" || arg == "debug" || arg == "ci" || arg == "clean"
-        || arg == "build" || arg == "list" || arg == "test" || arg == "cache" || arg == "status" || arg == "static"
+        || arg == "build" || arg == "list" || arg == "test" || arg == "cache" || arg == "status" || arg == "invalidate" || arg == "static"
         || arg == "help" || arg == "-h" || arg == "--help"
         || arg == "--include-examples" || arg == "--build-tests"
         || arg == "-I" || arg == "--include" || arg == "--link-flags"
@@ -2368,7 +2412,8 @@ try {
     }
 
     auto config = cb::build_config::debug;  // default to debug
-    auto do_clean = false, do_list = false, do_build = false, do_run_tests = false, do_cache_status = false;
+    auto do_clean = false, do_list = false, do_build = false, do_run_tests = false;
+    auto do_cache_status = false, do_cache_invalidate = false;
     auto test_filter = std::string{};
     auto test_runner_args = std::vector<std::string>{};
     auto machine_output = false;
@@ -2416,11 +2461,17 @@ try {
         } else if (argument == "list") {
             do_list = true;
         } else if (argument == "cache") {
-            if (i + 1 < argc && std::string_view{argv[i + 1]} == "status") {
+            if (i + 1 >= argc) {
+                cb::log::error("Usage: cache status|invalidate");
+                std::exit(1);
+            }
+            const auto cache_verb = std::string_view{argv[++i]};
+            if (cache_verb == "status") {
                 do_cache_status = true;
-                ++i;
+            } else if (cache_verb == "invalidate") {
+                do_cache_invalidate = true;
             } else {
-                cb::log::error("Usage: cache status — inspect object-cache profile and entry counts");
+                cb::log::error("Usage: cache status|invalidate");
                 std::exit(1);
             }
         } else if (argument == "static") {
@@ -2467,6 +2518,7 @@ try {
                       << "  ci               Clean and run tests (shortcut for: clean test)\n"
                       << "  list             List all translation units\n"
                       << "  cache status     Inspect object-cache profile and entry counts\n"
+                      << "  cache invalidate Remove object/link cache indexes (lighter than clean)\n"
                       << "  test [filter] [-- <args...>]  Build and run tests (optional filter)\n"
                       << "                 Forward test_runner flags directly (e.g. --tags=, --list)\n"
                       << "                 or pass any args after '--'\n"
@@ -2532,6 +2584,10 @@ try {
         build_system.cache_status();
         return 0;
     }
+    if (do_cache_invalidate) {
+        build_system.cache_invalidate();
+        return 0;
+    }
     if (do_clean) build_system.clean();
     if (do_build) {
         if (build_tests) {
@@ -2569,7 +2625,9 @@ try {
         // Build include_tests etc inside run_tests(), but pass args as tokens.
         build_system.run_tests(args);
     }
-    if (not do_clean and not do_list and not do_run_tests and not do_build and not do_cache_status) build_system.build();
+    if (not do_clean and not do_list and not do_run_tests and not do_build
+        and not do_cache_status and not do_cache_invalidate)
+        build_system.build();
 
     return 0;
 } catch (const std::exception& e) {
