@@ -204,6 +204,8 @@ Legacy caches without a `profile\t` header still load; the header is rewritten o
 
 **Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job) — `profile_header`, `cache_hit`, `flag_change`.
 
+**Optional follow-up:** a `cache` subcommand (`status`, `invalidate`, `prune`) for disk/orphan cleanup without full `clean` — backlog only; see [tester-improvements.md §4.4](tester-improvements.md#44-cache-maintenance-optional--add-if-operational-issues-appear).
+
 ---
 
 ## JSONL and correlation

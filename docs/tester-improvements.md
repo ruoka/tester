@@ -164,6 +164,24 @@ Design rationale and comparison with CMake, Make, and other build tools: [`docs/
 - 📋 Explicit test include/exclude globs in CB CLI.
 - 📋 First-class support for integration tests in a separate top-level `tests/` directory when embedded as a dependency.
 
+### 4.4 Cache maintenance (optional — add if operational issues appear)
+
+Not required for correctness today: profile v2 + timestamp rules already drive rebuilds. Consider only if users hit **disk bloat**, **stale orphan artifacts**, or need **visibility** into cache state without a full `clean`.
+
+**Problem today:** `clean` removes the entire `build-<os>-<config>/` tree. `flag_change` clears the in-memory object-cache index and forces recompiles, but old `.o` / `.pcm` files may remain on disk. Long-lived trees (renamed TUs, removed modules, repeated flag experiments) can accumulate dead artifacts.
+
+**Proposed `cache` subcommand** (alongside `build`, `test`, `list`, `clean`):
+
+| Verb | Purpose |
+|------|---------|
+| `cache status` | Decode profile header, index entry counts, disk usage (`obj/`, `pcm/`, `cache/`), orphan/stale rows (cache points at missing paths; artifacts with no matching source/TU). JSONL: `cache_status` event. |
+| `cache invalidate` | Delete or rewrite `object-cache.txt` / `executable-cache.txt` only — lighter than `clean`; next build treats everything as uncached without wiping artifacts. |
+| `cache prune` | Garbage-collect artifacts the current module graph no longer references; trim cache index rows for missing paths. Optional `--aggressive` after `flag_change` to drop all `obj/` / `pcm/` under the config. JSONL: `cache_prune_end` with counts. |
+
+**Implementation sketch:** scan current TU graph → expected `{obj, pcm}` set; walk `obj/` and `pcm/`; delete files not in set; reconcile `object-cache.txt`. Reuse existing `object_cache_profile()` / `parse_object_cache_profile_fields()` for `status`.
+
+**Smoke / CI:** add `legacy_cache` and `cache_prune` cases only if the subcommand ships.
+
 ---
 
 ## 5. Bootstrap scripts (`tools/CB.sh`)
@@ -253,6 +271,7 @@ When tester is used as `deps/tester` inside a larger repo:
 | — | `compile_end` + structured `argv` in CB JSONL | ✅ Done |
 | — | Unified `CB.sh` template | ✅ Done (`tools/CB.sh.core`) |
 | Low | Death tests, regex matchers, CMake export | Nice-to-have framework parity |
+| Low | `cache status` / `invalidate` / `prune` subcommands | Only if disk/orphan/stale-cache issues show up in practice |
 
 ---
 
