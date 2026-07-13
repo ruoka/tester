@@ -4,15 +4,14 @@
 
 #pragma once
 
-#include <array>
-#include <cstdio>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
-#include <sys/wait.h>
 
 namespace tester_selftest {
 
@@ -59,8 +58,21 @@ struct spawn_result
     int exit_code = -1;
 };
 
+inline auto read_file_text(const std::filesystem::path& path) -> std::string
+{
+    auto file = std::ifstream{path};
+    if(not file)
+        return {};
+    return {std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+}
+
 inline auto run_test_runner(const std::vector<std::string>& args, std::string_view extra_env = {}) -> spawn_result
 {
+    const auto out_path = std::filesystem::temp_directory_path()
+        / ("tester_selftest_"
+           + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())
+           + ".out");
+
     auto cmd = std::string{};
     if(not extra_env.empty())
         cmd += std::string{extra_env} + " ";
@@ -72,29 +84,16 @@ inline auto run_test_runner(const std::vector<std::string>& args, std::string_vi
         cmd += shell_quote(arg);
     }
 
+    cmd += " > ";
+    cmd += shell_quote(out_path.string());
     cmd += " 2>/dev/null";
 
-    auto pipe = ::popen(cmd.c_str(), "r");
-    if(pipe == nullptr)
-        return {.stdout_text = {}, .exit_code = -1};
+    const auto status = std::system(cmd.c_str());
+    auto output = read_file_text(out_path);
+    std::error_code ec;
+    std::filesystem::remove(out_path, ec);
 
-    auto output = std::string{};
-    auto buffer = std::array<char, 4096>{};
-    while(true)
-    {
-        const auto n = std::fread(buffer.data(), 1, buffer.size(), pipe);
-        if(n == 0)
-            break;
-        output.append(buffer.data(), n);
-    }
-
-    const auto status = ::pclose(pipe);
-    auto exit_code = status;
-#if defined(WIFEXITED) && defined(WEXITSTATUS)
-    if(status != -1 && WIFEXITED(status))
-        exit_code = WEXITSTATUS(status);
-#endif
-    return {.stdout_text = std::move(output), .exit_code = exit_code};
+    return {.stdout_text = std::move(output), .exit_code = status};
 }
 
 inline auto jsonl_events_contain(std::string_view jsonl, std::string_view needle) -> bool

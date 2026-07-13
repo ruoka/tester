@@ -30,8 +30,6 @@
 #include <utility>
 #include <stdexcept>
 #include <cctype>
-#include <unistd.h>
-#include <sys/wait.h>
 #include "cb-jsonl_sink.h++"
 #include "cb-console_sink.h++"
 
@@ -2279,25 +2277,9 @@ public:
         phase_started = test_started;
         cb::jsonl::sink().test_start(runner);
 
-        auto r = system(cmd.c_str());
-        auto exit_code = r;
-        auto signaled = false;
-        auto signal_number = 0;
-#if defined(WIFEXITED) && defined(WEXITSTATUS) && defined(WIFSIGNALED) && defined(WTERMSIG)
-        if (r != -1)
-        {
-            if (WIFEXITED(r))
-                exit_code = WEXITSTATUS(r);
-            else if (WIFSIGNALED(r))
-            {
-                signaled = true;
-                signal_number = WTERMSIG(r);
-                exit_code = 128 + signal_number;
-            }
-        }
-#endif
+        const auto r = system(cmd.c_str());
         const auto test_finished = std::chrono::steady_clock::now();
-        cb::jsonl::sink().test_end(r == 0, exit_code, r, signaled, signal_number, test_started, test_finished);
+        cb::jsonl::sink().test_end(r == 0, r, r, false, 0, test_started, test_finished);
         current_phase = jsonl::phase::none;
         if (r) {
             log::error("Some tests or assertions failed!");
