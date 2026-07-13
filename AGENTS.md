@@ -196,13 +196,15 @@ for (std::string_view segment :
     fields.emplace(parse_profile_field(segment));
 ```
 
-Use `std::from_chars` for fixed-width hex (`%XX` decode), not hand-rolled nibble loops. For two-field lines (`path\tticks`), `string_view::find('\t')` is fine — no need for a view pipeline.
+**Object-cache profile values** — tab-delimited `key=value` fields; values are stored verbatim (no percent-encoding). Invariant: values CB writes must not contain `'\t'`, `'\n'`, `'\r'`, or `'%'` (paths, flag lists, version lines satisfy this). For two-field cache entry lines (`path\tticks`), `string_view::find('\t')` is fine — no view pipeline needed.
 
 Do **not** add defensive parsers or legacy upgrade paths for on-disk formats that **only CB writes**; fresh builds use `clean` / `cache invalidate`. Trust the writer contract; invalidate the whole cache on header mismatch instead of skipping bad segments.
 
 **Subprocess I/O** — see [Implementation policy](#implementation-policy-standard-c-only) above. All toolchain commands go through `invoke_shell(argv)`; probes/self-tests use stamp/temp file + `std::ifstream`. Test env uses `putenv` + `invoke_shell` (not shell env prefixes). Never `popen` / `fork` / `exec`.
 
-**When custom code is fine** — whitespace flag tokenization (`append_whitespace_tokens` for CB-built flag strings; not POSIX shell quoting), topological sort, module graph walks, percent-encoding, and domain-specific cache logic. Do not reimplement `set_difference`, substring search, map membership, or **delimiter-join loops** by hand.
+**CB flag argv** — store toolchain flags as `string_list` (`compile_flags`, `link_flags`, `cpp_flags`, `module_flags`); argv builders use `append_argv`. Parse external flag **text** only at boundaries (`parse_external_flag_text` in `main` for `--compile-flags` / `--link-flags`; same helper when diffing serialized profile `compile`/`cpp` fields). Serialize lists to the object-cache profile with `flags_profile_string` (`join_with` on `' '`). Parse with `collapse_whitespace` then `views::split(' ')` + `filter` non-empty — symmetric with the writer; not full POSIX shell word-splitting (C++26 `split_when` would cover predicate delimiters without the collapse step).
+
+**When custom code is fine** — topological sort, module graph walks, percent-encoding, and domain-specific cache logic. Do not reimplement `set_difference`, substring search, map membership, or **delimiter-join loops** by hand.
 
 ## Do not
 

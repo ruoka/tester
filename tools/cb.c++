@@ -27,7 +27,7 @@
 #include <ranges>
 #include <utility>
 #include <stdexcept>
-#include <charconv>
+#include <cctype>
 #include "cb-jsonl_sink.h++"
 #include "cb-console_sink.h++"
 
@@ -140,30 +140,53 @@ inline std::string_view unit_kind_name(unit_kind kind)
 using suffix_list = std::vector<std::string>;
 using string_list = std::vector<std::string>;
 
-// Whitespace-separated flag tokens (CB-built strings and --compile-flags).
-// Not POSIX shell parsing — no quotes, escapes, or $ expansion.
-inline void append_whitespace_tokens(string_list& argv, std::string_view text)
+inline std::string_view view_from(auto&& part)
 {
-    constexpr auto whitespace = " \t\n\r"sv;
-    while(not text.empty())
-    {
-        const auto start = text.find_first_not_of(whitespace);
-        if(start == std::string_view::npos)
-            break;
-        text.remove_prefix(start);
-        const auto end = text.find_first_of(whitespace);
-        argv.emplace_back(text.substr(0, end));
-        if(end == std::string_view::npos)
-            break;
-        text.remove_prefix(end);
-    }
+    return std::string_view{part};
 }
 
-inline string_list whitespace_tokens(std::string_view text)
+// Collapse any isspace run to a single space; trim leading/trailing whitespace.
+inline std::string collapse_whitespace(std::string_view text)
 {
-    auto argv = string_list{};
-    append_whitespace_tokens(argv, text);
-    return argv;
+    return std::ranges::fold_left(
+        text,
+        std::string{},
+        [](std::string out, const char ch) {
+            if(std::isspace(static_cast<unsigned char>(ch)) != 0)
+            {
+                if(not out.empty() && out.back() != ' ')
+                    out += ' ';
+            }
+            else
+                out += ch;
+            return out;
+        });
+}
+
+// Parse external flag text only (CLI --compile-flags, object-cache profile fields).
+// CB stores flags as string_list; this runs at text boundaries, not in argv builders.
+// Symmetric with flags_profile_string (join_with on ' '); not POSIX shell parsing.
+inline string_list parse_external_flag_text(std::string_view text)
+{
+    const auto normalized = collapse_whitespace(text);
+    auto tokens = string_list{};
+    for(std::string_view token :
+        normalized | std::views::split(' ')
+                   | std::views::transform([](auto&& part) { return view_from(part); })
+                   | std::views::filter([](std::string_view t) { return not t.empty(); }))
+        tokens.emplace_back(token);
+    return tokens;
+}
+
+inline void append_argv(string_list& argv, const string_list& tokens)
+{
+    argv.insert(argv.end(), tokens.begin(), tokens.end());
+}
+
+inline void append_argv(string_list& argv, std::initializer_list<std::string_view> tokens)
+{
+    for(const auto token : tokens)
+        argv.emplace_back(token);
 }
 
 template<std::ranges::input_range R>
@@ -178,6 +201,11 @@ inline std::string join_with(R&& items, std::string_view sep)
             out += item;
             return out;
         });
+}
+
+inline std::string flags_profile_string(const string_list& flags)
+{
+    return join_with(flags, " "sv);
 }
 
 inline std::string join_argv(const string_list& argv)
@@ -195,60 +223,14 @@ inline std::string join_argv(const string_list& argv)
 
 using profile_fields = std::flat_map<std::string, std::string, std::less<>>;
 
-inline std::string encode_profile_value(std::string_view value)
-{
-    auto out = ""s;
-    out.reserve(value.size());
-    for(const auto ch : value)
-    {
-        switch(ch)
-        {
-            case '%': out += "%25"; break;
-            case '\t': out += "%09"; break;
-            case '\n': out += "%0A"; break;
-            case '\r': out += "%0D"; break;
-            default: out.push_back(ch);
-        }
-    }
-    return out;
-}
-
-inline std::string decode_profile_value(std::string_view value)
-{
-    auto out = ""s;
-    out.reserve(value.size());
-    for(std::size_t i = 0; i < value.size(); ++i)
-    {
-        if(value[i] == '%' && i + 2 < value.size())
-        {
-            unsigned byte = 0;
-            const auto [ptr, ec] = std::from_chars(value.data() + i + 1, value.data() + i + 3, byte, 16);
-            if(ec == std::errc{} && ptr == value.data() + i + 3)
-            {
-                out.push_back(static_cast<char>(byte));
-                i += 2;
-                continue;
-            }
-        }
-        out.push_back(value[i]);
-    }
-    return out;
-}
-
+// Object-cache profile values must not contain '\t', '\n', '\r', or '%' (tab-delimited format).
 inline void append_profile_field(std::string& profile, std::string_view key, std::string_view value)
 {
     if(not profile.empty())
         profile += '\t';
     profile += key;
     profile += '=';
-    profile += encode_profile_value(value);
-}
-
-inline std::string_view view_from(auto&& part)
-{
-    const auto first = std::ranges::begin(part);
-    const auto last = std::ranges::end(part);
-    return {first, static_cast<std::size_t>(last - first)};
+    profile += value;
 }
 
 inline std::pair<std::string, std::string> parse_profile_field(std::string_view segment)
@@ -256,7 +238,7 @@ inline std::pair<std::string, std::string> parse_profile_field(std::string_view 
     const auto eq = segment.find('=');
     return {
         std::string{segment.substr(0, eq)},
-        decode_profile_value(segment.substr(eq + 1))};
+        std::string{segment.substr(eq + 1)}};
 }
 
 inline profile_fields parse_object_cache_profile_fields(std::string_view profile)
@@ -278,8 +260,8 @@ using object_cache_profile_diff = cb_jsonl::object_cache_profile_diff;
 
 inline profile_token_change diff_profile_tokens(std::string_view old_text, std::string_view new_text)
 {
-    auto old_tokens = whitespace_tokens(old_text);
-    auto new_tokens = whitespace_tokens(new_text);
+    auto old_tokens = parse_external_flag_text(old_text);
+    auto new_tokens = parse_external_flag_text(new_text);
     std::ranges::sort(old_tokens);
     std::ranges::sort(new_tokens);
 
@@ -685,9 +667,9 @@ inline constexpr std::string_view object_cache_format = "cb-object-cache-v2"sv;
 class build_system {
 private:
     std::string source_dir;
-    std::string compile_flags, link_flags, cpp_flags;
+    string_list compile_flags, link_flags, cpp_flags;
     module_to_ldflags_map module_ldflags;
-    std::string module_flags;
+    string_list module_flags;
     std::string std_module_source;
     std::string llvm_prefix, llvm_cxx;
     std::string std_cppm_profile;
@@ -701,8 +683,8 @@ private:
     const bool static_link;
     bool include_tests = false;
     bool include_examples = false;
-    std::string extra_compile_flags;
-    std::string extra_link_flags;
+    string_list extra_compile_flag_tokens;
+    string_list extra_link_flag_tokens;
     mutable std::optional<std::string> object_cache_miss_reason;
     mutable std::optional<object_cache_profile_diff> object_cache_profile_diff;
     mutable bool profile_changed_emitted = false;
@@ -809,119 +791,138 @@ private:
 
     void initialize_build_flags()
     {
-        auto os        = os_name();
-        bool is_darwin = (os == "darwin");
-        bool is_linux  = (os == "linux");
-    
-        // ------------------------------------------------------------------
-        // Compile flags (common to all configs)
-        // ------------------------------------------------------------------
-        // Use -B to tell clang++ where to find binaries (like the linker)
-        compile_flags = "-B" + llvm_prefix + "/bin "
-                        "-fuse-ld=lld "
-                        "-std=c++23 -stdlib=libc++ -pthread -fPIC "
-                        "-fexperimental-library -Wall -Wextra "
-                        "-Wno-reserved-module-identifier "
-                        "-Wno-unused-command-line-argument ";
-    
-        if (is_linux) {
-            // Linux: normal include path, no -nostdinc++
-            compile_flags += "-I" + llvm_prefix + "/include/c++/v1 ";
-        } else {
-            // macOS + everything else: silence system headers, disable implicit modules
-            compile_flags += "-nostdinc++ -isystem " + llvm_prefix + "/include/c++/v1 "
-                             "-fno-implicit-modules -fno-implicit-module-maps ";
+        const auto os = os_name();
+        const auto is_darwin = (os == "darwin");
+        const auto is_linux = (os == "linux");
+
+        compile_flags = {
+            "-B" + llvm_prefix + "/bin",
+            "-fuse-ld=lld",
+            "-std=c++23",
+            "-stdlib=libc++",
+            "-pthread",
+            "-fPIC",
+            "-fexperimental-library",
+            "-Wall",
+            "-Wextra",
+            "-Wno-reserved-module-identifier",
+            "-Wno-unused-command-line-argument",
+        };
+
+        if(is_linux)
+            compile_flags.push_back("-I" + llvm_prefix + "/include/c++/v1");
+        else
+        {
+            append_argv(compile_flags, {
+                "-nostdinc++",
+                "-isystem",
+                llvm_prefix + "/include/c++/v1",
+                "-fno-implicit-modules",
+                "-fno-implicit-module-maps",
+            });
         }
-    
-        // ------------------------------------------------------------------
-        // Optimization / debug flags
-        // ------------------------------------------------------------------
-        if (config == build_config::release) {
-            compile_flags += "-O3 -DNDEBUG ";
+
+        if(config == build_config::release)
+        {
+            append_argv(compile_flags, {"-O3", "-DNDEBUG"});
             log::info("Building RELEASE configuration"s + (static_link ? " (static C++ stdlib)"s : ""s));
-        } else {
-            compile_flags += "-O0 -g3 ";
+        }
+        else
+        {
+            append_argv(compile_flags, {"-O0", "-g3"});
             log::info("Building DEBUG configuration"s + (static_link ? " (static C++ stdlib)"s : ""s));
         }
-    
-        // ------------------------------------------------------------------
-        // Machine-readable diagnostics (JSONL mode)
-        // ------------------------------------------------------------------
-        // Keep output low-noise in machine runs (stderr only).
-        if (cb::jsonl::enabled()) {
-            compile_flags += "-fno-caret-diagnostics -fno-show-column -fno-show-source-location ";
+
+        if(cb::jsonl::enabled())
+        {
+            append_argv(compile_flags, {
+                "-fno-caret-diagnostics",
+                "-fno-show-column",
+                "-fno-show-source-location",
+            });
         }
-    
-        // ------------------------------------------------------------------
-        // Link flags
-        // ------------------------------------------------------------------
-        if (static_link) {
-            if (is_darwin) {
-                // macOS cannot fully static-link libc++ (it stays dynamic)
-                link_flags = "-pthread -lc++ "
-                             "-L" + llvm_prefix + "/lib "
-                             "-Wl,-dead_strip";
+
+        if(static_link)
+        {
+            if(is_darwin)
+            {
+                link_flags = {
+                    "-pthread",
+                    "-lc++",
+                    "-L" + llvm_prefix + "/lib",
+                    "-Wl,-dead_strip",
+                };
                 log::warning("Static linking on macOS is limited – libc++ remains dynamically linked");
-            } else {
-                // Linux – static libc++ / libc++abi only (glibc stays dynamic)
-                auto arch = linux_arch();  // e.g. "aarch64"
-                link_flags = "-Wl,-Bstatic -lc++ -lc++abi -lc++experimental "
-                             "-Wl,-Bdynamic -pthread -ldl "
-                             "-L/usr/lib/" + arch + "-linux-gnu "
-                             "-L" + llvm_prefix + "/lib "
-                             "-O3";
-                if (config == build_config::debug) {
-                    link_flags += " -g3";  // replace -O3 in debug builds if you want
-                }
+            }
+            else
+            {
+                const auto arch = linux_arch();
+                link_flags = {
+                    "-Wl,-Bstatic",
+                    "-lc++",
+                    "-lc++abi",
+                    "-lc++experimental",
+                    "-Wl,-Bdynamic",
+                    "-pthread",
+                    "-ldl",
+                    "-L/usr/lib/" + arch + "-linux-gnu",
+                    "-L" + llvm_prefix + "/lib",
+                    "-O3",
+                };
+                if(config == build_config::debug)
+                    link_flags.push_back("-g3");
             }
         }
-        else {
-            // ---------- Dynamic linking ----------
-            if (is_darwin) {
-                // Workaround for llvm/llvm-project#92121 and #168287:
-                // When using ld64.lld, we must explicitly link with LLVM libunwind
-                // to avoid exception handling bugs on macOS ARM.
-                // See: https://gist.github.com/ruoka/a62dbdddeacec52d75382791bdc0a2ba
-                link_flags = "-pthread "
-                             "-L" + llvm_prefix + "/lib "
-                             "-Wl,-rpath," + llvm_prefix + "/lib "
-                             "-lunwind "
-                             "-Wl,-dead_strip ";
-                if (fs::exists("/usr/lib/system/introspection/libunwind.reexported_symbols")) {
-                    link_flags += "-Wl,-unexported_symbols_list,/usr/lib/system/introspection/libunwind.reexported_symbols";
-                }
-            } else {
-                // Linux dynamic – clean, correct, no -lunwind ever
-                auto arch = linux_arch();
-                link_flags = "-pthread -lc++ -lc++abi -lc++experimental "
-                             "-L/usr/lib/" + arch + "-linux-gnu "
-                             "-L" + llvm_prefix + "/lib "
-                             "-Wl,-rpath," + llvm_prefix + "/lib "
-                             "-O3";
-                if (config == build_config::debug) {
-                    link_flags += " -g3";
-                }
+        else if(is_darwin)
+        {
+            link_flags = {
+                "-pthread",
+                "-L" + llvm_prefix + "/lib",
+                "-Wl,-rpath," + llvm_prefix + "/lib",
+                "-lunwind",
+                "-Wl,-dead_strip",
+            };
+            if(fs::exists("/usr/lib/system/introspection/libunwind.reexported_symbols"))
+            {
+                link_flags.push_back(
+                    "-Wl,-unexported_symbols_list,/usr/lib/system/introspection/libunwind.reexported_symbols");
             }
         }
-        
-        // Append extra link flags if provided
-        if (not extra_link_flags.empty()) {
-            link_flags += " " + extra_link_flags;
-            log::info("Added extra linker flags: "s + extra_link_flags);
+        else
+        {
+            const auto arch = linux_arch();
+            link_flags = {
+                "-pthread",
+                "-lc++",
+                "-lc++abi",
+                "-lc++experimental",
+                "-L/usr/lib/" + arch + "-linux-gnu",
+                "-L" + llvm_prefix + "/lib",
+                "-Wl,-rpath," + llvm_prefix + "/lib",
+                "-O3",
+            };
+            if(config == build_config::debug)
+                link_flags.push_back("-g3");
         }
-        
-        // Append extra compile flags if provided
-        if (not extra_compile_flags.empty()) {
-            compile_flags += " " + extra_compile_flags;
-            log::info("Added extra compile flags: "s + extra_compile_flags);
+
+        if(not extra_link_flag_tokens.empty())
+        {
+            append_argv(link_flags, extra_link_flag_tokens);
+            log::info("Added extra linker flags: "s + flags_profile_string(extra_link_flag_tokens));
         }
-    
-        // ------------------------------------------------------------------
-        // Module flags (used for import std; and your own modules)
-        // ------------------------------------------------------------------
-        module_flags = "-fno-implicit-modules -fno-implicit-module-maps "
-                       "-fmodule-file=std=" + std_pcm_path() + " "
-                       "-fprebuilt-module-path=" + module_cache_dir() + " ";
+
+        if(not extra_compile_flag_tokens.empty())
+        {
+            append_argv(compile_flags, extra_compile_flag_tokens);
+            log::info("Added extra compile flags: "s + flags_profile_string(extra_compile_flag_tokens));
+        }
+
+        module_flags = {
+            "-fno-implicit-modules",
+            "-fno-implicit-module-maps",
+            "-fmodule-file=std=" + std_pcm_path(),
+            "-fprebuilt-module-path=" + module_cache_dir(),
+        };
     }
 
     // ============================================================================
@@ -1138,15 +1139,15 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        append_whitespace_tokens(argv, compile_flags);
-        append_whitespace_tokens(argv, cpp_flags);
+        append_argv(argv, compile_flags);
+        append_argv(argv, cpp_flags);
         return argv;
     }
 
     string_list precompile_argv(const translation_unit& tu) const
     {
         auto argv = base_compile_argv();
-        append_whitespace_tokens(argv, module_flags);
+        append_argv(argv, module_flags);
         argv.push_back(tu.full_path);
         argv.push_back("--precompile");
         argv.push_back("-o");
@@ -1158,8 +1159,8 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        append_whitespace_tokens(argv, compile_flags);
-        append_whitespace_tokens(argv, module_flags);
+        append_argv(argv, compile_flags);
+        append_argv(argv, module_flags);
         argv.push_back(tu.pcm_path);
         argv.push_back("-c");
         argv.push_back("-o");
@@ -1170,7 +1171,7 @@ private:
     string_list source_object_argv(const translation_unit& tu) const
     {
         auto argv = base_compile_argv();
-        append_whitespace_tokens(argv, module_flags);
+        append_argv(argv, module_flags);
         if (tu.kind == unit_kind::implementation_unit) {
             auto module_pcm = compute_pcm_path(tu);
             argv.push_back("-fmodule-file=" + tu.module + "=" + module_pcm);
@@ -1186,8 +1187,8 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        append_whitespace_tokens(argv, compile_flags);
-        append_whitespace_tokens(argv, cpp_flags);
+        append_argv(argv, compile_flags);
+        append_argv(argv, cpp_flags);
         argv.push_back("-nostdinc++");
         argv.push_back("-isystem");
         argv.push_back(llvm_prefix + "/include/c++/v1");
@@ -1206,13 +1207,20 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        append_whitespace_tokens(argv, "-std=c++23 -pthread -fPIC -fexperimental-library -Wall -Wextra");
+        append_argv(argv, {
+            "-std=c++23",
+            "-pthread",
+            "-fPIC",
+            "-fexperimental-library",
+            "-Wall",
+            "-Wextra",
+        });
         if(os_name() == "darwin")
             argv.push_back("-fapplication-extension");
         if(config == build_config::release)
-            append_whitespace_tokens(argv, "-O3 -DNDEBUG");
+            append_argv(argv, {"-O3", "-DNDEBUG"});
         else
-            append_whitespace_tokens(argv, "-O0 -g");
+            append_argv(argv, {"-O0", "-g"});
         argv.push_back("-fno-implicit-modules");
         argv.push_back("-fno-implicit-module-maps");
         argv.push_back("-fmodule-file=std=" + std_pcm_path());
@@ -1227,14 +1235,14 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        append_whitespace_tokens(argv, compile_flags);
-        append_whitespace_tokens(argv, collect_module_ldflags(tu.imports));
-        append_whitespace_tokens(argv, module_flags);
+        append_argv(argv, compile_flags);
+        append_argv(argv, collect_module_ldflags(tu.imports));
+        append_argv(argv, module_flags);
         argv.push_back(tu.object_path);
         for(const auto& object_path : shared_objects)
             argv.push_back(object_path);
         argv.push_back(std_obj_path());
-        append_whitespace_tokens(argv, link_flags);
+        append_argv(argv, link_flags);
         argv.push_back("-o");
         argv.push_back(tu.executable_path);
         return argv;
@@ -1246,12 +1254,12 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        append_whitespace_tokens(argv, compile_flags);
+        append_argv(argv, compile_flags);
         if(test_runner)
-            append_whitespace_tokens(argv, collect_module_ldflags(test_runner->imports));
+            append_argv(argv, collect_module_ldflags(test_runner->imports));
         else
-            append_whitespace_tokens(argv, collect_test_module_ldflags());
-        append_whitespace_tokens(argv, module_flags);
+            append_argv(argv, collect_test_module_ldflags());
+        append_argv(argv, module_flags);
         if(not test_runner_obj.empty())
             argv.push_back(test_runner_obj);
         for(const auto& object_path : linkable_object_paths())
@@ -1260,7 +1268,7 @@ private:
             if(tu.is_test and not tu.has_main)
                 argv.push_back(tu.object_path);
         argv.push_back(std_obj_path());
-        append_whitespace_tokens(argv, link_flags);
+        append_argv(argv, link_flags);
         argv.push_back("-o");
         argv.push_back(output_path);
         return argv;
@@ -1275,12 +1283,13 @@ private:
         return argv;
     }
 
-    std::string collect_module_ldflags(const string_list& imp) const {
-        auto f = ""s;
-        for (const auto& m : imp)
-            if (module_ldflags.contains(m))
-                f += module_ldflags.at(m) + " ";
-        return f;
+    string_list collect_module_ldflags(const string_list& imp) const
+    {
+        auto flags = string_list{};
+        for(const auto& m : imp)
+            if(module_ldflags.contains(m))
+                append_argv(flags, parse_external_flag_text(module_ldflags.at(m)));
+        return flags;
     }
 
     // ============================================================================
@@ -1301,8 +1310,8 @@ private:
         if(not clang_version.empty())
             append_profile_field(profile, "clang_ver", clang_version);
         append_profile_field(profile, "std_cppm", std_cppm_profile);
-        append_profile_field(profile, "compile", compile_flags);
-        append_profile_field(profile, "cpp", cpp_flags);
+        append_profile_field(profile, "compile", flags_profile_string(compile_flags));
+        append_profile_field(profile, "cpp", flags_profile_string(cpp_flags));
         return profile;
     }
 
@@ -1693,14 +1702,13 @@ private:
         emit_compile_end(tu, true, false, started, std::chrono::steady_clock::now(), rebuild_reason);
     }
 
-    void update_module_flags() {
-        auto flags = ""s;
-        for (const auto& tu : units_in_topological_order) {
-            if (tu.is_modular) {
-                flags += "-fmodule-file=" + tu.module + "=" + tu.pcm_path + " ";
-            }
+    void update_module_flags()
+    {
+        for(const auto& tu : units_in_topological_order)
+        {
+            if(tu.is_modular)
+                module_flags.push_back("-fmodule-file=" + tu.module + "=" + tu.pcm_path);
         }
-        module_flags += flags;
     }
 
     void compile_units() {
@@ -1780,13 +1788,13 @@ private:
         signature += "|";
         signature += dependency_signature(std_obj_path());
         signature += "|flags=";
-        signature += compile_flags;
+        signature += flags_profile_string(compile_flags);
         signature += "|link=";
-        signature += link_flags;
+        signature += flags_profile_string(link_flags);
         signature += "|modules=";
-        signature += module_flags;
+        signature += flags_profile_string(module_flags);
         signature += "|imports=";
-        signature += collect_module_ldflags(tu.imports);
+        signature += flags_profile_string(collect_module_ldflags(tu.imports));
         return signature;
     }
 
@@ -1828,12 +1836,13 @@ private:
         return objects;
     }
 
-    std::string collect_test_module_ldflags() const {
-        auto f = ""s;
-        for (const auto& tu : units_in_topological_order)
-            if (tu.is_test and not tu.has_main)
-                f += collect_module_ldflags(tu.imports);
-        return f;
+    string_list collect_test_module_ldflags() const
+    {
+        auto flags = string_list{};
+        for(const auto& tu : units_in_topological_order)
+            if(tu.is_test and not tu.has_main)
+                append_argv(flags, collect_module_ldflags(tu.imports));
+        return flags;
     }
 
     const translation_unit* find_test_runner_unit() const
@@ -1871,18 +1880,17 @@ private:
         signature += "|";
         signature += dependency_signature(std_obj_path());
         signature += "|flags=";
-        signature += compile_flags;
+        signature += flags_profile_string(compile_flags);
         signature += "|link=";
-        signature += link_flags;
+        signature += flags_profile_string(link_flags);
         signature += "|modules=";
-        signature += module_flags;
-        
-        // Include module ldflags from test objects and test_runner
-        auto test_ldflags = collect_test_module_ldflags();
-        if (const auto* test_runner = find_test_runner_unit())
-            test_ldflags += collect_module_ldflags(test_runner->imports);
+        signature += flags_profile_string(module_flags);
+
+        auto import_flags = collect_test_module_ldflags();
+        if(const auto* test_runner = find_test_runner_unit())
+            append_argv(import_flags, collect_module_ldflags(test_runner->imports));
         signature += "|imports=";
-        signature += test_ldflags;
+        signature += flags_profile_string(import_flags);
         
         return signature;
     }
@@ -1938,15 +1946,15 @@ private:
 public:
     build_system(
         build_config cfg,
-        const std::string& cpf = "",
+        const string_list& cpf = {},
         const module_to_ldflags_map& mlf = {},
         const std::string& src = ".",
         const std::string& stdcppm = "",
         bool static_linking = false,
         bool include_examples_flag = false,
-        const std::string& extra_compile_flags_param = "",
-        const std::string& extra_link_flags_param = ""
-    ) : config(cfg), static_link(static_linking), source_dir(src), cpp_flags(cpf), module_ldflags(mlf), std_module_source(stdcppm), include_tests(config == build_config::debug), include_examples(include_examples_flag), extra_compile_flags(extra_compile_flags_param), extra_link_flags(extra_link_flags_param) {
+        const string_list& extra_compile_flags_param = {},
+        const string_list& extra_link_flags_param = {}
+    ) : config(cfg), static_link(static_linking), source_dir(src), cpp_flags(cpf), module_ldflags(mlf), std_module_source(stdcppm), include_tests(config == build_config::debug), include_examples(include_examples_flag), extra_compile_flag_tokens(extra_compile_flags_param), extra_link_flag_tokens(extra_link_flags_param) {
         source_dir = normalize_path(source_dir);
 
         // Detect and setup LLVM environment (std.cppm location, LLVM prefix, compiler path)
@@ -2265,8 +2273,8 @@ try {
     auto include_examples = false;
     auto build_tests = false;  // --build-tests flag: build tests but don't run them
     auto include_paths = std::vector<std::string>{};
-    auto extra_compile_flags = std::string{};
-    auto extra_link_flags = std::string{};
+    auto extra_compile_flags = cb::string_list{};
+    auto extra_link_flags = cb::string_list{};
 
     for (int i = arg_index; i < argc; ++i) {
         auto argument = std::string_view{argv[i]};
@@ -2337,21 +2345,21 @@ try {
             }
         } else if (argument == "--link-flags") {
             if (i+1 < argc) {
-                extra_link_flags = argv[++i];
+                extra_link_flags = cb::parse_external_flag_text(argv[++i]);
             } else {
                 cb::log::error("Missing flags after --link-flags");
                 std::exit(1);
             }
         } else if (argument == "--compile-flags" or argument == "--extra-compile-flags") {
             if (i+1 < argc) {
-                extra_compile_flags = argv[++i];
+                extra_compile_flags = cb::parse_external_flag_text(argv[++i]);
             } else {
                 cb::log::error("Missing flags after --compile-flags");
                 std::exit(1);
             }
         } else if (argument.starts_with("--compile-flags=") or argument.starts_with("--extra-compile-flags=")) {
             const auto eq = argument.find('=');
-            extra_compile_flags = std::string{argument.substr(eq + 1)};
+            extra_compile_flags = cb::parse_external_flag_text(argument.substr(eq + 1));
         } else if (argument == "help" or argument == "-h" or argument == "--help") {
             std::cout << "Usage: " << argv[0] << " [std.cppm] [options]\n\n"
                       << "Options:\n"
@@ -2412,13 +2420,11 @@ try {
     if (cb::jsonl::enabled())
         std::atexit(cb::jsonl_atexit_handler);
 
-    // Build include flags from command-line arguments
-    auto include_flags = std::string{};
-    if (not include_paths.empty()) {
-        // Use provided include paths
-        for (const auto& path : include_paths) {
-            include_flags += "-I " + path + " ";
-        }
+    auto include_flags = cb::string_list{};
+    for(const auto& path : include_paths)
+    {
+        include_flags.push_back("-I");
+        include_flags.push_back(path);
     }
 
     auto build_system = cb::build_system{config, include_flags, {}, ".", stdcppm, static_linking, include_examples, extra_compile_flags, extra_link_flags};
