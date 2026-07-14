@@ -108,6 +108,17 @@ run_cb_build() {
   return "${status}"
 }
 
+run_cb_test() {
+  local work_dir=$1
+  shift
+  local status=0
+  LAST_JSONL="$(
+    cd "${work_dir}"
+    "${CB_BIN}" "${STD_CPPM}" debug test --jsonl "$@" 2>/dev/null
+  )" || status=$?
+  return "${status}"
+}
+
 run_cb_cache_status() {
   local work_dir=$1
   shift
@@ -167,6 +178,98 @@ assert_jsonl_contains() {
 
 assert_jsonl_not_contains() {
   assert_text_not_contains "${LAST_JSONL}" "$1" "${2:-jsonl_not_contains}"
+}
+
+assert_jsonl_event_count() {
+  local event_type=$1
+  local expected=$2
+  local label=${3:-jsonl_event_count}
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if python3 - "${event_type}" "${expected}" "${LAST_JSONL}" <<'PY'
+import json, sys
+event_type = sys.argv[1]
+expected = int(sys.argv[2])
+count = 0
+for line in sys.argv[3].splitlines():
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if event.get("type") == event_type:
+        count += 1
+if count != expected:
+    print(f"{event_type} count {count} != {expected}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+  then
+    jsonl_emit "{\"type\":\"smoke_assert_passed\",\"matcher\":\"${label}\"}"
+    return 0
+  fi
+  fail "expected ${expected} ${event_type} event(s)"
+  return 0
+}
+
+assert_jsonl_event_value() {
+  local event_type=$1
+  local key=$2
+  local expected=$3
+  local label=${4:-jsonl_event_value}
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if python3 - "${event_type}" "${key}" "${expected}" "${LAST_JSONL}" <<'PY'
+import json, sys
+event_type, key, expected_text, text = sys.argv[1:]
+expected = {"true": True, "false": False, "null": None}.get(expected_text, expected_text)
+for line in text.splitlines():
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if event.get("type") == event_type and event.get(key) == expected:
+        raise SystemExit(0)
+print(f"{event_type} with {key}={expected!r} not found", file=sys.stderr)
+raise SystemExit(1)
+PY
+  then
+    jsonl_emit "{\"type\":\"smoke_assert_passed\",\"matcher\":\"${label}\"}"
+    return 0
+  fi
+  fail "expected ${event_type} with ${key}=${expected}"
+  return 0
+}
+
+assert_compile_end() {
+  local source_suffix=$1
+  local cache_hit=$2
+  local rebuild_reason=$3
+  local ok=$4
+  local label=${5:-compile_end}
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if python3 - "${source_suffix}" "${cache_hit}" "${rebuild_reason}" "${ok}" "${LAST_JSONL}" <<'PY'
+import json, sys
+source_suffix = sys.argv[1]
+cache_hit = sys.argv[2] == "true"
+rebuild_reason = sys.argv[3]
+ok = sys.argv[4] == "true"
+for line in sys.argv[5].splitlines():
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if (event.get("type") == "compile_end"
+            and event.get("source_path", "").endswith(source_suffix)
+            and event.get("cache_hit") is cache_hit
+            and event.get("ok") is ok
+            and event.get("rebuild_reason", "") == rebuild_reason):
+        raise SystemExit(0)
+print(f"matching compile_end not found for {source_suffix}", file=sys.stderr)
+raise SystemExit(1)
+PY
+  then
+    jsonl_emit "{\"type\":\"smoke_assert_passed\",\"matcher\":\"${label}\"}"
+    return 0
+  fi
+  fail "expected compile_end for ${source_suffix} (ok=${ok}, cache_hit=${cache_hit}, reason=${rebuild_reason})"
+  return 0
 }
 
 assert_profile_header() {

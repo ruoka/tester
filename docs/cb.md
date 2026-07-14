@@ -40,7 +40,7 @@ The **test runner** is separate: crash **stack traces** in `test_runner.c++` use
 Condensed from the original project pitch — why teams pick CB over wiring CMake + CTest for ruoka-style repos:
 
 - **Pure C++** — build orchestration lives in `cb.c++`; no CMake scripting, Makefile generation, YAML/TOML, or helper languages
-- **Single-file transparency** — ~1300 lines in one place; read, debug, and fork without hunting generated rules
+- **Single-file transparency** — the ~2400-line orchestrator remains in one place, with presentation split into focused console/JSONL sinks
 - **Zero config** — conventions (`*.c++m`, `import` lines, co-located `*.test.c++`) replace `CMakeLists.txt`
 - **Fast incremental loops** — object timestamp cache, link signature cache, transitive PCM staleness; suited to Docker/CI where rebuild time matters
 - **No extra learning curve** — if you know C++ modules and can read `cb.c++`, you understand the build; no second DSL
@@ -211,6 +211,8 @@ Environment variables for **bootstrap** (not test output): `LLVM_PATH`, `CXX`, `
 
 Legacy caches without a `profile\t` header still load; the header is rewritten on the next save. Bumping `format` or adding fields intentionally invalidates old caches once.
 
+Cache indexes are written through a checked temporary file and atomically renamed only after a complete flush. A write or rename failure fails the build rather than promoting a partial index.
+
 **Value encoding:** profile field values are stored verbatim (no percent-encoding). CB writes only values that cannot contain tab, newline, or `%` (paths, flag lists, and version lines satisfy this).
 
 **Human logs** (stderr, non-JSONL): `Object cache profile changed; invalidating compile cache (compile: + -DFOO)`.
@@ -229,6 +231,8 @@ Legacy caches without a `profile\t` header still load; the header is rewritten o
 
 Build-phase JSONL events (`build_start`, `compile_start`, `compile_end`, `command_start`, `list_start`, `unit`, …) share `run_id` with test-phase events when CB spawns `test_runner`. Filter by `run_id` or `parent_run_id` to correlate `list` → `build` → `test` from one `./tools/CB.sh … --jsonl` invocation.
 
+Each `build` or `test` invocation emits exactly one `build_start` / `build_end` pair. For `test`, that pair covers source compilation, ordinary links, and the `test_runner` link; `test_start` follows it.
+
 Full event reference and triage workflow: [AGENTS.md](../AGENTS.md).
 
 Useful compile/link fields for debugging stale builds:
@@ -239,6 +243,7 @@ Useful compile/link fields for debugging stale builds:
 - `link_end` — per executable after link or skip (`executable_path`, `cache_hit`, `ok`, `duration_ms`). Skipped links emit `cache_hit: true` with `duration_ms: 0`.
 - `cache_hit: false` + `rebuild_reason: "pcm_stale:tester:assertions"` — transitive PCM invalidation; rebuilds test objects when assertion templates change
 - `rebuild_reason: "source_stale"` — TU source newer than cached object
+- `rebuild_reason: "pcm_stale:<module>"` — imported PCM, including an implementation unit's implicit interface PCM, is newer than its object
 
 Example `profile_diff` fragment:
 
@@ -253,7 +258,7 @@ Example `profile_diff` fragment:
 
 ## Architecture (brief)
 
-**`tools/cb.c++`** (~1300 lines) — parses the module graph, maintains `object_cache_map` and executable link signature cache, schedules parallel compiles, invokes `clang++` with `-fmodule-file=` flags, handles module interfaces and `.impl.c++` units, links executables (including `test_runner` with discovered test objects).
+**`tools/cb.c++`** (~2400 lines) — parses the module graph, maintains `object_cache_map` and executable link signature cache, schedules parallel compiles, invokes `clang++` with `-fmodule-file=` flags, handles module interfaces and `.impl.c++` units, links executables (including `test_runner` with discovered test objects).
 
 **`tools/CB.sh.core`** — bootstraps the `cb` binary, resolves `std.cppm`, handles cross-OS rebuild detection, JSONL-safe logging to stderr, and forwards args to `cb`.
 
@@ -265,10 +270,10 @@ Example `profile_diff` fragment:
 |------|------|
 | `cb-jsonl_sink.h++` | `namespace cb` — shared `object_cache_profile_diff` types; `namespace cb_jsonl` — JSONL event serialization (`write_profile_diff`, `sink::profile_changed`, `cache_status`, …) |
 | `cb-console_sink.h++` | Human formatting (`format_profile_diff`, `sink::profile_changed`, `cache_status`, …) |
-| `cb::log` (in `cb.c++`) | Routes to JSONL or console sink based on `--jsonl`; suppresses human `log::info` when JSONL is on |
+| `cb::log` (in `cb.c++`) | Routes events that have both human and JSONL forms; suppresses human `log::info` when JSONL is on |
 | `cb::detail` | Domain compute only (profile parse/diff, flag token diff) — not presentation |
 
-`build_system` gathers facts; `cb::log` picks the channel; each sink owns how its output looks.
+`build_system` gathers facts; `cb::log` picks the channel for dual-format events; JSONL-only compile/link lifecycle helpers emit telemetry directly. Each sink owns how its output looks. Shared profile field iteration keeps diff computation and both sink formats aligned when fields are added.
 
 ### Ranges idioms (`cb.c++`)
 

@@ -55,6 +55,26 @@ struct object_cache_profile_diff
     }
 };
 
+template<typename Diff, typename Callback>
+void for_each_profile_scalar(Diff& diff, Callback&& callback)
+{
+    callback("format", diff.format);
+    callback("config", diff.config);
+    callback("static_link", diff.static_link);
+    callback("llvm", diff.llvm);
+    callback("cxx", diff.cxx);
+    callback("cxx_sig", diff.cxx_sig);
+    callback("clang_ver", diff.clang_ver);
+    callback("std_cppm", diff.std_cppm);
+}
+
+template<typename Diff, typename Callback>
+void for_each_profile_tokens(Diff& diff, Callback&& callback)
+{
+    callback("compile", diff.compile);
+    callback("cpp", diff.cpp);
+}
+
 } // namespace cb
 
 namespace cb_jsonl {
@@ -108,26 +128,14 @@ inline void write_profile_diff(std::ostream& os, const object_cache_profile_diff
         write_value();
     };
 
-    if(diff.format)
-        field("format", [&]{ write_profile_diff_scalar(os, *diff.format); });
-    if(diff.config)
-        field("config", [&]{ write_profile_diff_scalar(os, *diff.config); });
-    if(diff.static_link)
-        field("static_link", [&]{ write_profile_diff_scalar(os, *diff.static_link); });
-    if(diff.llvm)
-        field("llvm", [&]{ write_profile_diff_scalar(os, *diff.llvm); });
-    if(diff.cxx)
-        field("cxx", [&]{ write_profile_diff_scalar(os, *diff.cxx); });
-    if(diff.cxx_sig)
-        field("cxx_sig", [&]{ write_profile_diff_scalar(os, *diff.cxx_sig); });
-    if(diff.clang_ver)
-        field("clang_ver", [&]{ write_profile_diff_scalar(os, *diff.clang_ver); });
-    if(diff.std_cppm)
-        field("std_cppm", [&]{ write_profile_diff_scalar(os, *diff.std_cppm); });
-    if(diff.compile)
-        field("compile", [&]{ write_profile_diff_tokens(os, *diff.compile); });
-    if(diff.cpp)
-        field("cpp", [&]{ write_profile_diff_tokens(os, *diff.cpp); });
+    cb::for_each_profile_scalar(diff, [&](std::string_view name, const auto& change) {
+        if(change)
+            field(name, [&]{ write_profile_diff_scalar(os, *change); });
+    });
+    cb::for_each_profile_tokens(diff, [&](std::string_view name, const auto& change) {
+        if(change)
+            field(name, [&]{ write_profile_diff_tokens(os, *change); });
+    });
     os << '}';
 }
 

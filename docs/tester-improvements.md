@@ -111,7 +111,7 @@ Machine-parseable test and build output for CI and automation. Human output rema
 
 ### 3.6 CB JSONL (build phase)
 
-- 🔶 CB emits `build_start` / `build_end`, `command_start` / `command_end`, `test_start` / `test_end`, `eof`.
+- ✅ CB emits one paired `build_start` / `build_end` per invocation, plus `command_start` / `command_end`, `test_start` / `test_end`, and `eof`.
 - ✅ `list --jsonl`: `list_start`, per-TU `unit` (`path`, `module`, `kind`, `imports`, `level`, `is_test`, …), `list_summary`.
 - ✅ `unit.is_test`: `true` for `*.test.c++` / `*.test.c++m` or `test/` / `tests/` path segments; `false` for `tester/` framework trees (exact segment match — not substring `test` in `tester`).
 - ✅ Per-translation-unit `compile_end` with `ok`, `duration_ms`, `source_path`, `object_path`, `pcm_path`, `module_name`, `cache_hit`.
@@ -138,9 +138,9 @@ Design rationale and comparison with CMake, Make, and other build tools: [`docs/
 
 ### 4.1 Core build system
 
-- ✅ Incremental compile cache (`object_cache_map`) and link cache (`link_cache_map`).
+- ✅ Incremental compile cache (`object_cache_map`) and link cache (`link_cache_map`); each level's compile decisions are completed against a stable cache before workers start, failed workers are joined, and cache indexes use checked temporary-file replacement.
 - ✅ Object-cache profile header (`format=cb-object-cache-v3`) with toolchain fields (`config`, `static_link`, `llvm`, `cxx`, `cxx_sig`, `clang_ver`, `std_cppm` as `path@size:mtime_ns`, `compile` / `cpp` including `--compile-flags`); invalidates on profile mismatch (`rebuild_reason: "profile_change"`).
-- ✅ CB smoke harness (`tests/cb/`) and CI `cb-smoke` job (`profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `cache_invalidate`, `profile_change`, `cache_status`).
+- ✅ CB smoke harness (`tests/cb/`) and CI `cb-smoke` job (`profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `compile_failure`, `link_failure`, `test_link_failure`, `implementation_pcm`, `test_lifecycle`, `cache_invalidate`, `profile_change`, `cache_status`).
 - ✅ `cache status` subcommand (human + JSONL `cache_status`).
 - ✅ `cache invalidate` subcommand (human + JSONL `cache_invalidate_end`).
 - ✅ `profile_changed` JSONL event (single `profile_diff` on profile mismatch).

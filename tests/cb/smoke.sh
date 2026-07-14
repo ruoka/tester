@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, cache_invalidate, profile_change, cache_status"
+      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, compile_failure, link_failure, test_link_failure, implementation_pcm, test_lifecycle, cache_invalidate, profile_change, cache_status"
       exit 0
       ;;
     *)
@@ -104,6 +104,111 @@ test_compile_start() {
   end_case compile_start
 }
 
+test_compile_failure() {
+  should_run compile_failure || return 0
+  begin_case compile_failure
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  printf '%s\n' 'int broken( {' > "${work_dir}/broken.c++"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if run_cb_build "${work_dir}"; then
+    fail "broken source unexpectedly compiled"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"compile_failure_exit"}'
+  fi
+  assert_compile_end "broken.c++" false source_stale false "failed_compile_end"
+  assert_jsonl_event_count build_end 1 "single_failed_build_end"
+  assert_jsonl_event_value build_end ok false "failed_build_end_status"
+  assert_jsonl_contains '"type":"eof"' "failure_jsonl_eof"
+  end_case compile_failure
+}
+
+test_link_failure() {
+  should_run link_failure || return 0
+  begin_case link_failure
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  printf '%s\n' \
+    'int missing();' \
+    'int main() { return missing(); }' > "${work_dir}/hello.c++"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if run_cb_build "${work_dir}"; then
+    fail "unresolved symbol unexpectedly linked"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"link_failure_exit"}'
+  fi
+  assert_jsonl_event_value link_end ok false "failed_link_end"
+  assert_jsonl_event_value build_end ok false "link_failed_build_end"
+  end_case link_failure
+}
+
+test_test_link_failure() {
+  should_run test_link_failure || return 0
+  begin_case test_link_failure
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  printf '%s\n' \
+    'int missing();' \
+    'int main() { return missing(); }' > "${work_dir}/test_runner.c++"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if run_cb_test "${work_dir}"; then
+    fail "broken test_runner unexpectedly linked"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"test_link_failure_exit"}'
+  fi
+  assert_jsonl_event_value link_end ok false "failed_test_link_end"
+  assert_jsonl_event_value build_end ok false "test_link_failed_build_end"
+  end_case test_link_failure
+}
+
+test_implementation_pcm() {
+  should_run implementation_pcm || return 0
+  begin_case implementation_pcm
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  printf '%s\n' \
+    'export module sample;' \
+    'export int sample_value();' > "${work_dir}/sample.c++m"
+  printf '%s\n' \
+    'module sample;' \
+    'int sample_value() { return 1; }' > "${work_dir}/sample.impl.c++"
+
+  run_cb_build "${work_dir}"
+  run_cb_build "${work_dir}"
+  assert_compile_cache_hits 3 "implementation_seed_cache_hits"
+
+  printf '%s\n' '// interface changed' >> "${work_dir}/sample.c++m"
+  run_cb_build "${work_dir}"
+  assert_compile_end "sample.impl.c++" false "pcm_stale:sample" true "implementation_rebuilt_for_interface_pcm"
+  end_case implementation_pcm
+}
+
+test_test_lifecycle() {
+  should_run test_lifecycle || return 0
+  begin_case test_lifecycle
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  printf '%s\n' \
+    'import std;' \
+    'int main()' \
+    '{' \
+    '    const auto* config = std::getenv("TESTER_CONFIG");' \
+    '    const auto* parent = std::getenv("TESTER_PARENT_RUN_ID");' \
+    '    return config && std::string_view{config} == "debug" && parent && *parent ? 0 : 1;' \
+    '}' > "${work_dir}/test_runner.c++"
+
+  run_cb_test "${work_dir}"
+  assert_jsonl_event_count build_start 1 "single_test_build_start"
+  assert_jsonl_event_count build_end 1 "single_test_build_end"
+  assert_jsonl_contains '"type":"test_end"' "test_end_event"
+  end_case test_lifecycle
+}
+
 test_cache_invalidate() {
   should_run cache_invalidate || return 0
   begin_case cache_invalidate
@@ -178,6 +283,11 @@ main() {
   test_cache_hit
   test_link_cache_hit
   test_compile_start
+  test_compile_failure
+  test_link_failure
+  test_test_link_failure
+  test_implementation_pcm
+  test_test_lifecycle
   test_cache_invalidate
   test_profile_change
   test_cache_status
