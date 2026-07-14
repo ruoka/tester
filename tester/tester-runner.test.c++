@@ -15,6 +15,16 @@ auto& dependency_run_counter()
     return value;
 }
 
+struct recording_observer final : output::observer
+{
+    int assertions = 0;
+
+    void assertion(const output::assertion_event&) override
+    {
+        ++assertions;
+    }
+};
+
 } // namespace
 
 auto register_tests()
@@ -42,6 +52,15 @@ auto register_tests()
     {
         require_true(true);
         require_eq(0, 0);
+    };
+
+    test_case("test_case [self] output observers receive assertion events") = []
+    {
+        auto recorder = recording_observer{};
+        output::observe(recorder);
+        check_eq(1, 1);
+        output::unobserve(recorder);
+        require_eq(recorder.assertions, 1);
     };
 
     return 0;

@@ -1,0 +1,249 @@
+// Copyright (c) 2025 Kaius Ruokonen. All rights reserved.
+// SPDX-License-Identifier: MIT
+// See the LICENSE file in the project root for full license text.
+
+export module tester:publisher;
+import :data;
+import :observer;
+import :utils;
+import std;
+
+namespace tester::publisher
+{
+
+using output::assertion_event;
+using output::display_matcher_name;
+using output::extract_matcher_name;
+using output::failure_index;
+using output::message_event;
+using output::notify;
+using output::observe_value;
+using output::observer;
+
+// Per-run configuration (owned by the runner)
+inline data::output_config g_config{};
+inline std::vector<std::string> g_run_argv{};
+
+export const data::output_config& cfg()
+{
+    return g_config;
+}
+
+export void set_slowest(std::size_t n) { g_config.slowest = n; }
+export void set_assertion_output(std::string_view policy)
+{
+    if(policy == "never") g_config.assertion_output = data::assertion_output_policy::never;
+    else if(policy == "always") g_config.assertion_output = data::assertion_output_policy::always;
+    else g_config.assertion_output = data::assertion_output_policy::failures;
+}
+export void set_output_max_bytes(std::size_t n) { g_config.output_max_bytes = n; }
+
+export void set_run_argv(int argc, char** argv)
+{
+    g_run_argv.clear();
+    if(argc <= 0 || argv == nullptr)
+        return;
+
+    g_run_argv.reserve(static_cast<std::size_t>(argc));
+    for(int i = 0; i < argc; ++i)
+        g_run_argv.emplace_back(argv[i] != nullptr ? argv[i] : "");
+}
+
+export std::string_view captured_output()
+{
+    auto output = std::string_view{};
+    notify([&output](const observer& target)
+    {
+        if(output.empty())
+            output = target.captured_output();
+    });
+    return output;
+}
+
+namespace {
+
+constexpr std::array g_run_env_keys = {
+    std::string_view{"NET_DISABLE_NETWORK_TESTS"},
+    std::string_view{"CURSOR_SANDBOX"},
+};
+
+auto collect_run_env() -> std::vector<std::pair<std::string, std::string>>
+{
+    auto out = std::vector<std::pair<std::string, std::string>>{};
+    for(const auto key : g_run_env_keys)
+    {
+        if(const auto* value = std::getenv(key.data()); value != nullptr && value[0] != '\0')
+            out.emplace_back(std::string{key}, value);
+    }
+    return out;
+}
+
+auto collect_failures()
+{
+    auto index = failure_index{};
+    for(const auto& result : data::test_results)
+    {
+        if(result.success && result.assertions_ok == result.assertions_total)
+            continue;
+        index.failed_test_ids.push_back(result.test_id);
+        if(index.first == nullptr)
+            index.first = &result;
+    }
+    return index;
+}
+
+} // namespace
+
+export void begin_run(std::string_view mode, std::string_view tags, std::chrono::system_clock::time_point started_at)
+{
+    const auto cwd = std::filesystem::current_path().string();
+    auto config = std::string{};
+    if(const auto* env = std::getenv("TESTER_CONFIG"); env != nullptr && env[0] != '\0')
+        config.assign(env);
+
+    const auto run_env = collect_run_env();
+    notify([&](observer& target)
+    {
+        target.run_start(mode, tags, started_at, cwd, g_run_argv, config, run_env);
+    });
+}
+
+export void end_run(std::string_view mode, std::string_view tags, bool passed, std::chrono::system_clock::time_point started_at, std::chrono::system_clock::time_point ended_at, const failure_index& failures = {})
+{
+    notify([&](observer& target)
+    {
+        target.run_end(mode, tags, passed, started_at, ended_at, failures);
+    });
+}
+
+// Thread-local current test ID (set by runner)
+inline thread_local std::string g_current_test_id;
+export void set_current_test_id(std::string_view test_id) { g_current_test_id = std::string{test_id}; }
+export std::string_view get_current_test_id() { return std::string_view{g_current_test_id}; }
+
+export void emit_output_eof()
+{
+    notify([](observer& target){ target.emit_eof(); });
+}
+
+export void print_test_catalogue(std::function<bool(const data::test_case&)> included, std::string_view tags_filter)
+{
+    notify([&](observer& target){ target.test_catalogue(included, tags_filter); });
+}
+
+export void print_test_cases(std::function<bool(const data::test_case&)> included)
+{
+    notify([&](observer& target){ target.test_cases(included); });
+}
+
+export void print_test_results()
+{
+    notify([&](observer& target)
+    {
+        target.test_results(cfg().assertion_output, cfg().output_max_bytes);
+    });
+}
+
+export void print_test_failures()
+{
+    notify([](observer& target){ target.test_failures(); });
+}
+
+export void print_test_statistics(std::optional<bool>& pending_run_end_passed_ref, bool& run_end_emitted_ref, std::string_view run_mode_param)
+{
+    const auto& stats = data::statistics();
+    const auto failed_tests = stats.total_tests - stats.successful_tests;
+    const auto failed_assertions = stats.total_assertions - stats.successful_assertions;
+    const auto passed = (failed_tests == 0 && failed_assertions == 0);
+    const auto slow_n = cfg().slowest;
+
+    auto slowest = std::vector<const data::test_result*>{};
+    if(slow_n > 0) {
+        slowest.reserve(data::test_results.size());
+        for(const auto& r : data::test_results) slowest.push_back(&r);
+        std::ranges::sort(slowest, [](const data::test_result* a, const data::test_result* b) { return a->duration > b->duration; });
+        if(slowest.size() > slow_n) slowest.resize(slow_n);
+    }
+
+    const auto failures = collect_failures();
+    const auto slowest_view = std::span<const data::test_result* const>{
+        slowest.data(),
+        slowest.size()};
+    notify([&](observer& target)
+    {
+        target.statistics(
+            stats,
+            passed,
+            slowest_view,
+            failures);
+    });
+
+    if(!pending_run_end_passed_ref.has_value())
+        pending_run_end_passed_ref = passed;
+    if(!run_end_emitted_ref && pending_run_end_passed_ref.has_value())
+    {
+        const auto passed_value = *pending_run_end_passed_ref;
+        pending_run_end_passed_ref = std::nullopt;
+        const auto ended_at = std::chrono::system_clock::now();
+        notify([&](observer& target)
+        {
+            target.run_end(
+                run_mode_param,
+                stats.run_tags,
+                passed_value,
+                stats.run_started_unix_ms,
+                ended_at,
+                failures);
+        });
+        run_end_emitted_ref = true;
+    }
+}
+
+export void test_case(const data::test_case& tc)
+{
+    notify([&](observer& target){ target.test_case(tc); });
+}
+
+export void exception(const data::test_case& tc, const std::exception& ex)
+{
+    notify([&](observer& target){ target.exception(tc, ex); });
+}
+
+export template<typename A,typename E>
+void assertion(const bool ok, const A& actual, const E& expected, const std::source_location location1, const std::source_location location2 = std::source_location::current(), std::string_view message = {})
+{
+    const auto policy = cfg().assertion_output;
+    const auto event = assertion_event{
+        ok,
+        !get_current_test_id().empty()
+            && (!ok || policy == data::assertion_output_policy::always),
+        extract_matcher_name(location2),
+        display_matcher_name(location2),
+        observe_value(actual),
+        observe_value(expected),
+        std::string{message},
+        std::string{get_current_test_id()},
+        location1.file_name(),
+        location1.line(),
+        location1.column()};
+    notify([&](observer& target){ target.assertion(event); });
+}
+
+export void message(const bool ok, auto msg, const std::source_location location1, const std::source_location location2 = std::source_location::current())
+{
+    auto stream = std::ostringstream{};
+    stream << msg;
+    const auto event = message_event{
+        ok,
+        stream.str(),
+        display_matcher_name(location1),
+        location1.file_name(),
+        location1.line(),
+        location1.column(),
+        location2.file_name(),
+        location2.line()};
+    notify([&](observer& target){ target.message(event); });
+}
+
+} // namespace tester::publisher
+

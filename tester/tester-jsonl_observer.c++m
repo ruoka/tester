@@ -3,14 +3,16 @@
 // See the LICENSE file in the project root for full license text.
 
 module;
-#include "details/output-mux.h++"
+#include "details/jsonl.h++"
 #if defined(__GNUG__) && __has_include(<cxxabi.h>)
 #   include <cxxabi.h>
 #endif
 
-export module tester:jsonl_sink;
+export module tester:jsonl_observer;
 
 import :data;
+import :observer;
+import :utils;
 import std;
 
 namespace tester::output::jsonl
@@ -144,18 +146,20 @@ void write_first_failure(std::ostream& os, const data::test_result& r)
     os << '}';
 }
 
+void write_observed_value(std::ostream& os, const observed_value& value)
+{
+    if(value.kind == value_kind::text)
+        os << '"' << ::jsonl::escape(value.value) << '"';
+    else
+        os << value.value;
+}
+
 } // namespace
 
 export auto test_failed(const data::test_result& r) -> bool
 {
     return !r.success || r.assertions_ok < r.assertions_total;
 }
-
-export struct failure_index
-{
-    std::vector<std::string> failed_test_ids;
-    const data::test_result* first = nullptr;
-};
 
 export auto collect_failures(const std::list<data::test_result>& results) -> failure_index
 {
@@ -182,13 +186,48 @@ void write_failure_index(std::ostream& os, const failure_index& failures)
 
 } // namespace
 
-export struct sink
+export struct observer final : tester::output::observer
 {
-    io::mux& m;
+    struct state
+    {
+        std::ostream& json;
+        std::ostream& result;
+        ::jsonl::jsonl_context<std::ostream> jsonl;
+        std::mutex mutex{};
 
-    explicit sink(io::mux& mux) : m(mux) {}
+        state(std::ostream& json_stream, std::ostream& result_stream)
+            : json{json_stream}, result{result_stream}, jsonl{json_stream}
+        {}
 
-    void run_start(std::string_view mode, std::string_view tags, std::chrono::system_clock::time_point started_at, std::string_view cwd, std::span<const std::string> argv, std::string_view config, std::span<const std::pair<std::string, std::string>> env)
+        void set_jsonl_enabled(bool enabled) { jsonl.set_enabled(enabled); }
+        std::ostream& result_os() { return result; }
+    };
+
+    state m;
+
+    explicit observer(std::ostream& json, std::ostream& result) : m{json, result} {}
+
+    bool machine_readable() const override
+    {
+        return true;
+    }
+
+    void activate() override
+    {
+        m.set_jsonl_enabled(true);
+        auto& context = m.jsonl;
+        context.reset_stream_state();
+        context.assign_new_run_id();
+        if(const auto* parent = std::getenv("TESTER_PARENT_RUN_ID"); parent != nullptr && parent[0] != '\0')
+            context.set_parent_run_id(parent);
+    }
+
+    void emit_eof() override
+    {
+        m.jsonl.emit_eof();
+    }
+
+    void run_start(std::string_view mode, std::string_view tags, std::chrono::system_clock::time_point started_at, std::string_view cwd, std::span<const std::string> argv, std::string_view config, std::span<const std::pair<std::string, std::string>> env) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("run_start", started_at) << [&](std::ostream& os){
@@ -203,7 +242,7 @@ export struct sink
         };
     }
 
-    void run_end(std::string_view mode, std::string_view tags, bool passed, std::chrono::system_clock::time_point started, std::chrono::system_clock::time_point ended, const failure_index& failures)
+    void run_end(std::string_view mode, std::string_view tags, bool passed, std::chrono::system_clock::time_point started, std::chrono::system_clock::time_point ended, const failure_index& failures) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         const auto duration = (started != std::chrono::system_clock::time_point{})
@@ -236,6 +275,28 @@ export struct sink
         };
     }
 
+    void test_catalogue(
+        const std::function<bool(const data::test_case&)>& included,
+        std::string_view tags_filter) override
+    {
+        auto registered_total = 0;
+        auto matched_total = 0;
+        for(const auto& test : data::test_cases)
+        {
+            ++registered_total;
+            if(included(test))
+                ++matched_total;
+        }
+
+        test_list_start(tags_filter);
+        for(const auto& test : data::test_cases)
+        {
+            if(included(test))
+                registered_test(test, output::extract_bracket_tags(test.test_name));
+        }
+        test_list_summary(registered_total, matched_total, tags_filter);
+    }
+
     void registered_test(const data::test_case& tc, std::span<const std::string> tags)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
@@ -254,7 +315,7 @@ export struct sink
         };
     }
 
-    void test_case(const data::test_case& tc)
+    void test_case(const data::test_case& tc) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("case") << [&](std::ostream& os){
@@ -296,19 +357,24 @@ export struct sink
         };
     }
 
-    void assertion_event(const data::test_assertion& a)
+    void assertion(const output::assertion_event& event) override
     {
+        if(not event.emit_event)
+            return;
+
         auto lock = std::lock_guard<std::mutex>{m.mutex};
-        m.json << m.jsonl(a.ok ? "assertion_passed" : "assertion_failed") << [&](std::ostream& os){
-            os << ",\"test_id\":\"" << ::jsonl::escape(a.test_id) << "\"";
-            os << ",\"matcher\":\"" << ::jsonl::escape(a.matcher) << "\"";
-            os << ",\"actual\":" << a.actual;
-            os << ",\"expected\":" << a.expected;
-            os << ",\"file\":\"" << ::jsonl::escape(a.file) << "\"";
-            os << ",\"line\":" << a.line;
-            os << ",\"column\":" << a.column;
-            if(not a.message.empty())
-                os << ",\"message\":\"" << ::jsonl::escape(a.message) << "\"";
+        m.json << m.jsonl(event.ok ? "assertion_passed" : "assertion_failed") << [&](std::ostream& os){
+            os << ",\"test_id\":\"" << ::jsonl::escape(event.test_id) << "\"";
+            os << ",\"matcher\":\"" << ::jsonl::escape(event.matcher) << "\"";
+            os << ",\"actual\":";
+            write_observed_value(os, event.actual);
+            os << ",\"expected\":";
+            write_observed_value(os, event.expected);
+            os << ",\"file\":\"" << ::jsonl::escape(event.file) << "\"";
+            os << ",\"line\":" << event.line;
+            os << ",\"column\":" << event.column;
+            if(not event.message.empty())
+                os << ",\"message\":\"" << ::jsonl::escape(event.message) << "\"";
         };
     }
 
@@ -326,6 +392,20 @@ export struct sink
         };
     }
 
+    void message(const output::message_event& event) override
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.json << m.jsonl("message") << [&](std::ostream& os){
+            os << ",\"ok\":" << (event.ok ? "true" : "false");
+            os << ",\"message\":\"" << ::jsonl::escape(event.message) << "\"";
+            os << ",\"file\":\"" << ::jsonl::escape(event.file) << "\"";
+            os << ",\"line\":" << event.line;
+            os << ",\"column\":" << event.column;
+            os << ",\"caller_file\":\"" << ::jsonl::escape(event.caller_file) << "\"";
+            os << ",\"caller_line\":" << event.caller_line;
+        };
+    }
+
     void on_exception(const data::test_case& tc, const std::exception& ex)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
@@ -338,6 +418,11 @@ export struct sink
             os << ",\"line\":" << tc.line;
             os << ",\"column\":" << tc.column;
         };
+    }
+
+    void exception(const data::test_case& tc, const std::exception& ex) override
+    {
+        on_exception(tc, ex);
     }
 
     void summary(const data::test_statistics& s,
@@ -372,7 +457,42 @@ export struct sink
             }
         };
     }
+
+    void test_results(
+        data::assertion_output_policy policy,
+        std::size_t max_output_bytes) override
+    {
+        for(const auto& result : data::test_results)
+        {
+            const auto include_output = policy == data::assertion_output_policy::always
+                || (policy == data::assertion_output_policy::failures && test_failed(result));
+            test(result, include_output, max_output_bytes);
+        }
+    }
+
+    void statistics(
+        const data::test_statistics& stats,
+        bool passed,
+        std::span<const data::test_result* const> slowest,
+        const failure_index& failures) override
+    {
+        summary(stats, passed, slowest, failures);
+        m.result_os()
+            << "RESULT:"
+            << " tests_ok=" << stats.successful_tests
+            << " tests_total=" << stats.total_tests
+            << " assertions_ok=" << stats.successful_assertions
+            << " assertions_total=" << stats.total_assertions
+            << " passed=" << (passed ? "true" : "false")
+            << '\n';
+    }
 };
+
+export inline auto& observer_instance(std::ostream& json, std::ostream& result)
+{
+    static auto value = observer{json, result};
+    return value;
+}
 
 } // namespace tester::output::jsonl
 

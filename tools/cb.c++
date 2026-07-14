@@ -30,8 +30,8 @@
 #include <utility>
 #include <stdexcept>
 #include <cctype>
-#include "cb-jsonl_sink.h++"
-#include "cb-console_sink.h++"
+#include "cb-jsonl_observer.h++"
+#include "cb-console_observer.h++"
 
 namespace fs = std::filesystem;
 
@@ -40,133 +40,31 @@ namespace cb {
 using namespace std::string_literals;
 using namespace std::string_view_literals;
 
-namespace jsonl {
-// JSONL state is owned by jsonl_context (no global flags)
-enum class phase { none, build };
-
-inline auto& io_mux()
+inline auto& jsonl_observer()
 {
-    static auto mux = io::mux{std::cout, std::cerr, std::cerr};
-    return mux;
+    static auto value = output::jsonl::observer{std::cout};
+    return value;
 }
 
-// JSONL context (owned by the shared output mux).
-inline auto& ctx()
+inline auto& console_observer()
 {
-    return io_mux().jsonl;
+    static auto value = output::console::observer{std::cerr};
+    return value;
 }
 
-inline bool enabled() { return ctx().is_enabled(); }
-inline void set_enabled(bool v) { io_mux().set_jsonl_enabled(v); }
-inline void reset() { io_mux().reset_jsonl_state(); }
+enum class build_phase { none, build };
 
-inline void initialize_session()
+inline bool select_output_observer(std::string_view name)
 {
-    if(enabled())
-        ctx().assign_new_run_id();
-}
-
-inline void atexit_handler()
-{
-    // Keep stdout parseable: only JSONL here.
-    // Lock to avoid interleaving with other threads that may be emitting events at exit.
-    auto lock = std::lock_guard<std::mutex>{io_mux().mutex};
-    ctx().emit_eof();
-}
-} // namespace jsonl
-
-inline auto& jsonl_sink()
-{
-    static auto sink = output::jsonl::sink{jsonl::io_mux()};
-    return sink;
-}
-
-inline auto& console_sink()
-{
-    static auto sink = output::console::sink{jsonl::io_mux()};
-    return sink;
-}
-
-namespace log {
-inline void error(std::string_view msg) {
-    // In JSONL mode, keep output machine-parseable: do not print human logs.
-    if(!cb::jsonl::enabled())
-        console_sink().error(msg);
-
-    // JSONL error event (machine output)
-    if(cb::jsonl::enabled())
-        jsonl_sink().error(msg);
-}
-
-inline void warning(std::string_view msg) { if(!cb::jsonl::enabled()) console_sink().warning(msg); }
-inline void info(std::string_view msg) { if(!cb::jsonl::enabled()) console_sink().info(msg); }
-inline void success(std::string_view msg) { if(!cb::jsonl::enabled()) console_sink().success(msg); }
-inline void command(std::string_view cmd) { if(!cb::jsonl::enabled()) console_sink().command(cmd); }
-
-inline void profile_changed(std::string_view reason, const output::object_cache_profile_diff& diff)
-{
-    if(cb::jsonl::enabled())
-        jsonl_sink().profile_changed(reason, diff);
-    else
-        console_sink().profile_changed(reason, diff);
-}
-
-inline void profile_change_rebuild(std::string_view tu_label)
-{
-    if(!cb::jsonl::enabled())
-        console_sink().profile_change_rebuild(tu_label);
-}
-
-inline void cache_status(std::string_view object_cache_path,
-                         bool object_cache_exists,
-                         bool profile_match,
-                         int object_entries,
-                         int object_stale_entries,
-                         int executable_entries,
-                         std::string_view current_profile)
-{
-    if(cb::jsonl::enabled())
+    static const auto registered = []
     {
-        jsonl_sink().cache_status(
-            object_cache_path,
-            object_cache_exists,
-            profile_match,
-            object_entries,
-            object_stale_entries,
-            executable_entries,
-            current_profile);
-    }
-    else
-    {
-        console_sink().cache_status(
-            object_cache_path,
-            object_cache_exists,
-            profile_match,
-            object_entries,
-            object_stale_entries,
-            executable_entries,
-            current_profile);
-    }
+        output::register_observer("console", console_observer());
+        output::register_observer("jsonl", jsonl_observer());
+        return true;
+    }();
+    (void)registered;
+    return output::select_observer(name);
 }
-
-inline void cache_invalidate_end(bool object_cache_removed,
-                                 bool executable_cache_removed,
-                                 bool compiler_stamp_removed)
-{
-    if(cb::jsonl::enabled())
-        jsonl_sink().cache_invalidate_end(object_cache_removed, executable_cache_removed, compiler_stamp_removed);
-    else
-        console_sink().cache_invalidate_end(object_cache_removed, executable_cache_removed, compiler_stamp_removed);
-}
-
-inline void source_list(const output::source_inventory& inventory)
-{
-    if(cb::jsonl::enabled())
-        jsonl_sink().source_list(inventory);
-    else
-        console_sink().source_list(inventory);
-}
-} // namespace log
 
 enum class build_config { debug, release };
 
@@ -673,16 +571,16 @@ private:
     output::object_cache_profile_diff profile_diff;
     
     // JSONL phase tracking state
-    jsonl::phase current_phase = jsonl::phase::none;
+    build_phase current_phase = build_phase::none;
     std::chrono::steady_clock::time_point phase_started{};
     bool build_end_emitted = false;
     
     void emit_failed_build_end()
     {
-        if(cb::jsonl::enabled() && current_phase == jsonl::phase::build && !build_end_emitted)
+        if(current_phase == build_phase::build && !build_end_emitted)
         {
             const auto finished = std::chrono::steady_clock::now();
-            jsonl_sink().build_end(false, phase_started, finished);
+            output::notify(&output::observer::build_end, false, phase_started, finished);
             build_end_emitted = true;
         }
     }
@@ -702,14 +600,14 @@ private:
             if (auto env = std::getenv("LLVM_PATH"); env and *env) {
                 std_module_source = env;
             } else {
-                log::error("std.cppm path not provided. Pass it as the first argument or set LLVM_PATH.");
+                output::notify(&output::observer::error, "std.cppm path not provided. Pass it as the first argument or set LLVM_PATH.");
                 std::exit(1);
             }
         }
 
         auto std_module_path = fs::path{std_module_source};
         if (not fs::exists(std_module_path)) {
-            log::error("std.cppm not found at: " + std_module_source);
+            output::notify(&output::observer::error, "std.cppm not found at: " + std_module_source);
             std::exit(1);
         }
 
@@ -740,7 +638,7 @@ private:
         if (not try_env_compiler()) {
             llvm_cxx = llvm_prefix + "/bin/clang++";
             if (!command_available(llvm_cxx)) {
-                log::error("clang++ not found. Expected: " + llvm_cxx + " (set LLVM_CXX to override).");
+                output::notify(&output::observer::error, "clang++ not found. Expected: " + llvm_cxx + " (set LLVM_CXX to override).");
                 std::exit(1);
             }
         }
@@ -801,15 +699,15 @@ private:
         if(config == build_config::release)
         {
             compile_flags.append_range(string_list{"-O3", "-DNDEBUG"});
-            log::info("Building RELEASE configuration"s + (static_link ? " (static C++ stdlib)"s : ""s));
+            output::notify(&output::observer::info, "Building RELEASE configuration"s + (static_link ? " (static C++ stdlib)"s : ""s));
         }
         else
         {
             compile_flags.append_range(string_list{"-O0", "-g3"});
-            log::info("Building DEBUG configuration"s + (static_link ? " (static C++ stdlib)"s : ""s));
+            output::notify(&output::observer::info, "Building DEBUG configuration"s + (static_link ? " (static C++ stdlib)"s : ""s));
         }
 
-        if(cb::jsonl::enabled())
+        if(output::machine_readable())
         {
             compile_flags.append_range(string_list{
                 "-fno-caret-diagnostics",
@@ -828,7 +726,7 @@ private:
                     "-L" + llvm_prefix + "/lib",
                     "-Wl,-dead_strip",
                 };
-                log::warning("Static linking on macOS is limited – libc++ remains dynamically linked");
+                output::notify(&output::observer::warning, "Static linking on macOS is limited – libc++ remains dynamically linked");
             }
             else
             {
@@ -884,13 +782,13 @@ private:
         if(not extra_link_flag_tokens.empty())
         {
             link_flags.append_range(extra_link_flag_tokens);
-            log::info("Added extra linker flags: "s + detail::flags_profile_string(extra_link_flag_tokens));
+            output::notify(&output::observer::info, "Added extra linker flags: "s + detail::flags_profile_string(extra_link_flag_tokens));
         }
 
         if(not extra_compile_flag_tokens.empty())
         {
             compile_flags.append_range(extra_compile_flag_tokens);
-            log::info("Added extra compile flags: "s + detail::flags_profile_string(extra_compile_flag_tokens));
+            output::notify(&output::observer::info, "Added extra compile flags: "s + detail::flags_profile_string(extra_compile_flag_tokens));
         }
 
         module_flags = {
@@ -926,7 +824,7 @@ private:
 #elif defined(__aarch64__) or defined(__arm64__)
         return "aarch64";
 #else
-        log::error("Unsupported architecture. Only x86_64 and aarch64 are supported.");
+        output::notify(&output::observer::error, "Unsupported architecture. Only x86_64 and aarch64 are supported.");
         std::exit(1);
 #endif
     }
@@ -1021,18 +919,14 @@ private:
             throw std::logic_error{"invoke_shell: empty argv"};
 
         auto cmd_str = detail::join_argv(argv);
-        // Human logs are suppressed in JSONL mode; still emit machine-readable command events.
-        if (cb::jsonl::enabled())
-            jsonl_sink().command_start(cmd_str, argv);
-        else
-            log::command(cmd_str);
+        output::notify(&output::observer::command, cmd_str);
+        output::notify(&output::observer::command_start, cmd_str, argv);
 
         const auto started = std::chrono::steady_clock::now();
         auto r = system(cmd_str.c_str());
         const auto finished = std::chrono::steady_clock::now();
 
-        if (cb::jsonl::enabled())
-            jsonl_sink().command_end(cmd_str, argv, r == 0, r, started, finished);
+        output::notify(&output::observer::command_end, cmd_str, argv, r == 0, r, started, finished);
         return r;
     }
 
@@ -1045,10 +939,8 @@ private:
     void emit_compile_start(const translation_unit& tu,
                             std::string_view rebuild_reason = {}) const
     {
-        if(!cb::jsonl::enabled())
-            return;
-
-        jsonl_sink().compile_start(
+        output::notify(
+            &output::observer::compile_start,
             tu.full_path,
             tu.object_path,
             tu.is_modular ? tu.pcm_path : std::string_view{},
@@ -1063,10 +955,8 @@ private:
                           std::chrono::steady_clock::time_point finished,
                           std::string_view rebuild_reason = {}) const
     {
-        if(!cb::jsonl::enabled())
-            return;
-
-        jsonl_sink().compile_end(
+        output::notify(
+            &output::observer::compile_end,
             tu.full_path,
             tu.object_path,
             tu.is_modular ? tu.pcm_path : std::string_view{},
@@ -1084,10 +974,7 @@ private:
                        std::chrono::steady_clock::time_point started,
                        std::chrono::steady_clock::time_point finished) const
     {
-        if(!cb::jsonl::enabled())
-            return;
-
-        jsonl_sink().link_end(executable_path, ok, cache_hit, started, finished);
+        output::notify(&output::observer::link_end, executable_path, ok, cache_hit, started, finished);
     }
 
     void emit_profile_changed()
@@ -1095,7 +982,7 @@ private:
         if(object_cache_miss_reason != "profile_change"sv)
             return;
 
-        cb::log::profile_changed(*object_cache_miss_reason, profile_diff);
+        output::notify(&output::observer::profile_changed, *object_cache_miss_reason, profile_diff);
     }
 
     void log_profile_change_rebuild(const translation_unit& tu, std::string_view rebuild_reason) const
@@ -1104,7 +991,7 @@ private:
             return;
 
         const auto label = tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename;
-        cb::log::profile_change_rebuild(label);
+        output::notify(&output::observer::profile_change_rebuild, label);
     }
 
     string_list base_compile_argv() const
@@ -1321,7 +1208,7 @@ private:
                 return cache;
             }
         } else {
-            log::info("Object cache missing profile header; ignoring"s);
+            output::notify(&output::observer::info, "Object cache missing profile header; ignoring"s);
             return cache;
         }
 
@@ -1567,7 +1454,7 @@ private:
                         continue;
                     units.push_back(std::move(tu));
                 } catch (const std::exception& e) {
-                    log::warning("Skipping "s + entry.path().string() + ": " + e.what());
+                    output::notify(&output::observer::warning, "Skipping "s + entry.path().string() + ": " + e.what());
                 }
             }
         } catch (const std::exception& e) {
@@ -1835,7 +1722,7 @@ private:
             if (tu.has_main and not tu.filename.contains("test_runner")) {
                 auto signature = compute_link_signature(tu, shared_objects);
                 if (not needs_relinking(tu, signature, link_cache)) {
-                        log::info("Skipping link (up-to-date): "s + tu.executable_path);
+                        output::notify(&output::observer::info, "Skipping link (up-to-date): "s + tu.executable_path);
                         const auto now = std::chrono::steady_clock::now();
                         emit_link_end(tu.executable_path, true, true, now, now);
                         continue;
@@ -1926,7 +1813,7 @@ private:
         const auto has_runner_unit = runner_it != units_in_topological_order.end();
 
         if(not has_test_runner_link_inputs(has_runner_unit)) {
-            log::info("No objects to link for test_runner");
+            output::notify(&output::observer::info, "No objects to link for test_runner");
             return;
         }
 
@@ -1953,7 +1840,7 @@ private:
         // Check if executable exists and signature matches
         if (fs::exists(test_runner_path)) {
             if (link_cache.contains(test_runner_path) and link_cache.at(test_runner_path) == signature) {
-                log::info("Skipping link (up-to-date): "s + test_runner_path);
+                output::notify(&output::observer::info, "Skipping link (up-to-date): "s + test_runner_path);
                 const auto now = std::chrono::steady_clock::now();
                 emit_link_end(test_runner_path, true, true, now, now);
                 return;
@@ -1968,9 +1855,9 @@ private:
             throw;
         }
         if(has_runner_unit)
-            log::success("test_runner linked with test objects");
+            output::notify(&output::observer::success, "test_runner linked with test objects");
         else
-            log::success("test_runner linked successfully");
+            output::notify(&output::observer::success, "test_runner linked successfully");
         
         emit_link_end(test_runner_path, true, false, link_started, std::chrono::steady_clock::now());
 
@@ -2026,9 +1913,9 @@ public:
         auto dir = build_root();
         if (fs::exists(dir)) {
             fs::remove_all(dir);
-            log::success("Removed "s + dir);
+            output::notify(&output::observer::success, "Removed "s + dir);
         } else {
-            log::info("Nothing to clean for "s + dir);
+            output::notify(&output::observer::info, "Nothing to clean for "s + dir);
         }
     }
 
@@ -2070,7 +1957,8 @@ public:
             }
         }
 
-        log::cache_status(
+        output::notify(
+            &output::observer::cache_status,
             cache_path,
             cache_exists,
             profile_match,
@@ -2096,7 +1984,7 @@ public:
         const auto executable_removed = remove_if_exists(executable_cache_path());
         const auto stamp_removed = remove_if_exists(cache_dir() + "/compiler-version.txt");
 
-        log::cache_invalidate_end(object_removed, executable_removed, stamp_removed);
+        output::notify(&output::observer::cache_invalidate_end, object_removed, executable_removed, stamp_removed);
     }
 
     void set_include_tests(bool value) {
@@ -2105,39 +1993,35 @@ public:
 
     void build() {
         const auto build_started = std::chrono::steady_clock::now();
-        current_phase = jsonl::phase::build;
+        current_phase = build_phase::build;
         phase_started = build_started;
         build_end_emitted = false;
-        if(cb::jsonl::enabled())
-            jsonl_sink().build_start(detail::config_name(config), include_tests, include_examples);
+        output::notify(&output::observer::build_start, detail::config_name(config), include_tests, include_examples);
 
         try {
             build_steps();
         } catch (...) {
             emit_failed_build_end();
-            current_phase = jsonl::phase::none;
+            current_phase = build_phase::none;
             throw;
         }
 
-        if(cb::jsonl::enabled()) {
-            jsonl_sink().build_end(true, build_started, std::chrono::steady_clock::now());
-            build_end_emitted = true;
-            current_phase = jsonl::phase::none;
-        }
+        output::notify(&output::observer::build_end, true, build_started, std::chrono::steady_clock::now());
+        build_end_emitted = true;
+        current_phase = build_phase::none;
 
-        log::success("Build completed: "s + build_root());
+        output::notify(&output::observer::success, "Build completed: "s + build_root());
     }
 
     void run_tests(const std::vector<std::string>& args = {}) {
-        log::info("=== Running tests ===");
+        output::notify(&output::observer::info, "=== Running tests ===");
 
         include_tests = true;
         const auto build_started = std::chrono::steady_clock::now();
-        current_phase = jsonl::phase::build;
+        current_phase = build_phase::build;
         phase_started = build_started;
         build_end_emitted = false;
-        if(cb::jsonl::enabled())
-            jsonl_sink().build_start(detail::config_name(config), true, include_examples);
+        output::notify(&output::observer::build_start, detail::config_name(config), true, include_examples);
 
         auto runner = binary_dir() + "/test_runner";
         try {
@@ -2147,16 +2031,15 @@ public:
                 throw std::runtime_error{"test_runner not found — make sure .test.c++ files or test_runner.c++ exist"};
         } catch (...) {
             emit_failed_build_end();
-            current_phase = jsonl::phase::none;
+            current_phase = build_phase::none;
             throw;
         }
 
         const auto build_finished = std::chrono::steady_clock::now();
-        if(cb::jsonl::enabled())
-            jsonl_sink().build_end(true, build_started, build_finished);
+        output::notify(&output::observer::build_end, true, build_started, build_finished);
         build_end_emitted = true;
-        current_phase = jsonl::phase::none;
-        log::success("Build completed: "s + build_root());
+        current_phase = build_phase::none;
+        output::notify(&output::observer::success, "Build completed: "s + build_root());
 
         static auto env_storage = std::array<std::string, 2>{};
         auto env_count = std::size_t{};
@@ -2164,9 +2047,9 @@ public:
             env_storage[env_count++] = std::string{key} + '=' + std::string{value};
         };
         store_env("TESTER_CONFIG", detail::config_name(config));
-        if(cb::jsonl::enabled())
+        if(output::machine_readable())
         {
-            const auto parent = cb::jsonl::ctx().get_run_id();
+            const auto parent = output::run_id();
             if(not parent.empty())
                 store_env("TESTER_PARENT_RUN_ID", parent);
         }
@@ -2174,17 +2057,17 @@ public:
             ::putenv(env_storage[i].data());
 
         const auto test_started = std::chrono::steady_clock::now();
-        jsonl_sink().test_start(runner);
+        output::notify(&output::observer::test_start, runner);
 
         const auto r = invoke_shell(test_runner_argv(runner, args));
         const auto test_finished = std::chrono::steady_clock::now();
-        jsonl_sink().test_end(r == 0, r, r, false, 0, test_started, test_finished);
-        current_phase = jsonl::phase::none;
+        output::notify(&output::observer::test_end, r == 0, r, r, false, 0, test_started, test_finished);
+        current_phase = build_phase::none;
         if (r) {
-            log::error("Some tests or assertions failed!");
+            output::notify(&output::observer::error, "Some tests or assertions failed!");
             std::exit(1);
         }
-        log::success("All tests passed!");
+        output::notify(&output::observer::success, "All tests passed!");
     }
 
     void list_sources() {
@@ -2220,7 +2103,7 @@ public:
             if(tu.dependency_level >= 0)
                 inventory.max_level = std::max(inventory.max_level, tu.dependency_level);
         }
-        log::source_list(inventory);
+        output::notify(&output::observer::source_list, inventory);
     }
 };
 
@@ -2249,10 +2132,10 @@ bool is_test_runner_token(std::string_view arg)
         || arg.starts_with("--jsonl-output-max-bytes=");
 }
 
-void note_test_runner_jsonl(std::string_view arg, bool& machine_output)
+void note_test_runner_jsonl(std::string_view arg, std::string_view& output_name)
 {
     if(arg == "--jsonl" || arg == "--output=jsonl" || arg == "--output=JSONL")
-        machine_output = true;
+        output_name = "jsonl";
 }
 
 } // namespace
@@ -2261,6 +2144,8 @@ using namespace std::string_literals;
 
 int main(int argc, char* argv[])
 try {
+    auto output_name = std::string_view{"console"};
+    cb::select_output_observer(output_name);
     auto stdcppm = ""s;  // Empty string triggers auto-detection
     auto arg_index = 1;
     if (argc > 1) {
@@ -2276,7 +2161,6 @@ try {
     auto do_cache_status = false, do_cache_invalidate = false;
     auto test_filter = std::string{};
     auto test_runner_args = std::vector<std::string>{};
-    auto machine_output = false;
     auto static_linking = false;
     auto include_examples = false;
     auto build_tests = false;  // --build-tests flag: build tests but don't run them
@@ -2292,11 +2176,12 @@ try {
             if(std::ranges::any_of(test_runner_args, [](const std::string& a) {
                 return a == "--output=jsonl" || a == "--output=JSONL";
             }))
-                machine_output = true;
+                output_name = "jsonl";
             break;
         }
         if (argument == "--jsonl" || argument == "--output=jsonl" || argument == "--output=JSONL") {
-            cb::jsonl::set_enabled(true);
+            output_name = "jsonl";
+            cb::select_output_observer(output_name);
             continue;
         }
         if (argument == "test") {
@@ -2322,7 +2207,7 @@ try {
             do_list = true;
         } else if (argument == "cache") {
             if (i + 1 >= argc) {
-                cb::log::error("Usage: cache status|invalidate");
+                cb::output::notify(&cb::output::observer::error, "Usage: cache status|invalidate");
                 std::exit(1);
             }
             const auto cache_verb = std::string_view{argv[++i]};
@@ -2331,7 +2216,7 @@ try {
             } else if (cache_verb == "invalidate") {
                 do_cache_invalidate = true;
             } else {
-                cb::log::error("Usage: cache status|invalidate");
+                cb::output::notify(&cb::output::observer::error, "Usage: cache status|invalidate");
                 std::exit(1);
             }
         } else if (argument == "static") {
@@ -2343,26 +2228,26 @@ try {
         } else if (do_run_tests && is_test_runner_token(argument)) {
             // Convenience: forward test_runner flags without requiring "--"
             test_runner_args.emplace_back(argv[i]);
-            note_test_runner_jsonl(argument, machine_output);
+            note_test_runner_jsonl(argument, output_name);
         } else if (argument == "-I" or argument == "--include") {
             if (i+1 < argc) {
                 include_paths.push_back(argv[++i]);
             } else {
-                cb::log::error("Missing path after -I/--include");
+                cb::output::notify(&cb::output::observer::error, "Missing path after -I/--include");
                 std::exit(1);
             }
         } else if (argument == "--link-flags") {
             if (i+1 < argc) {
                 extra_link_flags = cb::detail::parse_external_flag_text(argv[++i]);
             } else {
-                cb::log::error("Missing flags after --link-flags");
+                cb::output::notify(&cb::output::observer::error, "Missing flags after --link-flags");
                 std::exit(1);
             }
         } else if (argument == "--compile-flags" or argument == "--extra-compile-flags") {
             if (i+1 < argc) {
                 extra_compile_flags = cb::detail::parse_external_flag_text(argv[++i]);
             } else {
-                cb::log::error("Missing flags after --compile-flags");
+                cb::output::notify(&cb::output::observer::error, "Missing flags after --compile-flags");
                 std::exit(1);
             }
         } else if (argument.starts_with("--compile-flags=") or argument.starts_with("--extra-compile-flags=")) {
@@ -2407,26 +2292,12 @@ try {
         }
     }
 
-    // If we are going to run tests in JSONL mode, or build in JSONL mode,
-    // keep stdout machine-parseable by moving all CB human logs (including clean/build) to stderr.
-    if(machine_output || cb::jsonl::enabled())
+    if(not cb::select_output_observer(output_name))
     {
-        cb::jsonl::io_mux().set_human(std::cerr);
-        cb::jsonl::io_mux().set_result(std::cerr);
+        cb::output::notify(&cb::output::observer::error, "Unknown output observer: "s + std::string{output_name});
+        return 1;
     }
-    else
-    {
-        cb::jsonl::io_mux().set_human(std::cout);
-        cb::jsonl::io_mux().set_result(std::cout);
-    }
-    // For tests, JSONL is controlled by machine_output. For builds, it's already set.
-    if (!cb::jsonl::enabled()) {
-        cb::jsonl::set_enabled(machine_output);
-    }
-    cb::jsonl::reset();
-    cb::jsonl::initialize_session();
-    if (cb::jsonl::enabled())
-        std::atexit(cb::jsonl::atexit_handler);
+    std::atexit(cb::output::finish);
 
     auto include_flags = cb::string_list{};
     for(const auto& path : include_paths)
@@ -2466,12 +2337,8 @@ try {
         const auto has_output_flag = std::ranges::any_of(test_runner_args, [](const std::string& arg) {
             return arg.starts_with("--output=");
         });
-        if(cb::jsonl::enabled() && not has_output_flag) {
+        if(cb::output::machine_readable() && not has_output_flag)
             args.emplace_back("--output=jsonl");
-        } else if(cb::jsonl::enabled() && has_output_flag) {
-            // User specified custom output format, respect it
-            // Don't add --output=jsonl
-        }
 
         args.append_range(test_runner_args);
 
@@ -2484,9 +2351,9 @@ try {
 
     return 0;
 } catch (const std::exception& e) {
-    cb::log::error("Fatal error: "s + e.what());
+    cb::output::notify(&cb::output::observer::error, "Fatal error: "s + e.what());
     std::exit(1);
 } catch (...) {
-    cb::log::error("Fatal error: unknown exception");
+    cb::output::notify(&cb::output::observer::error, "Fatal error: unknown exception");
     std::exit(1);
 }

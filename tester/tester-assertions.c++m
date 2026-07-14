@@ -3,7 +3,7 @@
 // See the LICENSE file in the project root for full license text.
 
 export module tester:assertions;
-import :output;
+import :publisher;
 import :data;
 import std;
 
@@ -70,7 +70,7 @@ namespace tester::assertions
         ++data::statistics().total_assertions;
         const auto ok = match(actual,expected);
         data::statistics().successful_assertions += ok;
-        output::assertion(ok,actual,expected,location,matcher_location);
+        publisher::assertion(ok,actual,expected,location,matcher_location);
         return ok;
     };
 
@@ -81,7 +81,7 @@ namespace tester::assertions
         ++data::statistics().total_assertions;
         const auto ok = match(actual,expected);
         data::statistics().successful_assertions += ok;
-        output::assertion(ok,actual,expected,location,matcher_location);
+        publisher::assertion(ok,actual,expected,location,matcher_location);
         if(not ok)
         {
             throw assertion_failure{"Assertion failed"};
@@ -271,7 +271,7 @@ namespace tester::assertions
             actual = "?"sv;
         }
         data::statistics().successful_assertions += ok;
-        output::assertion(ok, actual, expected, location, matcher_location, ok ? ""sv : msg_expected_no_exception);
+        publisher::assertion(ok, actual, expected, location, matcher_location, ok ? ""sv : msg_expected_no_exception);
     }
 
     export auto check_throws(auto&& t, const std::source_location location = std::source_location::current())
@@ -296,7 +296,7 @@ namespace tester::assertions
             actual = "?"sv;
         }
         data::statistics().successful_assertions += ok;
-        output::assertion(ok, actual, expected, location, matcher_location, ok ? ""sv : msg_expected_exception);
+        publisher::assertion(ok, actual, expected, location, matcher_location, ok ? ""sv : msg_expected_exception);
     }
 
     export template<typename E>
@@ -327,7 +327,7 @@ namespace tester::assertions
             ok = not ok;
         }
         data::statistics().successful_assertions += ok;
-        output::assertion(ok, actual, expected, location, matcher_location, ok ? ""sv : throws_as_failure_message(actual));
+        publisher::assertion(ok, actual, expected, location, matcher_location, ok ? ""sv : throws_as_failure_message(actual));
     }
 
     // Fatal exception assertions (require_*)
@@ -341,18 +341,18 @@ namespace tester::assertions
             ++data::statistics().total_assertions;
             t();
             ++data::statistics().successful_assertions;
-            output::assertion(true,actual,expected,location,matcher_location);
+            publisher::assertion(true,actual,expected,location,matcher_location);
         }
         catch(const std::exception& e)
         {
             actual = typeid(e).name();
-            output::assertion(false, actual, expected, location, matcher_location, msg_expected_no_exception);
+            publisher::assertion(false, actual, expected, location, matcher_location, msg_expected_no_exception);
             throw assertion_failure{"Assertion failed: expected no exception"};
         }
         catch(...)
         {
             actual = "?"sv;
-            output::assertion(false, actual, expected, location, matcher_location, msg_expected_no_exception);
+            publisher::assertion(false, actual, expected, location, matcher_location, msg_expected_no_exception);
             throw assertion_failure{"Assertion failed: expected no exception"};
         }
     }
@@ -367,7 +367,7 @@ namespace tester::assertions
             ++data::statistics().total_assertions;
             t();
             actual = "none"sv;
-            output::assertion(false, actual, expected, location, matcher_location, msg_expected_exception);
+            publisher::assertion(false, actual, expected, location, matcher_location, msg_expected_exception);
             throw assertion_failure{"Assertion failed: expected exception"};
         }
         catch(const assertion_failure&)
@@ -378,13 +378,13 @@ namespace tester::assertions
         {
             actual = typeid(e).name();
             ++data::statistics().successful_assertions;
-            output::assertion(true,actual,expected,location,matcher_location);
+            publisher::assertion(true,actual,expected,location,matcher_location);
         }
         catch(...)
         {
             actual = "?"sv;
             ++data::statistics().successful_assertions;
-            output::assertion(true,actual,expected,location,matcher_location);
+            publisher::assertion(true,actual,expected,location,matcher_location);
         }
     }
 
@@ -400,7 +400,7 @@ namespace tester::assertions
             ++data::statistics().total_assertions;
             t();
             actual = "none"sv;
-            output::assertion(false, actual, expected, location, matcher_location, msg_expected_exception_type);
+            publisher::assertion(false, actual, expected, location, matcher_location, msg_expected_exception_type);
             throw assertion_failure{"Assertion failed: expected exception of type " + std::string{expected}};
         }
         catch(const assertion_failure&)
@@ -411,25 +411,25 @@ namespace tester::assertions
         {
             actual = typeid(E).name();
             ++data::statistics().successful_assertions;
-            output::assertion(true,actual,expected,location,matcher_location);
+            publisher::assertion(true,actual,expected,location,matcher_location);
         }
         catch(const std::exception& e)
         {
             actual = typeid(e).name();
-            output::assertion(false, actual, expected, location, matcher_location, msg_wrong_exception_type);
+            publisher::assertion(false, actual, expected, location, matcher_location, msg_wrong_exception_type);
             throw assertion_failure{"Assertion failed: expected exception of type " + std::string{expected} + " but got " + std::string{actual}};
         }
         catch(...)
         {
             actual = "?"sv;
-            output::assertion(false, actual, expected, location, matcher_location, msg_wrong_exception_type);
+            publisher::assertion(false, actual, expected, location, matcher_location, msg_wrong_exception_type);
             throw assertion_failure{"Assertion failed: expected exception of type " + std::string{expected}};
         }
     }
 
     export auto message(const bool ok, auto msg, const std::source_location location = std::source_location::current())
     {
-        output::message(ok,msg,location);
+        publisher::message(ok,msg,location);
     }
 
     export auto succeed(auto msg, const std::source_location location = std::source_location::current())
@@ -531,7 +531,7 @@ namespace tester::assertions
             expected_final = expected_str + " (" + diff_msg.value() + ")";
         }
         
-        output::assertion(ok, actual_str, expected_final, location);
+        publisher::assertion(ok, actual_str, expected_final, location);
         return ok;
     }
 
@@ -549,7 +549,7 @@ namespace tester::assertions
             expected_final = expected_str + " (" + diff_msg.value() + ")";
         }
         
-        output::assertion(ok, actual_str, expected_final, location);
+        publisher::assertion(ok, actual_str, expected_final, location);
         if (!ok) {
             auto msg = std::string{"Container equality assertion failed"};
             if (diff_msg.has_value()) {
@@ -595,7 +595,7 @@ namespace tester::assertions
         auto needle_str = to_std_string(needle);
         const auto ok = haystack_str.contains(needle_str);
         data::statistics().successful_assertions += ok;
-        output::assertion(ok, haystack_str, std::string{"contains: "} + needle_str, location);
+        publisher::assertion(ok, haystack_str, std::string{"contains: "} + needle_str, location);
         return ok;
     }
 
@@ -608,7 +608,7 @@ namespace tester::assertions
         auto needle_str = to_std_string(needle);
         const auto ok = haystack_str.contains(needle_str);
         data::statistics().successful_assertions += ok;
-        output::assertion(ok, haystack_str, std::string{"contains: "} + needle_str, location);
+        publisher::assertion(ok, haystack_str, std::string{"contains: "} + needle_str, location);
         if (!ok) {
             throw assertion_failure{"String does not contain expected substring: " + needle_str};
         }
@@ -660,7 +660,7 @@ namespace tester::assertions
         auto prefix_val = to_std_string(prefix);
         const auto ok = string_starts_with(str, prefix_val);
         data::statistics().successful_assertions += ok;
-        output::assertion(ok, str_val, std::string{"starts with: "} + prefix_val, location);
+        publisher::assertion(ok, str_val, std::string{"starts with: "} + prefix_val, location);
         return ok;
     }
 
@@ -673,7 +673,7 @@ namespace tester::assertions
         auto prefix_val = to_std_string(prefix);
         const auto ok = string_starts_with(str, prefix_val);
         data::statistics().successful_assertions += ok;
-        output::assertion(ok, str_val, std::string{"starts with: "} + prefix_val, location);
+        publisher::assertion(ok, str_val, std::string{"starts with: "} + prefix_val, location);
         if (!ok) {
             throw assertion_failure{"String does not start with expected prefix: " + prefix_val};
         }
@@ -688,7 +688,7 @@ namespace tester::assertions
         auto suffix_val = to_std_string(suffix);
         const auto ok = string_ends_with(str, suffix_val);
         data::statistics().successful_assertions += ok;
-        output::assertion(ok, str_val, std::string{"ends with: "} + suffix_val, location);
+        publisher::assertion(ok, str_val, std::string{"ends with: "} + suffix_val, location);
         return ok;
     }
 
@@ -701,7 +701,7 @@ namespace tester::assertions
         auto suffix_val = to_std_string(suffix);
         const auto ok = str_val.ends_with(suffix_val);
         data::statistics().successful_assertions += ok;
-        output::assertion(ok, str_val, std::string{"ends with: "} + suffix_val, location);
+        publisher::assertion(ok, str_val, std::string{"ends with: "} + suffix_val, location);
         if (!ok) {
             throw assertion_failure{"String does not end with expected suffix: " + suffix_val};
         }
@@ -714,7 +714,7 @@ namespace tester::assertions
         const auto ok = haystack.contains(needle);
         data::statistics().successful_assertions += ok;
         auto needle_str = std::string{1, needle};
-        output::assertion(ok, haystack, std::string{"contains: '"} + needle_str + "'", location);
+        publisher::assertion(ok, haystack, std::string{"contains: '"} + needle_str + "'", location);
         return ok;
     }
 
@@ -724,7 +724,7 @@ namespace tester::assertions
         const auto ok = haystack.contains(needle);
         data::statistics().successful_assertions += ok;
         auto needle_str = std::string{1, needle};
-        output::assertion(ok, haystack, std::string{"contains: '"} + needle_str + "'", location);
+        publisher::assertion(ok, haystack, std::string{"contains: '"} + needle_str + "'", location);
         if (!ok) {
             throw assertion_failure{"String does not contain expected character: '" + needle_str + "'"};
         }
@@ -747,7 +747,7 @@ namespace tester::assertions
         auto container_str = format_container(container);
         auto elem_str = std::ostringstream{};
         elem_str << element;
-        output::assertion(ok, container_str, std::string{"contains: "} + elem_str.str(), location);
+        publisher::assertion(ok, container_str, std::string{"contains: "} + elem_str.str(), location);
         return ok;
     }
 
@@ -762,7 +762,7 @@ namespace tester::assertions
         auto container_str = format_container(container);
         auto elem_str = std::ostringstream{};
         elem_str << element;
-        output::assertion(ok, container_str, std::string{"contains: "} + elem_str.str(), location);
+        publisher::assertion(ok, container_str, std::string{"contains: "} + elem_str.str(), location);
         if (!ok) {
             auto msg = std::ostringstream{};
             msg << "Container does not contain expected element: " << element;

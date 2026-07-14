@@ -3,7 +3,7 @@
 // See the LICENSE file in the project root for full license text.
 
 export module tester:engine;
-import :output;
+import :publisher;
 import :data;
 import :assertions;
 import std;
@@ -158,7 +158,7 @@ export auto run_test_cases(auto filter, auto set_test_id, auto clear_test_id, au
             continue;
         }
 
-        output::test_case(*tc);
+        publisher::test_case(*tc);
 
         auto tr = test_result{*tc};
         set_test_id(tc->test_id);
@@ -195,19 +195,19 @@ export auto run_test_cases(auto filter, auto set_test_id, auto clear_test_id, au
         {
             tr.success = false;
             failure_message = ex.what();
-            output::exception(*tc,ex);
+            publisher::exception(*tc,ex);
         }
         catch(const std::exception& ex)
         {
             tr.success = false;
             failure_message = ex.what();
-            output::exception(*tc,ex);
+            publisher::exception(*tc,ex);
         }
         catch(...)
         {
             tr.success = false;
             failure_message = "Unknown exception";
-            output::exception(*tc,std::runtime_error{"Unknown exception"});
+            publisher::exception(*tc,std::runtime_error{"Unknown exception"});
         }
         const auto finished = std::chrono::steady_clock::now();
         const auto finished_sys = std::chrono::system_clock::now();
@@ -225,7 +225,7 @@ export auto run_test_cases(auto filter, auto set_test_id, auto clear_test_id, au
         // because nested test cases store their own copies of the lambda (with captured
         // values), not references to this test_case object.
         test_cases.erase(tc);
-        tr.output = tr.success ? output::captured_output() : failure_message;
+        tr.output = tr.success ? publisher::captured_output() : failure_message;
         test_results.push_back(tr);
     }
 }

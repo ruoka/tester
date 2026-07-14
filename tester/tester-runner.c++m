@@ -3,7 +3,7 @@
 // See the LICENSE file in the project root for full license text.
 
 export module tester:runner;
-import :output;
+import :publisher;
 import :engine;
 import :data;
 import :utils;
@@ -57,10 +57,9 @@ public:
         m_current_test_id.clear();
 
         // Set current test ID for output module
-        output::set_current_test_id(m_current_test_id);
+        publisher::set_current_test_id(m_current_test_id);
 
-        if(output::jsonl_enabled())
-            output::begin_run(m_run_mode, m_run_tags, m_run_started_unix_ms);
+        publisher::begin_run(m_run_mode, m_run_tags, m_run_started_unix_ms);
     }
 
     void end_run(bool passed)
@@ -68,10 +67,7 @@ public:
         if(m_run_has_started)
             m_run_finished_monotonic = std::chrono::steady_clock::now();
 
-        if(!output::jsonl_enabled()) return;
-
-        // In "run" mode, we defer emitting run_end until after the summary so the JSONL stream
-        // ends in a predictable order. For other modes (e.g. "list"), emit immediately.
+        // In "run" mode, defer run_end until after the summary so event order is predictable.
         if(m_run_mode == "run")
         {
             m_pending_run_end_passed = passed;
@@ -80,20 +76,20 @@ public:
         }
 
         const auto ended_at = std::chrono::system_clock::now();
-        output::end_run(m_run_mode, m_run_tags, passed, m_run_started_unix_ms, ended_at);
+        publisher::end_run(m_run_mode, m_run_tags, passed, m_run_started_unix_ms, ended_at);
         m_run_end_emitted = true;
     }
 
     void set_current_test_id(std::string_view id)
     {
         m_current_test_id.assign(id.begin(), id.end());
-        output::set_current_test_id(m_current_test_id);
+        publisher::set_current_test_id(m_current_test_id);
     }
 
     void clear_current_test_id()
     {
         m_current_test_id.clear();
-        output::set_current_test_id("");
+        publisher::set_current_test_id("");
     }
 
     std::string_view get_current_test_id() const
@@ -103,16 +99,10 @@ public:
 
     auto print_test_cases()
     {
-        if(output::jsonl_enabled())
-        {
-            output::print_test_catalogue(
-                std::function<bool(const test_case&)>{[this](const test_case& tc){ return this->included(tc); }},
-                m_tags);
-            output::emit_jsonl_eof();
-            return;
-        }
-
-        output::print_test_cases(std::function<bool(const test_case&)>{[this](const test_case& tc){ return this->included(tc); }});
+        publisher::print_test_catalogue(
+            std::function<bool(const test_case&)>{[this](const test_case& tc){ return this->included(tc); }},
+            m_tags);
+        publisher::emit_output_eof();
     }
 
     auto run_tests()
@@ -133,17 +123,17 @@ public:
 
     auto print_test_results()
     {
-        output::print_test_results();
+        publisher::print_test_results();
     }
 
     auto print_test_failures()
     {
-        output::print_test_failures();
+        publisher::print_test_failures();
     }
 
     auto print_test_statistics()
     {
-        output::print_test_statistics(
+        publisher::print_test_statistics(
             m_pending_run_end_passed,
             m_run_end_emitted,
             m_run_mode);

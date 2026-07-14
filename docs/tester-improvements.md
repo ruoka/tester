@@ -287,7 +287,7 @@ When tester is used as `deps/tester` inside a larger repo:
 - Public consumer example: [YarDB](https://github.com/ruoka/YarDB)
 - Assertion implementation: `tester/tester-assertions.c++m`
 - Matcher name extraction: `tester/tester-utils.c++m` (`extract_matcher_name`)
-- JSONL sink: `tester/tester-jsonl_sink.c++m`
-- Output routing: `tester/tester-output.c++m`
+- JSONL observer: `tester/tester-jsonl_observer.c++m`
+- Event publishing: `tester/tester-publisher.c++m`
 - Build system: `tools/cb.c++`
 - CLI entry: `tester/test_runner.c++`

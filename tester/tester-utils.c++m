@@ -3,14 +3,47 @@
 // See the LICENSE file in the project root for full license text.
 
 module;
-#include "details/output-mux.h++"
+#if defined(__GNUG__) && __has_include(<cxxabi.h>)
+#   include <cxxabi.h>
+#   define TESTER_HAVE_CXXABI 1
+#else
+#   define TESTER_HAVE_CXXABI 0
+#endif
 
 export module tester:utils;
 import :data;
+import :observer;
 import std;
 
 namespace tester::output
 {
+
+namespace
+{
+
+template<class T>
+concept chrono_clock = requires {
+    typename T::time_point;
+    T::now();
+};
+
+}
+
+export std::string demangle(std::string_view name)
+{
+#if TESTER_HAVE_CXXABI
+    auto status = 0;
+    auto buffer = std::string{name};
+    auto demangled = abi::__cxa_demangle(buffer.c_str(), nullptr, nullptr, &status);
+    if(demangled != nullptr)
+    {
+        auto result = std::string{demangled};
+        std::free(demangled);
+        return result;
+    }
+#endif
+    return std::string{name};
+}
 
 // Bracket tags from scenario/test names, e.g. "scenario [fixer][board] ..." → ["fixer", "board"]
 export std::vector<std::string> extract_bracket_tags(std::string_view test_name)
@@ -48,58 +81,198 @@ export auto extract_matcher_name(const std::source_location sl)
     return std::string{base};
 }
 
-// Format value as JSON string (for structured assertion events)
-export template <typename V>
-std::string value_to_json_string(const V& val)
+export std::string display_matcher_name(const std::source_location sl)
 {
-    auto ss = std::ostringstream{};
+    using namespace std::literals;
+    auto name = std::string_view{sl.function_name()};
+
+    if(auto assertions_pos = name.find("assertions::"); assertions_pos != std::string_view::npos)
+        name.remove_prefix(assertions_pos + "assertions::"s.length());
+
+    auto base = name.substr(0, name.find_first_of("("));
+    auto display = std::string{base};
+
+    if(auto bracket = name.find('['); bracket != std::string_view::npos)
+    {
+        auto end = name.find(']', bracket);
+        auto parameters = end != std::string_view::npos
+            ? name.substr(bracket + 1, end - bracket - 1)
+            : name.substr(bracket + 1);
+
+        auto trim = [](std::string_view value)
+        {
+            auto start = value.find_first_not_of(" \t");
+            if(start == std::string_view::npos)
+                return std::string_view{};
+            auto finish = value.find_last_not_of(" \t");
+            return value.substr(start, finish - start + 1);
+        };
+
+        auto clean = [](std::string text)
+        {
+            auto replace_all = [](std::string& target, std::string_view from, std::string_view to)
+            {
+                for(auto pos = target.find(from); pos != std::string::npos; pos = target.find(from, pos + to.size()))
+                    target.replace(pos, from.size(), to);
+            };
+
+            replace_all(text, "std::__1::", "std::");
+            replace_all(text, "std::basic_string<char>", "std::string");
+            replace_all(text, "std::basic_string<wchar_t>", "std::wstring");
+            replace_all(text, " >", ">");
+            return text;
+        };
+
+        display.append(" [");
+        auto remaining = parameters;
+        auto first = true;
+        while(true)
+        {
+            auto pos = remaining.find(',');
+            auto token = trim(remaining.substr(0, pos));
+            if(not token.empty())
+            {
+                if(not first)
+                    display.append(", ");
+                auto eq = token.find('=');
+                if(eq != std::string_view::npos)
+                {
+                    display.append(trim(token.substr(0, eq)));
+                    display.push_back('=');
+                    display.append(demangle(clean(std::string{trim(token.substr(eq + 1))})));
+                }
+                else
+                {
+                    display.append(demangle(clean(std::string{token})));
+                }
+                first = false;
+            }
+            if(pos == std::string_view::npos)
+                break;
+            remaining.remove_prefix(pos + 1);
+        }
+        display.push_back(']');
+    }
+
+    return display;
+}
+
+export template<typename V>
+std::string value_to_display_string(const V& val)
+{
     using T = std::remove_cvref_t<V>;
-    
+    auto stream = std::ostringstream{};
+
     if constexpr (std::is_same_v<T, std::string>)
-        ss << '"' << ::jsonl::escape(val) << '"';
+        stream << demangle(val);
     else if constexpr (std::is_same_v<T, std::string_view>)
-        ss << '"' << ::jsonl::escape(val) << '"';
+        stream << demangle(val);
     else if constexpr (std::is_same_v<T, const char*> || std::is_same_v<T, char*>)
-        ss << '"' << ::jsonl::escape(val != nullptr ? std::string_view{val} : std::string_view{"nullptr"}) << '"';
+        stream << demangle(val != nullptr ? std::string_view{val} : std::string_view{"nullptr"});
+    else if constexpr (std::is_pointer_v<T>)
+    {
+        if(val != nullptr)
+            stream << val;
+        else
+            stream << "nullptr";
+    }
+    else if constexpr (std::is_enum_v<T>)
+        stream << std::to_underlying(val);
+    else if constexpr (chrono_clock<T>)
+        stream << std::format("{0:%F}T{0:%T}", val);
+    else if constexpr (std::is_arithmetic_v<T>)
+        stream << std::boolalpha << val;
+    else if constexpr (requires { val.index(); })
+    {
+        if(std::holds_alternative<std::monostate>(val) || val.valueless_by_exception())
+            stream << "null";
+        else
+            std::visit([&stream](const auto& alternative)
+            {
+                using alternative_type = std::decay_t<decltype(alternative)>;
+                if constexpr (std::is_same_v<alternative_type, bool>)
+                    stream << std::boolalpha << alternative;
+                else if constexpr (std::is_same_v<alternative_type, std::nullptr_t>
+                    || std::is_same_v<alternative_type, std::monostate>)
+                    stream << "null";
+                else if constexpr (std::is_same_v<alternative_type, std::string>
+                    || std::is_same_v<alternative_type, std::string_view>)
+                    stream << '"' << alternative << '"';
+                else if constexpr (requires { stream << alternative; })
+                    stream << alternative;
+                else
+                    stream << "...";
+            }, val);
+    }
+    else if constexpr (requires { stream << val; })
+        stream << std::boolalpha << val;
+    else
+        stream << "...";
+
+    return stream.str();
+}
+
+export template <typename V>
+observed_value observe_value(const V& val)
+{
+    using T = std::remove_cvref_t<V>;
+    auto value = std::string{};
+    auto kind = value_kind::text;
+
+    if constexpr (std::is_same_v<T, std::string>)
+        value = val;
+    else if constexpr (std::is_same_v<T, std::string_view>)
+        value = val;
+    else if constexpr (std::is_same_v<T, const char*> || std::is_same_v<T, char*>)
+        value = val != nullptr ? val : "nullptr";
     else if constexpr (std::is_pointer_v<T>)
     {
         if(val != nullptr)
         {
-            // For pointers, use a lambda to capture ADL
-            auto format_ptr = [&ss](const auto& v) {
-                if constexpr (requires(std::ostringstream& os, const std::decay_t<decltype(v)>& v2) { os << v2; })
+            const auto format_pointer = [](const auto& pointed)
+            {
+                if constexpr (requires(std::ostringstream& os, const std::decay_t<decltype(pointed)>& value) { os << value; })
                 {
-                    auto temp = std::ostringstream{};
-                    temp << v;
-                    ss << '"' << ::jsonl::escape(temp.str()) << '"';
+                    auto stream = std::ostringstream{};
+                    stream << pointed;
+                    return stream.str();
                 }
                 else
                 {
-                    ss << '"' << ::jsonl::escape(std::string{typeid(std::decay_t<decltype(v)>).name()}) << '"';
+                    return std::string{typeid(std::decay_t<decltype(pointed)>).name()};
                 }
             };
-            format_ptr(*val);
+            value = format_pointer(*val);
         }
         else
-            ss << "\"nullptr\"";
+            value = "nullptr";
     }
     else if constexpr (std::is_enum_v<T>)
-        ss << std::to_underlying(val);
+    {
+        value = std::to_string(std::to_underlying(val));
+        kind = value_kind::number;
+    }
     else if constexpr (std::is_arithmetic_v<T>)
     {
         if constexpr (std::is_same_v<T, bool>)
-            ss << (val ? "true" : "false");
+        {
+            value = val ? "true" : "false";
+            kind = value_kind::boolean;
+        }
         else
-            ss << val;
+        {
+            auto stream = std::ostringstream{};
+            stream << val;
+            value = stream.str();
+            kind = value_kind::number;
+        }
     }
     else
     {
-        // For complex types, use type name to avoid ambiguity with operator<<
-        // This handles types like xson::object that have multiple operator<< overloads
-        ss << '"' << ::jsonl::escape(std::string{typeid(T).name()}) << '"';
+        value = typeid(T).name();
     }
-    
-    return ss.str();
+
+    return observed_value{value_to_display_string(val), std::move(value), kind};
 }
 
 }
