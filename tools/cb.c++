@@ -100,6 +100,20 @@ inline void warning(std::string_view msg) { if(!cb::jsonl::enabled()) console_si
 inline void info(std::string_view msg) { if(!cb::jsonl::enabled()) console_sink().info(msg); }
 inline void success(std::string_view msg) { if(!cb::jsonl::enabled()) console_sink().success(msg); }
 inline void command(std::string_view cmd) { if(!cb::jsonl::enabled()) console_sink().command(cmd); }
+
+inline void profile_changed(std::string_view reason, const cb_jsonl::object_cache_profile_diff* diff = nullptr)
+{
+    if(cb::jsonl::enabled())
+        cb::jsonl::sink().profile_changed(reason, diff);
+    else
+        console_sink().profile_changed(reason, diff);
+}
+
+inline void profile_change_rebuild(std::string_view tu_label)
+{
+    if(!cb::jsonl::enabled())
+        console_sink().profile_change_rebuild(tu_label);
+}
 } // namespace log
 
 enum class build_config { debug, release };
@@ -281,61 +295,6 @@ inline object_cache_profile_diff diff_object_cache_profiles(std::string_view old
     diff_tokens("compile", diff.compile);
     diff_tokens("cpp", diff.cpp);
     return diff;
-}
-
-inline std::string format_token_list(const string_list& tokens, std::size_t max_tokens = 8)
-{
-    if(tokens.empty())
-        return {};
-
-    const auto count = std::min(tokens.size(), max_tokens);
-    const string_list head{tokens.begin(), tokens.begin() + static_cast<std::ptrdiff_t>(count)};
-    auto out = head | std::views::join_with(", "sv) | std::ranges::to<std::string>();
-    if(tokens.size() > max_tokens)
-        out += ", ... (" + std::to_string(tokens.size() - max_tokens) + " more)";
-    return out;
-}
-
-inline std::string format_token_change_summary(std::string_view name, const profile_token_change& change, std::size_t max_tokens = 8)
-{
-    auto parts = string_list{};
-    if(not change.added.empty())
-        parts.push_back("+ " + format_token_list(change.added, max_tokens));
-    if(not change.removed.empty())
-        parts.push_back("- " + format_token_list(change.removed, max_tokens));
-    if(parts.empty())
-        return {};
-
-    return std::string{name} + ": " + (parts | std::views::join_with(", "sv) | std::ranges::to<std::string>());
-}
-
-inline std::string format_profile_diff_message(const object_cache_profile_diff& diff, std::size_t max_tokens = 8)
-{
-    auto parts = string_list{};
-    const auto append_scalar = [&](std::string_view name, const profile_scalar_change& change) {
-        parts.push_back(std::string{name} + ": " + change.old_value + " -> " + change.new_value);
-    };
-
-    if(diff.format) append_scalar("format", *diff.format);
-    if(diff.config) append_scalar("config", *diff.config);
-    if(diff.static_link) append_scalar("static_link", *diff.static_link);
-    if(diff.llvm) append_scalar("llvm", *diff.llvm);
-    if(diff.cxx) append_scalar("cxx", *diff.cxx);
-    if(diff.cxx_sig) append_scalar("cxx_sig", *diff.cxx_sig);
-    if(diff.clang_ver) append_scalar("clang_ver", *diff.clang_ver);
-    if(diff.std_cppm) append_scalar("std_cppm", *diff.std_cppm);
-    if(diff.compile)
-    {
-        if(auto summary = format_token_change_summary("compile", *diff.compile, max_tokens); not summary.empty())
-            parts.push_back(std::move(summary));
-    }
-    if(diff.cpp)
-    {
-        if(auto summary = format_token_change_summary("cpp", *diff.cpp, max_tokens); not summary.empty())
-            parts.push_back(std::move(summary));
-    }
-
-    return parts | std::views::join_with("; "sv) | std::ranges::to<std::string>();
 }
 
 inline const suffix_list supported_suffixes = {
@@ -1116,19 +1075,18 @@ private:
             ? &*object_cache_profile_diff
             : nullptr;
 
-        if(cb::jsonl::enabled())
-            cb::jsonl::sink().profile_changed(*object_cache_miss_reason, diff);
+        cb::log::profile_changed(*object_cache_miss_reason, diff);
 
         const_cast<build_system*>(this)->profile_changed_emitted = true;
     }
 
     void log_profile_change_rebuild(const translation_unit& tu, std::string_view rebuild_reason) const
     {
-        if(cb::jsonl::enabled() || rebuild_reason != "profile_change"sv)
+        if(rebuild_reason != "profile_change"sv)
             return;
 
         const auto label = tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename;
-        log::info("Rebuilding "s + label + " because compile profile changed"s);
+        cb::log::profile_change_rebuild(label);
     }
 
     string_list base_compile_argv() const
@@ -1346,14 +1304,6 @@ private:
             if (stored_profile != current_profile) {
                 object_cache_miss_reason = "profile_change";
                 object_cache_profile_diff = detail::diff_object_cache_profiles(stored_profile, current_profile);
-                auto msg = "Object cache profile changed; invalidating compile cache"s;
-                if(object_cache_profile_diff and not object_cache_profile_diff->empty())
-                {
-                    msg += " (";
-                    msg += detail::format_profile_diff_message(*object_cache_profile_diff);
-                    msg += ')';
-                }
-                log::info(msg);
                 emit_profile_changed();
                 return cache;
             }

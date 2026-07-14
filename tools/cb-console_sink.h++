@@ -4,14 +4,77 @@
 
 #pragma once
 
+#include <algorithm>
 #include <mutex>
 #include <ostream>
+#include <ranges>
+#include <string>
 #include <string_view>
 #include <vector>
 
 #include "../tester/details/output-mux.h++"
+#include "cb-jsonl_sink.h++"
 
 namespace cb_console {
+
+using namespace std::string_view_literals;
+
+using string_list = std::vector<std::string>;
+
+inline std::string format_token_list(const string_list& tokens, std::size_t max_tokens = 8)
+{
+    if(tokens.empty())
+        return {};
+
+    const auto count = std::min(tokens.size(), max_tokens);
+    const string_list head{tokens.begin(), tokens.begin() + static_cast<std::ptrdiff_t>(count)};
+    auto out = head | std::views::join_with(", "sv) | std::ranges::to<std::string>();
+    if(tokens.size() > max_tokens)
+        out += ", ... (" + std::to_string(tokens.size() - max_tokens) + " more)";
+    return out;
+}
+
+inline std::string format_token_change_summary(std::string_view name, const cb_jsonl::profile_token_change& change, std::size_t max_tokens = 8)
+{
+    auto parts = string_list{};
+    if(not change.added.empty())
+        parts.push_back("+ " + format_token_list(change.added, max_tokens));
+    if(not change.removed.empty())
+        parts.push_back("- " + format_token_list(change.removed, max_tokens));
+    if(parts.empty())
+        return {};
+
+    return std::string{name} + ": " + (parts | std::views::join_with(", "sv) | std::ranges::to<std::string>());
+}
+
+inline std::string format_profile_diff(const cb_jsonl::object_cache_profile_diff& diff, std::size_t max_tokens = 8)
+{
+    auto parts = string_list{};
+    const auto append_scalar = [&](std::string_view name, const cb_jsonl::profile_scalar_change& change) {
+        parts.push_back(std::string{name} + ": " + change.old_value + " -> " + change.new_value);
+    };
+
+    if(diff.format) append_scalar("format", *diff.format);
+    if(diff.config) append_scalar("config", *diff.config);
+    if(diff.static_link) append_scalar("static_link", *diff.static_link);
+    if(diff.llvm) append_scalar("llvm", *diff.llvm);
+    if(diff.cxx) append_scalar("cxx", *diff.cxx);
+    if(diff.cxx_sig) append_scalar("cxx_sig", *diff.cxx_sig);
+    if(diff.clang_ver) append_scalar("clang_ver", *diff.clang_ver);
+    if(diff.std_cppm) append_scalar("std_cppm", *diff.std_cppm);
+    if(diff.compile)
+    {
+        if(auto summary = format_token_change_summary("compile", *diff.compile, max_tokens); not summary.empty())
+            parts.push_back(std::move(summary));
+    }
+    if(diff.cpp)
+    {
+        if(auto summary = format_token_change_summary("cpp", *diff.cpp, max_tokens); not summary.empty())
+            parts.push_back(std::move(summary));
+    }
+
+    return parts | std::views::join_with("; "sv) | std::ranges::to<std::string>();
+}
 
 struct sink
 {
@@ -42,6 +105,23 @@ struct sink
     void command(std::string_view cmd)
     {
         io::command(m, cmd);
+    }
+
+    void profile_changed(std::string_view reason, const cb_jsonl::object_cache_profile_diff* diff = nullptr)
+    {
+        auto msg = std::string{"Object cache profile changed; invalidating compile cache"};
+        if(diff && !diff->empty())
+        {
+            msg += " (";
+            msg += format_profile_diff(*diff);
+            msg += ')';
+        }
+        info(msg);
+    }
+
+    void profile_change_rebuild(std::string_view tu_label)
+    {
+        info("Rebuilding " + std::string{tu_label} + " because compile profile changed");
     }
 
     template<typename TranslationUnit>
