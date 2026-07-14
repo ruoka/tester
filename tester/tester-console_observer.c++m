@@ -9,16 +9,18 @@ module;
 #else
 #   define TESTER_HAVE_CXXABI 0
 #endif
-#include "details/output-mux.h++"
+#include "details/terminal-colors.h++"
 
-export module tester:console_sink;
+export module tester:console_observer;
 import :data;
+import :observer;
+import :utils;
 import std;
 
 namespace tester::output::console
 {
 
-namespace color = ::io::color;
+namespace color = ::term;
 using namespace data;
 
 namespace {
@@ -31,22 +33,20 @@ concept chrono_clock = requires {
 
 } // namespace
 
-// Helper function - must be outside anonymous namespace to avoid TU-local entity warnings
-export inline auto& io_mux()
+export struct observer final : tester::output::observer
 {
-    static auto mux = io::mux{std::cout, std::clog, std::clog};
-    return mux;
-}
-
-export inline auto& human_os() { return io_mux().human_os(); }
-export inline auto& result_os() { return io_mux().result_os(); }
-
-export struct sink
-{
-    explicit sink(io::mux& /*mux*/) {}
-    
+    std::ostream& human;
+    std::ostream& result;
+    bool result_line;
     std::ostringstream stream{};
     bool verbose = false;
+
+    explicit observer(std::ostream& human_stream, std::ostream& result_stream, bool emit_result_line)
+        : human{human_stream}, result{result_stream}, result_line{emit_result_line}
+    {}
+
+    std::ostream& human_os() { return human; }
+    std::ostream& result_os() { return result; }
     
     void reset()
     {
@@ -219,6 +219,11 @@ export struct sink
                << color::reset << '\n';
     }
 
+    void test_case(const data::test_case& tc) override
+    {
+        on_test_case(tc);
+    }
+
     void on_exception(const data::test_case& tc, const std::exception& ex)
     {
         stream << color::background::red
@@ -226,6 +231,38 @@ export struct sink
                << " " << tc.test_name << " "
                << "(" << tc.file_name << " " <<  tc.line << ":" <<  tc.column << ")"
                << color::reset << '\n';
+    }
+
+    void exception(const data::test_case& tc, const std::exception& ex) override
+    {
+        on_exception(tc, ex);
+    }
+
+    void assertion(const assertion_event& event) override
+    {
+        stream << (event.ok ? color::text::green : color::text::red)
+               << event.display_matcher << '\n'
+               << "  actual:   " << event.actual.display << '\n'
+               << "  expected: " << event.expected.display << '\n'
+               << "  location: " << event.file << " "
+               << event.line << ":" << event.column
+               << color::reset << '\n';
+
+        if(verbose)
+            std::clog << stream.view();
+    }
+
+    void message(const message_event& event) override
+    {
+        stream << (event.ok ? color::text::yellow : color::text::red)
+               << event.display_matcher << '\n'
+               << "  message:  " << event.message << '\n'
+               << "  location: " << event.file << " "
+               << event.line << ":" << event.column
+               << color::reset << '\n';
+
+        if(verbose)
+            std::clog << stream.view();
     }
 
     template<typename A, typename E>
@@ -282,6 +319,18 @@ export struct sink
                            << color::reset << std::endl;
     }
 
+    void test_catalogue(
+        const std::function<bool(const data::test_case&)>& included,
+        std::string_view) override
+    {
+        print_test_cases(included);
+    }
+
+    void test_cases(const std::function<bool(const data::test_case&)>& included) override
+    {
+        print_test_cases(included);
+    }
+
     void print_test_results()
     {
         human_os() << color::text::yellow
@@ -289,6 +338,11 @@ export struct sink
                    << color::reset << '\n';
         for(auto result : data::test_results)
             human_os() << result.output;
+    }
+
+    void test_results(data::assertion_output_policy, std::size_t) override
+    {
+        print_test_results();
     }
 
     void print_test_failures()
@@ -312,6 +366,11 @@ export struct sink
         for(const auto& result : data::test_results)
             if(not result.success)
                 human_os() << result.output;
+    }
+
+    void test_failures() override
+    {
+        print_test_failures();
     }
 
     void print_test_statistics(std::size_t slowest_n, 
@@ -397,14 +456,29 @@ export struct sink
         }
     }
 
+    void statistics(
+        const data::test_statistics& stats,
+        bool,
+        std::span<const data::test_result* const> slowest,
+        const failure_index&) override
+    {
+        print_test_statistics(
+            slowest.size(),
+            stats.run_started,
+            stats.run_finished,
+            stats.run_tags,
+            result_line);
+    }
+
     std::string_view stream_view() const { return stream.view(); }
+    std::string_view captured_output() const override { return stream_view(); }
     void reset_stream() { reset(); }
 };
 
-export inline auto& sink_instance()
+export inline auto& observer_instance(std::ostream& human, std::ostream& result, bool result_line = false)
 {
-    static auto s = sink{io_mux()};
-    return s;
+    static auto value = observer{human, result, result_line};
+    return value;
 }
 
 } // namespace tester::output::console

@@ -2,16 +2,80 @@
 // SPDX-License-Identifier: MIT
 // See the LICENSE file in the project root for full license text.
 
+module;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wincomplete-umbrella"
 #include <csignal>
 #pragma clang diagnostic pop
 #include <execinfo.h>
 #include <unistd.h>
-#include "details/jsonl-signal-safe.h++"
+module tester;
 import std;
-import tester;
+import :console_observer;
+import :jsonl_observer;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmain-attached-to-named-module"
 using namespace std::literals;
+
+namespace {
+
+auto append_cstr(char* buffer, std::size_t size, std::size_t capacity, const char* text)
+{
+    while(*text && size < capacity)
+        buffer[size++] = *text++;
+    return size;
+}
+
+auto append_unsigned(char* buffer, std::size_t size, std::size_t capacity, unsigned value)
+{
+    auto temporary = std::array<char, 32>{};
+    auto count = std::size_t{};
+    do
+    {
+        temporary[count++] = static_cast<char>('0' + value % 10);
+        value /= 10;
+    }
+    while(value);
+
+    while(count > 0 && size < capacity)
+        buffer[size++] = temporary[--count];
+    return size;
+}
+
+void emit_crash_event(
+    int stdout_fd,
+    int stderr_fd,
+    unsigned signal_number,
+    const char* schema,
+    std::size_t schema_length,
+    int version,
+    bool emit_result_line)
+{
+    auto buffer = std::array<char, 256>{};
+    auto size = std::size_t{};
+
+    size = append_cstr(buffer.data(), size, buffer.size(), "{\"type\":\"crash\",\"schema\":\"");
+    for(auto index = std::size_t{}; index < schema_length && size < buffer.size(); ++index)
+        buffer[size++] = schema[index];
+    size = append_cstr(buffer.data(), size, buffer.size(), "\",\"version\":");
+    size = append_unsigned(buffer.data(), size, buffer.size(), static_cast<unsigned>(version));
+    size = append_cstr(buffer.data(), size, buffer.size(), ",\"pid\":");
+    size = append_unsigned(buffer.data(), size, buffer.size(), static_cast<unsigned>(::getpid()));
+    size = append_cstr(buffer.data(), size, buffer.size(), ",\"signal\":");
+    size = append_unsigned(buffer.data(), size, buffer.size(), signal_number);
+    size = append_cstr(buffer.data(), size, buffer.size(), "}\n");
+
+    (void)::write(stdout_fd, buffer.data(), size);
+
+    if(emit_result_line)
+    {
+        constexpr char result[] = "RESULT: passed=false crashed=true\n";
+        (void)::write(stderr_fd, result, sizeof(result) - 1);
+    }
+}
+
+} // namespace
+
 // Schema is defined in jsonl.h++ as jsonl::jsonl_context<std::ostream>::schema
 // We duplicate it here as a string literal to avoid header inclusion conflicts with the std module
 static constexpr auto g_schema = "tester-jsonl"sv;
@@ -55,17 +119,13 @@ int main(int argc, char** argv)
     std::copy_n(g_schema.begin(), g_schema_len, g_schema_buf.begin());
     g_schema_buf[g_schema_len] = '\0';
 
-    struct run_state
-    {
-        bool jsonl_enabled = false;
-    };
-    static run_state state{};
+    static volatile std::sig_atomic_t jsonl_crash_output{};
 
     auto crash_handler = [](int signal)
     {
-        if(state.jsonl_enabled)
+        if(jsonl_crash_output)
         {
-            jsonl::signal_safe::emit_crash_event_jsonl(
+            emit_crash_event(
                 STDOUT_FILENO,
                 STDERR_FILENO,
                 static_cast<unsigned>(signal),
@@ -88,11 +148,11 @@ int main(int argc, char** argv)
 
     auto list_only = false;
     auto tags = std::string_view{};
-    auto output_mode = std::string_view{"human"};
+    auto output_name = std::string_view{"console"};
     auto result_line = false;
     auto slowest = std::size_t{0};
-    auto jsonl_output = std::string_view{"failures"};
-    auto jsonl_output_max_bytes = std::size_t{16384};
+    auto assertion_output = std::string_view{"failures"};
+    auto output_max_bytes = std::size_t{16384};
 
     for(std::string_view option : arguments)
     {
@@ -116,13 +176,17 @@ int main(int argc, char** argv)
 
         if(option == "--jsonl")
         {
-            output_mode = "jsonl";
+            output_name = "jsonl";
             continue;
         }
 
         if(option.starts_with("--output="))
         {
-            output_mode = option.substr(std::string_view{"--output="}.size());
+            output_name = option.substr(std::string_view{"--output="}.size());
+            if(output_name == "JSONL")
+                output_name = "jsonl";
+            else if(output_name == "human")
+                output_name = "console";
             continue;
         }
 
@@ -141,14 +205,14 @@ int main(int argc, char** argv)
 
         if(option.starts_with("--jsonl-output="))
         {
-            jsonl_output = option.substr(std::string_view{"--jsonl-output="}.size());
+            assertion_output = option.substr(std::string_view{"--jsonl-output="}.size());
             continue;
         }
 
         if(option.starts_with("--jsonl-output-max-bytes="))
         {
             auto value = option.substr(std::string_view{"--jsonl-output-max-bytes="}.size());
-            jsonl_output_max_bytes = parse_usize(value).value_or(16384);
+            output_max_bytes = parse_usize(value).value_or(16384);
             continue;
         }
 
@@ -167,14 +231,21 @@ int main(int argc, char** argv)
         // Use the public API of the tester module.
         // It handles its own internal configuration.
         tester::set_run_argv(argc, argv);
-        tester::set_output_format(output_mode);
-        tester::set_human_result_line(result_line);
         tester::set_slowest(slowest);
-        tester::set_jsonl_output(jsonl_output);
-        tester::set_jsonl_output_max_bytes(jsonl_output_max_bytes);
-        state.jsonl_enabled = (output_mode == "jsonl" || output_mode == "JSONL");
-        if(state.jsonl_enabled)
-            tester::initialize_jsonl_session();
+        tester::set_assertion_output(assertion_output);
+        tester::set_output_max_bytes(output_max_bytes);
+        tester::output::register_observer(
+            "jsonl",
+            tester::output::jsonl::observer_instance(std::cout, std::clog));
+        tester::output::register_observer(
+            "console",
+            tester::output::console::observer_instance(std::clog, std::clog, result_line));
+        if(not tester::output::select_observer(output_name))
+        {
+            std::clog << "Unknown output observer: " << output_name << '\n';
+            return 1;
+        }
+        jsonl_crash_output = output_name == "jsonl";
 
         auto tr = tester::runner{tags};
 
@@ -184,8 +255,6 @@ int main(int argc, char** argv)
             return 0;
         }
 
-        // In JSONL mode, keep stdout machine-parseable: don't emit the human test list.
-        if(!state.jsonl_enabled)
         tr.print_test_cases();
         tr.run_tests();
         tr.print_test_results();
@@ -209,3 +278,5 @@ int main(int argc, char** argv)
         return 1;
     }
 }
+
+#pragma clang diagnostic pop

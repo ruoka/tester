@@ -13,7 +13,6 @@ auto register_tests()
 {
     using tester::basic::test_case;
     using namespace tester::assertions;
-    using tester_selftest::jsonl_events_contain;
     using tester_selftest::run_test_runner;
 
     test_case("test_case [self] jsonl catalogue events") = []
@@ -24,11 +23,11 @@ auto register_tests()
             "--tags=[self]"});
 
         require_eq(result.exit_code, 0);
-        require_true(jsonl_events_contain(result.stdout_text, "\"type\":\"test_list_start\""));
-        require_true(jsonl_events_contain(result.stdout_text, "\"type\":\"registered_test\""));
-        require_true(jsonl_events_contain(result.stdout_text, "\"type\":\"test_list_summary\""));
-        require_true(jsonl_events_contain(result.stdout_text, "\"type\":\"eof\""));
-        require_true(jsonl_events_contain(result.stdout_text, "\"tags\":[\"self\"]"));
+        require_true(result.stdout_text.contains("\"type\":\"test_list_start\""));
+        require_true(result.stdout_text.contains("\"type\":\"registered_test\""));
+        require_true(result.stdout_text.contains("\"type\":\"test_list_summary\""));
+        require_true(result.stdout_text.contains("\"type\":\"eof\""));
+        require_true(result.stdout_text.contains("\"tags\":[\"self\"]"));
     };
 
     test_case("test_case [self] jsonl run_start metadata") = []
@@ -46,10 +45,10 @@ auto register_tests()
             "TESTER_SELFTEST_SPAWNED=1 TESTER_CONFIG=debug ");
 
         require_eq(result.exit_code, 0);
-        require_true(jsonl_events_contain(result.stdout_text, "\"type\":\"run_start\""));
-        require_true(jsonl_events_contain(result.stdout_text, "\"cwd\":"));
-        require_true(jsonl_events_contain(result.stdout_text, "\"argv\":["));
-        require_true(jsonl_events_contain(result.stdout_text, "\"config\":\"debug\""));
+        require_true(result.stdout_text.contains("\"type\":\"run_start\""));
+        require_true(result.stdout_text.contains("\"cwd\":"));
+        require_true(result.stdout_text.contains("\"argv\":["));
+        require_true(result.stdout_text.contains("\"config\":\"debug\""));
     };
 
     test_case("test_case [self] jsonl assertion_failed message shape") = []
@@ -60,9 +59,9 @@ auto register_tests()
             "--tags=[.jsonl-probe]"});
 
         require_neq(result.exit_code, 0);
-        require_true(jsonl_events_contain(result.stdout_text, "\"type\":\"assertion_failed\""));
-        require_true(jsonl_events_contain(result.stdout_text, "\"matcher\":\"check_nothrow\""));
-        require_true(jsonl_events_contain(result.stdout_text, "\"message\":\"expected no exception\""));
+        require_true(result.stdout_text.contains("\"type\":\"assertion_failed\""));
+        require_true(result.stdout_text.contains("\"matcher\":\"check_nothrow\""));
+        require_true(result.stdout_text.contains("\"message\":\"expected no exception\""));
     };
 
     test_case("test_case [.jsonl-probe] check_nothrow failure") = []

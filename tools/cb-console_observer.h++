@@ -12,12 +12,13 @@
 #include <string_view>
 #include <vector>
 
-#include "../tester/details/output-mux.h++"
-#include "cb-output.h++"
+#include "../tester/details/terminal-colors.h++"
+#include "cb-observer.h++"
 
 namespace cb::output::console {
 
 using namespace std::string_view_literals;
+namespace color = ::term;
 
 using string_list = std::vector<std::string>;
 
@@ -69,38 +70,45 @@ inline std::string format_profile_diff(const object_cache_profile_diff& diff, st
     return parts | std::views::join_with("; "sv) | std::ranges::to<std::string>();
 }
 
-struct sink
+struct observer final : cb::output::observer
 {
-    io::mux& m;
+    std::ostream& human;
+    std::mutex mutex{};
 
-    explicit sink(io::mux& mux) : m(mux) {}
+    explicit observer(std::ostream& human_stream) : human{human_stream} {}
 
-    void error(std::string_view msg)
+    void write(std::string_view prefix, std::string_view color_code, std::string_view message)
     {
-        io::error(m, msg);
+        auto lock = std::lock_guard<std::mutex>{mutex};
+        human << color_code << prefix << color::reset << " " << message << '\n';
     }
 
-    void warning(std::string_view msg)
+    void error(std::string_view msg) override
     {
-        io::warning(m, msg);
+        write("ERROR", color::bold::red, msg);
     }
 
-    void info(std::string_view msg)
+    void warning(std::string_view msg) override
     {
-        io::info(m, msg);
+        write("WARNING", color::bold::yellow, msg);
     }
 
-    void success(std::string_view msg)
+    void info(std::string_view msg) override
     {
-        io::success(m, msg);
+        write("INFO", color::bold::blue, msg);
     }
 
-    void command(std::string_view cmd)
+    void success(std::string_view msg) override
     {
-        io::command(m, cmd);
+        write("SUCCESS", color::bold::green, msg);
     }
 
-    void profile_changed(std::string_view reason, const object_cache_profile_diff& diff)
+    void command(std::string_view cmd) override
+    {
+        write("COMMAND", color::bold::blue, cmd);
+    }
+
+    void profile_changed(std::string_view reason, const object_cache_profile_diff& diff) override
     {
         auto msg = std::string{"Object cache profile changed; invalidating compile cache"};
         if(!diff.empty())
@@ -112,7 +120,7 @@ struct sink
         info(msg);
     }
 
-    void profile_change_rebuild(std::string_view tu_label)
+    void profile_change_rebuild(std::string_view tu_label) override
     {
         info("Rebuilding " + std::string{tu_label} + " because compile profile changed");
     }
@@ -123,7 +131,7 @@ struct sink
                       int object_entries,
                       int object_stale_entries,
                       int executable_entries,
-                      std::string_view)
+                      std::string_view) override
     {
         info("Object cache: " + std::string{object_cache_path});
         info("  exists: " + std::string{object_cache_exists ? "yes" : "no"});
@@ -138,7 +146,7 @@ struct sink
 
     void cache_invalidate_end(bool object_cache_removed,
                               bool executable_cache_removed,
-                              bool compiler_stamp_removed)
+                              bool compiler_stamp_removed) override
     {
         info("Invalidated compile/link cache indexes:");
         info("  object_cache: " + std::string{object_cache_removed ? "removed" : "absent"});
@@ -146,32 +154,32 @@ struct sink
         info("  compiler_stamp: " + std::string{compiler_stamp_removed ? "removed" : "absent"});
     }
 
-    void source_list(const source_inventory& inventory)
+    void source_list(const source_inventory& inventory) override
     {
-        auto lock = std::lock_guard<std::mutex>{m.mutex};
-        auto& os = m.human_os();
-        os << io::color::cyan << "\nFound " << inventory.units.size() << " translation units:\n\n" << io::color::reset;
-        os << io::color::cyan << " Total: " << inventory.units.size()
+        auto lock = std::lock_guard<std::mutex>{mutex};
+        auto& os = human;
+        os << color::cyan << "\nFound " << inventory.units.size() << " translation units:\n\n" << color::reset;
+        os << color::cyan << " Total: " << inventory.units.size()
                   << " | Main: " << inventory.main_count
-                  << " | Tests: " << inventory.test_count << "\n\n" << io::color::reset;
+                  << " | Tests: " << inventory.test_count << "\n\n" << color::reset;
 
         for (const auto& unit : inventory.units) {
-            os << io::color::cyan << " " << unit.path << io::color::reset;
-            if (not unit.module.empty()) os << " " << io::color::yellow << "[module: " << unit.module << "]" << io::color::reset;
-            if (unit.has_main) os << " " << io::color::green << "[main]" << io::color::reset;
-            if (unit.is_test) os << " " << io::color::magenta << "[TEST]" << io::color::reset;
-            if (unit.level >= 0) os << " " << io::color::gray << "level=" << unit.level << io::color::reset;
+            os << color::cyan << " " << unit.path << color::reset;
+            if (not unit.module.empty()) os << " " << color::yellow << "[module: " << unit.module << "]" << color::reset;
+            if (unit.has_main) os << " " << color::green << "[main]" << color::reset;
+            if (unit.is_test) os << " " << color::magenta << "[TEST]" << color::reset;
+            if (unit.level >= 0) os << " " << color::gray << "level=" << unit.level << color::reset;
             os << "\n";
             if (not unit.imports.empty()) {
-                os << io::color::gray << "   imports: ";
+                os << color::gray << "   imports: ";
                 for (std::size_t i = 0; i < unit.imports.size(); ++i) {
                     if (i) os << ", ";
                     os << unit.imports[i];
                 }
-                os << io::color::reset << "\n";
+                os << color::reset << "\n";
             }
         }
-        os << io::color::cyan << "\n" << io::color::reset;
+        os << color::cyan << "\n" << color::reset;
     }
 };
 

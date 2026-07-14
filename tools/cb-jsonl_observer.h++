@@ -14,8 +14,8 @@
 #include <string_view>
 #include <vector>
 
-#include "../tester/details/output-mux.h++"
-#include "cb-output.h++"
+#include "../tester/details/jsonl.h++"
+#include "cb-observer.h++"
 
 namespace cb::output::jsonl {
 
@@ -75,13 +75,43 @@ inline void write_profile_diff(std::ostream& os, const object_cache_profile_diff
     os << '}';
 }
 
-struct sink
+struct observer final : cb::output::observer
 {
-    io::mux& m;
+    struct state
+    {
+        std::ostream& json;
+        ::jsonl::jsonl_context<std::ostream> jsonl;
+        std::mutex mutex{};
 
-    explicit sink(io::mux& mux) : m(mux) {}
+        explicit state(std::ostream& stream) : json{stream}, jsonl{stream} {}
+    };
 
-    void build_start(std::string_view config, bool include_tests, bool include_examples)
+    state m;
+
+    explicit observer(std::ostream& stream) : m{stream} {}
+
+    bool machine_readable() const override { return true; }
+
+    void activate() override
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.jsonl.set_enabled(true);
+        m.jsonl.reset_stream_state();
+        m.jsonl.assign_new_run_id();
+    }
+
+    void finish() override
+    {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.jsonl.emit_eof();
+    }
+
+    std::string_view run_id() const override
+    {
+        return m.jsonl.get_run_id();
+    }
+
+    void build_start(std::string_view config, bool include_tests, bool include_examples) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("build_start") << [&](std::ostream& os){
@@ -91,7 +121,7 @@ struct sink
         };
     }
 
-    void build_end(bool ok, std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished)
+    void build_end(bool ok, std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started);
@@ -101,7 +131,7 @@ struct sink
         };
     }
 
-    void test_start(std::string_view runner)
+    void test_start(std::string_view runner) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("test_start") << [&](std::ostream& os){
@@ -109,7 +139,7 @@ struct sink
         };
     }
 
-    void test_end(bool ok, int exit_code, int wait_status, bool signaled, int signal_number, std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished)
+    void test_end(bool ok, int exit_code, int wait_status, bool signaled, int signal_number, std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started);
@@ -123,7 +153,7 @@ struct sink
         };
     }
 
-    void error(std::string_view message)
+    void error(std::string_view message) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("cb_error") << [&](std::ostream& os){
@@ -131,7 +161,7 @@ struct sink
         };
     }
 
-    void command_start(std::string_view cmd, std::span<const std::string> argv)
+    void command_start(std::string_view cmd, std::span<const std::string> argv) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("command_start") << [&](std::ostream& os){
@@ -140,7 +170,7 @@ struct sink
         };
     }
 
-    void command_end(std::string_view cmd, std::span<const std::string> argv, bool ok, int exit_code, std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished)
+    void command_end(std::string_view cmd, std::span<const std::string> argv, bool ok, int exit_code, std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started);
@@ -153,7 +183,7 @@ struct sink
         };
     }
 
-    void profile_changed(std::string_view reason, const object_cache_profile_diff& diff)
+    void profile_changed(std::string_view reason, const object_cache_profile_diff& diff) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("profile_changed") << [&](std::ostream& os){
@@ -172,7 +202,7 @@ struct sink
                       int object_entries,
                       int object_stale_entries,
                       int executable_entries,
-                      std::string_view current_profile)
+                      std::string_view current_profile) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("cache_status") << [&](std::ostream& os){
@@ -188,7 +218,7 @@ struct sink
 
     void cache_invalidate_end(bool object_cache_removed,
                               bool executable_cache_removed,
-                              bool compiler_stamp_removed)
+                              bool compiler_stamp_removed) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("cache_invalidate_end") << [&](std::ostream& os){
@@ -202,7 +232,7 @@ struct sink
                        std::string_view object_path,
                        std::string_view pcm_path,
                        std::string_view module_name,
-                       std::string_view rebuild_reason = {})
+                       std::string_view rebuild_reason = {}) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("compile_start") << [&](std::ostream& os){
@@ -221,7 +251,7 @@ struct sink
                   bool ok,
                   bool cache_hit,
                   std::chrono::steady_clock::time_point started,
-                  std::chrono::steady_clock::time_point finished)
+                  std::chrono::steady_clock::time_point finished) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started);
@@ -241,7 +271,7 @@ struct sink
                      bool cache_hit,
                      std::chrono::steady_clock::time_point started,
                      std::chrono::steady_clock::time_point finished,
-                     std::string_view rebuild_reason = {})
+                     std::string_view rebuild_reason = {}) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started);
@@ -260,7 +290,7 @@ struct sink
         };
     }
 
-    void source_list(const source_inventory& inventory)
+    void source_list(const source_inventory& inventory) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("list_start") << [&](std::ostream& os){

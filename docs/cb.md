@@ -40,7 +40,7 @@ The **test runner** is separate: crash **stack traces** in `test_runner.c++` use
 Condensed from the original project pitch — why teams pick CB over wiring CMake + CTest for ruoka-style repos:
 
 - **Pure C++** — build orchestration lives in `cb.c++`; no CMake scripting, Makefile generation, YAML/TOML, or helper languages
-- **Single-file transparency** — the ~2400-line orchestrator remains in one place, with presentation split into focused console/JSONL sinks
+- **Single-file transparency** — the ~2400-line orchestrator remains in one place, with presentation split into focused console/JSONL observers
 - **Zero config** — conventions (`*.c++m`, `import` lines, co-located `*.test.c++`) replace `CMakeLists.txt`
 - **Fast incremental loops** — object timestamp cache, link signature cache, transitive PCM staleness; suited to Docker/CI where rebuild time matters
 - **No extra learning curve** — if you know C++ modules and can read `cb.c++`, you understand the build; no second DSL
@@ -264,17 +264,17 @@ Example `profile_diff` fragment:
 
 **`tools/CB.sh`** (per repo) — thin config: include dirs, examples mode, sandbox env, extra link flags.
 
-### Output sinks
+### Output observers
 
 | File | Role |
 |------|------|
-| `cb-output.h++` | Shared `cb::output` models (`object_cache_profile_diff`, `source_inventory`) and profile-field iteration |
-| `cb-jsonl_sink.h++` | `cb::output::jsonl` event serialization (`write_profile_diff`, lifecycle telemetry, `source_list`, …) |
-| `cb-console_sink.h++` | `cb::output::console` human formatting (`format_profile_diff`, `source_list`, …) |
-| `cb::log` (in `cb.c++`) | Routes events that have both human and JSONL forms; suppresses human `log::info` when JSONL is on |
+| `cb-observer.h++` | Shared event models plus the `cb::output::observer` contract and observer registry |
+| `cb-jsonl_observer.h++` | `cb::output::jsonl::observer` serialization, JSONL context, stream, and output lock |
+| `cb-console_observer.h++` | `cb::output::console::observer` human formatting, stream, and output lock |
+| `cb::output::notify` | Publishes build events directly to installed observers |
 | `cb::detail` | Domain compute only (profile parse/diff, flag token diff) — not presentation |
 
-`build_system` gathers facts; `cb::log` picks the channel for dual-format events; JSONL-only compile/link lifecycle helpers emit telemetry directly. Both sinks consume the same source inventory and cache-event signatures while retaining channel-specific `format_*` and `write_*` helpers. Shared profile field iteration keeps diff computation and both sink formats aligned when fields are added.
+`build_system` gathers facts and publishes them directly through `cb::output::notify`. `main` registers built-in observers by name and selects one from the parsed `output_name`. Compile, link, command, cache, list, and lifecycle events all cross the same observer boundary; adding a formatter does not add format branches to `build_system`. Observers retain channel-specific `format_*` and `write_*` helpers, while shared profile-field iteration keeps diff computation and every format aligned when fields are added.
 
 ### Ranges idioms (`cb.c++`)
 

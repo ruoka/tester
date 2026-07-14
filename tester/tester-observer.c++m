@@ -1,0 +1,175 @@
+// Copyright (c) 2025 Kaius Ruokonen. All rights reserved.
+// SPDX-License-Identifier: MIT
+// See the LICENSE file in the project root for full license text.
+
+export module tester:observer;
+import :data;
+import std;
+
+namespace tester::output
+{
+
+export struct failure_index
+{
+    std::vector<std::string> failed_test_ids;
+    const data::test_result* first = nullptr;
+};
+
+export enum class value_kind
+{
+    text,
+    number,
+    boolean,
+    null
+};
+
+export struct observed_value
+{
+    std::string display;
+    std::string value;
+    value_kind kind = value_kind::text;
+};
+
+export struct assertion_event
+{
+    bool ok;
+    bool emit_event;
+    std::string matcher;
+    std::string display_matcher;
+    observed_value actual;
+    observed_value expected;
+    std::string message;
+    std::string test_id;
+    std::string file;
+    std::uint_least32_t line;
+    std::uint_least32_t column;
+};
+
+export struct message_event
+{
+    bool ok;
+    std::string message;
+    std::string display_matcher;
+    std::string file;
+    std::uint_least32_t line;
+    std::uint_least32_t column;
+    std::string caller_file;
+    std::uint_least32_t caller_line;
+};
+
+export class observer
+{
+public:
+    virtual ~observer() = default;
+
+    virtual bool machine_readable() const { return false; }
+    virtual void activate() {}
+    virtual void emit_eof() {}
+    virtual std::string_view captured_output() const { return {}; }
+
+    virtual void run_start(
+        std::string_view,
+        std::string_view,
+        std::chrono::system_clock::time_point,
+        std::string_view,
+        std::span<const std::string>,
+        std::string_view,
+        std::span<const std::pair<std::string, std::string>>) {}
+
+    virtual void run_end(
+        std::string_view,
+        std::string_view,
+        bool,
+        std::chrono::system_clock::time_point,
+        std::chrono::system_clock::time_point,
+        const failure_index&) {}
+
+    virtual void test_catalogue(
+        const std::function<bool(const data::test_case&)>&,
+        std::string_view) {}
+
+    virtual void test_cases(const std::function<bool(const data::test_case&)>&) {}
+    virtual void test_case(const data::test_case&) {}
+    virtual void exception(const data::test_case&, const std::exception&) {}
+    virtual void assertion(const assertion_event&) {}
+    virtual void message(const message_event&) {}
+
+    virtual void test_results(
+        data::assertion_output_policy,
+        std::size_t) {}
+
+    virtual void test_failures() {}
+
+    virtual void statistics(
+        const data::test_statistics&,
+        bool,
+        std::span<const data::test_result* const>,
+        const failure_index&) {}
+};
+
+inline auto g_observers = std::vector<std::reference_wrapper<observer>>{};
+inline auto g_named_observers = std::vector<std::pair<std::string, std::reference_wrapper<observer>>>{};
+
+export void register_observer(std::string_view name, observer& value)
+{
+    if(const auto found = std::ranges::find_if(g_named_observers, [name](const auto& entry)
+    {
+        return entry.first == name;
+    });
+       found != g_named_observers.end())
+    {
+        found->second = value;
+        return;
+    }
+    g_named_observers.emplace_back(name, value);
+}
+
+export void observe(observer& value)
+{
+    g_observers.emplace_back(value);
+    value.activate();
+}
+
+export void clear_observers()
+{
+    g_observers.clear();
+}
+
+export bool select_observer(std::string_view name)
+{
+    const auto found = std::ranges::find_if(g_named_observers, [name](const auto& entry)
+    {
+        return entry.first == name;
+    });
+    if(found == g_named_observers.end())
+        return false;
+
+    clear_observers();
+    observe(found->second.get());
+    return true;
+}
+
+export void unobserve(observer& value)
+{
+    std::erase_if(g_observers, [&value](const auto target)
+    {
+        return std::addressof(target.get()) == std::addressof(value);
+    });
+}
+
+export template<typename Callback>
+void notify(Callback&& callback)
+{
+    for(auto target : g_observers)
+        callback(target.get());
+}
+
+export bool machine_readable()
+{
+    return std::ranges::any_of(g_observers, [](const auto target)
+    {
+        return target.get().machine_readable();
+    });
+}
+
+} // namespace tester::output
