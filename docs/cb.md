@@ -259,6 +259,17 @@ Example `profile_diff` fragment:
 
 **`tools/CB.sh`** (per repo) — thin config: include dirs, examples mode, sandbox env, extra link flags.
 
+### Output sinks
+
+| File | Role |
+|------|------|
+| `cb-jsonl_sink.h++` | `namespace cb` — shared `object_cache_profile_diff` types; `namespace cb_jsonl` — JSONL event serialization (`write_profile_diff`, `sink::profile_changed`, `cache_status`, …) |
+| `cb-console_sink.h++` | Human formatting (`format_profile_diff`, `sink::profile_changed`, `cache_status`, …) |
+| `cb::log` (in `cb.c++`) | Routes to JSONL or console sink based on `--jsonl`; suppresses human `log::info` when JSONL is on |
+| `cb::detail` | Domain compute only (profile parse/diff, flag token diff) — not presentation |
+
+`build_system` gathers facts; `cb::log` picks the channel; each sink owns how its output looks.
+
 ### Ranges idioms (`cb.c++`)
 
 CB uses C++23 range pipelines instead of hand-written accumulation loops where the standard library covers the case:

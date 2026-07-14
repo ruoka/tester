@@ -34,7 +34,7 @@ inline std::string format_token_list(const string_list& tokens, std::size_t max_
     return out;
 }
 
-inline std::string format_token_change_summary(std::string_view name, const cb_jsonl::profile_token_change& change, std::size_t max_tokens = 8)
+inline std::string format_token_change_summary(std::string_view name, const cb::profile_token_change& change, std::size_t max_tokens = 8)
 {
     auto parts = string_list{};
     if(not change.added.empty())
@@ -47,10 +47,10 @@ inline std::string format_token_change_summary(std::string_view name, const cb_j
     return std::string{name} + ": " + (parts | std::views::join_with(", "sv) | std::ranges::to<std::string>());
 }
 
-inline std::string format_profile_diff(const cb_jsonl::object_cache_profile_diff& diff, std::size_t max_tokens = 8)
+inline std::string format_profile_diff(const cb::object_cache_profile_diff& diff, std::size_t max_tokens = 8)
 {
     auto parts = string_list{};
-    const auto append_scalar = [&](std::string_view name, const cb_jsonl::profile_scalar_change& change) {
+    const auto append_scalar = [&](std::string_view name, const cb::profile_scalar_change& change) {
         parts.push_back(std::string{name} + ": " + change.old_value + " -> " + change.new_value);
     };
 
@@ -107,13 +107,13 @@ struct sink
         io::command(m, cmd);
     }
 
-    void profile_changed(std::string_view reason, const cb_jsonl::object_cache_profile_diff* diff = nullptr)
+    void profile_changed(std::string_view reason, const cb::object_cache_profile_diff& diff)
     {
         auto msg = std::string{"Object cache profile changed; invalidating compile cache"};
-        if(diff && !diff->empty())
+        if(!diff.empty())
         {
             msg += " (";
-            msg += format_profile_diff(*diff);
+            msg += format_profile_diff(diff);
             msg += ')';
         }
         info(msg);
@@ -122,6 +122,34 @@ struct sink
     void profile_change_rebuild(std::string_view tu_label)
     {
         info("Rebuilding " + std::string{tu_label} + " because compile profile changed");
+    }
+
+    void cache_status(std::string_view object_cache_path,
+                      bool object_cache_exists,
+                      bool profile_match,
+                      int object_entries,
+                      int object_stale_entries,
+                      int executable_entries)
+    {
+        info("Object cache: " + std::string{object_cache_path});
+        info("  exists: " + std::string{object_cache_exists ? "yes" : "no"});
+        if(object_cache_exists)
+        {
+            info("  profile_match: " + std::string{profile_match ? "yes" : "no"});
+            info("  object_entries: " + std::to_string(object_entries));
+            info("  object_stale_entries: " + std::to_string(object_stale_entries));
+        }
+        info("  executable_entries: " + std::to_string(executable_entries));
+    }
+
+    void cache_invalidate_end(bool object_cache_removed,
+                              bool executable_cache_removed,
+                              bool compiler_stamp_removed)
+    {
+        info("Invalidated compile/link cache indexes:");
+        info("  object_cache: " + std::string{object_cache_removed ? "removed" : "absent"});
+        info("  executable_cache: " + std::string{executable_cache_removed ? "removed" : "absent"});
+        info("  compiler_stamp: " + std::string{compiler_stamp_removed ? "removed" : "absent"});
     }
 
     template<typename TranslationUnit>

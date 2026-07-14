@@ -101,7 +101,7 @@ inline void info(std::string_view msg) { if(!cb::jsonl::enabled()) console_sink(
 inline void success(std::string_view msg) { if(!cb::jsonl::enabled()) console_sink().success(msg); }
 inline void command(std::string_view cmd) { if(!cb::jsonl::enabled()) console_sink().command(cmd); }
 
-inline void profile_changed(std::string_view reason, const cb_jsonl::object_cache_profile_diff* diff = nullptr)
+inline void profile_changed(std::string_view reason, const object_cache_profile_diff& diff)
 {
     if(cb::jsonl::enabled())
         cb::jsonl::sink().profile_changed(reason, diff);
@@ -113,6 +113,47 @@ inline void profile_change_rebuild(std::string_view tu_label)
 {
     if(!cb::jsonl::enabled())
         console_sink().profile_change_rebuild(tu_label);
+}
+
+inline void cache_status(std::string_view object_cache_path,
+                         bool object_cache_exists,
+                         bool profile_match,
+                         int object_entries,
+                         int object_stale_entries,
+                         int executable_entries,
+                         std::string_view current_profile)
+{
+    if(cb::jsonl::enabled())
+    {
+        cb::jsonl::sink().cache_status(
+            object_cache_path,
+            object_cache_exists,
+            profile_match,
+            object_entries,
+            object_stale_entries,
+            executable_entries,
+            current_profile);
+    }
+    else
+    {
+        console_sink().cache_status(
+            object_cache_path,
+            object_cache_exists,
+            profile_match,
+            object_entries,
+            object_stale_entries,
+            executable_entries);
+    }
+}
+
+inline void cache_invalidate_end(bool object_cache_removed,
+                                 bool executable_cache_removed,
+                                 bool compiler_stamp_removed)
+{
+    if(cb::jsonl::enabled())
+        cb::jsonl::sink().cache_invalidate_end(object_cache_removed, executable_cache_removed, compiler_stamp_removed);
+    else
+        console_sink().cache_invalidate_end(object_cache_removed, executable_cache_removed, compiler_stamp_removed);
 }
 } // namespace log
 
@@ -128,10 +169,6 @@ enum class unit_kind : unsigned {
 
 using suffix_list = std::vector<std::string>;
 using string_list = std::vector<std::string>;
-
-using profile_scalar_change = cb_jsonl::profile_scalar_change;
-using profile_token_change = cb_jsonl::profile_token_change;
-using object_cache_profile_diff = cb_jsonl::object_cache_profile_diff;
 
 namespace detail {
 
@@ -630,7 +667,7 @@ private:
     string_list extra_compile_flag_tokens;
     string_list extra_link_flag_tokens;
     mutable std::optional<std::string> object_cache_miss_reason;
-    mutable std::optional<object_cache_profile_diff> object_cache_profile_diff;
+    mutable object_cache_profile_diff profile_diff;
     mutable bool profile_changed_emitted = false;
     
     // JSONL phase tracking state
@@ -1071,11 +1108,7 @@ private:
         if(profile_changed_emitted || object_cache_miss_reason != "profile_change"sv)
             return;
 
-        const auto* diff = (object_cache_profile_diff and not object_cache_profile_diff->empty())
-            ? &*object_cache_profile_diff
-            : nullptr;
-
-        cb::log::profile_changed(*object_cache_miss_reason, diff);
+        cb::log::profile_changed(*object_cache_miss_reason, profile_diff);
 
         const_cast<build_system*>(this)->profile_changed_emitted = true;
     }
@@ -1203,15 +1236,12 @@ private:
 
     string_list link_test_runner_argv(const std::string& output_path,
                                       const std::string& test_runner_obj,
-                                      const translation_unit* test_runner) const
+                                      const string_list& link_module_ldflags) const
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
         argv.append_range(compile_flags);
-        if(test_runner)
-            argv.append_range(collect_module_ldflags(test_runner->imports));
-        else
-            argv.append_range(collect_test_module_ldflags());
+        argv.append_range(link_module_ldflags);
         argv.append_range(module_flags);
         if(not test_runner_obj.empty())
             argv.push_back(test_runner_obj);
@@ -1287,7 +1317,7 @@ private:
 
     object_cache_map load_object_cache() {
         object_cache_miss_reason.reset();
-        object_cache_profile_diff.reset();
+        profile_diff = {};
         profile_changed_emitted = false;
         auto cache = object_cache_map{};
         auto file = std::ifstream{object_cache_path()};
@@ -1303,7 +1333,7 @@ private:
             const auto stored_profile = header.substr(std::string_view{"profile\t"}.size());
             if (stored_profile != current_profile) {
                 object_cache_miss_reason = "profile_change";
-                object_cache_profile_diff = detail::diff_object_cache_profiles(stored_profile, current_profile);
+                profile_diff = detail::diff_object_cache_profiles(stored_profile, current_profile);
                 emit_profile_changed();
                 return cache;
             }
@@ -1340,8 +1370,7 @@ private:
 
     static void count_cache_entries(std::istream& file,
                                     int& entries,
-                                    int& stale_entries,
-                                    object_cache_map* loaded = nullptr)
+                                    int& stale_entries)
     {
         auto line = ""s;
         while(std::getline(file, line))
@@ -1352,12 +1381,7 @@ private:
                 continue;
             ++entries;
             if(not fs::exists(path))
-            {
                 ++stale_entries;
-                continue;
-            }
-            if(loaded)
-                (*loaded)[path] = fs::file_time_type{std::chrono::nanoseconds{ticks}};
         }
     }
 
@@ -1776,9 +1800,9 @@ private:
     // Test Support
     // ============================================================================
 
-    bool has_test_runner_link_inputs(const translation_unit* test_runner) const
+    bool has_test_runner_link_inputs(bool has_runner_unit) const
     {
-        if(test_runner)
+        if(has_runner_unit)
             return true;
         return std::ranges::any_of(units_in_topological_order, [](const translation_unit& tu) {
             return not tu.has_main;
@@ -1796,16 +1820,8 @@ private:
             });
     }
 
-    const translation_unit* find_test_runner_unit() const
-    {
-        const auto it = std::ranges::find_if(units_in_topological_order, [](const translation_unit& tu) {
-            return tu.has_main and tu.base_name.contains("test_runner");
-        });
-        return it != units_in_topological_order.end() ? &*it : nullptr;
-    }
-
-    std::string compute_test_runner_signature(const translation_unit* test_runner,
-                                              const std::string& test_runner_obj) const {
+    std::string compute_test_runner_signature(const std::string& test_runner_obj,
+                                              const string_list& signature_import_flags) const {
         auto paths = string_list{};
         if(not test_runner_obj.empty())
             paths.push_back(test_runner_obj);
@@ -1824,35 +1840,42 @@ private:
         signature += detail::flags_profile_string(link_flags);
         signature += "|modules=";
         signature += detail::flags_profile_string(module_flags);
-
-        auto import_flags = collect_test_module_ldflags();
-        if(test_runner)
-            import_flags.append_range(collect_module_ldflags(test_runner->imports));
         signature += "|imports=";
-        signature += detail::flags_profile_string(import_flags);
+        signature += detail::flags_profile_string(signature_import_flags);
 
         return signature;
     }
 
     void link_test_runner() {
-        const auto* test_runner = find_test_runner_unit();
-        if(not has_test_runner_link_inputs(test_runner)) {
+        const auto runner_it = std::ranges::find_if(units_in_topological_order, [](const translation_unit& tu) {
+            return tu.has_main and tu.base_name.contains("test_runner");
+        });
+        const auto has_runner_unit = runner_it != units_in_topological_order.end();
+
+        if(not has_test_runner_link_inputs(has_runner_unit)) {
             log::info("No objects to link for test_runner");
             return;
         }
 
-        // Determine test_runner path and object
         auto test_runner_path = binary_dir() + "/test_runner";
         auto test_runner_obj = std::string{};
-
-        if (test_runner) {
-            test_runner_path = test_runner->executable_path;
-            test_runner_obj = test_runner->object_path;
+        if(has_runner_unit)
+        {
+            test_runner_path = runner_it->executable_path;
+            test_runner_obj = runner_it->object_path;
         }
+
+        const auto link_module_ldflags = has_runner_unit
+            ? collect_module_ldflags(runner_it->imports)
+            : collect_test_module_ldflags();
+
+        auto signature_import_flags = collect_test_module_ldflags();
+        if(has_runner_unit)
+            signature_import_flags.append_range(collect_module_ldflags(runner_it->imports));
 
         // Check if test_runner is up-to-date
         auto link_cache = load_executable_cache();
-        auto signature = compute_test_runner_signature(test_runner, test_runner_obj);
+        auto signature = compute_test_runner_signature(test_runner_obj, signature_import_flags);
         
         // Check if executable exists and signature matches
         if (fs::exists(test_runner_path)) {
@@ -1865,8 +1888,8 @@ private:
         }
 
         const auto link_started = std::chrono::steady_clock::now();
-        execute_system_command(link_test_runner_argv(test_runner_path, test_runner_obj, test_runner));
-        if(test_runner)
+        execute_system_command(link_test_runner_argv(test_runner_path, test_runner_obj, link_module_ldflags));
+        if(has_runner_unit)
             log::success("test_runner linked with test objects");
         else
             log::success("test_runner linked successfully");
@@ -1950,28 +1973,14 @@ public:
             }
         }
 
-        if(cb::jsonl::enabled())
-        {
-            cb::jsonl::sink().cache_status(
-                cache_path,
-                cache_exists,
-                profile_match,
-                object_entries,
-                object_stale,
-                executable_entries,
-                current_profile);
-            return;
-        }
-
-        log::info("Object cache: "s + cache_path);
-        log::info("  exists: "s + (cache_exists ? "yes" : "no"));
-        if(cache_exists)
-        {
-            log::info("  profile_match: "s + (profile_match ? "yes" : "no"));
-            log::info("  object_entries: " + std::to_string(object_entries));
-            log::info("  object_stale_entries: " + std::to_string(object_stale));
-        }
-        log::info("  executable_entries: " + std::to_string(executable_entries));
+        log::cache_status(
+            cache_path,
+            cache_exists,
+            profile_match,
+            object_entries,
+            object_stale,
+            executable_entries,
+            current_profile);
     }
 
     static bool remove_if_exists(const std::string& path)
@@ -1990,16 +1999,7 @@ public:
         const auto executable_removed = remove_if_exists(executable_cache_path());
         const auto stamp_removed = remove_if_exists(cache_dir() + "/compiler-version.txt");
 
-        if(cb::jsonl::enabled())
-        {
-            cb::jsonl::sink().cache_invalidate_end(object_removed, executable_removed, stamp_removed);
-            return;
-        }
-
-        log::info("Invalidated compile/link cache indexes:"s);
-        log::info("  object_cache: "s + (object_removed ? "removed" : "absent"));
-        log::info("  executable_cache: "s + (executable_removed ? "removed" : "absent"));
-        log::info("  compiler_stamp: "s + (stamp_removed ? "removed" : "absent"));
+        log::cache_invalidate_end(object_removed, executable_removed, stamp_removed);
     }
 
     void set_include_tests(bool value) {

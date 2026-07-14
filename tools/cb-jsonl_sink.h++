@@ -17,29 +17,8 @@
 
 #include "../tester/details/output-mux.h++"
 
-namespace cb_jsonl {
-
-using ::jsonl::escape;
-
-inline std::string join_json_strings(std::span<const std::string> values)
-{
-    return values
-        | std::views::transform([](const std::string& value) {
-            return '"' + escape(value) + '"';
-        })
-        | std::views::join_with(',')
-        | std::ranges::to<std::string>();
-}
-
-inline void write_argv(std::ostream& os, std::span<const std::string> argv)
-{
-    os << ",\"argv\":[" << join_json_strings(argv) << ']';
-}
-
-inline void write_string_array(std::ostream& os, std::string_view field, std::span<const std::string> values)
-{
-    os << ",\"" << field << "\":[" << join_json_strings(values) << ']';
-}
+// Shared object-cache profile diff model (human + JSONL sinks).
+namespace cb {
 
 struct profile_scalar_change
 {
@@ -75,6 +54,36 @@ struct object_cache_profile_diff
             and not compile and not cpp;
     }
 };
+
+} // namespace cb
+
+namespace cb_jsonl {
+
+using ::jsonl::escape;
+
+using profile_scalar_change = cb::profile_scalar_change;
+using profile_token_change = cb::profile_token_change;
+using object_cache_profile_diff = cb::object_cache_profile_diff;
+
+inline std::string join_json_strings(std::span<const std::string> values)
+{
+    return values
+        | std::views::transform([](const std::string& value) {
+            return '"' + escape(value) + '"';
+        })
+        | std::views::join_with(',')
+        | std::ranges::to<std::string>();
+}
+
+inline void write_argv(std::ostream& os, std::span<const std::string> argv)
+{
+    os << ",\"argv\":[" << join_json_strings(argv) << ']';
+}
+
+inline void write_string_array(std::ostream& os, std::string_view field, std::span<const std::string> values)
+{
+    os << ",\"" << field << "\":[" << join_json_strings(values) << ']';
+}
 
 inline void write_profile_diff_scalar(std::ostream& os, const profile_scalar_change& change)
 {
@@ -200,15 +209,15 @@ struct sink
         };
     }
 
-    void profile_changed(std::string_view reason, const object_cache_profile_diff* diff = nullptr)
+    void profile_changed(std::string_view reason, const object_cache_profile_diff& diff)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("profile_changed") << [&](std::ostream& os){
             os << ",\"reason\":\"" << escape(reason) << "\"";
-            if(diff && !diff->empty())
+            if(!diff.empty())
             {
                 os << ",\"profile_diff\":";
-                write_profile_diff(os, *diff);
+                write_profile_diff(os, diff);
             }
         };
     }
