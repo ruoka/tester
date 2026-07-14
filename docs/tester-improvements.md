@@ -140,7 +140,7 @@ Design rationale and comparison with CMake, Make, and other build tools: [`docs/
 
 - ✅ Incremental compile cache (`object_cache_map`) and link cache (`link_cache_map`); each level's compile decisions are completed against a stable cache before workers start, failed workers are joined, and cache indexes use checked temporary-file replacement.
 - ✅ Object-cache profile header (`format=cb-object-cache-v3`) with toolchain fields (`config`, `static_link`, `llvm`, `cxx`, `cxx_sig`, `clang_ver`, `std_cppm` as `path@size:mtime_ns`, `compile` / `cpp` including `--compile-flags`); invalidates on profile mismatch (`rebuild_reason: "profile_change"`).
-- ✅ CB smoke harness (`tests/cb/`) and CI `cb-smoke` job (`profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `compile_failure`, `link_failure`, `test_link_failure`, `implementation_pcm`, `test_lifecycle`, `cache_invalidate`, `profile_change`, `cache_status`).
+- ✅ CB smoke harness (`tests/cb/`) and CI `cb-smoke` job (`profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `source_list`, `compile_failure`, `link_failure`, `test_link_failure`, `implementation_pcm`, `test_lifecycle`, `cache_invalidate`, `profile_change`, `cache_status`).
 - ✅ `cache status` subcommand (human + JSONL `cache_status`).
 - ✅ `cache invalidate` subcommand (human + JSONL `cache_invalidate_end`).
 - ✅ `profile_changed` JSONL event (single `profile_diff` on profile mismatch).

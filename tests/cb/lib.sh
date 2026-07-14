@@ -119,6 +119,17 @@ run_cb_test() {
   return "${status}"
 }
 
+run_cb_list() {
+  local work_dir=$1
+  shift
+  local status=0
+  LAST_JSONL="$(
+    cd "${work_dir}"
+    "${CB_BIN}" "${STD_CPPM}" debug list --jsonl "$@" 2>/dev/null
+  )" || status=$?
+  return "${status}"
+}
+
 run_cb_cache_status() {
   local work_dir=$1
   shift
@@ -218,7 +229,13 @@ assert_jsonl_event_value() {
   if python3 - "${event_type}" "${key}" "${expected}" "${LAST_JSONL}" <<'PY'
 import json, sys
 event_type, key, expected_text, text = sys.argv[1:]
-expected = {"true": True, "false": False, "null": None}.get(expected_text, expected_text)
+special_values = {"true": True, "false": False, "null": None}
+expected = special_values.get(expected_text, expected_text)
+if expected_text not in special_values:
+    try:
+        expected = int(expected_text)
+    except ValueError:
+        pass
 for line in text.splitlines():
     try:
         event = json.loads(line)

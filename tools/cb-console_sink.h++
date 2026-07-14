@@ -13,9 +13,9 @@
 #include <vector>
 
 #include "../tester/details/output-mux.h++"
-#include "cb-jsonl_sink.h++"
+#include "cb-output.h++"
 
-namespace cb_console {
+namespace cb::output::console {
 
 using namespace std::string_view_literals;
 
@@ -34,7 +34,7 @@ inline std::string format_token_list(const string_list& tokens, std::size_t max_
     return out;
 }
 
-inline std::string format_token_change_summary(std::string_view name, const cb::profile_token_change& change, std::size_t max_tokens = 8)
+inline std::string format_token_change_summary(std::string_view name, const profile_token_change& change, std::size_t max_tokens = 8)
 {
     auto parts = string_list{};
     if(not change.added.empty())
@@ -47,18 +47,18 @@ inline std::string format_token_change_summary(std::string_view name, const cb::
     return std::string{name} + ": " + (parts | std::views::join_with(", "sv) | std::ranges::to<std::string>());
 }
 
-inline std::string format_profile_diff(const cb::object_cache_profile_diff& diff, std::size_t max_tokens = 8)
+inline std::string format_profile_diff(const object_cache_profile_diff& diff, std::size_t max_tokens = 8)
 {
     auto parts = string_list{};
-    const auto append_scalar = [&](std::string_view name, const cb::profile_scalar_change& change) {
+    const auto append_scalar = [&](std::string_view name, const profile_scalar_change& change) {
         parts.push_back(std::string{name} + ": " + change.old_value + " -> " + change.new_value);
     };
 
-    cb::for_each_profile_scalar(diff, [&](std::string_view name, const auto& change) {
+    for_each_profile_scalar(diff, [&](std::string_view name, const auto& change) {
         if(change)
             append_scalar(name, *change);
     });
-    cb::for_each_profile_tokens(diff, [&](std::string_view name, const auto& change) {
+    for_each_profile_tokens(diff, [&](std::string_view name, const auto& change) {
         if(change)
         {
             if(auto summary = format_token_change_summary(name, *change, max_tokens); not summary.empty())
@@ -100,7 +100,7 @@ struct sink
         io::command(m, cmd);
     }
 
-    void profile_changed(std::string_view reason, const cb::object_cache_profile_diff& diff)
+    void profile_changed(std::string_view reason, const object_cache_profile_diff& diff)
     {
         auto msg = std::string{"Object cache profile changed; invalidating compile cache"};
         if(!diff.empty())
@@ -122,7 +122,8 @@ struct sink
                       bool profile_match,
                       int object_entries,
                       int object_stale_entries,
-                      int executable_entries)
+                      int executable_entries,
+                      std::string_view)
     {
         info("Object cache: " + std::string{object_cache_path});
         info("  exists: " + std::string{object_cache_exists ? "yes" : "no"});
@@ -145,36 +146,27 @@ struct sink
         info("  compiler_stamp: " + std::string{compiler_stamp_removed ? "removed" : "absent"});
     }
 
-    template<typename TranslationUnit>
-    void print_sources(const std::vector<TranslationUnit>& units)
+    void source_list(const source_inventory& inventory)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         auto& os = m.human_os();
-        os << io::color::cyan << "\nFound " << units.size() << " translation units:\n\n" << io::color::reset;
-        
-        int main_count = 0, test_count = 0;
-        for (const auto& tu : units) {
-            if (tu.has_main) main_count++;
-            if (tu.is_test) test_count++;
-        }
-        
-        os << io::color::cyan << " Total: " << units.size()
-                  << " | Main: " << main_count
-                  << " | Tests: " << test_count << "\n\n" << io::color::reset;
+        os << io::color::cyan << "\nFound " << inventory.units.size() << " translation units:\n\n" << io::color::reset;
+        os << io::color::cyan << " Total: " << inventory.units.size()
+                  << " | Main: " << inventory.main_count
+                  << " | Tests: " << inventory.test_count << "\n\n" << io::color::reset;
 
-        for (const auto& tu : units) {
-            auto full = tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename;
-            os << io::color::cyan << " " << full << io::color::reset;
-            if (not tu.module.empty()) os << " " << io::color::yellow << "[module: " << tu.module << "]" << io::color::reset;
-            if (tu.has_main) os << " " << io::color::green << "[main]" << io::color::reset;
-            if (tu.is_test) os << " " << io::color::magenta << "[TEST]" << io::color::reset;
-            if (tu.dependency_level >= 0) os << " " << io::color::gray << "level=" << tu.dependency_level << io::color::reset;
+        for (const auto& unit : inventory.units) {
+            os << io::color::cyan << " " << unit.path << io::color::reset;
+            if (not unit.module.empty()) os << " " << io::color::yellow << "[module: " << unit.module << "]" << io::color::reset;
+            if (unit.has_main) os << " " << io::color::green << "[main]" << io::color::reset;
+            if (unit.is_test) os << " " << io::color::magenta << "[TEST]" << io::color::reset;
+            if (unit.level >= 0) os << " " << io::color::gray << "level=" << unit.level << io::color::reset;
             os << "\n";
-            if (not tu.imports.empty()) {
+            if (not unit.imports.empty()) {
                 os << io::color::gray << "   imports: ";
-                for (std::size_t i = 0; i < tu.imports.size(); ++i) {
+                for (std::size_t i = 0; i < unit.imports.size(); ++i) {
                     if (i) os << ", ";
-                    os << tu.imports[i];
+                    os << unit.imports[i];
                 }
                 os << io::color::reset << "\n";
             }
@@ -183,5 +175,5 @@ struct sink
     }
 };
 
-} // namespace cb_console
+} // namespace cb::output::console
 

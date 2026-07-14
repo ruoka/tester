@@ -182,8 +182,8 @@ return argv
     | std::views::join_with(" "sv)
     | std::ranges::to<std::string>();
 
-// JSON string arrays: cb_jsonl::join_json_strings (transform(escape) + join_with(','))
-os << '[' << cb_jsonl::join_json_strings(values) << ']';
+// JSON string arrays: cb::output::jsonl::join_json_strings (transform(escape) + join_with(','))
+os << '[' << cb::output::jsonl::join_json_strings(values) << ']';
 ```
 
 Prefer **`views::join_with` / `ranges::to`** for delimiter joins (including **`join_argv`**: `transform(shell_quote)` then `join_with(' ')`; **`join_json_strings`**: `transform(quote)` then `join_with(',')`). Use **`fold_left`** only when accumulation is not a plain per-element transform + join (e.g. **`collapse_whitespace`**). Not ad-hoc index loops or one-off join helpers.
@@ -216,7 +216,7 @@ Do **not** add defensive parsers or legacy upgrade paths for on-disk formats tha
 
 **CB flag argv** — store toolchain flags as `string_list` (`compile_flags`, `link_flags`, `cpp_flags`, `module_flags`); argv builders extend lists with `append_range` (literal groups as `string_list{…}`). Parse external flag **text** only at boundaries (`cb::detail::parse_external_flag_text` in `main` for `--compile-flags` / `--link-flags`; same helper when diffing serialized profile `compile`/`cpp` fields). Serialize lists to the object-cache profile with `detail::flags_profile_string` (`views::join_with(' ')` + `ranges::to<std::string>`). Parse with `collapse_whitespace` then `views::split(' ')` + `filter` non-empty + `ranges::to<string_list>` — symmetric with the writer; not full POSIX shell word-splitting (C++26 `split_when` would cover predicate delimiters without the collapse step).
 
-**`cb.c++` namespaces** — `cb::jsonl` owns JSONL context; `cb::log` routes events that have both human and JSONL forms to `cb_jsonl::sink` or `cb_console::sink`; JSONL-only compile/link telemetry uses focused `emit_*` helpers. Shared profile-diff types and field iteration live in `namespace cb` at the top of `cb-jsonl_sink.h++` (no separate header), keeping diff computation and both sink formats aligned. `cb::detail` is for compute helpers (`shell_quote`, `join_argv`, profile/flag parsing, path/TU scan); `cb::translation_unit` and `cb::build_system` at top level; anonymous namespace + `main` for CLI argv parsing only.
+**`cb.c++` namespaces** — `cb::jsonl` owns JSONL context; `cb::log` routes events that have both human and JSONL forms to `cb::output::jsonl::sink` or `cb::output::console::sink`; JSONL-only compile/link telemetry uses focused `emit_*` helpers. Shared profile-diff and source-inventory models live in `cb-output.h++` under `cb::output`. Both sinks expose the same `error`, `source_list`, `profile_changed`, `cache_status`, and `cache_invalidate_end` APIs; channel-specific formatting/telemetry stays in its sink. `cb::detail` is for compute helpers (`shell_quote`, `join_argv`, profile/flag parsing, path/TU scan); `cb::translation_unit` and `cb::build_system` at top level; anonymous namespace + `main` for CLI argv parsing only.
 
 **When custom code is fine** — topological sort, module graph walks, percent-encoding, and domain-specific cache logic. Do not reimplement `set_difference`, substring search, map membership, or **delimiter-join loops** by hand.
 

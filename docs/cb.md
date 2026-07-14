@@ -221,7 +221,7 @@ Cache indexes are written through a checked temporary file and atomically rename
 
 **Invalidate indexes:** `./tools/CB.sh debug cache invalidate` removes `object-cache.txt`, `executable-cache.txt`, and `compiler-version.txt` only — lighter than `clean`; artifacts in `obj/` / `pcm/` remain. JSONL: `cache_invalidate_end`.
 
-**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job) — `profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `cache_invalidate`, `profile_change`, `cache_status`.
+**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job) — `profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `source_list`, `compile_failure`, `link_failure`, `test_link_failure`, `implementation_pcm`, `test_lifecycle`, `cache_invalidate`, `profile_change`, `cache_status`.
 
 **Optional follow-up:** `cache prune` for disk/orphan cleanup — backlog only; see [tester-improvements.md §4.4](tester-improvements.md#44-cache-maintenance-optional--add-if-operational-issues-appear).
 
@@ -268,12 +268,13 @@ Example `profile_diff` fragment:
 
 | File | Role |
 |------|------|
-| `cb-jsonl_sink.h++` | `namespace cb` — shared `object_cache_profile_diff` types; `namespace cb_jsonl` — JSONL event serialization (`write_profile_diff`, `sink::profile_changed`, `cache_status`, …) |
-| `cb-console_sink.h++` | Human formatting (`format_profile_diff`, `sink::profile_changed`, `cache_status`, …) |
+| `cb-output.h++` | Shared `cb::output` models (`object_cache_profile_diff`, `source_inventory`) and profile-field iteration |
+| `cb-jsonl_sink.h++` | `cb::output::jsonl` event serialization (`write_profile_diff`, lifecycle telemetry, `source_list`, …) |
+| `cb-console_sink.h++` | `cb::output::console` human formatting (`format_profile_diff`, `source_list`, …) |
 | `cb::log` (in `cb.c++`) | Routes events that have both human and JSONL forms; suppresses human `log::info` when JSONL is on |
 | `cb::detail` | Domain compute only (profile parse/diff, flag token diff) — not presentation |
 
-`build_system` gathers facts; `cb::log` picks the channel for dual-format events; JSONL-only compile/link lifecycle helpers emit telemetry directly. Each sink owns how its output looks. Shared profile field iteration keeps diff computation and both sink formats aligned when fields are added.
+`build_system` gathers facts; `cb::log` picks the channel for dual-format events; JSONL-only compile/link lifecycle helpers emit telemetry directly. Both sinks consume the same source inventory and cache-event signatures while retaining channel-specific `format_*` and `write_*` helpers. Shared profile field iteration keeps diff computation and both sink formats aligned when fields are added.
 
 ### Ranges idioms (`cb.c++`)
 
