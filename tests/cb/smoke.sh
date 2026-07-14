@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CB smoke tests: object-cache profile, cache_hit, flag_change via JSONL compile_end.
+# CB smoke tests: object-cache profile, cache_hit, profile_change via JSONL compile_end.
 #
 # Usage:
 #   ./tests/cb/smoke.sh [--jsonl] [--case NAME]
@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, cache_invalidate, flag_change, cache_status"
+      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, cache_invalidate, profile_change, cache_status"
       exit 0
       ;;
     *)
@@ -49,8 +49,9 @@ test_profile_header() {
   run_cb_build "${work_dir}"
   cache_file="$(object_cache_path "${work_dir}")"
   assert_profile_header "${cache_file}"
-  assert_profile_contains "${cache_file}" 'format=cb-object-cache-v2' "profile_format_v2"
+  assert_profile_contains "${cache_file}" 'format=cb-object-cache-v3' "profile_format_v3"
   assert_profile_contains "${cache_file}" $'\tstd_cppm=' "profile_std_cppm"
+  assert_profile_contains "${cache_file}" '@' "profile_std_cppm_sig"
   assert_profile_contains "${cache_file}" $'\tcxx=' "profile_cxx"
   assert_profile_contains "${cache_file}" $'\tcxx_sig=' "profile_cxx_sig"
   assert_profile_contains "${cache_file}" $'\tclang_ver=' "profile_clang_ver"
@@ -70,7 +71,7 @@ test_cache_hit() {
 
   run_cb_build "${work_dir}"
   assert_compile_cache_hits 1 "second_build_cache_hit"
-  assert_jsonl_not_contains '"rebuild_reason":"flag_change"' "no_flag_change"
+  assert_jsonl_not_contains '"rebuild_reason":"profile_change"' "no_profile_change"
   end_case cache_hit
 }
 
@@ -130,9 +131,9 @@ test_cache_invalidate() {
   end_case cache_invalidate
 }
 
-test_flag_change() {
-  should_run flag_change || return 0
-  begin_case flag_change
+test_profile_change() {
+  should_run profile_change || return 0
+  begin_case profile_change
   local work_dir first_jsonl
   work_dir="$(prepare_work_dir)"
 
@@ -142,14 +143,14 @@ test_flag_change() {
 
   run_cb_build "${work_dir}" --compile-flags -DCB_SMOKE_FLAG=1
   assert_jsonl_contains '"type":"profile_changed"' "profile_changed_event"
-  assert_jsonl_contains '"reason":"flag_change"' "profile_changed_reason"
+  assert_jsonl_contains '"reason":"profile_change"' "profile_changed_reason"
   assert_jsonl_contains '"profile_diff"' "profile_diff_present"
   assert_jsonl_contains '"compile"' "profile_diff_compile_field"
   assert_jsonl_contains 'DCB_SMOKE_FLAG=1' "profile_diff_added_flag"
-  assert_jsonl_contains '"rebuild_reason":"flag_change"' "compile_end_flag_change"
+  assert_jsonl_contains '"rebuild_reason":"profile_change"' "compile_end_profile_change"
   assert_compile_end_has_no_profile_diff
-  assert_jsonl_contains '"cache_hit":false' "recompile_after_flag_change"
-  end_case flag_change
+  assert_jsonl_contains '"cache_hit":false' "recompile_after_profile_change"
+  end_case profile_change
 }
 
 test_cache_status() {
@@ -162,7 +163,7 @@ test_cache_status() {
   run_cb_cache_status "${work_dir}"
   assert_jsonl_contains '"type":"cache_status"' "cache_status_event"
   assert_jsonl_contains '"profile_match":true' "cache_status_profile_match"
-  assert_jsonl_contains 'format=cb-object-cache-v2' "cache_status_current_profile"
+  assert_jsonl_contains 'format=cb-object-cache-v3' "cache_status_current_profile"
   end_case cache_status
 }
 
@@ -178,7 +179,7 @@ main() {
   test_link_cache_hit
   test_compile_start
   test_cache_invalidate
-  test_flag_change
+  test_profile_change
   test_cache_status
 
   local end_ms duration_ms passed

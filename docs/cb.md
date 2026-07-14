@@ -194,9 +194,9 @@ Environment variables for **bootstrap** (not test output): `LLVM_PATH`, `CXX`, `
 
 ## Object cache profile
 
-`build-<os>-<config>/cache/object-cache.txt` starts with a readable **profile header** (not a hash). CB compares the full profile string on load; a mismatch clears the in-memory object cache and sets `rebuild_reason: "flag_change"` on every recompiled TU.
+`build-<os>-<config>/cache/object-cache.txt` starts with a readable **profile header** (not a hash). CB compares the full profile string on load; a mismatch clears the in-memory object cache and sets `rebuild_reason: "profile_change"` on every recompiled TU.
 
-**Format:** `format=cb-object-cache-v2` (tab-separated `key=value` fields after the `profile\t` prefix).
+**Format:** `format=cb-object-cache-v3` (tab-separated `key=value` fields after the `profile\t` prefix).
 
 | Field | Meaning |
 |-------|---------|
@@ -206,7 +206,7 @@ Environment variables for **bootstrap** (not test output): `LLVM_PATH`, `CXX`, `
 | `cxx` | Resolved `clang++` path (`LLVM_CXX` / `CXX` override or `llvm/bin/clang++`) |
 | `cxx_sig` | Compiler binary `size:mtime_ns` (detects toolchain binary swaps) |
 | `clang_ver` | First line of `clang++ --version` (probed once per CB run via `std::system`, written to `cache/compiler-version.txt`, read with `std::ifstream`) |
-| `std_cppm` | Canonical path to `std.cppm` |
+| `std_cppm` | Canonical path to `std.cppm` with content signature (`path@size:mtime_ns`) |
 | `compile` / `cpp` | Effective compile / per-TU C++ flags (includes `--compile-flags`) |
 
 Legacy caches without a `profile\t` header still load; the header is rewritten on the next save. Bumping `format` or adding fields intentionally invalidates old caches once.
@@ -219,7 +219,7 @@ Legacy caches without a `profile\t` header still load; the header is rewritten o
 
 **Invalidate indexes:** `./tools/CB.sh debug cache invalidate` removes `object-cache.txt`, `executable-cache.txt`, and `compiler-version.txt` only — lighter than `clean`; artifacts in `obj/` / `pcm/` remain. JSONL: `cache_invalidate_end`.
 
-**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job) — `profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `cache_invalidate`, `flag_change`, `cache_status`.
+**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job) — `profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `cache_invalidate`, `profile_change`, `cache_status`.
 
 **Optional follow-up:** `cache prune` for disk/orphan cleanup — backlog only; see [tester-improvements.md §4.4](tester-improvements.md#44-cache-maintenance-optional--add-if-operational-issues-appear).
 
@@ -234,8 +234,8 @@ Full event reference and triage workflow: [AGENTS.md](../AGENTS.md).
 Useful compile/link fields for debugging stale builds:
 
 - `compile_start` / `compile_end` — paired per TU. `compile_end.duration_ms` is wall time from compile start to finish (0 on cache hit). `rebuild_reason` appears on `compile_start` when recompiling and on `compile_end` when `cache_hit: false`.
-- `profile_changed` — emitted **once** when the profile header mismatches (`reason: "flag_change"`, optional `profile_diff`). Scalars use `{"old":"…","new":"…"}`; `compile` / `cpp` use `{"added":[…],"removed":[…]}` (sorted token diff via `std::ranges::set_difference` on shell words).
-- `cache_hit: false` + `rebuild_reason: "flag_change"` on each recompiled TU — correlate with the single `profile_changed` event for the diff.
+- `profile_changed` — emitted **once** when the profile header mismatches (`reason: "profile_change"`, optional `profile_diff`). Scalars use `{"old":"…","new":"…"}`; `compile` / `cpp` use `{"added":[…],"removed":[…]}` (sorted token diff via `std::ranges::set_difference` on shell words).
+- `cache_hit: false` + `rebuild_reason: "profile_change"` on each recompiled TU — correlate with the single `profile_changed` event for the diff.
 - `link_end` — per executable after link or skip (`executable_path`, `cache_hit`, `ok`, `duration_ms`). Skipped links emit `cache_hit: true` with `duration_ms: 0`.
 - `cache_hit: false` + `rebuild_reason: "pcm_stale:tester:assertions"` — transitive PCM invalidation; rebuilds test objects when assertion templates change
 - `rebuild_reason: "source_stale"` — TU source newer than cached object
@@ -243,7 +243,7 @@ Useful compile/link fields for debugging stale builds:
 Example `profile_diff` fragment:
 
 ```json
-"rebuild_reason": "flag_change",
+"rebuild_reason": "profile_change",
 "profile_diff": {
   "compile": { "added": ["-DCB_SMOKE_FLAG=1"], "removed": [] }
 }
