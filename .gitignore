@@ -27,3 +27,12 @@ Makefile.deps
 # Captured build/test output (local debug artifacts)
 *.jsonl
 *.log
+
+###############################################################################
+# IDE and Editor Files
+###############################################################################
+
+# Visual Studio Code
+.vscode/
+.vscode-test/
+.cursor/
