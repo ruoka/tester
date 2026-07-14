@@ -47,7 +47,7 @@ The project includes a VS Code devcontainer configuration. Simply open the proje
 
 ## Code Style
 
-The project follows the [C++ Core Guidelines](https://github.com/isocpp/CppCoreGuidelines/blob/master/CppCoreGuidelines.md) for code style and best practices, with the following exception:
+The project follows the [C++ Core Guidelines](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines) for code style and best practices, with the following exceptions:
 
 **Naming Convention:**
 - **All identifiers use `snake_case`** (including class names, functions, variables, etc.)
@@ -62,10 +62,10 @@ The project follows the [C++ Core Guidelines](https://github.com/isocpp/CppCoreG
 - Follow P1204R0 module organization guidelines
 - Keep modules focused and well-documented
 - Refer to the C++ Core Guidelines for:
-  - [Functions](https://github.com/isocpp/CppCoreGuidelines/blob/master/CppCoreGuidelines.md#s-functions)
-  - [Classes and class hierarchies](https://github.com/isocpp/CppCoreGuidelines/blob/master/CppCoreGuidelines.md#s-class)
-  - [Resource management](https://github.com/isocpp/CppCoreGuidelines/blob/master/CppCoreGuidelines.md#s-resource)
-  - [Error handling](https://github.com/isocpp/CppCoreGuidelines/blob/master/CppCoreGuidelines.md#s-errors)
+  - [Functions](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#S-functions)
+  - [Classes and class hierarchies](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#S-class)
+  - [Resource management](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#S-resource)
+  - [Error handling](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#S-errors)
   - And other sections as applicable
 
 ## Module Organization

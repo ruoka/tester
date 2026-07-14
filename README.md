@@ -59,7 +59,7 @@ Most test frameworks assume headers, macros, and a separate build system. Tester
 - **Machine-readable output** — JSONL on stdout for agents, dashboards, and CI triage
 - **Built-in builder** — CB resolves module dependencies, caches incrementally, and compiles in parallel
 
-Tester embeds as a git submodule (`deps/tester`) in larger projects. For a public multi-module consumer using tester and CB, see [YarDB](https://github.com/ruoka/YarDB). Framework contract tests live in `tester/*.test.c++` under the `[self]` tag. The `examples/` directory holds demos — some intentionally fail to show assertion output.
+Tester embeds as a git submodule (`deps/tester`) in larger projects. For a public multi-module consumer using tester and CB, see [YarDB](https://github.com/ruoka/YarDB). Framework contract tests live in `tester/*.test.c++` under the `[self]` tag. The `examples/` directory holds demos; assertion-failure showcases use the hidden tag `[.demo]` (excluded from default runs — use `--tags=[.demo]` to execute them).
 
 ## Quick Start
 
@@ -354,7 +354,7 @@ Test runner output is configured via CLI options, not environment variables.
 ```
 tester/
 ├── tester/              # Framework modules + [self] contract tests (*.test.c++)
-├── examples/            # Sample tests & demos (some intentional failures)
+├── examples/            # Sample tests & demos ([.demo] = hidden intentional failures)
 ├── tools/
 │   ├── cb.c++           # C++ Builder (single-file build system)
 │   ├── CB.sh            # Per-repo bootstrap wrapper

@@ -27,9 +27,9 @@ Use **`--jsonl`**. Parse **stdout only** (one JSON object per line, `schema: "te
 
 **Tag syntax:** bracket tags must be escaped in shell: `--tags='\[self\]'`. Substring/regex filters also work: `--tags='Test case 3'`.
 
-**Hidden tags:** bracket tags starting with `.` (Catch2-style, e.g. `[.jsonl-probe]`) are **skipped on unfiltered runs**. Select explicitly: `--tags='\[.jsonl-probe\]'`.
+**Hidden tags:** bracket tags starting with `.` (Catch2-style, e.g. `[.demo]`, `[.jsonl-probe]`) are **skipped on unfiltered runs**. Select explicitly: `--tags='\[.demo\]'`.
 
-**Scoped runs:** Prefer `--tags='\[self\]'` for framework work. An unfiltered run includes `examples/` demos — several **intentionally fail** to show assertion output; do not expect `summary.passed: true` on the full suite.
+**Scoped runs:** Prefer `--tags='\[self\]'` for framework work. Unfiltered standalone `./tools/CB.sh debug test` should report `summary.passed: true` — intentional failure demos in `examples/` use `[.demo]` (hidden unless requested).
 
 **Embedded in a parent repo** (fixer, YarDB, net, xson): the parent's `AGENTS.md` applies — scope with the parent project's tags (`[fixer]`, `[yardb]`, etc.), not `[self]`. See [docs/cb.md](docs/cb.md).
 
@@ -125,7 +125,7 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 
 ## C++ style (`tools/` and `tester/`)
 
-Prefer the **standard library** over hand-rolled loops and iterator idioms. The project targets **C++23**.
+Prefer the **standard library** over hand-rolled loops and iterator idioms. The project targets **C++23**. Follow [C++ Core Guidelines](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines) for best practices except project naming/style — see [CONTRIBUTING.md — Code Style](CONTRIBUTING.md#code-style).
 
 ### Implementation policy (standard C++ only)
 
@@ -169,32 +169,43 @@ std::ranges::sort(tokens);
 std::ranges::set_difference(new_tokens, old_tokens, std::back_inserter(added));
 ```
 
-**Joining / formatting** — do **not** use index loops (`for (i = 0; i < n; ++i)` + delimiter checks). Use `std::ranges::fold_left` (C++23) or a small shared helper built on it:
+**Joining / formatting** — do **not** use index loops (`for (i = 0; i < n; ++i)` + delimiter checks). For plain `string_list` joins (no empty elements), use **`std::views::join_with`** + **`std::ranges::to<std::string>`**. Use **`std::ranges::fold_left`** only when each element needs transformation:
 
 ```cpp
-// shell command: join_argv → invoke_shell (sole system() boundary)
-return std::ranges::fold_left(argv, std::string{}, [](std::string cmd, const std::string& arg) {
-    if (not cmd.empty()) cmd.push_back(' ');
-    cmd += shell_quote(arg);
-    return cmd;
-});
+// string_list → delimited text (flags, diff summaries)
+return flags | std::views::join_with(" "sv) | std::ranges::to<std::string>();
 
-// human-readable lists: ", " or "; " between items
-return join_with(parts, ", "sv);   // join_with itself is fold_left
+// shell command: quote each arg, then join (non-empty argv — contract at invoke_shell)
+return argv
+    | std::views::transform([](const std::string& arg) { return shell_quote(arg); })
+    | std::views::join_with(" "sv)
+    | std::ranges::to<std::string>();
 
-// JSON string arrays: cb_jsonl::join_json_strings (fold_left + escape)
+// JSON string arrays: cb_jsonl::join_json_strings (transform(escape) + join_with(','))
 os << '[' << cb_jsonl::join_json_strings(values) << ']';
 ```
 
-Prefer **one** reusable `join_with` / `join_json_strings` over per-call-site index loops. C++26 `std::views::join_with` may replace some of this later; until then, `fold_left` is the standard pattern.
+Prefer **`views::join_with` / `ranges::to`** for delimiter joins (including **`join_argv`**: `transform(shell_quote)` then `join_with(' ')`; **`join_json_strings`**: `transform(quote)` then `join_with(',')`). Use **`fold_left`** only when accumulation is not a plain per-element transform + join (e.g. **`collapse_whitespace`**). Not ad-hoc index loops or one-off join helpers.
 
-**Splitting / parsing** — prefer `std::views::split` + `std::views::transform` for delimited fields CB owns (e.g. object-cache profile `key=value` tabs). Pair with symmetric read/write helpers (`append_profile_field` / `parse_profile_field`), not ad-hoc parsers with silent `continue` on every segment:
+**Splitting / parsing** — prefer **`std::views::split`** + **`std::views::transform`** + **`std::ranges::to<Container>`** for delimited fields CB owns. Pair with symmetric read/write helpers (`append_profile_field` / `parse_profile_field`), not ad-hoc parsers with silent `continue` on every segment:
 
 ```cpp
-for (std::string_view segment :
-     profile | std::views::split('\t') | std::views::transform([](auto&& part) { return view_from(part); }))
-    fields.emplace(parse_profile_field(segment));
+// external flag text → string_list (collapse whitespace, drop empty tokens)
+return normalized
+    | std::views::split(' ')
+    | std::views::transform([](auto&& part) { return std::string_view{part}; })
+    | std::views::filter([](std::string_view t) { return not t.empty(); })
+    | std::views::transform([](std::string_view t) { return std::string{t}; })
+    | std::ranges::to<string_list>();
+
+// object-cache profile → flat_map (split on tab; key/value on first '=' only)
+return profile
+    | std::views::split('\t')
+    | std::views::transform([](auto&& part) { return parse_profile_field(std::string_view{part}); })
+    | std::ranges::to<profile_fields>();
 ```
+
+`parse_profile_field` uses **`string_view::find('=')`** (first delimiter only) — not `views::split('=')` — because profile values such as `compile` may contain `=`.
 
 **Object-cache profile values** — tab-delimited `key=value` fields; values are stored verbatim (no percent-encoding). Invariant: values CB writes must not contain `'\t'`, `'\n'`, `'\r'`, or `'%'` (paths, flag lists, version lines satisfy this). For two-field cache entry lines (`path\tticks`), `string_view::find('\t')` is fine — no view pipeline needed.
 
@@ -202,7 +213,7 @@ Do **not** add defensive parsers or legacy upgrade paths for on-disk formats tha
 
 **Subprocess I/O** — see [Implementation policy](#implementation-policy-standard-c-only) above. All toolchain commands go through `invoke_shell(argv)`; probes/self-tests use stamp/temp file + `std::ifstream`. Test env uses `putenv` + `invoke_shell` (not shell env prefixes). Never `popen` / `fork` / `exec`.
 
-**CB flag argv** — store toolchain flags as `string_list` (`compile_flags`, `link_flags`, `cpp_flags`, `module_flags`); argv builders use `detail::append_argv`. Parse external flag **text** only at boundaries (`cb::detail::parse_external_flag_text` in `main` for `--compile-flags` / `--link-flags`; same helper when diffing serialized profile `compile`/`cpp` fields). Serialize lists to the object-cache profile with `detail::flags_profile_string` (`join_with` on `' '`). Parse with `collapse_whitespace` then `views::split(' ')` + `filter` non-empty — symmetric with the writer; not full POSIX shell word-splitting (C++26 `split_when` would cover predicate delimiters without the collapse step).
+**CB flag argv** — store toolchain flags as `string_list` (`compile_flags`, `link_flags`, `cpp_flags`, `module_flags`); argv builders extend lists with `append_range` (literal groups as `string_list{…}`). Parse external flag **text** only at boundaries (`cb::detail::parse_external_flag_text` in `main` for `--compile-flags` / `--link-flags`; same helper when diffing serialized profile `compile`/`cpp` fields). Serialize lists to the object-cache profile with `detail::flags_profile_string` (`views::join_with(' ')` + `ranges::to<std::string>`). Parse with `collapse_whitespace` then `views::split(' ')` + `filter` non-empty + `ranges::to<string_list>` — symmetric with the writer; not full POSIX shell word-splitting (C++26 `split_when` would cover predicate delimiters without the collapse step).
 
 **`cb.c++` namespaces** — `cb::jsonl` / `cb::log` for I/O; `cb::detail` for free-function helpers (`shell_quote`, `join_argv`, profile/flag parsing, path/TU scan utilities); `cb::translation_unit` and `cb::build_system` at top level; anonymous namespace + `main` for CLI argv parsing only.
 
@@ -213,10 +224,11 @@ Do **not** add defensive parsers or legacy upgrade paths for on-disk formats tha
 - Infer pass/fail from exit code alone — read `summary.passed` or `run_end.passed`
 - Parse stderr as structured JSONL
 - Use an unfiltered full-suite run as the default fix loop — scope with `--tags='\[self\]'` for framework work
-- Expect `summary.passed: true` on the full suite — `examples/` includes intentional failures
+- Expect `summary.passed: true` on standalone `./tools/CB.sh debug test` (demo failures are `[.demo]` hidden tags)
 - Run `[.tag]` probe fixtures unless explicitly selected (they are hidden by default)
-- Use index loops to join/format delimited strings — use `ranges::fold_left` or shared `join_with` / `join_json_strings`
+- Use index loops to join/format delimited strings — use `std::views::join_with` + `std::ranges::to<std::string>`, `std::ranges::fold_left` (when fold state is not transform-then-join), or `join_json_strings`
 - Multiply one-off helper functions when a std algorithm or existing join helper already covers the case
+- Reimplement std join/parse/search when this section already covers the case
 
 ## More detail
 

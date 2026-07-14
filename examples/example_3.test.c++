@@ -11,7 +11,7 @@ using namespace std::literals;
 
 auto feature()
 {
-    scenario("Test case 3") = []
+    scenario("Test case 3 [.demo]") = []
     {
         given("Simple test to verify assertions") = [] 
         {

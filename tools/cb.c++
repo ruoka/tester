@@ -123,19 +123,13 @@ namespace detail {
 
 inline std::string shell_quote(std::string_view arg)
 {
-    // POSIX shell single-quote escaping: ' -> '\''
-    auto out = std::string{};
-    out.reserve(arg.size() + 2);
-    out.push_back('\'');
-    for(const char ch : arg)
-    {
-        if(ch == '\'')
-            out.append("'\\''");
-        else
-            out.push_back(ch);
-    }
-    out.push_back('\'');
-    return out;
+    // POSIX: wrap in single quotes; internal ' becomes '\'' (split/join idiom).
+    const auto inner = arg
+        | std::views::split('\'')
+        | std::views::transform([](auto&& part) { return std::string_view{part}; })
+        | std::views::join_with("'\\''"sv)
+        | std::ranges::to<std::string>();
+    return std::string{'\''} + inner + '\'';
 }
 
 inline std::string_view config_name(build_config cfg)
@@ -161,85 +155,52 @@ inline std::string_view unit_kind_name(unit_kind kind)
     return "unknown";
 }
 
-inline std::string_view view_from(auto&& part)
-{
-    return std::string_view{part};
-}
-
 // Collapse any isspace run to a single space; trim leading/trailing whitespace.
 inline std::string collapse_whitespace(std::string_view text)
 {
-    return std::ranges::fold_left(
+    auto out = std::ranges::fold_left(
         text,
         std::string{},
-        [](std::string out, const char ch) {
+        [](std::string acc, const char ch) {
             if(std::isspace(static_cast<unsigned char>(ch)) != 0)
             {
-                if(not out.empty() && out.back() != ' ')
-                    out += ' ';
+                if(not acc.empty() && acc.back() != ' ')
+                    acc += ' ';
             }
             else
-                out += ch;
-            return out;
+                acc += ch;
+            return acc;
         });
+    if(not out.empty() && out.back() == ' ')
+        out.pop_back();
+    return out;
 }
 
 // Parse external flag text only (CLI --compile-flags, object-cache profile fields).
 // CB stores flags as string_list; this runs at text boundaries, not in argv builders.
-// Symmetric with flags_profile_string (join_with on ' '); not POSIX shell parsing.
+// Symmetric with flags_profile_string (views::join_with on ' '); not POSIX shell parsing.
 inline string_list parse_external_flag_text(std::string_view text)
 {
     const auto normalized = collapse_whitespace(text);
-    auto tokens = string_list{};
-    for(std::string_view token :
-        normalized | std::views::split(' ')
-                   | std::views::transform([](auto&& part) { return view_from(part); })
-                   | std::views::filter([](std::string_view t) { return not t.empty(); }))
-        tokens.emplace_back(token);
-    return tokens;
-}
-
-inline void append_argv(string_list& argv, const string_list& tokens)
-{
-    argv.insert(argv.end(), tokens.begin(), tokens.end());
-}
-
-inline void append_argv(string_list& argv, std::initializer_list<std::string_view> tokens)
-{
-    for(const auto token : tokens)
-        argv.emplace_back(token);
-}
-
-template<std::ranges::input_range R>
-inline std::string join_with(R&& items, std::string_view sep)
-{
-    return std::ranges::fold_left(
-        std::forward<R>(items),
-        std::string{},
-        [sep](std::string out, const auto& item) {
-            if(not out.empty())
-                out += sep;
-            out += item;
-            return out;
-        });
+    return normalized
+        | std::views::split(' ')
+        | std::views::transform([](auto&& part) { return std::string_view{part}; })
+        | std::views::filter([](std::string_view t) { return not t.empty(); })
+        | std::views::transform([](std::string_view t) { return std::string{t}; })
+        | std::ranges::to<string_list>();
 }
 
 inline std::string flags_profile_string(const string_list& flags)
 {
-    return join_with(flags, " "sv);
+    return flags | std::views::join_with(" "sv) | std::ranges::to<std::string>();
 }
 
 inline std::string join_argv(const string_list& argv)
 {
-    return std::ranges::fold_left(
-        argv,
-        std::string{},
-        [](std::string cmd, const std::string& arg) {
-            if(not cmd.empty())
-                cmd.push_back(' ');
-            cmd += shell_quote(arg);
-            return cmd;
-        });
+    return argv
+        | std::views::transform([](const std::string& arg) { return shell_quote(arg); })
+        | std::views::join_with(" "sv)
+        | std::ranges::to<std::string>();
 }
 
 using profile_fields = std::flat_map<std::string, std::string, std::less<>>;
@@ -264,15 +225,10 @@ inline std::pair<std::string, std::string> parse_profile_field(std::string_view 
 
 inline profile_fields parse_object_cache_profile_fields(std::string_view profile)
 {
-    auto fields = profile_fields{};
-    for(std::string_view segment :
-        profile | std::views::split('\t')
-                | std::views::transform([](auto&& part) { return view_from(part); }))
-    {
-        auto [key, value] = parse_profile_field(segment);
-        fields.emplace(std::move(key), std::move(value));
-    }
-    return fields;
+    return profile
+        | std::views::split('\t')
+        | std::views::transform([](auto&& part) { return parse_profile_field(std::string_view{part}); })
+        | std::ranges::to<profile_fields>();
 }
 
 inline profile_token_change diff_profile_tokens(std::string_view old_text, std::string_view new_text)
@@ -332,7 +288,9 @@ inline std::string format_token_list(const string_list& tokens, std::size_t max_
     if(tokens.empty())
         return {};
 
-    auto out = join_with(tokens | std::views::take(max_tokens), ", "sv);
+    const auto count = std::min(tokens.size(), max_tokens);
+    const string_list head{tokens.begin(), tokens.begin() + static_cast<std::ptrdiff_t>(count)};
+    auto out = head | std::views::join_with(", "sv) | std::ranges::to<std::string>();
     if(tokens.size() > max_tokens)
         out += ", ... (" + std::to_string(tokens.size() - max_tokens) + " more)";
     return out;
@@ -348,7 +306,7 @@ inline std::string format_token_change_summary(std::string_view name, const prof
     if(parts.empty())
         return {};
 
-    return std::string{name} + ": " + join_with(parts, ", "sv);
+    return std::string{name} + ": " + (parts | std::views::join_with(", "sv) | std::ranges::to<std::string>());
 }
 
 inline std::string format_profile_diff_message(const object_cache_profile_diff& diff, std::size_t max_tokens = 8)
@@ -377,7 +335,7 @@ inline std::string format_profile_diff_message(const object_cache_profile_diff& 
             parts.push_back(std::move(summary));
     }
 
-    return join_with(parts, "; "sv);
+    return parts | std::views::join_with("; "sv) | std::ranges::to<std::string>();
 }
 
 inline const suffix_list supported_suffixes = {
@@ -390,10 +348,13 @@ inline const suffix_list supported_suffixes = {
     ".cpp"
 };
 
-inline std::string make_base_name(std::string_view filename) {
-    for (const auto& suffix : supported_suffixes)
-        if (filename.ends_with(suffix))
-            return std::string{filename.substr(0, filename.size() - suffix.size())};
+inline std::string make_base_name(std::string_view filename)
+{
+    const auto suffix = std::ranges::find_if(supported_suffixes, [&](std::string_view s) {
+        return filename.ends_with(s);
+    });
+    if(suffix != supported_suffixes.end())
+        return std::string{filename.substr(0, filename.size() - suffix->size())};
     return std::string{filename};
 }
 
@@ -538,14 +499,15 @@ private:
     inline static const std::regex using_namespace_regex{R"(\busing\s+namespace\b)"};
 };
 
-inline bool translation_unit::match_supported_suffix(std::string_view filename, std::string& out_suffix) {
-    for (const auto& suffix : detail::supported_suffixes) {
-        if (filename.ends_with(suffix)) {
-            out_suffix.assign(suffix.data(), suffix.size());
-            return true;
-        }
-    }
-    return false;
+inline bool translation_unit::match_supported_suffix(std::string_view filename, std::string& out_suffix)
+{
+    const auto suffix = std::ranges::find_if(detail::supported_suffixes, [&](const std::string& s) {
+        return filename.ends_with(s);
+    });
+    if(suffix == detail::supported_suffixes.end())
+        return false;
+    out_suffix.assign(suffix->data(), suffix->size());
+    return true;
 }
 
 namespace detail {
@@ -836,7 +798,7 @@ private:
             compile_flags.push_back("-I" + llvm_prefix + "/include/c++/v1");
         else
         {
-            detail::append_argv(compile_flags, {
+            compile_flags.append_range(string_list{
                 "-nostdinc++",
                 "-isystem",
                 llvm_prefix + "/include/c++/v1",
@@ -847,18 +809,18 @@ private:
 
         if(config == build_config::release)
         {
-            detail::append_argv(compile_flags, {"-O3", "-DNDEBUG"});
+            compile_flags.append_range(string_list{"-O3", "-DNDEBUG"});
             log::info("Building RELEASE configuration"s + (static_link ? " (static C++ stdlib)"s : ""s));
         }
         else
         {
-            detail::append_argv(compile_flags, {"-O0", "-g3"});
+            compile_flags.append_range(string_list{"-O0", "-g3"});
             log::info("Building DEBUG configuration"s + (static_link ? " (static C++ stdlib)"s : ""s));
         }
 
         if(cb::jsonl::enabled())
         {
-            detail::append_argv(compile_flags, {
+            compile_flags.append_range(string_list{
                 "-fno-caret-diagnostics",
                 "-fno-show-column",
                 "-fno-show-source-location",
@@ -930,13 +892,13 @@ private:
 
         if(not extra_link_flag_tokens.empty())
         {
-            detail::append_argv(link_flags, extra_link_flag_tokens);
+            link_flags.append_range(extra_link_flag_tokens);
             log::info("Added extra linker flags: "s + detail::flags_profile_string(extra_link_flag_tokens));
         }
 
         if(not extra_compile_flag_tokens.empty())
         {
-            detail::append_argv(compile_flags, extra_compile_flag_tokens);
+            compile_flags.append_range(extra_compile_flag_tokens);
             log::info("Added extra compile flags: "s + detail::flags_profile_string(extra_compile_flag_tokens));
         }
 
@@ -1061,7 +1023,7 @@ private:
     // General Utilities
     // ============================================================================
 
-    // Sole shell boundary: argv is the source of truth; join_argv + system() only here.
+    // Sole shell boundary: argv is non-empty (contract); join_argv quotes each element with join_with.
     int invoke_shell(const string_list& argv) const
     {
         if(argv.empty())
@@ -1162,15 +1124,15 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        detail::append_argv(argv, compile_flags);
-        detail::append_argv(argv, cpp_flags);
+        argv.append_range(compile_flags);
+        argv.append_range(cpp_flags);
         return argv;
     }
 
     string_list precompile_argv(const translation_unit& tu) const
     {
         auto argv = base_compile_argv();
-        detail::append_argv(argv, module_flags);
+        argv.append_range(module_flags);
         argv.push_back(tu.full_path);
         argv.push_back("--precompile");
         argv.push_back("-o");
@@ -1182,8 +1144,8 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        detail::append_argv(argv, compile_flags);
-        detail::append_argv(argv, module_flags);
+        argv.append_range(compile_flags);
+        argv.append_range(module_flags);
         argv.push_back(tu.pcm_path);
         argv.push_back("-c");
         argv.push_back("-o");
@@ -1194,7 +1156,7 @@ private:
     string_list source_object_argv(const translation_unit& tu) const
     {
         auto argv = base_compile_argv();
-        detail::append_argv(argv, module_flags);
+        argv.append_range(module_flags);
         if (tu.kind == unit_kind::implementation_unit) {
             auto module_pcm = compute_pcm_path(tu);
             argv.push_back("-fmodule-file=" + tu.module + "=" + module_pcm);
@@ -1210,8 +1172,8 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        detail::append_argv(argv, compile_flags);
-        detail::append_argv(argv, cpp_flags);
+        argv.append_range(compile_flags);
+        argv.append_range(cpp_flags);
         argv.push_back("-nostdinc++");
         argv.push_back("-isystem");
         argv.push_back(llvm_prefix + "/include/c++/v1");
@@ -1230,7 +1192,7 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        detail::append_argv(argv, {
+        argv.append_range(string_list{
             "-std=c++23",
             "-pthread",
             "-fPIC",
@@ -1241,9 +1203,9 @@ private:
         if(os_name() == "darwin")
             argv.push_back("-fapplication-extension");
         if(config == build_config::release)
-            detail::append_argv(argv, {"-O3", "-DNDEBUG"});
+            argv.append_range(string_list{"-O3", "-DNDEBUG"});
         else
-            detail::append_argv(argv, {"-O0", "-g"});
+            argv.append_range(string_list{"-O0", "-g"});
         argv.push_back("-fno-implicit-modules");
         argv.push_back("-fno-implicit-module-maps");
         argv.push_back("-fmodule-file=std=" + std_pcm_path());
@@ -1258,14 +1220,13 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        detail::append_argv(argv, compile_flags);
-        detail::append_argv(argv, collect_module_ldflags(tu.imports));
-        detail::append_argv(argv, module_flags);
+        argv.append_range(compile_flags);
+        argv.append_range(collect_module_ldflags(tu.imports));
+        argv.append_range(module_flags);
         argv.push_back(tu.object_path);
-        for(const auto& object_path : shared_objects)
-            argv.push_back(object_path);
+        argv.append_range(shared_objects);
         argv.push_back(std_obj_path());
-        detail::append_argv(argv, link_flags);
+        argv.append_range(link_flags);
         argv.push_back("-o");
         argv.push_back(tu.executable_path);
         return argv;
@@ -1277,21 +1238,22 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        detail::append_argv(argv, compile_flags);
+        argv.append_range(compile_flags);
         if(test_runner)
-            detail::append_argv(argv, collect_module_ldflags(test_runner->imports));
+            argv.append_range(collect_module_ldflags(test_runner->imports));
         else
-            detail::append_argv(argv, collect_test_module_ldflags());
-        detail::append_argv(argv, module_flags);
+            argv.append_range(collect_test_module_ldflags());
+        argv.append_range(module_flags);
         if(not test_runner_obj.empty())
             argv.push_back(test_runner_obj);
-        for(const auto& object_path : linkable_object_paths())
-            argv.push_back(object_path);
-        for(const auto& tu : units_in_topological_order)
-            if(tu.is_test and not tu.has_main)
-                argv.push_back(tu.object_path);
+        argv.append_range(linkable_object_paths());
+        argv.append_range(
+            units_in_topological_order
+            | std::views::filter([](const translation_unit& tu) { return tu.is_test and not tu.has_main; })
+            | std::views::transform([](const translation_unit& tu) { return tu.object_path; })
+            | std::ranges::to<string_list>());
         argv.push_back(std_obj_path());
-        detail::append_argv(argv, link_flags);
+        argv.append_range(link_flags);
         argv.push_back("-o");
         argv.push_back(output_path);
         return argv;
@@ -1301,18 +1263,19 @@ private:
     {
         auto argv = string_list{};
         argv.push_back(runner);
-        for(const auto& arg : args)
-            argv.push_back(arg);
+        argv.append_range(args);
         return argv;
     }
 
     string_list collect_module_ldflags(const string_list& imp) const
     {
-        auto flags = string_list{};
-        for(const auto& m : imp)
-            if(module_ldflags.contains(m))
-                detail::append_argv(flags, detail::parse_external_flag_text(module_ldflags.at(m)));
-        return flags;
+        return std::ranges::fold_left(
+            imp | std::views::filter([&](const std::string& m) { return module_ldflags.contains(m); }),
+            string_list{},
+            [&](string_list flags, const std::string& m) {
+                flags.append_range(detail::parse_external_flag_text(module_ldflags.at(m)));
+                return flags;
+            });
     }
 
     // ============================================================================
@@ -1727,11 +1690,13 @@ private:
 
     void update_module_flags()
     {
-        for(const auto& tu : units_in_topological_order)
-        {
-            if(tu.is_modular)
-                module_flags.push_back("-fmodule-file=" + tu.module + "=" + tu.pcm_path);
-        }
+        module_flags.append_range(
+            units_in_topological_order
+            | std::views::filter([](const translation_unit& tu) { return tu.is_modular; })
+            | std::views::transform([](const translation_unit& tu) {
+                return "-fmodule-file=" + tu.module + "=" + tu.pcm_path;
+            })
+            | std::ranges::to<string_list>());
     }
 
     void compile_units() {
@@ -1772,19 +1737,12 @@ private:
     // Linking
     // ============================================================================
 
-    string_list linkable_object_paths() const {
-        auto objects = string_list{};
-        for (const auto& tu : units_in_topological_order)
-            if (not tu.has_main and not tu.is_test)
-                objects.push_back(tu.object_path);
-        return objects;
-    }
-
-    std::string collect_linkable_objects() const {
-        auto buffer = ""s;
-        for (const auto& object_path : linkable_object_paths())
-            buffer += object_path + " "s;
-        return buffer;
+    string_list linkable_object_paths() const
+    {
+        return units_in_topological_order
+            | std::views::filter([](const translation_unit& tu) { return not tu.has_main and not tu.is_test; })
+            | std::views::transform([](const translation_unit& tu) { return tu.object_path; })
+            | std::ranges::to<string_list>();
     }
 
     void link_executable(const translation_unit& tu, const string_list& shared_objects) {
@@ -1800,16 +1758,21 @@ private:
         return path + ":" + std::to_string(timestamp);
     }
 
+    std::string dependency_signatures_joined(const string_list& paths) const
+    {
+        return paths
+            | std::views::transform([&](const std::string& path) { return dependency_signature(path); })
+            | std::views::join_with("|"sv)
+            | std::ranges::to<std::string>();
+    }
+
     std::string compute_link_signature(const translation_unit& tu, const string_list& shared_objects) const {
-        auto signature = std::string{};
-        signature.reserve(256);
-        signature += dependency_signature(tu.object_path);
-        for (const auto& object_path : shared_objects) {
-            signature += "|";
-            signature += dependency_signature(object_path);
-        }
-        signature += "|";
-        signature += dependency_signature(std_obj_path());
+        auto paths = string_list{};
+        paths.push_back(tu.object_path);
+        paths.append_range(shared_objects);
+        paths.push_back(std_obj_path());
+
+        auto signature = dependency_signatures_joined(paths);
         signature += "|flags=";
         signature += detail::flags_profile_string(compile_flags);
         signature += "|link=";
@@ -1851,21 +1814,24 @@ private:
     // Test Support
     // ============================================================================
 
-    std::string collect_linkable_test_objects() const {
-        auto objects = ""s;
-        for (const auto& tu : units_in_topological_order)
-            if (tu.is_test and not tu.has_main)
-                objects += tu.object_path + " "s;
-        return objects;
+    bool has_test_runner_link_inputs(const translation_unit* test_runner) const
+    {
+        if(test_runner)
+            return true;
+        return std::ranges::any_of(units_in_topological_order, [](const translation_unit& tu) {
+            return not tu.has_main;
+        });
     }
 
     string_list collect_test_module_ldflags() const
     {
-        auto flags = string_list{};
-        for(const auto& tu : units_in_topological_order)
-            if(tu.is_test and not tu.has_main)
-                detail::append_argv(flags, collect_module_ldflags(tu.imports));
-        return flags;
+        return std::ranges::fold_left(
+            units_in_topological_order | std::views::filter([](const translation_unit& tu) { return tu.is_test and not tu.has_main; }),
+            string_list{},
+            [&](string_list flags, const translation_unit& tu) {
+                flags.append_range(collect_module_ldflags(tu.imports));
+                return flags;
+            });
     }
 
     const translation_unit* find_test_runner_unit() const
@@ -1876,32 +1842,20 @@ private:
         return it != units_in_topological_order.end() ? &*it : nullptr;
     }
 
-    std::string compute_test_runner_signature(const std::string& test_runner_path, const std::string& test_runner_obj) const {
-        auto signature = std::string{};
-        signature.reserve(512);
-        
-        // Include test_runner object if it exists
-        if (not test_runner_obj.empty()) {
-            signature += dependency_signature(test_runner_obj);
-        }
-        
-        // Include all test objects
-        for (const auto& tu : units_in_topological_order) {
-            if (tu.is_test and not tu.has_main) {
-                signature += "|";
-                signature += dependency_signature(tu.object_path);
-            }
-        }
-        
-        // Include all regular (non-main, non-test) objects
-        auto shared_objects = linkable_object_paths();
-        for (const auto& object_path : shared_objects) {
-            signature += "|";
-            signature += dependency_signature(object_path);
-        }
-        
-        signature += "|";
-        signature += dependency_signature(std_obj_path());
+    std::string compute_test_runner_signature(const translation_unit* test_runner,
+                                              const std::string& test_runner_obj) const {
+        auto paths = string_list{};
+        if(not test_runner_obj.empty())
+            paths.push_back(test_runner_obj);
+        paths.append_range(
+            units_in_topological_order
+            | std::views::filter([](const translation_unit& tu) { return tu.is_test and not tu.has_main; })
+            | std::views::transform([](const translation_unit& tu) { return tu.object_path; })
+            | std::ranges::to<string_list>());
+        paths.append_range(linkable_object_paths());
+        paths.push_back(std_obj_path());
+
+        auto signature = dependency_signatures_joined(paths);
         signature += "|flags=";
         signature += detail::flags_profile_string(compile_flags);
         signature += "|link=";
@@ -1910,17 +1864,17 @@ private:
         signature += detail::flags_profile_string(module_flags);
 
         auto import_flags = collect_test_module_ldflags();
-        if(const auto* test_runner = find_test_runner_unit())
-            detail::append_argv(import_flags, collect_module_ldflags(test_runner->imports));
+        if(test_runner)
+            import_flags.append_range(collect_module_ldflags(test_runner->imports));
         signature += "|imports=";
         signature += detail::flags_profile_string(import_flags);
-        
+
         return signature;
     }
 
     void link_test_runner() {
-        auto objects = collect_linkable_test_objects();
-        if (objects.empty()) {
+        const auto* test_runner = find_test_runner_unit();
+        if(not has_test_runner_link_inputs(test_runner)) {
             log::info("No objects to link for test_runner");
             return;
         }
@@ -1928,7 +1882,6 @@ private:
         // Determine test_runner path and object
         auto test_runner_path = binary_dir() + "/test_runner";
         auto test_runner_obj = std::string{};
-        const auto* test_runner = find_test_runner_unit();
 
         if (test_runner) {
             test_runner_path = test_runner->executable_path;
@@ -1937,7 +1890,7 @@ private:
 
         // Check if test_runner is up-to-date
         auto link_cache = load_executable_cache();
-        auto signature = compute_test_runner_signature(test_runner_path, test_runner_obj);
+        auto signature = compute_test_runner_signature(test_runner, test_runner_obj);
         
         // Check if executable exists and signature matches
         if (fs::exists(test_runner_path)) {
@@ -2286,11 +2239,11 @@ try {
         auto argument = std::string_view{argv[i]};
         if (argument == "--") {
             // Everything after "--" is passed to test_runner (only meaningful with "test").
-            for (int j = i + 1; j < argc; ++j)
-                test_runner_args.emplace_back(argv[j]);
-            for (const auto& a : test_runner_args)
-                if (a == "--output=jsonl" || a == "--output=JSONL")
-                    machine_output = true;
+            test_runner_args.assign(argv + i + 1, argv + argc);
+            if(std::ranges::any_of(test_runner_args, [](const std::string& a) {
+                return a == "--output=jsonl" || a == "--output=JSONL";
+            }))
+                machine_output = true;
             break;
         }
         if (argument == "--jsonl" || argument == "--output=jsonl" || argument == "--output=JSONL") {
@@ -2461,22 +2414,17 @@ try {
 
         // If CB is in JSONL mode, automatically enable JSONL for test_runner
         // unless the user explicitly specified a different output format
-        bool has_output_flag = false;
-        for (const auto& arg : test_runner_args) {
-            if (arg.starts_with("--output=")) {
-                has_output_flag = true;
-                break;
-            }
-        }
-        if (cb::jsonl::enabled() && !has_output_flag) {
+        const auto has_output_flag = std::ranges::any_of(test_runner_args, [](const std::string& arg) {
+            return arg.starts_with("--output=");
+        });
+        if(cb::jsonl::enabled() && not has_output_flag) {
             args.emplace_back("--output=jsonl");
-        } else if (cb::jsonl::enabled() && has_output_flag) {
+        } else if(cb::jsonl::enabled() && has_output_flag) {
             // User specified custom output format, respect it
             // Don't add --output=jsonl
         }
 
-        for (auto& a : test_runner_args)
-            args.emplace_back(a);
+        args.append_range(test_runner_args);
 
         // Build include_tests etc inside run_tests(), but pass args as tokens.
         build_system.run_tests(args);

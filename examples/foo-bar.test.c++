@@ -29,19 +29,19 @@ auto test_set()
             require_neq(prt, "blah");
         };
 
-        section("test nothrow") = []
+        section("test nothrow [.demo]") = []
         {
             require_nothrow([]{});
             require_nothrow([]{throw std::exception{};});
         };
 
-        section("Test throws") = []
+        section("Test throws [.demo]") = []
         {
             require_throws([]{throw std::exception{};});
             require_throws([]{});
         };
 
-        section("Test throw") = []
+        section("Test throw [.demo]") = []
         {
             require_throws_as([]{throw std::out_of_range{"test"};}, std::out_of_range{"test"});
             require_throws_as([]{throw std::runtime_error{"test"};}, std::out_of_range{"test"});

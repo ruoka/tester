@@ -29,7 +29,7 @@ On first run, **`CB.sh.core` bootstraps CB itself** — it compiles `tools/cb.c+
 - **Subprocesses:** `std::system` only (until the standard provides something better). No `popen`, `fork`, `execve`, or `posix_spawn`. Build a `string_list argv`; `invoke_shell(argv)` is the sole `join_argv` → `system()` boundary (compile, link, `test_runner`).
 - **Probes / capture:** redirect child stdout to a file (`compiler-version.txt`, self-test temp files), read with `std::ifstream`.
 - **Invoked toolchain:** `clang++` and `lld` are external programs; calling them via `std::system` is expected.
-- **Algorithms:** prefer `ranges::fold_left`, `views::split`, `ranges::set_difference`, etc. over index loops and one-off join helpers — see [AGENTS.md — C++ style](../AGENTS.md).
+- **Algorithms:** prefer `std::views::join_with`, `std::ranges::to`, `std::views::split`, `std::ranges::set_difference`, etc. over index loops and one-off helpers — see [AGENTS.md — C++ style](../AGENTS.md).
 
 The **test runner** is separate: crash **stack traces** in `test_runner.c++` use `<execinfo.h>` (`backtrace`, `backtrace_symbols_fd`) — POSIX/glibc/macOS only, not ISO C++. That is the deliberate exception; see [AGENTS.md — Implementation policy](../AGENTS.md#implementation-policy-standard-c-only).
 
@@ -258,6 +258,19 @@ Example `profile_diff` fragment:
 **`tools/CB.sh.core`** — bootstraps the `cb` binary, resolves `std.cppm`, handles cross-OS rebuild detection, JSONL-safe logging to stderr, and forwards args to `cb`.
 
 **`tools/CB.sh`** (per repo) — thin config: include dirs, examples mode, sandbox env, extra link flags.
+
+### Ranges idioms (`cb.c++`)
+
+CB uses C++23 range pipelines instead of hand-written accumulation loops where the standard library covers the case:
+
+| Task | Pattern |
+|------|---------|
+| Join `string_list` with separator | `items \| std::views::join_with(sep) \| std::ranges::to<std::string>()` |
+| Split delimited text → `vector` | `text \| std::views::split(delim) \| … \| std::ranges::to<string_list>()` |
+| Split profile → `flat_map` | `profile \| std::views::split('\t') \| std::views::transform(parse_profile_field) \| std::ranges::to<profile_fields>()` |
+| Shell-safe command string | `argv \| transform(shell_quote) \| views::join_with(' ') \| ranges::to<std::string>()` (`join_argv`; non-empty `argv` — contract at `invoke_shell`) |
+
+`parse_profile_field` splits on the **first** `=` only (`find`, not `views::split('=')`) because values like `compile` may contain `=`. Agent-oriented detail: [AGENTS.md](../AGENTS.md).
 
 ---
 

@@ -23,7 +23,7 @@ auto feature()
 
                 then("customer makes an order") = []
                 {
-                    and_then("food and drinks are delivered to the customer") = []
+                    and_then("food and drinks are delivered to the customer [.demo]") = []
                     {
                         require_eq(123.34,456.876);
                         require_eq(123.34,123.34);
@@ -51,7 +51,7 @@ auto feature()
         };
     };
 
-    scenario("Test case 2b") = []
+    scenario("Test case 2b [.demo]") = []
     {
         given("Customer wants to drink only beer") = []
         {

@@ -157,7 +157,7 @@ namespace tester::assertions
     auto check_lt(A actual, E expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        return check(std::size_t{} ? std::less<std::common_type_t<A,E>>{} : std::less<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        return check(std::less<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
     };
 
     export template<typename A, typename E>

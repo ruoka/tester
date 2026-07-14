@@ -20,7 +20,7 @@ auto feature()
             {
                 then("customer makes an order") = []
                 {
-                    and_then("food and drinks are delivered to the customer") = []
+                    and_then("food and drinks are delivered to the customer [.demo]") = []
                     {
                         require_eq(123.45, 123.45);
                         require_neq(123.34, 456.876);
@@ -38,7 +38,7 @@ auto feature()
             {
                 and_when("WOLT driver is available") = []
                 {
-                    then("food and drinks are delievred to his home door") = []
+                    then("food and drinks are delievred to his home door [.demo]") = []
                     {
                         require_false(true);
                         require_true(false);
@@ -50,7 +50,7 @@ auto feature()
         };
     };
 
-    scenario("Test case 1b") = []
+    scenario("Test case 1b [.demo]") = []
     {
         given("Customer wants to drink only beer") = []
         {

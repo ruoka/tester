@@ -23,7 +23,7 @@ auto register_tests()
         check_contains(str, "!");
     };
 
-    test_case("StringContains_Character") = [] {
+    test_case("StringContains_Character [.demo]") = [] {
         auto str = "Hello, world!"s;
         
         // Should pass
@@ -35,7 +35,7 @@ auto register_tests()
         check_contains(str, 'z');
     };
 
-    test_case("StringContains_CaseSensitive") = [] {
+    test_case("StringContains_CaseSensitive [.demo]") = [] {
         auto str = "Hello, World!"s;
         
         // Should pass
@@ -47,7 +47,7 @@ auto register_tests()
         check_contains(str, std::string{"world"});
     };
 
-    test_case("StringStartsWith_Prefix") = [] {
+    test_case("StringStartsWith_Prefix [.demo]") = [] {
         auto str = "Hello, world!"s;
         
         // Should pass
@@ -60,7 +60,7 @@ auto register_tests()
         check_starts_with(str, std::string{"world"});
     };
 
-    test_case("StringEndsWith_Suffix") = [] {
+    test_case("StringEndsWith_Suffix [.demo]") = [] {
         auto str = "Hello, world!"s;
         
         // Should pass
@@ -73,7 +73,7 @@ auto register_tests()
         check_ends_with(str, std::string{"Hello"});
     };
 
-    test_case("StringHasSubstr_Alias") = [] {
+    test_case("StringHasSubstr_Alias [.demo]") = [] {
         auto str = "Hello, world!"s;
         
         // require_has_substr is an alias for require_contains
@@ -84,7 +84,7 @@ auto register_tests()
         check_has_substr(str, "xyz");
     };
 
-    test_case("StringAssertions_EmptyString") = [] {
+    test_case("StringAssertions_EmptyString [.demo]") = [] {
         auto empty = ""s;
         
         // Should fail - empty string doesn't contain anything

@@ -20,7 +20,7 @@ auto register_tests()
     // Equality and ordering assertions
     // ============================================================================
 
-    test_case("Check_neq_NonFatal") = [] {
+    test_case("Check_neq_NonFatal [.demo]") = [] {
         // Should pass
         check_neq(1, 2);
         check_neq(1.0, 2.0);
@@ -31,7 +31,7 @@ auto register_tests()
         check_neq(3.14, 3.14);
     };
 
-    test_case("Check_lt_NonFatal") = [] {
+    test_case("Check_lt_NonFatal [.demo]") = [] {
         // Should pass
         check_lt(1, 2);
         check_lt(1.5, 2.5);
@@ -43,7 +43,7 @@ auto register_tests()
         check_lt(10.0, 5.0);
     };
 
-    test_case("Check_lteq_NonFatal") = [] {
+    test_case("Check_lteq_NonFatal [.demo]") = [] {
         // Should pass
         check_lteq(1, 2);
         check_lteq(5, 5);  // equal case
@@ -55,7 +55,7 @@ auto register_tests()
         check_lteq(7.0, 3.0);
     };
 
-    test_case("Check_gt_NonFatal") = [] {
+    test_case("Check_gt_NonFatal [.demo]") = [] {
         // Should pass
         check_gt(5, 3);
         check_gt(10.0, 5.0);
@@ -67,7 +67,7 @@ auto register_tests()
         check_gt(1.0, 2.0);
     };
 
-    test_case("Check_gteq_NonFatal") = [] {
+    test_case("Check_gteq_NonFatal [.demo]") = [] {
         // Should pass
         check_gteq(5, 3);
         check_gteq(5, 5);  // equal case
@@ -83,7 +83,7 @@ auto register_tests()
     // Boolean assertions
     // ============================================================================
 
-    test_case("Check_true_NonFatal") = [] {
+    test_case("Check_true_NonFatal [.demo]") = [] {
         // Should pass
         check_true(true);
         check_true(1 == 1);
@@ -95,7 +95,7 @@ auto register_tests()
         check_true(5 > 10);
     };
 
-    test_case("Check_false_NonFatal") = [] {
+    test_case("Check_false_NonFatal [.demo]") = [] {
         // Should pass
         check_false(false);
         check_false(1 == 2);
@@ -111,7 +111,7 @@ auto register_tests()
     // Exception assertions - check_* versions (non-fatal)
     // ============================================================================
 
-    test_case("Check_nothrow_NonFatal") = [] {
+    test_case("Check_nothrow_NonFatal [.demo]") = [] {
         // Should pass
         check_nothrow([] {});
         check_nothrow([] { volatile int x = 42; (void)x; });
@@ -123,7 +123,7 @@ auto register_tests()
         check_nothrow([] { throw 42; });  // non-std exception
     };
 
-    test_case("Check_throws_NonFatal") = [] {
+    test_case("Check_throws_NonFatal [.demo]") = [] {
         // Should pass - any exception
         check_throws([] { throw std::runtime_error{"test"}; });
         check_throws([] { throw std::out_of_range{"test"}; });
@@ -134,7 +134,7 @@ auto register_tests()
         check_throws([] { volatile int x = 42; (void)x; });  // no exception
     };
 
-    test_case("Check_throws_as_NonFatal") = [] {
+    test_case("Check_throws_as_NonFatal [.demo]") = [] {
         // Should pass - exact exception type
         check_throws_as([] { throw std::runtime_error{"test"}; }, std::runtime_error{"expected"});
         check_throws_as([] { throw std::out_of_range{"test"}; }, std::out_of_range{"expected"});
@@ -152,7 +152,7 @@ auto register_tests()
     // Mixed test: Verify non-fatal assertions continue execution
     // ============================================================================
 
-    test_case("NonFatal_ContinuesExecution") = [] {
+    test_case("NonFatal_ContinuesExecution [.demo]") = [] {
         // Multiple failing check_* assertions should all be reported
         check_eq(1, 2);      // fails
         check_neq(5, 5);     // fails
