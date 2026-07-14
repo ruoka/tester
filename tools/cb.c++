@@ -50,12 +50,6 @@ inline auto& io_mux()
     return mux;
 }
 
-inline auto& sink()
-{
-    static auto s = output::jsonl::sink{io_mux()};
-    return s;
-}
-
 // JSONL context (owned by the shared output mux).
 inline auto& ctx()
 {
@@ -81,6 +75,12 @@ inline void atexit_handler()
 }
 } // namespace jsonl
 
+inline auto& jsonl_sink()
+{
+    static auto sink = output::jsonl::sink{jsonl::io_mux()};
+    return sink;
+}
+
 inline auto& console_sink()
 {
     static auto sink = output::console::sink{jsonl::io_mux()};
@@ -95,7 +95,7 @@ inline void error(std::string_view msg) {
 
     // JSONL error event (machine output)
     if(cb::jsonl::enabled())
-        cb::jsonl::sink().error(msg);
+        jsonl_sink().error(msg);
 }
 
 inline void warning(std::string_view msg) { if(!cb::jsonl::enabled()) console_sink().warning(msg); }
@@ -106,7 +106,7 @@ inline void command(std::string_view cmd) { if(!cb::jsonl::enabled()) console_si
 inline void profile_changed(std::string_view reason, const output::object_cache_profile_diff& diff)
 {
     if(cb::jsonl::enabled())
-        cb::jsonl::sink().profile_changed(reason, diff);
+        jsonl_sink().profile_changed(reason, diff);
     else
         console_sink().profile_changed(reason, diff);
 }
@@ -127,7 +127,7 @@ inline void cache_status(std::string_view object_cache_path,
 {
     if(cb::jsonl::enabled())
     {
-        cb::jsonl::sink().cache_status(
+        jsonl_sink().cache_status(
             object_cache_path,
             object_cache_exists,
             profile_match,
@@ -154,7 +154,7 @@ inline void cache_invalidate_end(bool object_cache_removed,
                                  bool compiler_stamp_removed)
 {
     if(cb::jsonl::enabled())
-        cb::jsonl::sink().cache_invalidate_end(object_cache_removed, executable_cache_removed, compiler_stamp_removed);
+        jsonl_sink().cache_invalidate_end(object_cache_removed, executable_cache_removed, compiler_stamp_removed);
     else
         console_sink().cache_invalidate_end(object_cache_removed, executable_cache_removed, compiler_stamp_removed);
 }
@@ -162,7 +162,7 @@ inline void cache_invalidate_end(bool object_cache_removed,
 inline void source_list(const output::source_inventory& inventory)
 {
     if(cb::jsonl::enabled())
-        cb::jsonl::sink().source_list(inventory);
+        jsonl_sink().source_list(inventory);
     else
         console_sink().source_list(inventory);
 }
@@ -682,7 +682,7 @@ private:
         if(cb::jsonl::enabled() && current_phase == jsonl::phase::build && !build_end_emitted)
         {
             const auto finished = std::chrono::steady_clock::now();
-            cb::jsonl::sink().build_end(false, phase_started, finished);
+            jsonl_sink().build_end(false, phase_started, finished);
             build_end_emitted = true;
         }
     }
@@ -1023,7 +1023,7 @@ private:
         auto cmd_str = detail::join_argv(argv);
         // Human logs are suppressed in JSONL mode; still emit machine-readable command events.
         if (cb::jsonl::enabled())
-            cb::jsonl::sink().command_start(cmd_str, argv);
+            jsonl_sink().command_start(cmd_str, argv);
         else
             log::command(cmd_str);
 
@@ -1032,7 +1032,7 @@ private:
         const auto finished = std::chrono::steady_clock::now();
 
         if (cb::jsonl::enabled())
-            cb::jsonl::sink().command_end(cmd_str, argv, r == 0, r, started, finished);
+            jsonl_sink().command_end(cmd_str, argv, r == 0, r, started, finished);
         return r;
     }
 
@@ -1048,7 +1048,7 @@ private:
         if(!cb::jsonl::enabled())
             return;
 
-        cb::jsonl::sink().compile_start(
+        jsonl_sink().compile_start(
             tu.full_path,
             tu.object_path,
             tu.is_modular ? tu.pcm_path : std::string_view{},
@@ -1066,7 +1066,7 @@ private:
         if(!cb::jsonl::enabled())
             return;
 
-        cb::jsonl::sink().compile_end(
+        jsonl_sink().compile_end(
             tu.full_path,
             tu.object_path,
             tu.is_modular ? tu.pcm_path : std::string_view{},
@@ -1087,7 +1087,7 @@ private:
         if(!cb::jsonl::enabled())
             return;
 
-        cb::jsonl::sink().link_end(executable_path, ok, cache_hit, started, finished);
+        jsonl_sink().link_end(executable_path, ok, cache_hit, started, finished);
     }
 
     void emit_profile_changed()
@@ -2109,7 +2109,7 @@ public:
         phase_started = build_started;
         build_end_emitted = false;
         if(cb::jsonl::enabled())
-            cb::jsonl::sink().build_start(detail::config_name(config), include_tests, include_examples);
+            jsonl_sink().build_start(detail::config_name(config), include_tests, include_examples);
 
         try {
             build_steps();
@@ -2120,7 +2120,7 @@ public:
         }
 
         if(cb::jsonl::enabled()) {
-            cb::jsonl::sink().build_end(true, build_started, std::chrono::steady_clock::now());
+            jsonl_sink().build_end(true, build_started, std::chrono::steady_clock::now());
             build_end_emitted = true;
             current_phase = jsonl::phase::none;
         }
@@ -2137,7 +2137,7 @@ public:
         phase_started = build_started;
         build_end_emitted = false;
         if(cb::jsonl::enabled())
-            cb::jsonl::sink().build_start(detail::config_name(config), true, include_examples);
+            jsonl_sink().build_start(detail::config_name(config), true, include_examples);
 
         auto runner = binary_dir() + "/test_runner";
         try {
@@ -2153,7 +2153,7 @@ public:
 
         const auto build_finished = std::chrono::steady_clock::now();
         if(cb::jsonl::enabled())
-            cb::jsonl::sink().build_end(true, build_started, build_finished);
+            jsonl_sink().build_end(true, build_started, build_finished);
         build_end_emitted = true;
         current_phase = jsonl::phase::none;
         log::success("Build completed: "s + build_root());
@@ -2174,11 +2174,11 @@ public:
             ::putenv(env_storage[i].data());
 
         const auto test_started = std::chrono::steady_clock::now();
-        cb::jsonl::sink().test_start(runner);
+        jsonl_sink().test_start(runner);
 
         const auto r = invoke_shell(test_runner_argv(runner, args));
         const auto test_finished = std::chrono::steady_clock::now();
-        cb::jsonl::sink().test_end(r == 0, r, r, false, 0, test_started, test_finished);
+        jsonl_sink().test_end(r == 0, r, r, false, 0, test_started, test_finished);
         current_phase = jsonl::phase::none;
         if (r) {
             log::error("Some tests or assertions failed!");
