@@ -443,7 +443,7 @@ inline std::string read_first_line(const std::string& path)
     return line;
 }
 
-inline constexpr std::string_view object_cache_format = "cb-object-cache-v2"sv;
+inline constexpr std::string_view object_cache_format = "cb-object-cache-v3"sv;
 
 } // namespace detail
 
@@ -755,7 +755,8 @@ private:
             }
         }
 
-        std_cppm_profile = fs::weakly_canonical(std_module_path).string();
+        const auto canonical_std_cppm = fs::weakly_canonical(std_module_path).string();
+        std_cppm_profile = canonical_std_cppm + '@' + detail::binary_signature(canonical_std_cppm);
         cxx_sig = detail::binary_signature(llvm_cxx);
     }
 
@@ -1108,16 +1109,26 @@ private:
 
     void emit_profile_changed() const
     {
-        if(profile_changed_emitted || object_cache_miss_reason != "flag_change"sv)
-            return;
-        if(not cb::jsonl::enabled())
+        if(profile_changed_emitted || object_cache_miss_reason != "profile_change"sv)
             return;
 
         const auto* diff = (object_cache_profile_diff and not object_cache_profile_diff->empty())
             ? &*object_cache_profile_diff
             : nullptr;
-        cb::jsonl::sink().profile_changed(*object_cache_miss_reason, diff);
+
+        if(cb::jsonl::enabled())
+            cb::jsonl::sink().profile_changed(*object_cache_miss_reason, diff);
+
         const_cast<build_system*>(this)->profile_changed_emitted = true;
+    }
+
+    void log_profile_change_rebuild(const translation_unit& tu, std::string_view rebuild_reason) const
+    {
+        if(cb::jsonl::enabled() || rebuild_reason != "profile_change"sv)
+            return;
+
+        const auto label = tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename;
+        log::info("Rebuilding "s + label + " because compile profile changed"s);
     }
 
     string_list base_compile_argv() const
@@ -1333,7 +1344,7 @@ private:
         if (header.starts_with("profile\t")) {
             const auto stored_profile = header.substr(std::string_view{"profile\t"}.size());
             if (stored_profile != current_profile) {
-                object_cache_miss_reason = "flag_change";
+                object_cache_miss_reason = "profile_change";
                 object_cache_profile_diff = detail::diff_object_cache_profiles(stored_profile, current_profile);
                 auto msg = "Object cache profile changed; invalidating compile cache"s;
                 if(object_cache_profile_diff and not object_cache_profile_diff->empty())
@@ -1677,6 +1688,7 @@ private:
     // ============================================================================
 
     void compile_unit(const translation_unit& tu, std::string_view rebuild_reason) {
+        log_profile_change_rebuild(tu, rebuild_reason);
         emit_compile_start(tu, rebuild_reason);
         const auto started = std::chrono::steady_clock::now();
         if (tu.is_modular) {

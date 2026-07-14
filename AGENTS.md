@@ -58,7 +58,7 @@ If `matcher` is `"require"` or `"check"` on a `require_eq` / `check_eq` line, st
 ## Triage workflow (build failure)
 
 1. Find `command_end` with `"ok":false` — use the `argv` array to rerun without shell parsing.
-2. Check `compile_end` events: `cache_hit:false` means that translation unit recompiled; `cache_hit:true` means incremental skip. When `rebuild_reason` is `flag_change`, read the single `profile_changed` event for `profile_diff` (not repeated on each `compile_end`).
+2. Check `compile_end` events: `cache_hit:false` means that translation unit recompiled; `cache_hit:true` means incremental skip. When `rebuild_reason` is `profile_change`, read the single `profile_changed` event for `profile_diff` (not repeated on each `compile_end`).
 3. Rebuild: `./tools/CB.sh debug build --jsonl`, then re-run tests.
 
 ## Event reference (stdout)
