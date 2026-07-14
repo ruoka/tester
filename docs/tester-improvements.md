@@ -119,8 +119,8 @@ Machine-parseable test and build output for CI and automation. Human output rema
 - ✅ Per-binary `link_end` (`executable_path`, `cache_hit`, `ok`, `duration_ms`); `link_start` still optional.
 - ✅ Structured `argv: ["clang++", "..."]` on `command_start` / `command_end` alongside human `cmd` string.
 - ✅ `cache_hit: true` on `compile_end` when incremental compile skips a translation unit.
-- ✅ `rebuild_reason` on `compile_end` when `cache_hit:false` (e.g. `source_stale`, `pcm_stale:<module>`, `dependency_pcm_stale:<module>`, `flag_change`).
-- ✅ `profile_changed` event with `profile_diff` on flag mismatch (scalar fields + token diff on `compile`/`cpp`; not repeated on each `compile_end`).
+- ✅ `rebuild_reason` on `compile_end` when `cache_hit:false` (e.g. `source_stale`, `pcm_stale:<module>`, `dependency_pcm_stale:<module>`, `profile_change`).
+- ✅ `profile_changed` event with `profile_diff` on profile mismatch (scalar fields + token diff on `compile`/`cpp`; not repeated on each `compile_end`).
 
 ### 3.7 Recommended automation invocation
 
@@ -139,12 +139,13 @@ Design rationale and comparison with CMake, Make, and other build tools: [`docs/
 ### 4.1 Core build system
 
 - ✅ Incremental compile cache (`object_cache_map`) and link cache (`link_cache_map`).
-- ✅ Object-cache profile header (`format=cb-object-cache-v2`) with toolchain fields (`cxx`, `cxx_sig`, `clang_ver`, `std_cppm`, flags); invalidates on profile mismatch.
-- ✅ CB smoke harness (`tests/cb/`) and CI `cb-smoke` job (`profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `cache_invalidate`, `flag_change`, `cache_status`).
+- ✅ Object-cache profile header (`format=cb-object-cache-v3`) with toolchain fields (`config`, `static_link`, `llvm`, `cxx`, `cxx_sig`, `clang_ver`, `std_cppm` as `path@size:mtime_ns`, `compile` / `cpp` including `--compile-flags`); invalidates on profile mismatch (`rebuild_reason: "profile_change"`).
+- ✅ CB smoke harness (`tests/cb/`) and CI `cb-smoke` job (`profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `cache_invalidate`, `profile_change`, `cache_status`).
 - ✅ `cache status` subcommand (human + JSONL `cache_status`).
 - ✅ `cache invalidate` subcommand (human + JSONL `cache_invalidate_end`).
-- ✅ `profile_changed` JSONL event (single `profile_diff` on flag mismatch).
-- ✅ Profile value `%XX` escaping.
+- ✅ `profile_changed` JSONL event (single `profile_diff` on profile mismatch).
+- ✅ Human-mode `profile_change` logging on stderr (non-JSONL).
+- ✅ Profile value writer contract (verbatim tab-separated values; fields CB writes must not contain tab, newline, or `%`).
 - ✅ Parallel compilation, topological module sort, preamble `import` scan in `cb.c++`.
 - ✅ CB / tester implementation policy: standard C++ + `std::system` only; stack traces in `test_runner` via `<execinfo.h>` (POSIX exception).
 - ✅ `debug` / `release` configurations; `clean`, `list`, `ci`, `--build-tests`.
@@ -171,9 +172,9 @@ Design rationale and comparison with CMake, Make, and other build tools: [`docs/
 
 ### 4.4 Cache maintenance (optional — add if operational issues appear)
 
-Not required for correctness today: profile v2 + timestamp rules already drive rebuilds. Consider only if users hit **disk bloat**, **stale orphan artifacts**, or need **visibility** into cache state without a full `clean`.
+Not required for correctness today: profile v3 + timestamp rules already drive rebuilds. Consider only if users hit **disk bloat**, **stale orphan artifacts**, or need **visibility** into cache state without a full `clean`.
 
-**Problem today:** `clean` removes the entire `build-<os>-<config>/` tree. `flag_change` clears the in-memory object-cache index and forces recompiles, but old `.o` / `.pcm` files may remain on disk. Long-lived trees (renamed TUs, removed modules, repeated flag experiments) can accumulate dead artifacts.
+**Problem today:** `clean` removes the entire `build-<os>-<config>/` tree. `profile_change` clears the in-memory object-cache index and forces recompiles, but old `.o` / `.pcm` files may remain on disk. Long-lived trees (renamed TUs, removed modules, repeated flag experiments) can accumulate dead artifacts.
 
 **Proposed `cache` subcommand** (alongside `build`, `test`, `list`, `clean`):
 
@@ -181,7 +182,7 @@ Not required for correctness today: profile v2 + timestamp rules already drive r
 |------|---------|
 | `cache status` | Decode profile header, index entry counts, disk usage (`obj/`, `pcm/`, `cache/`), orphan/stale rows (cache points at missing paths; artifacts with no matching source/TU). JSONL: `cache_status` event. ✅ |
 | `cache invalidate` | Delete `object-cache.txt` / `executable-cache.txt` / `compiler-version.txt` only — lighter than `clean`; next build treats everything as uncached without wiping artifacts. JSONL: `cache_invalidate_end`. ✅ |
-| `cache prune` | Garbage-collect artifacts the current module graph no longer references; trim cache index rows for missing paths. Optional `--aggressive` after `flag_change` to drop all `obj/` / `pcm/` under the config. JSONL: `cache_prune_end` with counts. |
+| `cache prune` | Garbage-collect artifacts the current module graph no longer references; trim cache index rows for missing paths. Optional `--aggressive` after `profile_change` to drop all `obj/` / `pcm/` under the config. JSONL: `cache_prune_end` with counts. |
 
 **Implementation sketch:** scan current TU graph → expected `{obj, pcm}` set; walk `obj/` and `pcm/`; delete files not in set; reconcile `object-cache.txt`. Reuse existing `object_cache_profile()` / `parse_object_cache_profile_fields()` for `status`.
 

@@ -211,7 +211,7 @@ Environment variables for **bootstrap** (not test output): `LLVM_PATH`, `CXX`, `
 
 Legacy caches without a `profile\t` header still load; the header is rewritten on the next save. Bumping `format` or adding fields intentionally invalidates old caches once.
 
-**Value encoding:** profile field values use `%XX` escaping for `%`, tab, and newlines (so `clang_ver` and paths are safe in the tab-separated line).
+**Value encoding:** profile field values are stored verbatim (no percent-encoding). CB writes only values that cannot contain tab, newline, or `%` (paths, flag lists, and version lines satisfy this).
 
 **Human logs** (stderr, non-JSONL): `Object cache profile changed; invalidating compile cache (compile: + -DFOO)`.
 

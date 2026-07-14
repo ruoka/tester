@@ -246,11 +246,13 @@ Tester ships with **CB** (`tools/cb.c++`), a module-aware build system in a sing
 ./tools/CB.sh debug list           # human TU inventory
 ./tools/CB.sh debug list --jsonl   # machine-readable inventory
 ./tools/CB.sh debug clean
+./tools/CB.sh debug cache status      # inspect object-cache profile
+./tools/CB.sh debug cache invalidate  # drop cache indexes only (lighter than clean)
 ./tools/CB.sh debug --include-examples build
 ./tools/CB.sh --help
 ```
 
-Artifacts land in `build-<os>-<config>/` (`pcm/`, `obj/`, `bin/`, `cache/`). When embedded as a submodule, examples are excluded from default builds; standalone `./tools/CB.sh debug test` includes them. Use `--include-examples` to build demos explicitly.
+Artifacts land in `build-<os>-<config>/` (`pcm/`, `obj/`, `bin/`, `cache/`). Object-cache profile format and invalidation: [`docs/cb.md` — Object cache profile](docs/cb.md#object-cache-profile). When embedded as a submodule, examples are excluded from default builds; standalone `./tools/CB.sh debug test` includes them. Use `--include-examples` to build demos explicitly.
 
 **Makefile (legacy):** `make module`, `make run_examples`, `make tests`, `make tools` — see `Makefile` for targets. Prefer CB for new work.
 
@@ -308,7 +310,7 @@ Other test events: `run_start`, `run_end`, `case`, `test`, `message`, `exception
 |-------|---------|
 | `build_start` / `build_end` | Whole build phase |
 | `command_start` / `command_end` | Each subprocess (`cmd` + structured `argv`) |
-| `profile_changed` | Object-cache profile mismatch (`reason`, `profile_diff`) |
+| `profile_changed` | Object-cache profile mismatch (`reason: "profile_change"`, `profile_diff`) — see [object cache profile](docs/cb.md#object-cache-profile) |
 | `cache_status` | `cache status` inspection |
 | `cache_invalidate_end` | `cache invalidate` result |
 | `compile_start` | Per TU before compile or cache skip |
