@@ -162,11 +162,14 @@ public:
 
     bool included(std::string_view test_name) const
     {
+        if(m_tags.empty() && has_hidden_tag(test_name))
+            return false;
+
         if(not is_runnable_test_name(test_name))
             return true;
 
         if(m_tags.empty())
-            return not has_hidden_tag(test_name);
+            return true;
 
         if(m_use_literal_tags)
             return match_literal_tags(test_name);

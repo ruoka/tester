@@ -23,17 +23,12 @@ using ::jsonl::escape;
 
 inline std::string join_json_strings(std::span<const std::string> values)
 {
-    return std::ranges::fold_left(
-        values,
-        std::string{},
-        [](std::string acc, const std::string& value) {
-            if(not acc.empty())
-                acc += ',';
-            acc += '"';
-            acc += escape(value);
-            acc += '"';
-            return acc;
-        });
+    return values
+        | std::views::transform([](const std::string& value) {
+            return '"' + escape(value) + '"';
+        })
+        | std::views::join_with(',')
+        | std::ranges::to<std::string>();
 }
 
 inline void write_argv(std::ostream& os, std::span<const std::string> argv)

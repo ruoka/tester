@@ -22,7 +22,7 @@ auto register_tests()
         check_container_eq(vec1, vec2);
     };
 
-    test_case("ContainerEquality_Mismatch") = [] {
+    test_case("ContainerEquality_Mismatch [.demo]") = [] {
         auto vec1 = std::vector<int>{1, 2, 3, 4, 5};
         auto vec2 = std::vector<int>{1, 2, 9, 4, 5};  // Mismatch at index 2
         
@@ -30,7 +30,7 @@ auto register_tests()
         check_container_eq(vec1, vec2);
     };
 
-    test_case("ContainerEquality_DifferentSizes") = [] {
+    test_case("ContainerEquality_DifferentSizes [.demo]") = [] {
         auto vec1 = std::vector<int>{1, 2, 3};
         auto vec2 = std::vector<int>{1, 2, 3, 4, 5};  // Extra elements
         
@@ -38,7 +38,7 @@ auto register_tests()
         check_container_eq(vec1, vec2);
     };
 
-    test_case("ContainerContains_Integer") = [] {
+    test_case("ContainerContains_Integer [.demo]") = [] {
         auto vec = std::vector<int>{10, 20, 30, 40, 50};
         
         // Should pass
@@ -49,7 +49,7 @@ auto register_tests()
         check_contains(vec, 99);
     };
 
-    test_case("ContainerContains_String") = [] {
+    test_case("ContainerContains_String [.demo]") = [] {
         auto vec = std::vector<std::string>{"apple", "banana", "cherry"};
         
         // Should pass
@@ -60,7 +60,7 @@ auto register_tests()
         check_contains(vec, "grape"s);
     };
 
-    test_case("ContainerContains_Empty") = [] {
+    test_case("ContainerContains_Empty [.demo]") = [] {
         auto vec = std::vector<int>{};
         
         // Should fail - empty container
