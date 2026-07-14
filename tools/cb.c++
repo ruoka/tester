@@ -23,6 +23,8 @@
 #include <chrono>
 #include <iostream>
 #include <algorithm>
+#include <atomic>
+#include <exception>
 #include <iterator>
 #include <ranges>
 #include <utility>
@@ -314,14 +316,7 @@ inline object_cache_profile_diff diff_object_cache_profiles(std::string_view old
             out = profile_scalar_change{old_value, new_value};
     };
 
-    diff_scalar("format", diff.format);
-    diff_scalar("config", diff.config);
-    diff_scalar("static_link", diff.static_link);
-    diff_scalar("llvm", diff.llvm);
-    diff_scalar("cxx", diff.cxx);
-    diff_scalar("cxx_sig", diff.cxx_sig);
-    diff_scalar("clang_ver", diff.clang_ver);
-    diff_scalar("std_cppm", diff.std_cppm);
+    for_each_profile_scalar(diff, diff_scalar);
 
     const auto diff_tokens = [&](std::string_view key, std::optional<profile_token_change>& out) {
         auto change = diff_profile_tokens(field_value(old_fields, key), field_value(new_fields, key));
@@ -329,8 +324,7 @@ inline object_cache_profile_diff diff_object_cache_profiles(std::string_view old
             out = std::move(change);
     };
 
-    diff_tokens("compile", diff.compile);
-    diff_tokens("cpp", diff.cpp);
+    for_each_profile_tokens(diff, diff_tokens);
     return diff;
 }
 
@@ -641,7 +635,7 @@ using object_cache_map = std::flat_map<std::string, fs::file_time_type, std::les
 using translation_unit_list = std::vector<translation_unit>;
 using topo_sort_queue = std::queue<std::string>;
 using level_groups_map = std::flat_map<int, std::vector<const translation_unit*>>;
-using thread_list = std::vector<std::thread>;
+using thread_list = std::vector<std::jthread>;
 using module_to_ldflags_map = std::flat_map<std::string, std::string, std::less<>>;
 using executable_cache_map = std::flat_map<std::string, std::string, std::less<>>;
 
@@ -666,31 +660,22 @@ private:
     bool include_examples = false;
     string_list extra_compile_flag_tokens;
     string_list extra_link_flag_tokens;
-    mutable std::optional<std::string> object_cache_miss_reason;
-    mutable object_cache_profile_diff profile_diff;
-    mutable bool profile_changed_emitted = false;
+    std::optional<std::string> object_cache_miss_reason;
+    object_cache_profile_diff profile_diff;
     
     // JSONL phase tracking state
     jsonl::phase current_phase = jsonl::phase::none;
     std::chrono::steady_clock::time_point phase_started{};
     bool build_end_emitted = false;
     
-    void mark_build_end()
+    void emit_failed_build_end()
     {
-        build_end_emitted = true;
-    }
-    
-    void handle_build_error(std::string_view msg) const
-    {
-        // If build fails mid-flight, emit a structured build_end before error.
-        // Note: build_end_emitted is mutable to allow const methods to mark it.
         if(cb::jsonl::enabled() && current_phase == jsonl::phase::build && !build_end_emitted)
         {
             const auto finished = std::chrono::steady_clock::now();
             cb::jsonl::sink().build_end(false, phase_started, finished);
-            const_cast<build_system*>(this)->mark_build_end();
+            build_end_emitted = true;
         }
-        log::error(msg);
     }
 
     // ============================================================================
@@ -1024,10 +1009,7 @@ private:
     int invoke_shell(const string_list& argv) const
     {
         if(argv.empty())
-        {
-            handle_build_error("invoke_shell: empty argv");
-            std::exit(1);
-        }
+            throw std::logic_error{"invoke_shell: empty argv"};
 
         auto cmd_str = detail::join_argv(argv);
         // Human logs are suppressed in JSONL mode; still emit machine-readable command events.
@@ -1048,11 +1030,7 @@ private:
     void execute_system_command(const string_list& argv) const
     {
         if(const auto r = invoke_shell(argv); r)
-        {
-            auto cmd_str = detail::join_argv(argv);
-            handle_build_error("Command failed: "s + cmd_str);
-            std::exit(1);
-        }
+            throw std::runtime_error{"Command failed: " + detail::join_argv(argv)};
     }
 
     void emit_compile_start(const translation_unit& tu,
@@ -1103,14 +1081,12 @@ private:
         cb::jsonl::sink().link_end(executable_path, ok, cache_hit, started, finished);
     }
 
-    void emit_profile_changed() const
+    void emit_profile_changed()
     {
-        if(profile_changed_emitted || object_cache_miss_reason != "profile_change"sv)
+        if(object_cache_miss_reason != "profile_change"sv)
             return;
 
         cb::log::profile_changed(*object_cache_miss_reason, profile_diff);
-
-        const_cast<build_system*>(this)->profile_changed_emitted = true;
     }
 
     void log_profile_change_rebuild(const translation_unit& tu, std::string_view rebuild_reason) const
@@ -1318,7 +1294,6 @@ private:
     object_cache_map load_object_cache() {
         object_cache_miss_reason.reset();
         profile_diff = {};
-        profile_changed_emitted = false;
         auto cache = object_cache_map{};
         auto file = std::ifstream{object_cache_path()};
         if (not file)
@@ -1334,7 +1309,6 @@ private:
             if (stored_profile != current_profile) {
                 object_cache_miss_reason = "profile_change";
                 profile_diff = detail::diff_object_cache_profiles(stored_profile, current_profile);
-                emit_profile_changed();
                 return cache;
             }
         } else {
@@ -1355,17 +1329,33 @@ private:
     void save_object_cache(const object_cache_map& c) {
         auto tmp = object_cache_path() + ".tmp";
         auto file = std::ofstream{tmp};
-        if (file) {
-            file << "profile\t" << object_cache_profile() << "\n";
-            for (const auto& [path, timestamp] : c) {
-                if (not fs::exists(path))
-                    continue;
-                auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    timestamp.time_since_epoch()).count();
-                file << path << "\t" << ticks << "\n";
-            }
+        if(not file)
+            throw std::runtime_error{"Cannot open object cache temporary file: " + tmp};
+
+        file << "profile\t" << object_cache_profile() << "\n";
+        for (const auto& [path, timestamp] : c) {
+            if (not fs::exists(path))
+                continue;
+            auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                timestamp.time_since_epoch()).count();
+            file << path << "\t" << ticks << "\n";
         }
-        fs::rename(tmp, object_cache_path());
+        file.close();
+        if(not file)
+        {
+            auto ignored = std::error_code{};
+            fs::remove(tmp, ignored);
+            throw std::runtime_error{"Failed to write object cache temporary file: " + tmp};
+        }
+
+        auto error = std::error_code{};
+        fs::rename(tmp, object_cache_path(), error);
+        if(error)
+        {
+            auto ignored = std::error_code{};
+            fs::remove(tmp, ignored);
+            throw std::runtime_error{"Failed to replace object cache: " + error.message()};
+        }
     }
 
     static void count_cache_entries(std::istream& file,
@@ -1432,6 +1422,19 @@ private:
         if (object_timestamp < c.at(tu.full_path))
             return "object_stale";
 
+        // Implementation units consume their interface PCM implicitly through
+        // -fmodule-file=<module>=<pcm>, even when they do not import that module.
+        if(tu.kind == unit_kind::implementation_unit && u2tu.contains(tu.module))
+        {
+            const auto& interface = *u2tu.at(tu.module);
+            if(not fs::exists(interface.pcm_path))
+                return "dependency_pcm_stale:" + interface.module;
+            if(fs::last_write_time(interface.pcm_path) > object_timestamp)
+                return "pcm_stale:" + interface.module;
+            if(auto interface_reason = needs_recompile(interface, c, u2tu))
+                return *interface_reason;
+        }
+
         // For modular units, also check if .pcm file is stale
         if (tu.is_modular) {
             if (not fs::exists(tu.pcm_path))
@@ -1488,11 +1491,26 @@ private:
         }
         auto tmp = executable_cache_path() + ".tmp";
         auto file = std::ofstream{tmp};
-        if (not file) return;
+        if(not file)
+            throw std::runtime_error{"Cannot open executable cache temporary file: " + tmp};
         for (const auto& [path, signature] : cache)
             file << path << "\t" << signature << "\n";
         file.close();
-        fs::rename(tmp, executable_cache_path());
+        if(not file)
+        {
+            auto ignored = std::error_code{};
+            fs::remove(tmp, ignored);
+            throw std::runtime_error{"Failed to write executable cache temporary file: " + tmp};
+        }
+
+        auto error = std::error_code{};
+        fs::rename(tmp, executable_cache_path(), error);
+        if(error)
+        {
+            auto ignored = std::error_code{};
+            fs::remove(tmp, ignored);
+            throw std::runtime_error{"Failed to replace executable cache: " + error.message()};
+        }
     }
 
     bool needs_relinking(const translation_unit& tu, const std::string& signature, const executable_cache_map& link_cache) const {
@@ -1544,11 +1562,9 @@ private:
                 }
             }
         } catch (const std::exception& e) {
-            handle_build_error("Failed to scan project: "s + e.what());
-            throw;
+            throw std::runtime_error{"Failed to scan project: "s + e.what()};
         } catch (...) {
-            handle_build_error("Failed to scan project: unknown error");
-            throw;
+            throw std::runtime_error{"Failed to scan project: unknown error"};
         }
 
         if (units.empty()) { units_in_topological_order = std::move(units); return; }
@@ -1613,7 +1629,6 @@ private:
             auto message = "Cyclic dependency detected between units:"s;
             for (const auto& unit : cyclic_units)
                 message += " " + unit;
-            handle_build_error(message);
             throw std::runtime_error{message};
         }
 
@@ -1665,29 +1680,38 @@ private:
         log_profile_change_rebuild(tu, rebuild_reason);
         emit_compile_start(tu, rebuild_reason);
         const auto started = std::chrono::steady_clock::now();
-        if (tu.is_modular) {
-            execute_system_command(precompile_argv(tu));
-            execute_system_command(pcm_object_argv(tu));
-        } else {
-            execute_system_command(source_object_argv(tu));
+        try {
+            if (tu.is_modular) {
+                execute_system_command(precompile_argv(tu));
+                execute_system_command(pcm_object_argv(tu));
+            } else {
+                execute_system_command(source_object_argv(tu));
+            }
+        } catch (...) {
+            emit_compile_end(tu, false, false, started, std::chrono::steady_clock::now(), rebuild_reason);
+            throw;
         }
         emit_compile_end(tu, true, false, started, std::chrono::steady_clock::now(), rebuild_reason);
     }
 
     void update_module_flags()
     {
-        module_flags.append_range(
+        const auto discovered_flags =
             units_in_topological_order
             | std::views::filter([](const translation_unit& tu) { return tu.is_modular; })
             | std::views::transform([](const translation_unit& tu) {
                 return "-fmodule-file=" + tu.module + "=" + tu.pcm_path;
             })
-            | std::ranges::to<string_list>());
+            | std::ranges::to<string_list>();
+        for(const auto& flag : discovered_flags)
+            if(not std::ranges::contains(module_flags, flag))
+                module_flags.push_back(flag);
     }
 
     void compile_units() {
         if (units_in_topological_order.empty()) return;
         auto cache = load_object_cache();
+        emit_profile_changed();
 
         auto u2tu = unit_to_tu_map{};
         for (auto& tu : units_in_topological_order) {
@@ -1700,21 +1724,42 @@ private:
             levels[tu.dependency_level >= 0 ? tu.dependency_level : INT_MAX].push_back(&tu);
 
         for (const auto& [lvl, group] : levels) {
+            auto decisions = std::vector<std::pair<const translation_unit*, std::optional<std::string>>>{};
+            decisions.reserve(group.size());
+            for(const auto* tu : group)
+                decisions.emplace_back(tu, needs_recompile(*tu, cache, u2tu));
+
             auto threads = thread_list{};
-                for (const auto* tu : group) {
-                threads.emplace_back([this, tu, &cache, &u2tu]() {
-                    if (auto reason = needs_recompile(*tu, cache, u2tu)) {
-                        compile_unit(*tu, *reason);
-                        auto lock = std::lock_guard<std::mutex>{cache_mutex};
-                        cache[tu->full_path] = tu->last_modified;
-                    } else {
-                        const auto now = std::chrono::steady_clock::now();
-                        emit_compile_start(*tu);
-                        emit_compile_end(*tu, true, true, now, now);
-                    }
-                });
+            auto failed = std::atomic_bool{false};
+            auto failure = std::exception_ptr{};
+            auto failure_mutex = std::mutex{};
+
+            for (const auto& [tu, reason] : decisions) {
+                if(reason) {
+                    threads.emplace_back([this, tu, reason, &cache, &failed, &failure, &failure_mutex]() {
+                        if(failed.load(std::memory_order_relaxed))
+                            return;
+                        try {
+                            compile_unit(*tu, *reason);
+                            auto lock = std::lock_guard<std::mutex>{cache_mutex};
+                            cache[tu->full_path] = tu->last_modified;
+                        } catch (...) {
+                            failed.store(true, std::memory_order_relaxed);
+                            auto lock = std::lock_guard<std::mutex>{failure_mutex};
+                            if(not failure)
+                                failure = std::current_exception();
+                            return;
+                        }
+                    });
+                } else {
+                    const auto now = std::chrono::steady_clock::now();
+                    emit_compile_start(*tu);
+                    emit_compile_end(*tu, true, true, now, now);
+                }
             }
             for (auto& thread : threads) thread.join();
+            if(failure)
+                std::rethrow_exception(failure);
         }
         save_object_cache(cache);
     }
@@ -1774,6 +1819,9 @@ private:
         auto shared_objects = linkable_object_paths();
         auto link_cache = load_executable_cache();
         auto threads = thread_list{};
+        auto failed = std::atomic_bool{false};
+        auto failure = std::exception_ptr{};
+        auto failure_mutex = std::mutex{};
         for (const auto& tu : units_in_topological_order)
             if (tu.has_main and not tu.filename.contains("test_runner")) {
                 auto signature = compute_link_signature(tu, shared_objects);
@@ -1783,16 +1831,32 @@ private:
                         emit_link_end(tu.executable_path, true, true, now, now);
                         continue;
                 }
-                threads.emplace_back([this, tu, &shared_objects, signature, &link_cache]() {
+                threads.emplace_back([this, tu, &shared_objects, signature, &link_cache, &failed, &failure, &failure_mutex]() {
+                    if(failed.load(std::memory_order_relaxed))
+                        return;
                     const auto started = std::chrono::steady_clock::now();
-                    link_executable(tu, shared_objects);
-                    const auto finished = std::chrono::steady_clock::now();
-                    emit_link_end(tu.executable_path, true, false, started, finished);
-                    auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
-                    link_cache[tu.executable_path] = signature;
+                    auto linked = false;
+                    try {
+                        link_executable(tu, shared_objects);
+                        linked = true;
+                        const auto finished = std::chrono::steady_clock::now();
+                        emit_link_end(tu.executable_path, true, false, started, finished);
+                        auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
+                        link_cache[tu.executable_path] = signature;
+                    } catch (...) {
+                        if(not linked)
+                            emit_link_end(tu.executable_path, false, false, started, std::chrono::steady_clock::now());
+                        failed.store(true, std::memory_order_relaxed);
+                        auto lock = std::lock_guard<std::mutex>{failure_mutex};
+                        if(not failure)
+                            failure = std::current_exception();
+                        return;
+                    }
                 });
             }
         for (auto& thread : threads) thread.join();
+        if(failure)
+            std::rethrow_exception(failure);
         save_executable_cache(link_cache);
     }
 
@@ -1888,7 +1952,12 @@ private:
         }
 
         const auto link_started = std::chrono::steady_clock::now();
-        execute_system_command(link_test_runner_argv(test_runner_path, test_runner_obj, link_module_ldflags));
+        try {
+            execute_system_command(link_test_runner_argv(test_runner_path, test_runner_obj, link_module_ldflags));
+        } catch (...) {
+            emit_link_end(test_runner_path, false, false, link_started, std::chrono::steady_clock::now());
+            throw;
+        }
         if(has_runner_unit)
             log::success("test_runner linked with test objects");
         else
@@ -1902,6 +1971,25 @@ private:
             link_cache[test_runner_path] = signature;
         }
         save_executable_cache(link_cache);
+    }
+
+    void build_steps()
+    {
+        // Ensure build directories exist (they may have been removed by clean())
+        fs::create_directories(module_cache_dir());
+        fs::create_directories(object_dir());
+        fs::create_directories(binary_dir());
+        fs::create_directories(cache_dir());
+
+        build_std_pcm();
+        build_std_o();
+        scan_and_order();
+        if(units_in_topological_order.empty())
+            throw std::runtime_error{"No sources found"};
+
+        update_module_flags();
+        compile_units();
+        link_executables();
     }
 
 public:
@@ -2006,35 +2094,23 @@ public:
         include_tests = value;
     }
 
-    void build() {    
+    void build() {
         const auto build_started = std::chrono::steady_clock::now();
         current_phase = jsonl::phase::build;
         phase_started = build_started;
         build_end_emitted = false;
+        if(cb::jsonl::enabled())
+            cb::jsonl::sink().build_start(detail::config_name(config), include_tests, include_examples);
 
-        if (cb::jsonl::enabled()) {
-            cb::jsonl::sink().build_start(detail::config_name(config), false, include_examples);
+        try {
+            build_steps();
+        } catch (...) {
+            emit_failed_build_end();
+            current_phase = jsonl::phase::none;
+            throw;
         }
 
-        // Ensure build directories exist (they may have been removed by clean())
-        fs::create_directories(module_cache_dir());
-        fs::create_directories(object_dir());
-        fs::create_directories(binary_dir());
-        fs::create_directories(cache_dir());
-
-        build_std_pcm();
-        build_std_o();
-        scan_and_order();
-        if (units_in_topological_order.empty()) {
-            handle_build_error("No sources found");
-            std::exit(1);
-        }
-
-        update_module_flags();
-        compile_units();
-        link_executables();
-
-        if (cb::jsonl::enabled()) {
+        if(cb::jsonl::enabled()) {
             cb::jsonl::sink().build_end(true, build_started, std::chrono::steady_clock::now());
             build_end_emitted = true;
             current_phase = jsonl::phase::none;
@@ -2046,6 +2122,7 @@ public:
     void run_tests(const std::vector<std::string>& args = {}) {
         log::info("=== Running tests ===");
 
+        include_tests = true;
         const auto build_started = std::chrono::steady_clock::now();
         current_phase = jsonl::phase::build;
         phase_started = build_started;
@@ -2053,34 +2130,39 @@ public:
         if(cb::jsonl::enabled())
             cb::jsonl::sink().build_start(detail::config_name(config), true, include_examples);
 
-        include_tests = true;
-        build();
-        link_test_runner();
-
         auto runner = binary_dir() + "/test_runner";
-        if (not fs::exists(runner)) {
-            log::error("test_runner not found — no test files discovered");
-            log::error("Make sure you have .test.c++ files or a test_runner.c++");
-            std::exit(1);
+        try {
+            build_steps();
+            link_test_runner();
+            if(not fs::exists(runner))
+                throw std::runtime_error{"test_runner not found — make sure .test.c++ files or test_runner.c++ exist"};
+        } catch (...) {
+            emit_failed_build_end();
+            current_phase = jsonl::phase::none;
+            throw;
         }
-    
+
         const auto build_finished = std::chrono::steady_clock::now();
-        cb::jsonl::sink().build_end(true, build_started, build_finished);
+        if(cb::jsonl::enabled())
+            cb::jsonl::sink().build_end(true, build_started, build_finished);
         build_end_emitted = true;
         current_phase = jsonl::phase::none;
+        log::success("Build completed: "s + build_root());
 
-        auto env_storage = std::vector<std::string>{};
-        auto set_env = [&](std::string_view key, std::string_view value) {
-            env_storage.push_back(std::string{key} + '=' + std::string{value});
-            ::putenv(env_storage.back().data());
+        static auto env_storage = std::array<std::string, 2>{};
+        auto env_count = std::size_t{};
+        const auto store_env = [&](std::string_view key, std::string_view value) {
+            env_storage[env_count++] = std::string{key} + '=' + std::string{value};
         };
-        set_env("TESTER_CONFIG", detail::config_name(config));
+        store_env("TESTER_CONFIG", detail::config_name(config));
         if(cb::jsonl::enabled())
         {
             const auto parent = cb::jsonl::ctx().get_run_id();
             if(not parent.empty())
-                set_env("TESTER_PARENT_RUN_ID", parent);
+                store_env("TESTER_PARENT_RUN_ID", parent);
         }
+        for(auto i = std::size_t{}; i < env_count; ++i)
+            ::putenv(env_storage[i].data());
 
         const auto test_started = std::chrono::steady_clock::now();
         cb::jsonl::sink().test_start(runner);

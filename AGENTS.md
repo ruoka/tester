@@ -59,7 +59,8 @@ If `matcher` is `"require"` or `"check"` on a `require_eq` / `check_eq` line, st
 
 1. Find `command_end` with `"ok":false` — use the `argv` array to rerun without shell parsing.
 2. Check `compile_end` events: `cache_hit:false` means that translation unit recompiled; `cache_hit:true` means incremental skip. When `rebuild_reason` is `profile_change`, read the single `profile_changed` event for `profile_diff` (not repeated on each `compile_end`).
-3. Rebuild: `./tools/CB.sh debug build --jsonl`, then re-run tests.
+3. A failed compiler invocation emits `compile_end` with `ok:false`; CB joins the remaining workers before emitting one failed `build_end` and exiting.
+4. Rebuild: `./tools/CB.sh debug build --jsonl`, then re-run tests.
 
 ## Event reference (stdout)
 
@@ -102,7 +103,7 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 | `list_start` | TU inventory start (`config`, `include_tests`, `include_examples`, `source_dir`) |
 | `unit` | Per translation unit (`path`, `module`, `kind`, `imports[]`, `level`, `has_main`, `is_test`, `is_modular`) |
 | `list_summary` | Inventory totals (`units_total`, `main_count`, `test_count`, `max_level`) |
-| `build_start` / `build_end` | Whole build |
+| `build_start` / `build_end` | Whole build; exactly one pair per `build` or `test` invocation (test-runner link included) |
 | `command_start` / `command_end` | Subprocesses (`cmd` + `argv`) |
 | `profile_changed` | Once per build when object-cache profile mismatches (`reason`, `profile_diff`) |
 | `cache_status` | `cache status` subcommand (`object_cache_path`, `profile_match`, entry counts, `current_profile`) |
@@ -211,11 +212,11 @@ return profile
 
 Do **not** add defensive parsers or legacy upgrade paths for on-disk formats that **only CB writes**; fresh builds use `clean` / `cache invalidate`. Trust the writer contract; invalidate the whole cache on header mismatch instead of skipping bad segments.
 
-**Subprocess I/O** — see [Implementation policy](#implementation-policy-standard-c-only) above. All toolchain commands go through `invoke_shell(argv)`; probes/self-tests use stamp/temp file + `std::ifstream`. Test env uses `putenv` + `invoke_shell` (not shell env prefixes). Never `popen` / `fork` / `exec`.
+**Subprocess I/O** — see [Implementation policy](#implementation-policy-standard-c-only) above. All toolchain commands go through `invoke_shell(argv)`; probes/self-tests use stamp/temp file + `std::ifstream`. Test env uses process-lifetime `std::array<std::string, 2>` storage with `putenv` + `invoke_shell` (not shell env prefixes); populate all strings before calling `putenv`, which retains their pointers. Never `popen` / `fork` / `exec`.
 
 **CB flag argv** — store toolchain flags as `string_list` (`compile_flags`, `link_flags`, `cpp_flags`, `module_flags`); argv builders extend lists with `append_range` (literal groups as `string_list{…}`). Parse external flag **text** only at boundaries (`cb::detail::parse_external_flag_text` in `main` for `--compile-flags` / `--link-flags`; same helper when diffing serialized profile `compile`/`cpp` fields). Serialize lists to the object-cache profile with `detail::flags_profile_string` (`views::join_with(' ')` + `ranges::to<std::string>`). Parse with `collapse_whitespace` then `views::split(' ')` + `filter` non-empty + `ranges::to<string_list>` — symmetric with the writer; not full POSIX shell word-splitting (C++26 `split_when` would cover predicate delimiters without the collapse step).
 
-**`cb.c++` namespaces** — `cb::jsonl` / `cb::log` route I/O to `cb_jsonl::sink` or `cb_console::sink`; shared profile-diff types live in `namespace cb` at the top of `cb-jsonl_sink.h++` (no separate header); `cb::detail` for compute helpers (`shell_quote`, `join_argv`, profile/flag parsing, path/TU scan); `cb::translation_unit` and `cb::build_system` at top level; anonymous namespace + `main` for CLI argv parsing only.
+**`cb.c++` namespaces** — `cb::jsonl` owns JSONL context; `cb::log` routes events that have both human and JSONL forms to `cb_jsonl::sink` or `cb_console::sink`; JSONL-only compile/link telemetry uses focused `emit_*` helpers. Shared profile-diff types and field iteration live in `namespace cb` at the top of `cb-jsonl_sink.h++` (no separate header), keeping diff computation and both sink formats aligned. `cb::detail` is for compute helpers (`shell_quote`, `join_argv`, profile/flag parsing, path/TU scan); `cb::translation_unit` and `cb::build_system` at top level; anonymous namespace + `main` for CLI argv parsing only.
 
 **When custom code is fine** — topological sort, module graph walks, percent-encoding, and domain-specific cache logic. Do not reimplement `set_difference`, substring search, map membership, or **delimiter-join loops** by hand.
 

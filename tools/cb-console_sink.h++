@@ -54,24 +54,17 @@ inline std::string format_profile_diff(const cb::object_cache_profile_diff& diff
         parts.push_back(std::string{name} + ": " + change.old_value + " -> " + change.new_value);
     };
 
-    if(diff.format) append_scalar("format", *diff.format);
-    if(diff.config) append_scalar("config", *diff.config);
-    if(diff.static_link) append_scalar("static_link", *diff.static_link);
-    if(diff.llvm) append_scalar("llvm", *diff.llvm);
-    if(diff.cxx) append_scalar("cxx", *diff.cxx);
-    if(diff.cxx_sig) append_scalar("cxx_sig", *diff.cxx_sig);
-    if(diff.clang_ver) append_scalar("clang_ver", *diff.clang_ver);
-    if(diff.std_cppm) append_scalar("std_cppm", *diff.std_cppm);
-    if(diff.compile)
-    {
-        if(auto summary = format_token_change_summary("compile", *diff.compile, max_tokens); not summary.empty())
-            parts.push_back(std::move(summary));
-    }
-    if(diff.cpp)
-    {
-        if(auto summary = format_token_change_summary("cpp", *diff.cpp, max_tokens); not summary.empty())
-            parts.push_back(std::move(summary));
-    }
+    cb::for_each_profile_scalar(diff, [&](std::string_view name, const auto& change) {
+        if(change)
+            append_scalar(name, *change);
+    });
+    cb::for_each_profile_tokens(diff, [&](std::string_view name, const auto& change) {
+        if(change)
+        {
+            if(auto summary = format_token_change_summary(name, *change, max_tokens); not summary.empty())
+                parts.push_back(std::move(summary));
+        }
+    });
 
     return parts | std::views::join_with("; "sv) | std::ranges::to<std::string>();
 }
