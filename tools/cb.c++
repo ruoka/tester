@@ -52,7 +52,7 @@ inline auto& io_mux()
 
 inline auto& sink()
 {
-    static auto s = cb_jsonl::sink{io_mux()};
+    static auto s = output::jsonl::sink{io_mux()};
     return s;
 }
 
@@ -83,7 +83,7 @@ inline void atexit_handler()
 
 inline auto& console_sink()
 {
-    static auto sink = cb_console::sink{jsonl::io_mux()};
+    static auto sink = output::console::sink{jsonl::io_mux()};
     return sink;
 }
 
@@ -95,7 +95,7 @@ inline void error(std::string_view msg) {
 
     // JSONL error event (machine output)
     if(cb::jsonl::enabled())
-        cb::jsonl::sink().cb_error(msg);
+        cb::jsonl::sink().error(msg);
 }
 
 inline void warning(std::string_view msg) { if(!cb::jsonl::enabled()) console_sink().warning(msg); }
@@ -103,7 +103,7 @@ inline void info(std::string_view msg) { if(!cb::jsonl::enabled()) console_sink(
 inline void success(std::string_view msg) { if(!cb::jsonl::enabled()) console_sink().success(msg); }
 inline void command(std::string_view cmd) { if(!cb::jsonl::enabled()) console_sink().command(cmd); }
 
-inline void profile_changed(std::string_view reason, const object_cache_profile_diff& diff)
+inline void profile_changed(std::string_view reason, const output::object_cache_profile_diff& diff)
 {
     if(cb::jsonl::enabled())
         cb::jsonl::sink().profile_changed(reason, diff);
@@ -144,7 +144,8 @@ inline void cache_status(std::string_view object_cache_path,
             profile_match,
             object_entries,
             object_stale_entries,
-            executable_entries);
+            executable_entries,
+            current_profile);
     }
 }
 
@@ -156,6 +157,14 @@ inline void cache_invalidate_end(bool object_cache_removed,
         cb::jsonl::sink().cache_invalidate_end(object_cache_removed, executable_cache_removed, compiler_stamp_removed);
     else
         console_sink().cache_invalidate_end(object_cache_removed, executable_cache_removed, compiler_stamp_removed);
+}
+
+inline void source_list(const output::source_inventory& inventory)
+{
+    if(cb::jsonl::enabled())
+        cb::jsonl::sink().source_list(inventory);
+    else
+        console_sink().source_list(inventory);
 }
 } // namespace log
 
@@ -284,24 +293,24 @@ inline profile_fields parse_object_cache_profile_fields(std::string_view profile
         | std::ranges::to<profile_fields>();
 }
 
-inline profile_token_change diff_profile_tokens(std::string_view old_text, std::string_view new_text)
+inline output::profile_token_change diff_profile_tokens(std::string_view old_text, std::string_view new_text)
 {
     auto old_tokens = parse_external_flag_text(old_text);
     auto new_tokens = parse_external_flag_text(new_text);
     std::ranges::sort(old_tokens);
     std::ranges::sort(new_tokens);
 
-    auto change = profile_token_change{};
+    auto change = output::profile_token_change{};
     std::ranges::set_difference(new_tokens, old_tokens, std::back_inserter(change.added));
     std::ranges::set_difference(old_tokens, new_tokens, std::back_inserter(change.removed));
     return change;
 }
 
-inline object_cache_profile_diff diff_object_cache_profiles(std::string_view old_profile, std::string_view new_profile)
+inline output::object_cache_profile_diff diff_object_cache_profiles(std::string_view old_profile, std::string_view new_profile)
 {
     const auto old_fields = parse_object_cache_profile_fields(old_profile);
     const auto new_fields = parse_object_cache_profile_fields(new_profile);
-    auto diff = object_cache_profile_diff{};
+    auto diff = output::object_cache_profile_diff{};
 
     const auto field_value = [](const profile_fields& fields, std::string_view key) -> std::string {
         if(fields.contains(key))
@@ -309,22 +318,22 @@ inline object_cache_profile_diff diff_object_cache_profiles(std::string_view old
         return {};
     };
 
-    const auto diff_scalar = [&](std::string_view key, std::optional<profile_scalar_change>& out) {
+    const auto diff_scalar = [&](std::string_view key, std::optional<output::profile_scalar_change>& out) {
         const auto old_value = field_value(old_fields, key);
         const auto new_value = field_value(new_fields, key);
         if(old_value != new_value)
-            out = profile_scalar_change{old_value, new_value};
+            out = output::profile_scalar_change{old_value, new_value};
     };
 
-    for_each_profile_scalar(diff, diff_scalar);
+    output::for_each_profile_scalar(diff, diff_scalar);
 
-    const auto diff_tokens = [&](std::string_view key, std::optional<profile_token_change>& out) {
+    const auto diff_tokens = [&](std::string_view key, std::optional<output::profile_token_change>& out) {
         auto change = diff_profile_tokens(field_value(old_fields, key), field_value(new_fields, key));
         if(change.changed())
             out = std::move(change);
     };
 
-    for_each_profile_tokens(diff, diff_tokens);
+    output::for_each_profile_tokens(diff, diff_tokens);
     return diff;
 }
 
@@ -661,7 +670,7 @@ private:
     string_list extra_compile_flag_tokens;
     string_list extra_link_flag_tokens;
     std::optional<std::string> object_cache_miss_reason;
-    object_cache_profile_diff profile_diff;
+    output::object_cache_profile_diff profile_diff;
     
     // JSONL phase tracking state
     jsonl::phase current_phase = jsonl::phase::none;
@@ -2178,44 +2187,40 @@ public:
         log::success("All tests passed!");
     }
 
-    void print_sources() {
+    void list_sources() {
         scan_and_order();
-        if(cb::jsonl::enabled()) {
-            auto main_count = 0;
-            auto test_count = 0;
-            auto max_level = 0;
-            for(const auto& tu : units_in_topological_order) {
-                if(tu.has_main) ++main_count;
-                if(tu.is_test) ++test_count;
-                if(tu.dependency_level >= 0)
-                    max_level = std::max(max_level, tu.dependency_level);
-            }
-            cb::jsonl::sink().list_start(
-                detail::config_name(config),
-                include_tests,
-                include_examples,
-                source_dir);
-            for(const auto& tu : units_in_topological_order) {
-                const auto path = tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename;
-                cb::jsonl::sink().unit(
-                    tu.unit,
-                    path,
-                    tu.module,
-                    detail::unit_kind_name(tu.kind),
-                    tu.imports,
-                    tu.dependency_level,
-                    tu.has_main,
-                    tu.is_test,
-                    tu.is_modular);
-            }
-            cb::jsonl::sink().list_summary(
-                static_cast<int>(units_in_topological_order.size()),
-                main_count,
-                test_count,
-                max_level);
-        } else {
-            console_sink().print_sources(units_in_topological_order);
+        auto inventory = output::source_inventory{
+            std::string{detail::config_name(config)},
+            include_tests,
+            include_examples,
+            source_dir,
+            {},
+            0,
+            0,
+            0,
+        };
+        inventory.units.reserve(units_in_topological_order.size());
+        for(const auto& tu : units_in_topological_order)
+        {
+            inventory.units.push_back(output::source_unit{
+                tu.unit,
+                tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename,
+                tu.module,
+                std::string{detail::unit_kind_name(tu.kind)},
+                tu.imports,
+                tu.dependency_level,
+                tu.has_main,
+                tu.is_test,
+                tu.is_modular,
+            });
+            if(tu.has_main)
+                ++inventory.main_count;
+            if(tu.is_test)
+                ++inventory.test_count;
+            if(tu.dependency_level >= 0)
+                inventory.max_level = std::max(inventory.max_level, tu.dependency_level);
         }
+        log::source_list(inventory);
     }
 };
 
@@ -2432,7 +2437,7 @@ try {
 
     auto build_system = cb::build_system{config, include_flags, {}, ".", stdcppm, static_linking, include_examples, extra_compile_flags, extra_link_flags};
 
-    if (do_list) build_system.print_sources();
+    if (do_list) build_system.list_sources();
     if (do_cache_status) {
         build_system.cache_status();
         return 0;

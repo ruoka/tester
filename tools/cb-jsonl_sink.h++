@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <chrono>
 #include <mutex>
-#include <optional>
 #include <ostream>
 #include <ranges>
 #include <span>
@@ -16,74 +15,11 @@
 #include <vector>
 
 #include "../tester/details/output-mux.h++"
+#include "cb-output.h++"
 
-// Shared object-cache profile diff model (human + JSONL sinks).
-namespace cb {
-
-struct profile_scalar_change
-{
-    std::string old_value;
-    std::string new_value;
-};
-
-struct profile_token_change
-{
-    std::vector<std::string> added;
-    std::vector<std::string> removed;
-
-    bool changed() const { return not added.empty() or not removed.empty(); }
-};
-
-struct object_cache_profile_diff
-{
-    std::optional<profile_scalar_change> format;
-    std::optional<profile_scalar_change> config;
-    std::optional<profile_scalar_change> static_link;
-    std::optional<profile_scalar_change> llvm;
-    std::optional<profile_scalar_change> cxx;
-    std::optional<profile_scalar_change> cxx_sig;
-    std::optional<profile_scalar_change> clang_ver;
-    std::optional<profile_scalar_change> std_cppm;
-    std::optional<profile_token_change> compile;
-    std::optional<profile_token_change> cpp;
-
-    bool empty() const
-    {
-        return not format and not config and not static_link and not llvm
-            and not cxx and not cxx_sig and not clang_ver and not std_cppm
-            and not compile and not cpp;
-    }
-};
-
-template<typename Diff, typename Callback>
-void for_each_profile_scalar(Diff& diff, Callback&& callback)
-{
-    callback("format", diff.format);
-    callback("config", diff.config);
-    callback("static_link", diff.static_link);
-    callback("llvm", diff.llvm);
-    callback("cxx", diff.cxx);
-    callback("cxx_sig", diff.cxx_sig);
-    callback("clang_ver", diff.clang_ver);
-    callback("std_cppm", diff.std_cppm);
-}
-
-template<typename Diff, typename Callback>
-void for_each_profile_tokens(Diff& diff, Callback&& callback)
-{
-    callback("compile", diff.compile);
-    callback("cpp", diff.cpp);
-}
-
-} // namespace cb
-
-namespace cb_jsonl {
+namespace cb::output::jsonl {
 
 using ::jsonl::escape;
-
-using profile_scalar_change = cb::profile_scalar_change;
-using profile_token_change = cb::profile_token_change;
-using object_cache_profile_diff = cb::object_cache_profile_diff;
 
 inline std::string join_json_strings(std::span<const std::string> values)
 {
@@ -128,11 +64,11 @@ inline void write_profile_diff(std::ostream& os, const object_cache_profile_diff
         write_value();
     };
 
-    cb::for_each_profile_scalar(diff, [&](std::string_view name, const auto& change) {
+    for_each_profile_scalar(diff, [&](std::string_view name, const auto& change) {
         if(change)
             field(name, [&]{ write_profile_diff_scalar(os, *change); });
     });
-    cb::for_each_profile_tokens(diff, [&](std::string_view name, const auto& change) {
+    for_each_profile_tokens(diff, [&](std::string_view name, const auto& change) {
         if(change)
             field(name, [&]{ write_profile_diff_tokens(os, *change); });
     });
@@ -187,7 +123,7 @@ struct sink
         };
     }
 
-    void cb_error(std::string_view message)
+    void error(std::string_view message)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("cb_error") << [&](std::ostream& os){
@@ -324,55 +260,40 @@ struct sink
         };
     }
 
-    void list_start(std::string_view config, bool include_tests, bool include_examples, std::string_view source_dir)
+    void source_list(const source_inventory& inventory)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("list_start") << [&](std::ostream& os){
-            os << ",\"config\":\"" << escape(config) << "\"";
-            os << ",\"include_tests\":" << (include_tests ? "true" : "false");
-            os << ",\"include_examples\":" << (include_examples ? "true" : "false");
-            os << ",\"source_dir\":\"" << escape(source_dir) << "\"";
+            os << ",\"config\":\"" << escape(inventory.config) << "\"";
+            os << ",\"include_tests\":" << (inventory.include_tests ? "true" : "false");
+            os << ",\"include_examples\":" << (inventory.include_examples ? "true" : "false");
+            os << ",\"source_dir\":\"" << escape(inventory.source_dir) << "\"";
         };
-    }
-
-    void unit(std::string_view unit_id,
-              std::string_view path,
-              std::string_view module_name,
-              std::string_view kind,
-              std::span<const std::string> imports,
-              int level,
-              bool has_main,
-              bool is_test,
-              bool is_modular)
-    {
-        auto lock = std::lock_guard<std::mutex>{m.mutex};
-        m.json << m.jsonl("unit") << [&](std::ostream& os){
-            os << ",\"unit\":\"" << escape(unit_id) << "\"";
-            os << ",\"path\":\"" << escape(path) << "\"";
-            if(!module_name.empty())
-                os << ",\"module\":\"" << escape(module_name) << "\"";
-            os << ",\"kind\":\"" << escape(kind) << "\"";
-            write_string_array(os, "imports", imports);
-            if(level >= 0)
-                os << ",\"level\":" << level;
-            os << ",\"has_main\":" << (has_main ? "true" : "false");
-            os << ",\"is_test\":" << (is_test ? "true" : "false");
-            os << ",\"is_modular\":" << (is_modular ? "true" : "false");
-        };
-    }
-
-    void list_summary(int units_total, int main_count, int test_count, int max_level)
-    {
-        auto lock = std::lock_guard<std::mutex>{m.mutex};
+        for(const auto& unit : inventory.units)
+        {
+            m.json << m.jsonl("unit") << [&](std::ostream& os){
+                os << ",\"unit\":\"" << escape(unit.unit) << "\"";
+                os << ",\"path\":\"" << escape(unit.path) << "\"";
+                if(!unit.module.empty())
+                    os << ",\"module\":\"" << escape(unit.module) << "\"";
+                os << ",\"kind\":\"" << escape(unit.kind) << "\"";
+                write_string_array(os, "imports", unit.imports);
+                if(unit.level >= 0)
+                    os << ",\"level\":" << unit.level;
+                os << ",\"has_main\":" << (unit.has_main ? "true" : "false");
+                os << ",\"is_test\":" << (unit.is_test ? "true" : "false");
+                os << ",\"is_modular\":" << (unit.is_modular ? "true" : "false");
+            };
+        }
         m.json << m.jsonl("list_summary") << [&](std::ostream& os){
-            os << ",\"units_total\":" << units_total;
-            os << ",\"main_count\":" << main_count;
-            os << ",\"test_count\":" << test_count;
-            os << ",\"max_level\":" << max_level;
+            os << ",\"units_total\":" << inventory.units.size();
+            os << ",\"main_count\":" << inventory.main_count;
+            os << ",\"test_count\":" << inventory.test_count;
+            os << ",\"max_level\":" << inventory.max_level;
         };
     }
 };
 
-} // namespace cb_jsonl
+} // namespace cb::output::jsonl
 
 

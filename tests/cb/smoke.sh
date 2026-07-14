@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, compile_failure, link_failure, test_link_failure, implementation_pcm, test_lifecycle, cache_invalidate, profile_change, cache_status"
+      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_list, compile_failure, link_failure, test_link_failure, implementation_pcm, test_lifecycle, cache_invalidate, profile_change, cache_status"
       exit 0
       ;;
     *)
@@ -102,6 +102,25 @@ test_compile_start() {
   assert_compile_start_end_pairs
   assert_jsonl_contains '"rebuild_reason":"source_stale"' "compile_start_rebuild_reason"
   end_case compile_start
+}
+
+test_source_list() {
+  should_run source_list || return 0
+  begin_case source_list
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  run_cb_list "${work_dir}"
+  assert_jsonl_event_count list_start 1 "single_list_start"
+  assert_jsonl_event_count unit 1 "single_list_unit"
+  assert_jsonl_event_count list_summary 1 "single_list_summary"
+  assert_jsonl_event_value list_start config debug "list_config"
+  assert_jsonl_event_value list_start include_tests true "list_includes_tests"
+  assert_jsonl_event_value unit path hello.c++ "list_unit_path"
+  assert_jsonl_event_value unit kind non_module "list_unit_kind"
+  assert_jsonl_event_value list_summary units_total 1 "list_units_total"
+  assert_jsonl_event_value list_summary main_count 1 "list_main_count"
+  end_case source_list
 }
 
 test_compile_failure() {
@@ -283,6 +302,7 @@ main() {
   test_cache_hit
   test_link_cache_hit
   test_compile_start
+  test_source_list
   test_compile_failure
   test_link_failure
   test_test_link_failure
