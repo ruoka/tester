@@ -45,7 +45,7 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 
 - ✅ Regex and substring tag filters via `--tags=`.
 - 📋 Document bracket-tag convention (`[module]` in scenario names) in one canonical example table.
-- ✅ `test_runner --list --jsonl`: `test_list_start`, `registered_test`, `test_list_summary`.
+- ✅ `test_runner --list --jsonl=failures`: `test_list_start`, `registered_test`, `test_list_summary`.
 
 ### 2.2 BDD ergonomics
 
@@ -58,7 +58,7 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 - ✅ `priority` and `depends_on` fields on `test_case`.
 - 📋 Expose dependency graph in `--list` output.
 - 📋 Fail fast with a clear message when dependency cycle is detected.
-- ✅ Framework self-tests in `tester/*.test.c++` tagged `[self]`; CI runs `./tools/CB.sh debug test --jsonl --tags='\[self\]'` and requires `summary.passed`.
+- ✅ Framework self-tests in `tester/*.test.c++` tagged `[self]`; CI runs `./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'` and requires `summary.passed`.
 
 ### 2.4 Matcher naming in JSONL
 
@@ -78,7 +78,7 @@ Machine-parseable test and build output for CI and automation. Human output rema
 ### 3.1 Structured assertion events
 
 - ✅ `assertion_failed` / `assertion_passed` with `test_id`, `matcher`, `actual`, `expected`, `file`, `line`, `column`.
-- ✅ `assertion_failed` always emitted in JSONL mode; `assertion_passed` when `--jsonl-output=always` (default policy: `failures`).
+- ✅ Unified `--jsonl=summary|failures|trace`; failed assertions in failures/trace and passing assertions in trace.
 - ✅ `message` on `assertion_failed` / `assertion_passed` for exception assertions (`require_nothrow`, `check_throws*`, …).
 - 📋 Add `expression` (source-level) field for non-comparison assertions (needs macro infrastructure).
 - 📋 Document event ordering: assertion events stream during execution; `test` records batch at finalize time.
@@ -92,6 +92,7 @@ Machine-parseable test and build output for CI and automation. Human output rema
 - ✅ `failed_test_ids: [...]` in `summary` / `run_end`.
 - ✅ `first_failure: { test_id, file, line, message }` for direct navigation.
 - ✅ `slowest` JSON array in `summary` when `--slowest=N` is set.
+- ✅ Compact summary/failures modes suppress case events, passing test rollups, duplicate `run_end`, and trace-only fields.
 
 ### 3.3 Exception metadata
 
@@ -121,11 +122,12 @@ Machine-parseable test and build output for CI and automation. Human output rema
 - ✅ `cache_hit: true` on `compile_end` when incremental compile skips a translation unit.
 - ✅ `rebuild_reason` on `compile_end` when `cache_hit:false` (e.g. `source_stale`, `pcm_stale:<module>`, `dependency_pcm_stale:<module>`, `profile_change`).
 - ✅ `profile_changed` event with `profile_diff` on profile mismatch (scalar fields + token diff on `compile`/`cpp`; not repeated on each `compile_end`).
+- ✅ Compact CB modes suppress successful command/TU events and enrich `build_end` with compile/link/cache/failure totals.
 
 ### 3.7 Recommended automation invocation
 
 ```bash
-./tools/CB.sh debug test --jsonl --jsonl-output=always -- --tags='\[module\]'
+./tools/CB.sh debug test --jsonl=failures --tags='\[module\]'
 ```
 
 `--tags` and `--list` may be passed directly after `test` (no `--` required). Use `--` only for uncommon `test_runner` flags.
@@ -140,7 +142,7 @@ Design rationale and comparison with CMake, Make, and other build tools: [`docs/
 
 - ✅ Incremental compile cache (`object_cache_map`) and link cache (`link_cache_map`); each level's compile decisions are completed against a stable cache before workers start, failed workers are joined, and cache indexes use checked temporary-file replacement.
 - ✅ Object-cache profile header (`format=cb-object-cache-v3`) with toolchain fields (`config`, `static_link`, `llvm`, `cxx`, `cxx_sig`, `clang_ver`, `std_cppm` as `path@size:mtime_ns`, `compile` / `cpp` including `--compile-flags`); invalidates on profile mismatch (`rebuild_reason: "profile_change"`).
-- ✅ CB smoke harness (`tests/cb/`) and CI `cb-smoke` job (`profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `source_list`, `compile_failure`, `link_failure`, `test_link_failure`, `implementation_pcm`, `test_lifecycle`, `cache_invalidate`, `profile_change`, `cache_status`).
+- ✅ CB smoke harness (`tests/cb/`) and CI `cb-smoke` job, including summary/failures/trace mode contracts.
 - ✅ `cache status` subcommand (human + JSONL `cache_status`).
 - ✅ `cache invalidate` subcommand (human + JSONL `cache_invalidate_end`).
 - ✅ `profile_changed` JSONL event (single `profile_diff` on profile mismatch).
@@ -159,7 +161,7 @@ Design rationale and comparison with CMake, Make, and other build tools: [`docs/
 
 - ✅ Auto-link `test_runner` with discovered `*.test.c++` objects.
 - ✅ Positional filter after `test` (substring on test id).
-- ✅ Convenience forwarding to `test_runner` without `--` for: `--tags=`, `--list`, `--output=jsonl`, `--jsonl-output=…`, `--slowest=…`, `--result`, `--help`, and global `--jsonl`.
+- ✅ Convenience forwarding to `test_runner` without `--` for: `--tags=`, `--list`, `--jsonl[=summary|failures|trace]`, `--jsonl-output-max-bytes=…`, `--slowest=…`, `--result`, and `--help`.
 - ✅ Positional filter after `test` no longer consumes flags that start with `-` or known test_runner tokens.
 - 📋 `test --watch` mode (rebuild + rerun on file change).
 
@@ -204,7 +206,7 @@ Per-project wrappers compile `cb.c++` and invoke it with the right include paths
 ### 5.2 Robustness
 
 - ✅ Cross-OS binary rebuild detection and `std.cppm` existence checks in `CB.sh.core` (all wrappers).
-- ✅ JSONL-safe wrapper logging (`cb_log` → stderr when `--jsonl` / `--output=jsonl`).
+- ✅ JSONL-safe wrapper logging (`cb_log` → stderr when `--jsonl[=summary|failures|trace]`).
 - ✅ `NET_DISABLE_NETWORK_TESTS` sandbox hook only enabled in net wrapper (`CB_SANDBOX_DISABLE_NETWORK_TESTS=1`).
 
 ### 5.3 Sandbox & CI

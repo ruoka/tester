@@ -19,6 +19,8 @@
 
 namespace cb::output::jsonl {
 
+enum class jsonl_mode { summary, failures, trace };
+
 using ::jsonl::escape;
 
 inline std::string join_json_strings(std::span<const std::string> values)
@@ -82,6 +84,15 @@ struct observer final : cb::output::observer
         std::ostream& json;
         ::jsonl::jsonl_context<std::ostream> jsonl;
         std::mutex mutex{};
+        jsonl_mode mode = jsonl_mode::failures;
+        std::size_t compile_total = 0;
+        std::size_t compile_rebuilt = 0;
+        std::size_t compile_cache_hits = 0;
+        std::size_t compile_failed = 0;
+        std::size_t links_total = 0;
+        std::size_t link_cache_hits = 0;
+        std::size_t link_failed = 0;
+        std::size_t commands_failed = 0;
 
         explicit state(std::ostream& stream) : json{stream}, jsonl{stream} {}
     };
@@ -90,7 +101,15 @@ struct observer final : cb::output::observer
 
     explicit observer(std::ostream& stream) : m{stream} {}
 
-    bool machine_readable() const override { return true; }
+    void set_mode(jsonl_mode mode)
+    {
+        m.mode = mode;
+    }
+
+    auto mode() const
+    {
+        return m.mode;
+    }
 
     void activate() override
     {
@@ -114,6 +133,14 @@ struct observer final : cb::output::observer
     void build_start(std::string_view config, bool include_tests, bool include_examples) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.compile_total = 0;
+        m.compile_rebuilt = 0;
+        m.compile_cache_hits = 0;
+        m.compile_failed = 0;
+        m.links_total = 0;
+        m.link_cache_hits = 0;
+        m.link_failed = 0;
+        m.commands_failed = 0;
         m.json << m.jsonl("build_start") << [&](std::ostream& os){
             os << ",\"config\":\"" << escape(config) << "\"";
             os << ",\"include_tests\":" << (include_tests ? "true" : "false");
@@ -128,6 +155,17 @@ struct observer final : cb::output::observer
         m.json << m.jsonl("build_end") << [&](std::ostream& os){
             os << ",\"ok\":" << (ok ? "true" : "false");
             os << ",\"duration_ms\":" << duration.count();
+            if(m.mode != jsonl_mode::trace)
+            {
+                os << ",\"compile_total\":" << m.compile_total;
+                os << ",\"compile_rebuilt\":" << m.compile_rebuilt;
+                os << ",\"compile_cache_hits\":" << m.compile_cache_hits;
+                os << ",\"compile_failed\":" << m.compile_failed;
+                os << ",\"links_total\":" << m.links_total;
+                os << ",\"link_cache_hits\":" << m.link_cache_hits;
+                os << ",\"link_failed\":" << m.link_failed;
+                os << ",\"commands_failed\":" << m.commands_failed;
+            }
         };
     }
 
@@ -163,6 +201,9 @@ struct observer final : cb::output::observer
 
     void command_start(std::string_view cmd, std::span<const std::string> argv) override
     {
+        if(m.mode != jsonl_mode::trace)
+            return;
+
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("command_start") << [&](std::ostream& os){
             os << ",\"cmd\":\"" << escape(cmd) << "\"";
@@ -173,9 +214,15 @@ struct observer final : cb::output::observer
     void command_end(std::string_view cmd, std::span<const std::string> argv, bool ok, int exit_code, std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
+        if(not ok)
+            ++m.commands_failed;
+        if(m.mode == jsonl_mode::summary || (m.mode == jsonl_mode::failures && ok))
+            return;
+
         const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started);
         m.json << m.jsonl("command_end") << [&](std::ostream& os){
-            os << ",\"cmd\":\"" << escape(cmd) << "\"";
+            if(m.mode == jsonl_mode::trace)
+                os << ",\"cmd\":\"" << escape(cmd) << "\"";
             write_argv(os, argv);
             os << ",\"ok\":" << (ok ? "true" : "false");
             os << ",\"exit_code\":" << exit_code;
@@ -185,6 +232,9 @@ struct observer final : cb::output::observer
 
     void profile_changed(std::string_view reason, const object_cache_profile_diff& diff) override
     {
+        if(m.mode == jsonl_mode::summary)
+            return;
+
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("profile_changed") << [&](std::ostream& os){
             os << ",\"reason\":\"" << escape(reason) << "\"";
@@ -234,6 +284,9 @@ struct observer final : cb::output::observer
                        std::string_view module_name,
                        std::string_view rebuild_reason = {}) override
     {
+        if(m.mode != jsonl_mode::trace)
+            return;
+
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("compile_start") << [&](std::ostream& os){
             os << ",\"source_path\":\"" << escape(source_path) << "\"";
@@ -254,6 +307,14 @@ struct observer final : cb::output::observer
                   std::chrono::steady_clock::time_point finished) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
+        ++m.links_total;
+        if(cache_hit)
+            ++m.link_cache_hits;
+        if(not ok)
+            ++m.link_failed;
+        if(m.mode == jsonl_mode::summary || (m.mode == jsonl_mode::failures && ok))
+            return;
+
         const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started);
         m.json << m.jsonl("link_end") << [&](std::ostream& os){
             os << ",\"executable_path\":\"" << escape(executable_path) << "\"";
@@ -274,6 +335,16 @@ struct observer final : cb::output::observer
                      std::string_view rebuild_reason = {}) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
+        ++m.compile_total;
+        if(cache_hit)
+            ++m.compile_cache_hits;
+        else
+            ++m.compile_rebuilt;
+        if(not ok)
+            ++m.compile_failed;
+        if(m.mode == jsonl_mode::summary || (m.mode == jsonl_mode::failures && ok))
+            return;
+
         const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started);
         m.json << m.jsonl("compile_end") << [&](std::ostream& os){
             os << ",\"source_path\":\"" << escape(source_path) << "\"";

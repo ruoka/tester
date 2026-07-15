@@ -28,7 +28,7 @@ auto register_tests()
     test_case("test_case [self] tag filter alpha only") = []
     {
         const auto result = run_test_runner({
-            "--output=jsonl",
+            "--jsonl=failures",
             "--list",
             "--tags=[alpha]"});
 
@@ -50,14 +50,14 @@ auto register_tests()
     test_case("test_case [self] hidden tag excluded unless requested") = []
     {
         const auto default_list = run_test_runner({
-            "--output=jsonl",
+            "--jsonl=failures",
             "--list"});
 
         require_eq(default_list.exit_code, 0);
         require_false(default_list.stdout_text.contains(".hidden-probe"));
 
         const auto tagged_list = run_test_runner({
-            "--output=jsonl",
+            "--jsonl=failures",
             "--list",
             "--tags=[.hidden-probe]"});
 

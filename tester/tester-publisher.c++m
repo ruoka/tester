@@ -30,13 +30,6 @@ export const data::output_config& cfg()
 }
 
 export void set_slowest(std::size_t n) { g_config.slowest = n; }
-export void set_assertion_output(std::string_view policy)
-{
-    if(policy == "never") g_config.assertion_output = data::assertion_output_policy::never;
-    else if(policy == "always") g_config.assertion_output = data::assertion_output_policy::always;
-    else g_config.assertion_output = data::assertion_output_policy::failures;
-}
-export void set_output_max_bytes(std::size_t n) { g_config.output_max_bytes = n; }
 
 export void set_run_argv(int argc, char** argv)
 {
@@ -138,10 +131,7 @@ export void print_test_cases(std::function<bool(const data::test_case&)> include
 
 export void print_test_results()
 {
-    notify([&](observer& target)
-    {
-        target.test_results(cfg().assertion_output, cfg().output_max_bytes);
-    });
+    notify([&](observer& target){ target.test_results(); });
 }
 
 export void print_test_failures()
@@ -212,11 +202,8 @@ export void exception(const data::test_case& tc, const std::exception& ex)
 export template<typename A,typename E>
 void assertion(const bool ok, const A& actual, const E& expected, const std::source_location location1, const std::source_location location2 = std::source_location::current(), std::string_view message = {})
 {
-    const auto policy = cfg().assertion_output;
     const auto event = assertion_event{
         ok,
-        !get_current_test_id().empty()
-            && (!ok || policy == data::assertion_output_policy::always),
         extract_matcher_name(location2),
         display_matcher_name(location2),
         observe_value(actual),

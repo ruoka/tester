@@ -68,7 +68,7 @@ git clone --recursive https://github.com/ruoka/tester.git
 cd tester
 
 # Framework contract tests (CI gate)
-./tools/CB.sh debug test --jsonl --tags='\[self\]'
+./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'
 
 # Build
 ./tools/CB.sh debug build
@@ -206,14 +206,14 @@ Working copies: `examples/readme_unit_example.*`, `examples/readme_bdd_example.t
 ./tools/CB.sh debug test --list
 
 # Machine-readable catalogue
-./tools/CB.sh debug test --list --jsonl
+./tools/CB.sh debug test --list --jsonl=failures
 ```
 
 Pass options through to `test_runner` after `--`, or use CB shortcuts directly:
 
 ```bash
-./tools/CB.sh debug test -- --output=jsonl --jsonl-output=always --slowest=10
-./tools/CB.sh debug test --jsonl --tags='\[self\]'
+./tools/CB.sh debug test -- --jsonl=trace --slowest=10
+./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'
 ./tools/CB.sh debug test -- --result   # stable RESULT: line on stderr in JSONL mode
 ```
 
@@ -223,7 +223,7 @@ Pass options through to `test_runner` after `--`, or use CB shortcuts directly:
 - **Substring** — `--tags=simulator` matches any test name containing `simulator`
 - **Regex** — `--tags="scenario.*Happy"`; invalid regex falls back to substring matching
 
-The runner prints human-readable results on stderr (stdout in human mode), returns non-zero when any test fails, and emits JSONL on stdout with `--output=jsonl`.
+The runner prints human-readable results on stderr (stdout in human mode), returns non-zero when any test fails, and emits JSONL on stdout with `--jsonl[=summary|failures|trace]`.
 
 ### Makefile runner (legacy)
 
@@ -244,7 +244,7 @@ Tester ships with **CB** (`tools/cb.c++`), a module-aware build system in a sing
 ./tools/CB.sh release build --build-tests   # compile tests without running
 ./tools/CB.sh debug test
 ./tools/CB.sh debug list           # human TU inventory
-./tools/CB.sh debug list --jsonl   # machine-readable inventory
+./tools/CB.sh debug list --jsonl=failures   # machine-readable inventory
 ./tools/CB.sh debug clean
 ./tools/CB.sh debug cache status      # inspect object-cache profile
 ./tools/CB.sh debug cache invalidate  # drop cache indexes only (lighter than clean)
@@ -260,24 +260,27 @@ Artifacts land in `build-<os>-<config>/` (`pcm/`, `obj/`, `bin/`, `cache/`). Obj
 
 Tester emits **JSONL on stdout** (`schema: "tester-jsonl"`) for test runs and CB JSONL for builds. Parse stdout only; treat stderr as human wrapper logs.
 
-**For AI agents and automation**, start with [`AGENTS.md`](AGENTS.md).
+**For AI agents and automation**, start with [`AGENTS.md`](AGENTS.md). For a practical assessment and token-efficient workflow, see [Recommendation for AI Coding Agents](docs/ai-agent-recommendation.md).
 
 ### Canonical commands
 
 ```bash
-./tools/CB.sh debug test --jsonl --jsonl-output=always --tags='\[self\]'  # scoped run
-./tools/CB.sh debug test --list --jsonl                                   # test catalogue
-./tools/CB.sh debug build --jsonl                                         # compile telemetry
-./tools/CB.sh debug list --jsonl                                          # TU inventory
+./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'  # agent/debug loop
+./tools/CB.sh debug test --jsonl=summary --tags='\[self\]'   # CI aggregate
+./tools/CB.sh debug test --list --jsonl=failures             # test catalogue
+./tools/CB.sh debug build --jsonl=trace                       # full compile telemetry
+./tools/CB.sh debug list --jsonl=failures                     # TU inventory
 ```
 
-**Flags:**
-- `--jsonl` — machine-readable stdout for CB and (on `test`) `test_runner`
-- `--jsonl-output=always` — emit `assertion_passed` as well as `assertion_failed` (default: failures only)
+**Unified JSONL modes:**
+- `--jsonl` / `--jsonl=failures` — aggregate rollups plus actionable failures (default)
+- `--jsonl=summary` — lifecycle and final aggregates only
+- `--jsonl=trace` — every build/test event, including passing assertions
+- `--jsonl-output-max-bytes=N` — cap captured failed-test output
 
 Escape bracket tags in shell: `--tags='\[self\]'`.
 
-### Test catalogue (`test --list --jsonl`)
+### Test catalogue (`test --list --jsonl=failures`)
 
 | Event | Purpose |
 |-------|---------|
@@ -289,33 +292,33 @@ Escape bracket tags in shell: `--tags='\[self\]'`.
 
 | Event | When emitted |
 |-------|----------------|
-| `assertion_failed` | Every failed assertion (always) |
-| `assertion_passed` | Only when `--jsonl-output=always` |
+| `assertion_failed` | In `failures` and `trace` modes |
+| `assertion_passed` | In `trace` mode |
 
 Fields: `test_id`, `matcher`, `actual`, `expected`, `file`, `line`, `column`, optional `message`.
 
 `matcher` is the public wrapper name (e.g. `require_eq`), not the generic `check`/`require` hub. If you see `"matcher":"require"` on a `require_eq` line, rebuild test objects — template matchers are instantiated in `*.test.c++` translation units.
 
-Other test events: `run_start`, `run_end`, `case`, `test`, `message`, `exception`, `summary`, `eof`.
+Trace mode emits all test events: `run_start`, `run_end`, `case`, `test`, `message`, `exception`, `summary`, and `eof`. Failures mode suppresses passing cases/tests and duplicate `run_end`; summary mode emits only lifecycle and aggregate events.
 
 - `run_start` — `cwd`, structured `argv`, `config` (via `TESTER_CONFIG` when CB spawns the child), `env` for curated vars when set
 - `exception` — demangled `exception_type`, `message`, `file`, `line`
 - `summary` / `run_end` — `failed_test_ids`, `first_failure`
 
-**Correlation:** filter `run_id=<cb>` or `parent_run_id=<cb>` to tie `list` → `build` → `test` from one `./tools/CB.sh … --jsonl` invocation.
+**Correlation:** filter `run_id=<cb>` or `parent_run_id=<cb>` to tie `list` → `build` → `test` from one JSONL invocation.
 
 ### CB build JSONL
 
 | Event | Purpose |
 |-------|---------|
-| `build_start` / `build_end` | Whole build phase |
-| `command_start` / `command_end` | Each subprocess (`cmd` + structured `argv`) |
+| `build_start` / `build_end` | Whole build; compact modes add compile/link/cache/failure totals |
+| `command_start` / `command_end` | Every subprocess in trace; failed commands only in failures |
 | `profile_changed` | Object-cache profile mismatch (`reason: "profile_change"`, `profile_diff`) — see [object cache profile](docs/cb.md#object-cache-profile) |
 | `cache_status` | `cache status` inspection |
 | `cache_invalidate_end` | `cache invalidate` result |
-| `compile_start` | Per TU before compile or cache skip |
-| `compile_end` | Per TU (`source_path`, `cache_hit`, `rebuild_reason`, `duration_ms`, paths) |
-| `link_end` | Per executable (`executable_path`, `cache_hit`, `ok`, `duration_ms`) |
+| `compile_start` | Per TU in trace mode |
+| `compile_end` | Per TU in trace; failed compilations only in failures |
+| `link_end` | Per executable in trace; failed links only in failures |
 | `list_start` / `unit` / `list_summary` | TU inventory (`module`, `imports[]`, `level`, `is_test`, …) |
 
 ## How Tester Compares
@@ -433,6 +436,7 @@ MIT — see [LICENSE](LICENSE).
 
 - [docs/cb.md](docs/cb.md) — C++ Builder design, workflows, and comparison with CMake/Make
 - [AGENTS.md](AGENTS.md) — JSONL automation guide for CI and AI agents
+- [docs/ai-agent-recommendation.md](docs/ai-agent-recommendation.md) — practical benefits and token-efficient agent workflow
 - [docs/tester-improvements.md](docs/tester-improvements.md) — improvement backlog
 - [YarDB](https://github.com/ruoka/YarDB) — public reference project using tester + CB (P1204R0 layout)
 - [P1204R0](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1204r0.html) — canonical C++ project structure

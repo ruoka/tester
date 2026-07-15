@@ -16,7 +16,7 @@ CB_BIN="${CB_BIN:-$CB_TOOLS_DIR/cb}"
 
 CB_JSONL_MODE=false
 for __cb_arg in "$@"; do
-  if [[ "$__cb_arg" == "--jsonl" || "$__cb_arg" == "--output=jsonl" || "$__cb_arg" == "--output=JSONL" ]]; then
+  if [[ "$__cb_arg" == "--jsonl" || "$__cb_arg" == --jsonl=* ]]; then
     CB_JSONL_MODE=true
     break
   fi

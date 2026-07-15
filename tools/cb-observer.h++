@@ -100,7 +100,6 @@ class observer
 public:
     virtual ~observer() = default;
 
-    virtual bool machine_readable() const { return false; }
     virtual void activate() {}
     virtual void finish() {}
     virtual std::string_view run_id() const { return {}; }
@@ -248,14 +247,6 @@ void notify(Method method, Args&&... args)
 {
     for(auto target : observers)
         std::invoke(method, target.get(), args...);
-}
-
-inline bool machine_readable()
-{
-    return std::ranges::any_of(observers, [](const auto target)
-    {
-        return target.get().machine_readable();
-    });
 }
 
 inline std::string_view run_id()

@@ -21,7 +21,5 @@ namespace tester
 
     // Public API for configuration (delegates to the output module)
     export void set_slowest(std::size_t n) { publisher::set_slowest(n); }
-    export void set_assertion_output(std::string_view policy) { publisher::set_assertion_output(policy); }
-    export void set_output_max_bytes(std::size_t n) { publisher::set_output_max_bytes(n); }
     export void set_run_argv(int argc, char** argv) { publisher::set_run_argv(argc, argv); }
 }

@@ -4,25 +4,25 @@ Guidance for AI agents and automation using this repo’s JSONL output.
 
 ## Golden rule
 
-Use **`--jsonl`**. Parse **stdout only** (one JSON object per line, `schema: "tester-jsonl"`). Treat **stderr** as human/CB wrapper logs — do not parse it for pass/fail.
+Use **`--jsonl=failures`**. Parse **stdout only** (one JSON object per line, `schema: "tester-jsonl"`). Treat **stderr** as human/CB wrapper logs — do not parse it for pass/fail.
 
 ## Canonical commands
 
 ```bash
 # Framework contract tests (CI gate — preferred while fixing)
-./tools/CB.sh debug test --jsonl --jsonl-output=always --tags='\[self\]'
+./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'
 
 # Translation-unit inventory (modules, imports, compile levels)
-./tools/CB.sh debug list --jsonl
+./tools/CB.sh debug list --jsonl=failures
 
 # Test catalogue (ids, tags, depends_on for scoped runs)
-./tools/CB.sh debug test --list --jsonl
+./tools/CB.sh debug test --list --jsonl=failures
 
 # Full suite (standalone only — includes examples/)
-./tools/CB.sh debug test --jsonl --jsonl-output=always
+./tools/CB.sh debug test --jsonl=failures
 
 # Build with compile telemetry
-./tools/CB.sh debug build --jsonl
+./tools/CB.sh debug build --jsonl=trace
 ```
 
 **Tag syntax:** bracket tags must be escaped in shell: `--tags='\[self\]'`. Substring/regex filters also work: `--tags='Test case 3'`.
@@ -33,40 +33,41 @@ Use **`--jsonl`**. Parse **stdout only** (one JSON object per line, `schema: "te
 
 **Embedded in a parent repo** (fixer, YarDB, net, xson): the parent's `AGENTS.md` applies — scope with the parent project's tags (`[fixer]`, `[yardb]`, etc.), not `[self]`. See [docs/cb.md](docs/cb.md).
 
-**Flags:**
-- `--jsonl` — machine-readable stdout for CB and (on `test`) test_runner
-- `--jsonl-output=always` — emit `assertion_passed` as well as `assertion_failed` (default: failures only)
+**Unified JSONL modes:**
+- `--jsonl` / `--jsonl=failures` — aggregates plus actionable failures (recommended)
+- `--jsonl=summary` — lifecycle and final aggregates only
+- `--jsonl=trace` — complete build/test telemetry, including passing assertions
 
 ## Triage workflow (test failure)
 
-1. Find the last `summary` or `run_end` on stdout.
+1. Find the last `summary` on stdout (`run_end` is trace-only).
 
 2. Check the result:
-   - If `passed` (or `run_end.passed`) is `true` → this scoped run succeeded. You're done.
+   - If `passed` is `true` → this scoped run succeeded. You're done.
    - If `false`:
      - Read `first_failure` — `file`, `line`, `message`, and usually the failing `matcher` with `actual` / `expected`. Open the source at that location.
      - Read `failed_test_ids` for the full failure set.
 
-3. For detailed diagnosis, grep stdout for `assertion_failed` (use `assertion_passed` as well when you passed `--jsonl-output=always`):
+3. For detailed diagnosis, inspect `assertion_failed`:
    - `matcher` — e.g. `require_eq`, `check_contains` (not generic `require` / `check`)
    - `actual`, `expected`, `file`, `line`, `column`
 
 4. Fix the source, then re-run the **exact same scoped command**.
 
-If `matcher` is `"require"` or `"check"` on a `require_eq` / `check_eq` line, stale test objects are likely — rebuild test TUs (`./tools/CB.sh debug build --jsonl`), not only `tester_assertions.pcm`.
+If `matcher` is `"require"` or `"check"` on a `require_eq` / `check_eq` line, stale test objects are likely — rebuild test TUs (`./tools/CB.sh debug build --jsonl=failures`), not only `tester_assertions.pcm`.
 
 ## Triage workflow (build failure)
 
 1. Find `command_end` with `"ok":false` — use the `argv` array to rerun without shell parsing.
-2. Check `compile_end` events: `cache_hit:false` means that translation unit recompiled; `cache_hit:true` means incremental skip. When `rebuild_reason` is `profile_change`, read the single `profile_changed` event for `profile_diff` (not repeated on each `compile_end`).
+2. In failures mode, inspect failed `compile_end` and `command_end` events. Use trace mode when successful per-TU cache/rebuild telemetry is needed.
 3. A failed compiler invocation emits `compile_end` with `ok:false`; CB joins the remaining workers before emitting one failed `build_end` and exiting.
-4. Rebuild: `./tools/CB.sh debug build --jsonl`, then re-run tests.
+4. Rebuild: `./tools/CB.sh debug build --jsonl=failures`, then re-run tests.
 
 ## Event reference (stdout)
 
 ### Correlation
 
-Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` → `test` in one `CB … --jsonl` invocation.
+Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` → `test`.
 
 | Field | On | Meaning |
 |-------|-----|---------|
@@ -76,7 +77,7 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 | `pid` | Every event | OS process id (`test_runner` differs from CB) |
 | `ts_unix_ms` | Every event | Unix timestamp (ms) |
 
-### Test catalogue (`test --list --jsonl`)
+### Test catalogue (`test --list --jsonl=failures`)
 
 | Event | Use |
 |-------|-----|
@@ -88,10 +89,10 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 
 | Event | Use |
 |-------|-----|
-| `run_start` / `run_end` | Run boundaries; `run_start` has `cwd`, `argv`, `config` (from `TESTER_CONFIG` when CB spawns the child), `env` (curated test-relevant vars when set, e.g. `NET_DISABLE_NETWORK_TESTS`, `CURSOR_SANDBOX`), `passed`, `duration_ms` on `run_end` |
-| `assertion_failed` | Always on failed assertions (`matcher`, `actual`, `expected`, optional `message`) |
-| `assertion_passed` | With `--jsonl-output=always` |
-| `test` | Per-test rollup (`success`, `output`, assertion counts) |
+| `run_start` / `run_end` | `run_start` is always emitted; `run_end` is trace-only |
+| `assertion_failed` | Failures and trace modes (`matcher`, `actual`, `expected`, optional `message`) |
+| `assertion_passed` | Trace mode |
+| `test` | Failed tests in failures mode; every test in trace mode |
 | `summary` | `tests_ok`/`tests_total`, `failed_test_ids`, `first_failure` |
 | `exception` | Uncaught exceptions (`exception_type`, `message`, `file`, `line`) |
 | `eof` | End of JSONL stream |
@@ -103,14 +104,14 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 | `list_start` | TU inventory start (`config`, `include_tests`, `include_examples`, `source_dir`) |
 | `unit` | Per translation unit (`path`, `module`, `kind`, `imports[]`, `level`, `has_main`, `is_test`, `is_modular`) |
 | `list_summary` | Inventory totals (`units_total`, `main_count`, `test_count`, `max_level`) |
-| `build_start` / `build_end` | Whole build; exactly one pair per `build` or `test` invocation (test-runner link included) |
-| `command_start` / `command_end` | Subprocesses (`cmd` + `argv`) |
+| `build_start` / `build_end` | Whole build; compact modes add aggregate compile/link/cache/failure counts |
+| `command_start` / `command_end` | Every command in trace; failed commands only in failures |
 | `profile_changed` | Once per build when object-cache profile mismatches (`reason`, `profile_diff`) |
 | `cache_status` | `cache status` subcommand (`object_cache_path`, `profile_match`, entry counts, `current_profile`) |
 | `cache_invalidate_end` | `cache invalidate` subcommand (`object_cache_removed`, `executable_cache_removed`, `compiler_stamp_removed`) |
-| `compile_start` | Per TU before compile or cache skip (`source_path`, optional `rebuild_reason`) |
-| `compile_end` | Per TU (`source_path`, `cache_hit`, `rebuild_reason` when `cache_hit:false`, `duration_ms`, paths) |
-| `link_end` | Per executable (`executable_path`, `cache_hit`, `ok`, `duration_ms`) |
+| `compile_start` | Per TU in trace mode |
+| `compile_end` | Per TU in trace; failed compilations only in failures |
+| `link_end` | Per executable in trace; failed links only in failures |
 | `cb_error` | CB fatal/diagnostic |
 
 **`unit.is_test`:** `true` for `*.test.c++` / `*.test.c++m`, or when a path segment is exactly `test/` or `tests/`. `false` for sources under a `tester/` framework tree (library modules, not project tests) — including nested paths like `deps/xson/deps/tester/`. Does not match the substring `test` inside names such as `tester` or `test_exception_bug`.
@@ -118,9 +119,9 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 ## Example agent loop
 
 ```text
-1. ./tools/CB.sh debug build --jsonl
-2. ./tools/CB.sh debug test --jsonl --jsonl-output=always --tags='\[self\]'
-3. Parse last `summary` or `run_end` → check `passed`
+1. ./tools/CB.sh debug build --jsonl=failures
+2. ./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'
+3. Parse the last `summary` → check `passed`
 4. If false: follow triage workflow (`first_failure` + `assertion_failed`) → edit → re-run the same scoped command
 ```
 

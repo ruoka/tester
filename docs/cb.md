@@ -16,7 +16,7 @@ CB is optimized for **pure C++23 module projects** that follow ruoka layout conv
 - **Incremental caching** — skips recompilation when source timestamps and transitive PCM dependencies are unchanged (`cache_hit`, `rebuild_reason` in JSONL); compile cache invalidated when the **toolchain profile** changes (flags, compiler path, `std.cppm`, …); link step skipped when object signature unchanged
 - **Parallel builds** — compiles independent translation units concurrently
 - **Test integration** — auto-discovers `*.test.c++`, links `test_runner`, forwards `test` / `--tags` / `--list` to the framework
-- **JSONL telemetry** — `list --jsonl`, `build --jsonl` with `compile_end`, structured `argv`, and `run_id` correlation with test runs
+- **JSONL telemetry** — unified summary/failures/trace modes; trace includes `compile_end` and structured `argv`
 
 Artifacts land in `build-<os>-<config>/` (`pcm/`, `obj/`, `bin/`, `cache/`). Examples: `build-linux-debug/`, `build-darwin-release/`.
 
@@ -151,7 +151,7 @@ cd tester
 
 - `tools/CB.sh` includes `tester/` sources and **examples on `test` runs** (`CB_INCLUDE_EXAMPLES_MODE=always`)
 - CB compiles itself (`cb.c++` → `build-*/bin/cb`) on first invocation via `CB.sh.core`
-- Framework contract tests: `./tools/CB.sh debug test --jsonl --tags='\[self\]'`
+- Framework contract tests: `./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'`
 
 ### Embedded (`deps/tester` in a parent repo)
 
@@ -176,17 +176,17 @@ Tester is a **dependency**, not the build entry point. The parent's wrapper owns
 ./tools/CB.sh debug test               # build and run tests
 ./tools/CB.sh debug test "substring"   # positional filter on test id
 ./tools/CB.sh debug test --tags='\[self\]'   # filter by bracket tag
-./tools/CB.sh debug test --list --jsonl      # test catalogue
-./tools/CB.sh debug list --jsonl       # translation-unit inventory
-./tools/CB.sh debug build --jsonl      # compile telemetry
-./tools/CB.sh ci --jsonl               # clean, then test (CI entry point)
+./tools/CB.sh debug test --list --jsonl=failures  # test catalogue
+./tools/CB.sh debug list --jsonl=failures         # translation-unit inventory
+./tools/CB.sh debug build --jsonl=trace            # full compile telemetry
+./tools/CB.sh ci --jsonl=summary                    # aggregate CI entry point
 ./tools/CB.sh debug clean
 ./tools/CB.sh --help
 ```
 
 Pass `std.cppm` as the **first** argument when auto-detection fails: `./tools/CB.sh /path/to/std.cppm debug build`.
 
-CB forwards common `test_runner` flags without `--`: `--tags=`, `--list`, `--jsonl`, `--jsonl-output=…`, `--slowest=…`.
+CB forwards common `test_runner` flags without `--`: `--tags=`, `--list`, `--jsonl[=summary|failures|trace]`, `--jsonl-output-max-bytes=…`, and `--slowest=…`.
 
 Environment variables for **bootstrap** (not test output): `LLVM_PATH`, `CXX`, `CB_INCLUDE_FLAGS`. See [Requirements](../README.md#requirements) in the README. macOS toolchain: [clang-modules-macos.md](clang-modules-macos.md) ([LLVM build docs](https://llvm.org/docs/GettingStarted.html)).
 
@@ -229,7 +229,7 @@ Cache indexes are written through a checked temporary file and atomically rename
 
 ## JSONL and correlation
 
-Build-phase JSONL events (`build_start`, `compile_start`, `compile_end`, `command_start`, `list_start`, `unit`, …) share `run_id` with test-phase events when CB spawns `test_runner`. Filter by `run_id` or `parent_run_id` to correlate `list` → `build` → `test` from one `./tools/CB.sh … --jsonl` invocation.
+Build-phase JSONL events share `run_id` with test-phase events when CB spawns `test_runner`. Trace mode includes per-command and per-TU events; compact modes retain aggregate `build_end`. Filter by `run_id` or `parent_run_id` to correlate build and test phases.
 
 Each `build` or `test` invocation emits exactly one `build_start` / `build_end` pair. For `test`, that pair covers source compilation, ordinary links, and the `test_runner` link; `test_start` follows it.
 
