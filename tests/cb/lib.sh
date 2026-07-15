@@ -103,7 +103,7 @@ run_cb_build() {
   local status=0
   LAST_JSONL="$(
     cd "${work_dir}"
-    "${CB_BIN}" "${STD_CPPM}" debug build --jsonl "$@" 2>/dev/null
+    "${CB_BIN}" "${STD_CPPM}" debug build --jsonl=trace "$@" 2>/dev/null
   )" || status=$?
   return "${status}"
 }
@@ -114,7 +114,7 @@ run_cb_test() {
   local status=0
   LAST_JSONL="$(
     cd "${work_dir}"
-    "${CB_BIN}" "${STD_CPPM}" debug test --jsonl "$@" 2>/dev/null
+    "${CB_BIN}" "${STD_CPPM}" debug test --jsonl=trace "$@" 2>/dev/null
   )" || status=$?
   return "${status}"
 }
@@ -125,7 +125,7 @@ run_cb_list() {
   local status=0
   LAST_JSONL="$(
     cd "${work_dir}"
-    "${CB_BIN}" "${STD_CPPM}" debug list --jsonl "$@" 2>/dev/null
+    "${CB_BIN}" "${STD_CPPM}" debug list --jsonl=trace "$@" 2>/dev/null
   )" || status=$?
   return "${status}"
 }
@@ -136,7 +136,7 @@ run_cb_cache_status() {
   local status=0
   LAST_JSONL="$(
     cd "${work_dir}"
-    "${CB_BIN}" "${STD_CPPM}" debug cache status --jsonl "$@" 2>/dev/null
+    "${CB_BIN}" "${STD_CPPM}" debug cache status --jsonl=trace "$@" 2>/dev/null
   )" || status=$?
   return "${status}"
 }
@@ -147,7 +147,7 @@ run_cb_cache_invalidate() {
   local status=0
   LAST_JSONL="$(
     cd "${work_dir}"
-    "${CB_BIN}" "${STD_CPPM}" debug cache invalidate --jsonl "$@" 2>/dev/null
+    "${CB_BIN}" "${STD_CPPM}" debug cache invalidate --jsonl=trace "$@" 2>/dev/null
   )" || status=$?
   return "${status}"
 }

@@ -194,7 +194,7 @@ clang++ -std=c++20 -stdlib=libc++ \
 ```bash
 git clone --recursive https://github.com/ruoka/tester.git
 cd tester
-./tools/CB.sh debug test --jsonl --tags='\[self\]'
+./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'
 ```
 
 Optional overrides:

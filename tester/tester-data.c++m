@@ -8,13 +8,9 @@ import std;
 namespace tester::data
 {
 
-export enum class assertion_output_policy { never, failures, always };
-
 export struct output_config
 {
     std::size_t slowest = 0;
-    assertion_output_policy assertion_output = assertion_output_policy::failures;
-    std::size_t output_max_bytes = 16384;
 };
 
 export struct test_metadata

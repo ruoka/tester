@@ -47,7 +47,7 @@ jobs:
 
       - name: Run self tests (${{ matrix.config }})
         run: |
-          ./tools/CB.sh ${{ matrix.config }} test --jsonl --tags='\[self\]' > "test_results_self_${{ matrix.config }}.jsonl"
+          ./tools/CB.sh ${{ matrix.config }} test --jsonl=failures --tags='\[self\]' > "test_results_self_${{ matrix.config }}.jsonl"
           if command -v jq >/dev/null 2>&1; then
             passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' "test_results_self_${{ matrix.config }}.jsonl")
             if [ "$passed" != "true" ]; then
@@ -141,7 +141,7 @@ jobs:
 
       - name: Run tests with examples (expect failures)
         run: |
-          ./tools/CB.sh debug --include-examples test --output=jsonl > test_results_examples.jsonl || true
+          ./tools/CB.sh debug --include-examples test --jsonl=failures > test_results_examples.jsonl || true
 
       - name: Verify expected failures
         run: |

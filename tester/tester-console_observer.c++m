@@ -340,7 +340,7 @@ export struct observer final : tester::output::observer
             human_os() << result.output;
     }
 
-    void test_results(data::assertion_output_policy, std::size_t) override
+    void test_results() override
     {
         print_test_results();
     }

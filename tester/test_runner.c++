@@ -83,15 +83,16 @@ static auto g_schema_buf = std::array<char, 64>{};
 static auto g_schema_len = std::size_t{0};
 
 constexpr auto usage =
-R"(test_runner [--help] [--list] [--tags=<tag>] [--output=<human|jsonl>] [--jsonl] [--slowest=<N>]
-            [--jsonl-output=<never|failures|always>] [--jsonl-output-max-bytes=<N>] [--result]
+R"(test_runner [--help] [--list] [--tags=<tag>]
+            [--jsonl[=<summary|failures|trace>]] [--slowest=<N>]
+            [--jsonl-output-max-bytes=<N>] [--result]
             [<tags>]
 Examples:
   test_runner
   test_runner --list
   test_runner --list --jsonl
-  test_runner --jsonl --jsonl-output=failures --slowest=10
-  test_runner --output=jsonl --jsonl-output=failures --slowest=10
+  test_runner --jsonl=failures --tags=[self]
+  test_runner --jsonl=trace --slowest=10
   test_runner --tags=scenario("My test")
   test_runner --tags=[acceptor]
   test_runner --tags="scenario.*Happy"
@@ -151,7 +152,7 @@ int main(int argc, char** argv)
     auto output_name = std::string_view{"console"};
     auto result_line = false;
     auto slowest = std::size_t{0};
-    auto assertion_output = std::string_view{"failures"};
+    auto jsonl_mode = tester::output::jsonl::jsonl_mode::failures;
     auto output_max_bytes = std::size_t{16384};
 
     for(std::string_view option : arguments)
@@ -180,13 +181,21 @@ int main(int argc, char** argv)
             continue;
         }
 
-        if(option.starts_with("--output="))
+        if(option.starts_with("--jsonl="))
         {
-            output_name = option.substr(std::string_view{"--output="}.size());
-            if(output_name == "JSONL")
-                output_name = "jsonl";
-            else if(output_name == "human")
-                output_name = "console";
+            const auto mode = option.substr(std::string_view{"--jsonl="}.size());
+            if(mode == "summary")
+                jsonl_mode = tester::output::jsonl::jsonl_mode::summary;
+            else if(mode == "failures")
+                jsonl_mode = tester::output::jsonl::jsonl_mode::failures;
+            else if(mode == "trace")
+                jsonl_mode = tester::output::jsonl::jsonl_mode::trace;
+            else
+            {
+                std::clog << "Unknown JSONL mode: " << mode << std::endl;
+                return 1;
+            }
+            output_name = "jsonl";
             continue;
         }
 
@@ -200,12 +209,6 @@ int main(int argc, char** argv)
         {
             auto value = option.substr(std::string_view{"--slowest="}.size());
             slowest = parse_usize(value).value_or(0);
-            continue;
-        }
-
-        if(option.starts_with("--jsonl-output="))
-        {
-            assertion_output = option.substr(std::string_view{"--jsonl-output="}.size());
             continue;
         }
 
@@ -232,11 +235,9 @@ int main(int argc, char** argv)
         // It handles its own internal configuration.
         tester::set_run_argv(argc, argv);
         tester::set_slowest(slowest);
-        tester::set_assertion_output(assertion_output);
-        tester::set_output_max_bytes(output_max_bytes);
         tester::output::register_observer(
             "jsonl",
-            tester::output::jsonl::observer_instance(std::cout, std::clog));
+            tester::output::jsonl::observer_instance(std::cout, std::clog, jsonl_mode, output_max_bytes));
         tester::output::register_observer(
             "console",
             tester::output::console::observer_instance(std::clog, std::clog, result_line));
@@ -255,11 +256,11 @@ int main(int argc, char** argv)
             return 0;
         }
 
-        tr.print_test_cases();
         tr.run_tests();
         tr.print_test_results();
         tr.print_test_failures();
         tr.print_test_statistics();
+        tester::publisher::emit_output_eof();
         return tr.all_tests_passed() ? 0 : 1;
     }
     catch(const tester::assertions::assertion_failure& ex)

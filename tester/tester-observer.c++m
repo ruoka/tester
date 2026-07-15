@@ -33,7 +33,6 @@ export struct observed_value
 export struct assertion_event
 {
     bool ok;
-    bool emit_event;
     std::string matcher;
     std::string display_matcher;
     observed_value actual;
@@ -62,7 +61,6 @@ export class observer
 public:
     virtual ~observer() = default;
 
-    virtual bool machine_readable() const { return false; }
     virtual void activate() {}
     virtual void emit_eof() {}
     virtual std::string_view captured_output() const { return {}; }
@@ -94,9 +92,7 @@ public:
     virtual void assertion(const assertion_event&) {}
     virtual void message(const message_event&) {}
 
-    virtual void test_results(
-        data::assertion_output_policy,
-        std::size_t) {}
+    virtual void test_results() {}
 
     virtual void test_failures() {}
 
@@ -162,14 +158,6 @@ void notify(Callback&& callback)
 {
     for(auto target : g_observers)
         callback(target.get());
-}
-
-export bool machine_readable()
-{
-    return std::ranges::any_of(g_observers, [](const auto target)
-    {
-        return target.get().machine_readable();
-    });
 }
 
 } // namespace tester::output

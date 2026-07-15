@@ -707,15 +707,6 @@ private:
             output::notify(&output::observer::info, "Building DEBUG configuration"s + (static_link ? " (static C++ stdlib)"s : ""s));
         }
 
-        if(output::machine_readable())
-        {
-            compile_flags.append_range(string_list{
-                "-fno-caret-diagnostics",
-                "-fno-show-column",
-                "-fno-show-source-location",
-            });
-        }
-
         if(static_link)
         {
             if(is_darwin)
@@ -2047,12 +2038,9 @@ public:
             env_storage[env_count++] = std::string{key} + '=' + std::string{value};
         };
         store_env("TESTER_CONFIG", detail::config_name(config));
-        if(output::machine_readable())
-        {
-            const auto parent = output::run_id();
-            if(not parent.empty())
-                store_env("TESTER_PARENT_RUN_ID", parent);
-        }
+        const auto parent = output::run_id();
+        if(not parent.empty())
+            store_env("TESTER_PARENT_RUN_ID", parent);
         for(auto i = std::size_t{}; i < env_count; ++i)
             ::putenv(env_storage[i].data());
 
@@ -2119,23 +2107,36 @@ bool is_cb_token(std::string_view arg)
         || arg == "--include-examples" || arg == "--build-tests"
         || arg == "-I" || arg == "--include" || arg == "--link-flags"
         || arg == "--compile-flags" || arg == "--extra-compile-flags"
-        || arg == "--jsonl" || arg == "--";
+        || arg == "--jsonl" || arg.starts_with("--jsonl=") || arg == "--";
 }
 
 bool is_test_runner_token(std::string_view arg)
 {
     return arg == "--list" || arg == "--jsonl" || arg == "--result" || arg == "--help"
         || arg.starts_with("--tags=")
-        || arg.starts_with("--output=")
         || arg.starts_with("--slowest=")
-        || arg.starts_with("--jsonl-output=")
+        || arg.starts_with("--jsonl=")
         || arg.starts_with("--jsonl-output-max-bytes=");
 }
 
 void note_test_runner_jsonl(std::string_view arg, std::string_view& output_name)
 {
-    if(arg == "--jsonl" || arg == "--output=jsonl" || arg == "--output=JSONL")
+    if(arg == "--jsonl")
+    {
         output_name = "jsonl";
+        cb::jsonl_observer().set_mode(cb::output::jsonl::jsonl_mode::failures);
+    }
+    else if(arg.starts_with("--jsonl="))
+    {
+        output_name = "jsonl";
+        const auto mode = arg.substr(std::string_view{"--jsonl="}.size());
+        if(mode == "summary")
+            cb::jsonl_observer().set_mode(cb::output::jsonl::jsonl_mode::summary);
+        else if(mode == "trace")
+            cb::jsonl_observer().set_mode(cb::output::jsonl::jsonl_mode::trace);
+        else
+            cb::jsonl_observer().set_mode(cb::output::jsonl::jsonl_mode::failures);
+    }
 }
 
 } // namespace
@@ -2173,13 +2174,30 @@ try {
         if (argument == "--") {
             // Everything after "--" is passed to test_runner (only meaningful with "test").
             test_runner_args.assign(argv + i + 1, argv + argc);
-            if(std::ranges::any_of(test_runner_args, [](const std::string& a) {
-                return a == "--output=jsonl" || a == "--output=JSONL";
-            }))
-                output_name = "jsonl";
+            for(const auto& arg : test_runner_args)
+                note_test_runner_jsonl(arg, output_name);
             break;
         }
-        if (argument == "--jsonl" || argument == "--output=jsonl" || argument == "--output=JSONL") {
+        if (argument == "--jsonl") {
+            cb::jsonl_observer().set_mode(cb::output::jsonl::jsonl_mode::failures);
+            output_name = "jsonl";
+            cb::select_output_observer(output_name);
+            continue;
+        }
+        if(argument.starts_with("--jsonl="))
+        {
+            const auto mode = argument.substr(std::string_view{"--jsonl="}.size());
+            if(mode == "summary")
+                cb::jsonl_observer().set_mode(cb::output::jsonl::jsonl_mode::summary);
+            else if(mode == "failures")
+                cb::jsonl_observer().set_mode(cb::output::jsonl::jsonl_mode::failures);
+            else if(mode == "trace")
+                cb::jsonl_observer().set_mode(cb::output::jsonl::jsonl_mode::trace);
+            else
+            {
+                cb::output::notify(&cb::output::observer::error, "Unknown JSONL mode: "s + std::string{mode});
+                return 1;
+            }
             output_name = "jsonl";
             cb::select_output_observer(output_name);
             continue;
@@ -2270,7 +2288,7 @@ try {
                       << "  static           Enable static linking (C++ stdlib static)\n"
                       << "  --include-examples Include examples directory in build (excluded by default)\n"
                       << "  --build-tests    Build tests in release mode (useful for CI to verify compilation)\n"
-                      << "  --jsonl          Enable JSONL output format (machine-readable)\n"
+                      << "  --jsonl[=<summary|failures|trace>]  Machine-readable output (default: failures)\n"
                       << "  -I, --include    Add include directory (can be specified multiple times)\n"
                       << "  --link-flags     Add extra linker flags (e.g., --link-flags \"-lcrypto\")\n"
                       << "  --compile-flags  Add extra compiler flags\n"
@@ -2285,8 +2303,9 @@ try {
                       << "  " << argv[0] << " ci\n"
                       << "  " << argv[0] << " test\n"
                       << "  " << argv[0] << " test --tags=[module]\n"
-                      << "  " << argv[0] << " test --jsonl --jsonl-output=always --tags=[module]\n"
-                      << "  " << argv[0] << " test -- --output=jsonl --slowest=10\n"
+                      << "  " << argv[0] << " test --jsonl=failures --tags=[module]\n"
+                      << "  " << argv[0] << " debug build --jsonl=summary\n"
+                      << "  " << argv[0] << " test -- --jsonl=trace --slowest=10\n"
                       << "  " << argv[0] << " clean\n";
             return 0;
         }
@@ -2332,13 +2351,18 @@ try {
         if (!test_filter.empty())
             args.emplace_back(test_filter);
 
-        // If CB is in JSONL mode, automatically enable JSONL for test_runner
-        // unless the user explicitly specified a different output format
-        const auto has_output_flag = std::ranges::any_of(test_runner_args, [](const std::string& arg) {
-            return arg.starts_with("--output=");
+        const auto has_jsonl_mode = std::ranges::any_of(test_runner_args, [](const std::string& arg) {
+            return arg == "--jsonl" || arg.starts_with("--jsonl=");
         });
-        if(cb::output::machine_readable() && not has_output_flag)
-            args.emplace_back("--output=jsonl");
+        if(output_name == "jsonl" && not has_jsonl_mode)
+        {
+            const auto mode = cb::jsonl_observer().mode();
+            args.emplace_back(mode == cb::output::jsonl::jsonl_mode::summary
+                ? "--jsonl=summary"
+                : mode == cb::output::jsonl::jsonl_mode::trace
+                    ? "--jsonl=trace"
+                    : "--jsonl=failures");
+        }
 
         args.append_range(test_runner_args);
 

@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_list, compile_failure, link_failure, test_link_failure, implementation_pcm, test_lifecycle, cache_invalidate, profile_change, cache_status"
+      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_list, compile_failure, link_failure, test_link_failure, implementation_pcm, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
       exit 0
       ;;
     *)
@@ -291,6 +291,48 @@ test_cache_status() {
   end_case cache_status
 }
 
+test_jsonl_modes() {
+  should_run jsonl_modes || return 0
+  begin_case jsonl_modes
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  run_cb_build "${work_dir}" --jsonl=failures
+  assert_jsonl_event_count build_start 1 "failures_build_start"
+  assert_jsonl_event_count build_end 1 "failures_build_end"
+  assert_jsonl_not_contains '"type":"command_start"' "failures_no_command_start"
+  assert_jsonl_not_contains '"type":"compile_end"' "failures_no_successful_compile"
+  assert_jsonl_contains '"compile_rebuilt":1' "failures_rollup_rebuilt"
+
+  run_cb_build "${work_dir}" --jsonl=summary
+  assert_jsonl_event_count build_start 1 "summary_build_start"
+  assert_jsonl_event_count build_end 1 "summary_build_end"
+  assert_jsonl_not_contains '"type":"command_' "summary_no_commands"
+  assert_jsonl_not_contains '"type":"compile_' "summary_no_compiles"
+  assert_jsonl_contains '"compile_cache_hits":1' "summary_rollup_cache_hit"
+  end_case jsonl_modes
+}
+
+test_jsonl_failure_mode() {
+  should_run jsonl_failure_mode || return 0
+  begin_case jsonl_failure_mode
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+  printf '%s\n' 'int broken( {' > "${work_dir}/broken.c++"
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if run_cb_build "${work_dir}" --jsonl=failures; then
+    fail "broken source unexpectedly compiled in failures mode"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"jsonl_failure_mode_exit"}'
+  fi
+  assert_jsonl_event_value command_end ok false "failures_command_end"
+  assert_jsonl_not_contains '"cmd":' "failures_argv_without_cmd"
+  assert_compile_end "broken.c++" false source_stale false "failures_compile_end"
+  assert_jsonl_event_value build_end ok false "failures_build_end_status"
+  end_case jsonl_failure_mode
+}
+
 main() {
   require_cb
   trap cleanup_work_dir EXIT
@@ -311,6 +353,8 @@ main() {
   test_cache_invalidate
   test_profile_change
   test_cache_status
+  test_jsonl_modes
+  test_jsonl_failure_mode
 
   local end_ms duration_ms passed
   end_ms=$(python3 - <<'PY'
