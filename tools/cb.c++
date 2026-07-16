@@ -893,6 +893,10 @@ private:
     std::string compute_executable_path(const translation_unit& tu) const {
         if (not tu.has_main)
             throw std::logic_error{"compute_executable_path called on non-main translation unit: " + tu.filename};
+        // test_runner is a well-known entry point; keep it at bin/test_runner even when
+        // the source lives under a subdirectory (e.g. tester/test_runner.c++).
+        if(tu.base_name.contains("test_runner"))
+            return binary_dir() + "/" + tu.base_name;
         return binary_dir() + "/" + non_modular_artifact_stem(tu);
     }
 
@@ -1894,6 +1898,7 @@ private:
 
         const auto link_started = std::chrono::steady_clock::now();
         try {
+            ensure_artifact_parent(test_runner_path);
             execute_system_command(link_test_runner_argv(test_runner_path, test_runner_obj, link_module_ldflags));
         } catch (...) {
             emit_link_end(test_runner_path, false, false, link_started, std::chrono::steady_clock::now());
