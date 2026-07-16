@@ -290,7 +290,13 @@ inline bool determine_is_test(std::string_view rel_dir, std::string_view name, s
     return path_has_test_segment(combined);
 }
 
-inline std::string make_unit(std::string_view module_value, unit_kind kind, std::string_view filename_value) {
+inline std::string make_relative_source(std::string_view rel_dir, std::string_view filename_value) {
+    if(rel_dir.empty())
+        return std::string{filename_value};
+    return std::string{rel_dir} + "/" + std::string{filename_value};
+}
+
+inline std::string make_unit(std::string_view module_value, unit_kind kind, std::string_view relative_source) {
     switch (kind) {
         case unit_kind::interface_unit:
         case unit_kind::partition_unit:
@@ -298,9 +304,11 @@ inline std::string make_unit(std::string_view module_value, unit_kind kind, std:
         case unit_kind::implementation_unit:
         case unit_kind::non_module:
         case unit_kind::global_fragment:
-            return std::string{filename_value};
+            // Non-modular keys must include the relative directory. Basename-only
+            // keys silently drop same-named sources in different directories.
+            return std::string{relative_source};
     }
-    return std::string{filename_value};
+    return std::string{relative_source};
 }
 
 inline std::string make_full_path(const fs::path& file_path) {
@@ -435,7 +443,7 @@ inline translation_unit::translation_unit(const fs::path& relative,
       suffix(detail::extract_suffix(relative.filename().string())),
       base_name(detail::make_base_name(this->filename)),
       full_path(detail::make_full_path(full_path)),
-      unit(detail::make_unit(module_value, kind_value, this->filename)),
+      unit(detail::make_unit(module_value, kind_value, detail::make_relative_source(this->path, this->filename))),
       module(std::move(module_value)),
       imports(std::move(imports_value)),
       kind(kind_value),
@@ -864,9 +872,16 @@ private:
         throw std::logic_error{"Unsupported suffix for object file: " + tu.suffix};
     }
 
+    std::string non_modular_artifact_stem(const translation_unit& tu) const {
+        if(tu.path.empty())
+            return tu.base_name;
+        return tu.path + "/" + tu.base_name;
+    }
+
     std::string compute_object_path(const translation_unit& tu) const {
-        auto base = tu.is_modular ? module_safe_name(tu.module) : tu.base_name;
-        return object_dir() + "/" + base + object_suffix(tu);
+        if(tu.is_modular)
+            return object_dir() + "/" + module_safe_name(tu.module) + object_suffix(tu);
+        return object_dir() + "/" + non_modular_artifact_stem(tu) + object_suffix(tu);
     }
 
     std::string compute_pcm_path(const translation_unit& tu) const {
@@ -878,7 +893,7 @@ private:
     std::string compute_executable_path(const translation_unit& tu) const {
         if (not tu.has_main)
             throw std::logic_error{"compute_executable_path called on non-main translation unit: " + tu.filename};
-        return binary_dir() + "/" + tu.base_name;
+        return binary_dir() + "/" + non_modular_artifact_stem(tu);
     }
 
     void validate_translation_unit(const translation_unit& tu) const {
@@ -1461,6 +1476,14 @@ private:
         auto unit_to_tu = unit_to_tu_map{};
 
         for (auto& tu : units) {
+            if(unit_to_tu.contains(tu.unit))
+            {
+                const auto& prior = *unit_to_tu.at(tu.unit);
+                const auto prior_path = prior.path.empty() ? prior.filename : prior.path + "/" + prior.filename;
+                const auto current_path = tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename;
+                throw std::runtime_error{
+                    "Duplicate translation unit key '" + tu.unit + "' from " + prior_path + " and " + current_path};
+            }
             unit_to_tu[tu.unit] = &tu;
             indegrees[tu.unit] = 0;
         }
@@ -1519,16 +1542,37 @@ private:
             throw std::runtime_error{message};
         }
 
+        auto object_owners = std::flat_map<std::string, std::string, std::less<>>{};
+        auto pcm_owners = std::flat_map<std::string, std::string, std::less<>>{};
+        auto executable_owners = std::flat_map<std::string, std::string, std::less<>>{};
+
         for (auto& tu : sorted) {
             // Attach builder-managed artifact paths once we know the full configuration.
             // Keeping them here keeps the translation unit metadata immutable while giving downstream
             // steps a single place to read object/PCM/binary locations from.
+            const auto source_label = tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename;
             tu.object_path = compute_object_path(tu);
+            if(object_owners.contains(tu.object_path))
+                throw std::runtime_error{
+                    "Duplicate object path '" + tu.object_path + "' from "
+                    + object_owners.at(tu.object_path) + " and " + source_label};
+            object_owners.emplace(tu.object_path, source_label);
+
             if (tu.is_modular) {
                 tu.pcm_path = compute_pcm_path(tu);
+                if(pcm_owners.contains(tu.pcm_path))
+                    throw std::runtime_error{
+                        "Duplicate PCM path '" + tu.pcm_path + "' from "
+                        + pcm_owners.at(tu.pcm_path) + " and " + source_label};
+                pcm_owners.emplace(tu.pcm_path, source_label);
             }
             if (tu.has_main) {
                 tu.executable_path = compute_executable_path(tu);
+                if(executable_owners.contains(tu.executable_path))
+                    throw std::runtime_error{
+                        "Duplicate executable path '" + tu.executable_path + "' from "
+                        + executable_owners.at(tu.executable_path) + " and " + source_label};
+                executable_owners.emplace(tu.executable_path, source_label);
             }
             validate_translation_unit(tu);
         }
@@ -1563,8 +1607,17 @@ private:
     // Compilation
     // ============================================================================
 
+    void ensure_artifact_parent(const std::string& artifact_path) const {
+        const auto parent = fs::path{artifact_path}.parent_path();
+        if(not parent.empty())
+            fs::create_directories(parent);
+    }
+
     void compile_unit(const translation_unit& tu, std::string_view rebuild_reason) {
         log_profile_change_rebuild(tu, rebuild_reason);
+        ensure_artifact_parent(tu.object_path);
+        if(tu.is_modular)
+            ensure_artifact_parent(tu.pcm_path);
         emit_compile_start(tu, rebuild_reason);
         const auto started = std::chrono::steady_clock::now();
         try {
@@ -1665,6 +1718,7 @@ private:
 
     void link_executable(const translation_unit& tu, const string_list& shared_objects) {
         if (not tu.has_main) return;
+        ensure_artifact_parent(tu.executable_path);
         execute_system_command(link_executable_argv(tu, shared_objects));
     }
 

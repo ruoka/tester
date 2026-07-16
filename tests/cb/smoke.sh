@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_list, compile_failure, link_failure, test_link_failure, implementation_pcm, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
+      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_list, compile_failure, link_failure, test_link_failure, implementation_pcm, same_basename_sources, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
       exit 0
       ;;
     *)
@@ -181,6 +181,40 @@ test_test_link_failure() {
   assert_jsonl_event_value link_end ok false "failed_test_link_end"
   assert_jsonl_event_value build_end ok false "test_link_failed_build_end"
   end_case test_link_failure
+}
+
+test_same_basename_sources() {
+  should_run same_basename_sources || return 0
+  begin_case same_basename_sources
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  mkdir -p "${work_dir}/left" "${work_dir}/right"
+  printf '%s\n' 'int marker_left() { return 1; }' > "${work_dir}/left/util.c++"
+  printf '%s\n' 'int marker_right() { return 2; }' > "${work_dir}/right/util.c++"
+  printf '%s\n' \
+    'int marker_left();' \
+    'int marker_right();' \
+    'int main() { return marker_left() + marker_right() - 3; }' > "${work_dir}/hello.c++"
+
+  run_cb_list "${work_dir}"
+  assert_jsonl_event_count unit 3 "same_basename_list_units"
+  assert_jsonl_event_value unit path left/util.c++ "same_basename_left_unit"
+  assert_jsonl_event_value unit path right/util.c++ "same_basename_right_unit"
+  assert_jsonl_event_value unit unit left/util.c++ "same_basename_left_key"
+  assert_jsonl_event_value unit unit right/util.c++ "same_basename_right_key"
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if run_cb_build "${work_dir}"; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"same_basename_build_exit"}'
+  else
+    fail "same-basename sources in different directories failed to build"
+  fi
+  assert_compile_end "left/util.c++" false source_stale true "same_basename_left_compile"
+  assert_compile_end "right/util.c++" false source_stale true "same_basename_right_compile"
+  assert_jsonl_contains '/obj/left/util.o' "same_basename_left_object"
+  assert_jsonl_contains '/obj/right/util.o' "same_basename_right_object"
+  end_case same_basename_sources
 }
 
 test_implementation_pcm() {
@@ -349,6 +383,7 @@ main() {
   test_link_failure
   test_test_link_failure
   test_implementation_pcm
+  test_same_basename_sources
   test_test_lifecycle
   test_cache_invalidate
   test_profile_change
