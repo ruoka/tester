@@ -221,7 +221,7 @@ Cache indexes are written through a checked temporary file and atomically rename
 
 **Invalidate indexes:** `./tools/CB.sh debug cache invalidate` removes `object-cache.txt`, `executable-cache.txt`, and `compiler-version.txt` only — lighter than `clean`; artifacts in `obj/` / `pcm/` remain. JSONL: `cache_invalidate_end`.
 
-**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job) — `profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `source_list`, `compile_failure`, `link_failure`, `test_link_failure`, `implementation_pcm`, `test_lifecycle`, `cache_invalidate`, `profile_change`, `cache_status`.
+**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job) — `profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `source_stale`, `source_list`, `compile_failure`, `link_failure`, `test_link_failure`, `link_rebuild_reason`, `implementation_pcm`, `rebuild_summary`, `test_lifecycle`, `cache_invalidate`, `profile_change`, `cache_status`, `jsonl_modes`, `jsonl_failure_mode`.
 
 **Optional follow-up:** `cache prune` for disk/orphan cleanup — backlog only; see [tester-improvements.md §4.4](tester-improvements.md#44-cache-maintenance-optional--add-if-operational-issues-appear).
 
@@ -237,18 +237,34 @@ Full event reference and triage workflow: [AGENTS.md](../AGENTS.md).
 
 Useful compile/link fields for debugging stale builds:
 
-- `compile_start` / `compile_end` — paired per TU. `compile_end.duration_ms` is wall time from compile start to finish (0 on cache hit). `rebuild_reason` appears on `compile_start` when recompiling and on `compile_end` when `cache_hit: false`.
+- `compile_start` / `compile_end` — paired per TU. `compile_end.duration_ms` is wall time from compile start to finish (0 on cache hit). When `cache_hit: false`, both carry short `rebuild_reason` plus structured `rebuild` (`kind`, optional `module` / `pcm_path` / `object_path` / `trigger_path` / `hint` / `message` / `see_event`). `compile_start` also repeats `message` at the top level for log skimmers.
+- `build_end.rebuild_summary` — per-kind compile rebuild counts plus `top_modules` (modules most often cited by PCM reasons). Present in every JSONL mode when any TU rebuilt.
 - `profile_changed` — emitted **once** when the profile header mismatches (`reason: "profile_change"`, optional `profile_diff`). Scalars use `{"old":"…","new":"…"}`; `compile` / `cpp` use `{"added":[…],"removed":[…]}` (sorted token diff via `std::ranges::set_difference` on shell words).
-- `cache_hit: false` + `rebuild_reason: "profile_change"` on each recompiled TU — correlate with the single `profile_changed` event for the diff.
-- `link_end` — per executable after link or skip (`executable_path`, `cache_hit`, `ok`, `duration_ms`). Skipped links emit `cache_hit: true` with `duration_ms: 0`.
-- `cache_hit: false` + `rebuild_reason: "pcm_stale:tester:assertions"` — transitive PCM invalidation; rebuilds test objects when assertion templates change
+- `cache_hit: false` + `rebuild_reason: "profile_change"` on each recompiled TU — correlate with the single `profile_changed` event (`rebuild.see_event: "profile_changed"`); do not expect `profile_diff` on each `compile_end`.
+- `link_end` — per executable after link or skip (`executable_path`, `cache_hit`, `ok`, `duration_ms`). Skipped links emit `cache_hit: true` with `duration_ms: 0`. Relinks add `rebuild_reason` / `rebuild` (`missing_executable`, `not_in_cache`, `object_changed`, `link_flags_changed`, …).
+- `rebuild_reason: "not_in_cache"` — first compile of this source for the current config (distinct from an edit)
 - `rebuild_reason: "source_stale"` — TU source newer than cached object
-- `rebuild_reason: "pcm_stale:<module>"` — imported PCM, including an implementation unit's implicit interface PCM, is newer than its object
+- `rebuild_reason: "pcm_stale"` — imported PCM (including an implementation unit's implicit interface PCM) newer than this object; module and trigger source are in `rebuild`
 
-Example `profile_diff` fragment:
+Example rebuild object:
 
 ```json
-"rebuild_reason": "profile_change",
+"rebuild_reason": "pcm_stale",
+"rebuild": {
+  "kind": "pcm_stale",
+  "module": "sample",
+  "pcm_path": "build-darwin-debug/pcm/sample.pcm",
+  "object_path": "build-darwin-debug/obj/sample.impl.o",
+  "trigger_path": "sample.c++m",
+  "hint": "Imported PCM newer than this object; recompile follows module graph.",
+  "message": "Rebuilding sample.impl.c++ because PCM sample is newer than the object (import graph)"
+}
+```
+
+Example `profile_diff` fragment (on `profile_changed` only):
+
+```json
+"reason": "profile_change",
 "profile_diff": {
   "compile": { "added": ["-DCB_SMOKE_FLAG=1"], "removed": [] }
 }

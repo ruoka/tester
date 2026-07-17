@@ -120,7 +120,8 @@ Machine-parseable test and build output for CI and automation. Human output rema
 - ✅ Per-binary `link_end` (`executable_path`, `cache_hit`, `ok`, `duration_ms`); `link_start` still optional.
 - ✅ Structured `argv: ["clang++", "..."]` on `command_start` / `command_end` alongside human `cmd` string.
 - ✅ `cache_hit: true` on `compile_end` when incremental compile skips a translation unit.
-- ✅ `rebuild_reason` on `compile_end` when `cache_hit:false` (e.g. `source_stale`, `pcm_stale:<module>`, `dependency_pcm_stale:<module>`, `profile_change`).
+- ✅ `rebuild_reason` on `compile_end` when `cache_hit:false` (short kind: `not_in_cache`, `source_stale`, `pcm_stale`, `dependency_pcm_stale`, `profile_change`, …).
+- ✅ Structured `rebuild` object on compile/link events (`kind`, `module`, paths, `hint`, `message`, optional `see_event`) plus `build_end.rebuild_summary` (`by kind` counts + `top_modules`).
 - ✅ `profile_changed` event with `profile_diff` on profile mismatch (scalar fields + token diff on `compile`/`cpp`; not repeated on each `compile_end`).
 - ✅ Compact CB modes suppress successful command/TU events and enrich `build_end` with compile/link/cache/failure totals.
 

@@ -95,6 +95,21 @@ struct source_inventory
     int max_level;
 };
 
+// Structured rebuild telemetry for compile/link JSONL (kind is also rebuild_reason).
+struct rebuild_info
+{
+    std::string kind;
+    std::string module;
+    std::string pcm_path;
+    std::string object_path;
+    std::string trigger_path;
+    std::string hint;
+    std::string message;
+    std::string see_event;
+
+    bool empty() const { return kind.empty(); }
+};
+
 class observer
 {
 public:
@@ -155,7 +170,7 @@ public:
         std::string_view,
         std::string_view,
         std::string_view,
-        std::string_view) {}
+        const rebuild_info& = {}) {}
 
     virtual void compile_end(
         std::string_view,
@@ -166,14 +181,15 @@ public:
         bool,
         std::chrono::steady_clock::time_point,
         std::chrono::steady_clock::time_point,
-        std::string_view) {}
+        const rebuild_info& = {}) {}
 
     virtual void link_end(
         std::string_view,
         bool,
         bool,
         std::chrono::steady_clock::time_point,
-        std::chrono::steady_clock::time_point) {}
+        std::chrono::steady_clock::time_point,
+        const rebuild_info& = {}) {}
 };
 
 inline auto observers = std::vector<std::reference_wrapper<observer>>{};
