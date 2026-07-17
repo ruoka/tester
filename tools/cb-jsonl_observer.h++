@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <flat_map>
 #include <mutex>
 #include <ostream>
 #include <ranges>
@@ -77,6 +78,31 @@ inline void write_profile_diff(std::ostream& os, const object_cache_profile_diff
     os << '}';
 }
 
+inline void write_rebuild_field(std::ostream& os, std::string_view name, std::string_view value, bool& first)
+{
+    if(value.empty())
+        return;
+    if(not first)
+        os << ',';
+    first = false;
+    os << '"' << name << "\":\"" << escape(value) << '"';
+}
+
+inline void write_rebuild(std::ostream& os, const rebuild_info& rebuild)
+{
+    os << '{';
+    auto first = true;
+    write_rebuild_field(os, "kind", rebuild.kind, first);
+    write_rebuild_field(os, "module", rebuild.module, first);
+    write_rebuild_field(os, "pcm_path", rebuild.pcm_path, first);
+    write_rebuild_field(os, "object_path", rebuild.object_path, first);
+    write_rebuild_field(os, "trigger_path", rebuild.trigger_path, first);
+    write_rebuild_field(os, "hint", rebuild.hint, first);
+    write_rebuild_field(os, "message", rebuild.message, first);
+    write_rebuild_field(os, "see_event", rebuild.see_event, first);
+    os << '}';
+}
+
 struct observer final : cb::output::observer
 {
     struct state
@@ -93,8 +119,57 @@ struct observer final : cb::output::observer
         std::size_t link_cache_hits = 0;
         std::size_t link_failed = 0;
         std::size_t commands_failed = 0;
+        std::flat_map<std::string, std::size_t, std::less<>> rebuild_by_kind{};
+        std::flat_map<std::string, std::size_t, std::less<>> rebuild_modules{};
 
         explicit state(std::ostream& stream) : json{stream}, jsonl{stream} {}
+
+        void note_rebuild(const rebuild_info& rebuild)
+        {
+            if(rebuild.empty())
+                return;
+            ++rebuild_by_kind[rebuild.kind];
+            if(not rebuild.module.empty())
+                ++rebuild_modules[rebuild.module];
+        }
+
+        void write_rebuild_summary(std::ostream& os) const
+        {
+            if(rebuild_by_kind.empty())
+                return;
+
+            os << ",\"rebuild_summary\":{";
+            auto first = true;
+            for(const auto& [kind, count] : rebuild_by_kind)
+            {
+                if(not first)
+                    os << ',';
+                first = false;
+                os << '"' << escape(kind) << "\":" << count;
+            }
+
+            if(not rebuild_modules.empty())
+            {
+                auto ranked = std::vector<std::pair<std::string, std::size_t>>{
+                    rebuild_modules.begin(),
+                    rebuild_modules.end()};
+                std::ranges::sort(ranked, [](const auto& a, const auto& b) {
+                    if(a.second != b.second)
+                        return a.second > b.second;
+                    return a.first < b.first;
+                });
+                const auto limit = std::min<std::size_t>(ranked.size(), 8);
+                os << ",\"top_modules\":[";
+                for(std::size_t i = 0; i < limit; ++i)
+                {
+                    if(i)
+                        os << ',';
+                    os << '"' << escape(ranked[i].first) << '"';
+                }
+                os << ']';
+            }
+            os << '}';
+        }
     };
 
     state m;
@@ -141,6 +216,8 @@ struct observer final : cb::output::observer
         m.link_cache_hits = 0;
         m.link_failed = 0;
         m.commands_failed = 0;
+        m.rebuild_by_kind.clear();
+        m.rebuild_modules.clear();
         m.json << m.jsonl("build_start") << [&](std::ostream& os){
             os << ",\"config\":\"" << escape(config) << "\"";
             os << ",\"include_tests\":" << (include_tests ? "true" : "false");
@@ -166,6 +243,7 @@ struct observer final : cb::output::observer
                 os << ",\"link_failed\":" << m.link_failed;
                 os << ",\"commands_failed\":" << m.commands_failed;
             }
+            m.write_rebuild_summary(os);
         };
     }
 
@@ -282,7 +360,7 @@ struct observer final : cb::output::observer
                        std::string_view object_path,
                        std::string_view pcm_path,
                        std::string_view module_name,
-                       std::string_view rebuild_reason = {}) override
+                       const rebuild_info& rebuild = {}) override
     {
         if(m.mode != jsonl_mode::trace)
             return;
@@ -295,8 +373,14 @@ struct observer final : cb::output::observer
                 os << ",\"pcm_path\":\"" << escape(pcm_path) << "\"";
             if(!module_name.empty())
                 os << ",\"module_name\":\"" << escape(module_name) << "\"";
-            if(!rebuild_reason.empty())
-                os << ",\"rebuild_reason\":\"" << escape(rebuild_reason) << "\"";
+            if(not rebuild.empty())
+            {
+                os << ",\"rebuild_reason\":\"" << escape(rebuild.kind) << "\"";
+                os << ",\"rebuild\":";
+                write_rebuild(os, rebuild);
+                if(not rebuild.message.empty())
+                    os << ",\"message\":\"" << escape(rebuild.message) << "\"";
+            }
         };
     }
 
@@ -304,7 +388,8 @@ struct observer final : cb::output::observer
                   bool ok,
                   bool cache_hit,
                   std::chrono::steady_clock::time_point started,
-                  std::chrono::steady_clock::time_point finished) override
+                  std::chrono::steady_clock::time_point finished,
+                  const rebuild_info& rebuild = {}) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         ++m.links_total;
@@ -320,6 +405,12 @@ struct observer final : cb::output::observer
             os << ",\"executable_path\":\"" << escape(executable_path) << "\"";
             os << ",\"ok\":" << (ok ? "true" : "false");
             os << ",\"cache_hit\":" << (cache_hit ? "true" : "false");
+            if(not cache_hit and not rebuild.empty())
+            {
+                os << ",\"rebuild_reason\":\"" << escape(rebuild.kind) << "\"";
+                os << ",\"rebuild\":";
+                write_rebuild(os, rebuild);
+            }
             os << ",\"duration_ms\":" << duration.count();
         };
     }
@@ -332,14 +423,17 @@ struct observer final : cb::output::observer
                      bool cache_hit,
                      std::chrono::steady_clock::time_point started,
                      std::chrono::steady_clock::time_point finished,
-                     std::string_view rebuild_reason = {}) override
+                     const rebuild_info& rebuild = {}) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         ++m.compile_total;
         if(cache_hit)
             ++m.compile_cache_hits;
         else
+        {
             ++m.compile_rebuilt;
+            m.note_rebuild(rebuild);
+        }
         if(not ok)
             ++m.compile_failed;
         if(m.mode == jsonl_mode::summary || (m.mode == jsonl_mode::failures && ok))
@@ -355,8 +449,12 @@ struct observer final : cb::output::observer
                 os << ",\"module_name\":\"" << escape(module_name) << "\"";
             os << ",\"ok\":" << (ok ? "true" : "false");
             os << ",\"cache_hit\":" << (cache_hit ? "true" : "false");
-            if(!cache_hit && !rebuild_reason.empty())
-                os << ",\"rebuild_reason\":\"" << escape(rebuild_reason) << "\"";
+            if(not cache_hit and not rebuild.empty())
+            {
+                os << ",\"rebuild_reason\":\"" << escape(rebuild.kind) << "\"";
+                os << ",\"rebuild\":";
+                write_rebuild(os, rebuild);
+            }
             os << ",\"duration_ms\":" << duration.count();
         };
     }

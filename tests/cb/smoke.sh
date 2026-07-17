@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_list, compile_failure, link_failure, test_link_failure, implementation_pcm, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
+      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, rebuild_summary, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
       exit 0
       ;;
     *)
@@ -100,8 +100,30 @@ test_compile_start() {
   assert_jsonl_contains '"type":"compile_start"' "compile_start_event"
   assert_jsonl_contains '"type":"compile_end"' "compile_end_event"
   assert_compile_start_end_pairs
-  assert_jsonl_contains '"rebuild_reason":"source_stale"' "compile_start_rebuild_reason"
+  assert_jsonl_contains '"rebuild_reason":"not_in_cache"' "compile_start_rebuild_reason"
+  assert_jsonl_contains '"rebuild":{' "compile_start_rebuild_object"
+  assert_jsonl_contains '"message":"Rebuilding' "compile_start_rebuild_message"
+  assert_jsonl_contains '"rebuild_summary":{' "build_end_rebuild_summary"
   end_case compile_start
+}
+
+test_source_stale() {
+  should_run source_stale || return 0
+  begin_case source_stale
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  run_cb_build "${work_dir}"
+  run_cb_build "${work_dir}"
+  assert_compile_cache_hits 1 "source_stale_seed_cache_hit"
+
+  printf '%s\n' '// edited after cache seed' >> "${work_dir}/hello.c++"
+  run_cb_build "${work_dir}"
+  assert_compile_end "hello.c++" false source_stale true "edited_source_rebuild"
+  assert_jsonl_contains '"rebuild":{"kind":"source_stale"' "edited_source_rebuild_object"
+  assert_jsonl_contains '"hint":"Source mtime newer than cached compile timestamp."' "edited_source_hint"
+  assert_rebuild_summary source_stale 1 "" "edited_source_summary"
+  end_case source_stale
 }
 
 test_source_list() {
@@ -136,7 +158,7 @@ test_compile_failure() {
   else
     jsonl_emit '{"type":"smoke_assert_passed","matcher":"compile_failure_exit"}'
   fi
-  assert_compile_end "broken.c++" false source_stale false "failed_compile_end"
+  assert_compile_end "broken.c++" false not_in_cache false "failed_compile_end"
   assert_jsonl_event_count build_end 1 "single_failed_build_end"
   assert_jsonl_event_value build_end ok false "failed_build_end_status"
   assert_jsonl_contains '"type":"eof"' "failure_jsonl_eof"
@@ -183,6 +205,26 @@ test_test_link_failure() {
   end_case test_link_failure
 }
 
+test_link_rebuild_reason() {
+  should_run link_rebuild_reason || return 0
+  begin_case link_rebuild_reason
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  run_cb_build "${work_dir}"
+  assert_link_end "/hello" false missing_executable true "first_link_missing_executable"
+  assert_jsonl_contains '"rebuild":{"kind":"missing_executable"' "first_link_rebuild_object"
+
+  run_cb_build "${work_dir}"
+  assert_link_cache_hits 1 "link_rebuild_seed_cache_hit"
+
+  printf '%s\n' '// force object change' >> "${work_dir}/hello.c++"
+  run_cb_build "${work_dir}"
+  assert_link_end "/hello" false object_changed true "relink_after_object_change"
+  assert_jsonl_contains '"message":"Linking' "relink_message"
+  end_case link_rebuild_reason
+}
+
 test_implementation_pcm() {
   should_run implementation_pcm || return 0
   begin_case implementation_pcm
@@ -202,8 +244,38 @@ test_implementation_pcm() {
 
   printf '%s\n' '// interface changed' >> "${work_dir}/sample.c++m"
   run_cb_build "${work_dir}"
-  assert_compile_end "sample.impl.c++" false "pcm_stale:sample" true "implementation_rebuilt_for_interface_pcm"
+  assert_compile_end "sample.impl.c++" false pcm_stale true "implementation_rebuilt_for_interface_pcm"
+  assert_jsonl_contains '"module":"sample"' "implementation_rebuild_module"
+  assert_jsonl_contains '"trigger_path":' "implementation_rebuild_trigger"
   end_case implementation_pcm
+}
+
+test_rebuild_summary() {
+  should_run rebuild_summary || return 0
+  begin_case rebuild_summary
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  printf '%s\n' \
+    'export module sample;' \
+    'export int sample_value();' > "${work_dir}/sample.c++m"
+  printf '%s\n' \
+    'module sample;' \
+    'int sample_value() { return 1; }' > "${work_dir}/sample.impl.c++"
+  printf '%s\n' \
+    'import sample;' \
+    'int main() { return sample_value(); }' > "${work_dir}/hello.c++"
+
+  run_cb_build "${work_dir}"
+  run_cb_build "${work_dir}"
+  assert_compile_cache_hits 3 "rebuild_summary_seed_cache_hits"
+
+  printf '%s\n' '// interface changed for summary' >> "${work_dir}/sample.c++m"
+  run_cb_build "${work_dir}"
+  assert_rebuild_summary source_stale 1 "" "summary_source_stale"
+  assert_rebuild_summary pcm_stale 1 sample "summary_pcm_stale_top_module"
+  assert_jsonl_contains '"top_modules":["sample"]' "summary_top_modules_exact"
+  end_case rebuild_summary
 }
 
 test_test_lifecycle() {
@@ -328,7 +400,8 @@ test_jsonl_failure_mode() {
   fi
   assert_jsonl_event_value command_end ok false "failures_command_end"
   assert_jsonl_not_contains '"cmd":' "failures_argv_without_cmd"
-  assert_compile_end "broken.c++" false source_stale false "failures_compile_end"
+  assert_compile_end "broken.c++" false not_in_cache false "failures_compile_end"
+  assert_jsonl_contains '"rebuild":{"kind":"not_in_cache"' "failures_compile_rebuild_object"
   assert_jsonl_event_value build_end ok false "failures_build_end_status"
   end_case jsonl_failure_mode
 }
@@ -344,11 +417,14 @@ main() {
   test_cache_hit
   test_link_cache_hit
   test_compile_start
+  test_source_stale
   test_source_list
   test_compile_failure
   test_link_failure
   test_test_link_failure
+  test_link_rebuild_reason
   test_implementation_pcm
+  test_rebuild_summary
   test_test_lifecycle
   test_cache_invalidate
   test_profile_change
