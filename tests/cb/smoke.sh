@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, rebuild_summary, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
+      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, rebuild_summary, module_safe_name_collision, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
       exit 0
       ;;
     *)
@@ -278,6 +278,45 @@ test_rebuild_summary() {
   end_case rebuild_summary
 }
 
+test_module_safe_name_collision() {
+  should_run module_safe_name_collision || return 0
+  begin_case module_safe_name_collision
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  # Partition demo:part and flat module demo_part used to share demo_part.pcm/.o
+  # when ':' was replaced with '_'. Distinct modules must keep distinct artifacts.
+  printf '%s\n' \
+    'export module demo:part;' \
+    'export int part_value() { return 1; }' > "${work_dir}/part.c++m"
+  printf '%s\n' \
+    'export module demo_part;' \
+    'export int flat_value() { return 2; }' > "${work_dir}/flat.c++m"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "module_safe_name_build_ok"
+  assert_jsonl_contains '-fmodule-file=demo:part=' "module_flag_partition"
+  assert_jsonl_contains '-fmodule-file=demo_part=' "module_flag_flat"
+  assert_jsonl_contains 'demo%3Apart.pcm' "partition_pcm_encoded"
+  assert_jsonl_contains 'demo_part.pcm' "flat_pcm_unencoded"
+  assert_jsonl_not_contains "-fmodule-file=demo:part=${BUILD_DIR}/pcm/demo_part.pcm" "partition_not_collapsed"
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ -f "${work_dir}/${BUILD_DIR}/pcm/demo%3Apart.pcm" && -f "${work_dir}/${BUILD_DIR}/pcm/demo_part.pcm" ]]; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"distinct_pcm_files"}'
+  else
+    fail "expected distinct pcm files for demo:part and demo_part under ${BUILD_DIR}/pcm"
+  fi
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ -f "${work_dir}/${BUILD_DIR}/obj/demo%3Apart.o" && -f "${work_dir}/${BUILD_DIR}/obj/demo_part.o" ]]; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"distinct_object_files"}'
+  else
+    fail "expected distinct object files for demo:part and demo_part under ${BUILD_DIR}/obj"
+  fi
+  end_case module_safe_name_collision
+}
+
 test_test_lifecycle() {
   should_run test_lifecycle || return 0
   begin_case test_lifecycle
@@ -425,6 +464,7 @@ main() {
   test_link_rebuild_reason
   test_implementation_pcm
   test_rebuild_summary
+  test_module_safe_name_collision
   test_test_lifecycle
   test_cache_invalidate
   test_profile_change

@@ -845,11 +845,22 @@ private:
         return path.string();
     }
 
+    // Map a module name to a filesystem-safe artifact stem without collapsing
+    // distinct modules onto one path. Replacing ':'/'-'/'.' with '_' made
+    // `demo:part` and `demo_part` share pcm/obj files; percent-encode instead.
     std::string module_safe_name(std::string_view module_name) const {
-        auto safe = std::string{module_name};
-        std::ranges::replace(safe, ':', '_');
-        std::ranges::replace(safe, '-', '_');
-        std::ranges::replace(safe, '.', '_');
+        auto safe = std::string{};
+        safe.reserve(module_name.size());
+        for(const unsigned char c : module_name) {
+            if((c >= 'A' and c <= 'Z') or (c >= 'a' and c <= 'z') or (c >= '0' and c <= '9') or c == '_') {
+                safe.push_back(static_cast<char>(c));
+                continue;
+            }
+            static constexpr char hex[] = "0123456789ABCDEF";
+            safe.push_back('%');
+            safe.push_back(hex[c >> 4]);
+            safe.push_back(hex[c & 0x0F]);
+        }
         return safe;
     }
 
@@ -1651,16 +1662,37 @@ private:
             throw std::runtime_error{message};
         }
 
+        auto object_owners = std::flat_map<std::string, std::string, std::less<>>{};
+        auto pcm_owners = std::flat_map<std::string, std::string, std::less<>>{};
+        auto executable_owners = std::flat_map<std::string, std::string, std::less<>>{};
+
         for (auto& tu : sorted) {
             // Attach builder-managed artifact paths once we know the full configuration.
             // Keeping them here keeps the translation unit metadata immutable while giving downstream
             // steps a single place to read object/PCM/binary locations from.
+            const auto source_label = tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename;
             tu.object_path = compute_object_path(tu);
+            if(object_owners.contains(tu.object_path))
+                throw std::runtime_error{
+                    "Duplicate object path '" + tu.object_path + "' from "
+                    + object_owners.at(tu.object_path) + " and " + source_label};
+            object_owners.emplace(tu.object_path, source_label);
+
             if (tu.is_modular) {
                 tu.pcm_path = compute_pcm_path(tu);
+                if(pcm_owners.contains(tu.pcm_path))
+                    throw std::runtime_error{
+                        "Duplicate PCM path '" + tu.pcm_path + "' from "
+                        + pcm_owners.at(tu.pcm_path) + " and " + source_label};
+                pcm_owners.emplace(tu.pcm_path, source_label);
             }
             if (tu.has_main) {
                 tu.executable_path = compute_executable_path(tu);
+                if(executable_owners.contains(tu.executable_path))
+                    throw std::runtime_error{
+                        "Duplicate executable path '" + tu.executable_path + "' from "
+                        + executable_owners.at(tu.executable_path) + " and " + source_label};
+                executable_owners.emplace(tu.executable_path, source_label);
             }
             validate_translation_unit(tu);
         }
