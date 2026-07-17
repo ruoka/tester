@@ -289,6 +289,78 @@ PY
   return 0
 }
 
+assert_link_end() {
+  local exe_suffix=$1
+  local cache_hit=$2
+  local rebuild_reason=$3
+  local ok=$4
+  local label=${5:-link_end}
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if python3 - "${exe_suffix}" "${cache_hit}" "${rebuild_reason}" "${ok}" "${LAST_JSONL}" <<'PY'
+import json, sys
+exe_suffix = sys.argv[1]
+cache_hit = sys.argv[2] == "true"
+rebuild_reason = sys.argv[3]
+ok = sys.argv[4] == "true"
+for line in sys.argv[5].splitlines():
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if (event.get("type") == "link_end"
+            and event.get("executable_path", "").endswith(exe_suffix)
+            and event.get("cache_hit") is cache_hit
+            and event.get("ok") is ok
+            and event.get("rebuild_reason", "") == rebuild_reason):
+        raise SystemExit(0)
+print(f"matching link_end not found for {exe_suffix}", file=sys.stderr)
+raise SystemExit(1)
+PY
+  then
+    jsonl_emit "{\"type\":\"smoke_assert_passed\",\"matcher\":\"${label}\"}"
+    return 0
+  fi
+  fail "expected link_end for ${exe_suffix} (ok=${ok}, cache_hit=${cache_hit}, reason=${rebuild_reason})"
+  return 0
+}
+
+assert_rebuild_summary() {
+  local kind=$1
+  local min_count=$2
+  local module=${3:-}
+  local label=${4:-rebuild_summary}
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if python3 - "${kind}" "${min_count}" "${module}" "${LAST_JSONL}" <<'PY'
+import json, sys
+kind = sys.argv[1]
+min_count = int(sys.argv[2])
+module = sys.argv[3]
+for line in sys.argv[4].splitlines():
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if event.get("type") != "build_end":
+        continue
+    summary = event.get("rebuild_summary") or {}
+    if summary.get(kind, 0) < min_count:
+        print(f"rebuild_summary.{kind}={summary.get(kind, 0)} < {min_count}", file=sys.stderr)
+        raise SystemExit(1)
+    if module and module not in (summary.get("top_modules") or []):
+        print(f"module {module!r} not in top_modules={summary.get('top_modules')!r}", file=sys.stderr)
+        raise SystemExit(1)
+    raise SystemExit(0)
+print("build_end with rebuild_summary not found", file=sys.stderr)
+raise SystemExit(1)
+PY
+  then
+    jsonl_emit "{\"type\":\"smoke_assert_passed\",\"matcher\":\"${label}\"}"
+    return 0
+  fi
+  fail "expected rebuild_summary ${kind}>=${min_count}${module:+ module=${module}}"
+  return 0
+}
+
 assert_profile_header() {
   local cache_file=$1
   local label=${2:-profile_header}

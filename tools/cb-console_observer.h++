@@ -5,6 +5,7 @@
 #pragma once
 
 #include <algorithm>
+#include <flat_map>
 #include <mutex>
 #include <ostream>
 #include <ranges>
@@ -17,6 +18,7 @@
 
 namespace cb::output::console {
 
+using namespace std::string_literals;
 using namespace std::string_view_literals;
 namespace color = ::term;
 
@@ -74,6 +76,8 @@ struct observer final : cb::output::observer
 {
     std::ostream& human;
     std::mutex mutex{};
+    std::flat_map<std::string, std::size_t, std::less<>> rebuild_by_kind{};
+    std::flat_map<std::string, std::size_t, std::less<>> rebuild_modules{};
 
     explicit observer(std::ostream& human_stream) : human{human_stream} {}
 
@@ -81,6 +85,46 @@ struct observer final : cb::output::observer
     {
         auto lock = std::lock_guard<std::mutex>{mutex};
         human << color_code << prefix << color::reset << " " << message << '\n';
+    }
+
+    void note_rebuild(const rebuild_info& rebuild)
+    {
+        if(rebuild.empty())
+            return;
+        ++rebuild_by_kind[rebuild.kind];
+        if(not rebuild.module.empty())
+            ++rebuild_modules[rebuild.module];
+    }
+
+    std::string format_rebuild_summary() const
+    {
+        if(rebuild_by_kind.empty())
+            return {};
+
+        auto parts = string_list{};
+        for(const auto& [kind, count] : rebuild_by_kind)
+            parts.push_back(kind + '=' + std::to_string(count));
+
+        auto msg = "Rebuild summary: "s + (parts | std::views::join_with(", "sv) | std::ranges::to<std::string>());
+        if(not rebuild_modules.empty())
+        {
+            auto ranked = std::vector<std::pair<std::string, std::size_t>>{
+                rebuild_modules.begin(),
+                rebuild_modules.end()};
+            std::ranges::sort(ranked, [](const auto& a, const auto& b) {
+                if(a.second != b.second)
+                    return a.second > b.second;
+                return a.first < b.first;
+            });
+            const auto limit = std::min<std::size_t>(ranked.size(), 8);
+            auto modules = ranked
+                | std::views::take(limit)
+                | std::views::keys
+                | std::ranges::to<string_list>();
+            msg += "; top modules: ";
+            msg += modules | std::views::join_with(", "sv) | std::ranges::to<std::string>();
+        }
+        return msg;
     }
 
     void error(std::string_view msg) override
@@ -123,6 +167,62 @@ struct observer final : cb::output::observer
     void profile_change_rebuild(std::string_view tu_label) override
     {
         info("Rebuilding " + std::string{tu_label} + " because compile profile changed");
+    }
+
+    void build_start(std::string_view, bool, bool) override
+    {
+        auto lock = std::lock_guard<std::mutex>{mutex};
+        rebuild_by_kind.clear();
+        rebuild_modules.clear();
+    }
+
+    void build_end(bool,
+                   std::chrono::steady_clock::time_point,
+                   std::chrono::steady_clock::time_point) override
+    {
+        auto lock = std::lock_guard<std::mutex>{mutex};
+        if(auto summary = format_rebuild_summary(); not summary.empty())
+        {
+            human << color::bold::blue << "INFO" << color::reset << " " << summary << '\n';
+        }
+    }
+
+    void compile_start(std::string_view,
+                       std::string_view,
+                       std::string_view,
+                       std::string_view,
+                       const rebuild_info& rebuild = {}) override
+    {
+        if(not rebuild.empty() and not rebuild.message.empty())
+            info(rebuild.message);
+    }
+
+    void compile_end(std::string_view,
+                     std::string_view,
+                     std::string_view,
+                     std::string_view,
+                     bool,
+                     bool cache_hit,
+                     std::chrono::steady_clock::time_point,
+                     std::chrono::steady_clock::time_point,
+                     const rebuild_info& rebuild = {}) override
+    {
+        if(not cache_hit)
+        {
+            auto lock = std::lock_guard<std::mutex>{mutex};
+            note_rebuild(rebuild);
+        }
+    }
+
+    void link_end(std::string_view,
+                  bool,
+                  bool cache_hit,
+                  std::chrono::steady_clock::time_point,
+                  std::chrono::steady_clock::time_point,
+                  const rebuild_info& rebuild = {}) override
+    {
+        if(not cache_hit and not rebuild.message.empty())
+            info(rebuild.message);
     }
 
     void cache_status(std::string_view object_cache_path,
