@@ -296,7 +296,7 @@ test_gmf_preamble() {
 
   run_cb_list "${work_dir}"
   assert_jsonl_contains '"module":"gmf_demo"' "gmf_named_module"
-  assert_jsonl_contains '"kind":"interface_unit"' "gmf_interface_kind"
+  assert_jsonl_contains '"kind":"interface"' "gmf_interface_kind"
   assert_jsonl_contains '"is_modular":true' "gmf_is_modular"
 
   run_cb_build "${work_dir}"
