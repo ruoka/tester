@@ -830,6 +830,7 @@ private:
     std::string cache_dir() const             { return build_root() + "/cache"; }
     std::string object_cache_path() const     { return cache_dir() + "/object-cache.txt"; }
     std::string executable_cache_path() const { return cache_dir() + "/executable-cache.txt"; }
+    std::string std_module_profile_path() const { return cache_dir() + "/std-module-profile.txt"; }
     std::string std_pcm_path() const          { return module_cache_dir() + "/std.pcm"; }
     std::string std_obj_path() const          { return object_dir() + "/std.o"; }
 
@@ -1671,13 +1672,54 @@ private:
     // Standard Library Module Building
     // ============================================================================
 
+    bool std_module_profile_matches() const
+    {
+        if(not fs::exists(std_pcm_path()))
+            return false;
+
+        const auto stored = detail::read_first_line(std_module_profile_path());
+        return not stored.empty() and stored == object_cache_profile();
+    }
+
+    void save_std_module_profile() const
+    {
+        fs::create_directories(cache_dir());
+        const auto path = std_module_profile_path();
+        const auto tmp = path + ".tmp";
+        auto file = std::ofstream{tmp};
+        if(not file)
+            throw std::runtime_error{"Cannot open std module profile temporary file: " + tmp};
+
+        file << object_cache_profile() << '\n';
+        file.close();
+        if(not file)
+        {
+            auto ignored = std::error_code{};
+            fs::remove(tmp, ignored);
+            throw std::runtime_error{"Failed to write std module profile temporary file: " + tmp};
+        }
+
+        auto error = std::error_code{};
+        fs::rename(tmp, path, error);
+        if(error)
+        {
+            auto ignored = std::error_code{};
+            fs::remove(tmp, ignored);
+            throw std::runtime_error{"Failed to replace std module profile: " + error.message()};
+        }
+    }
+
     void build_std_pcm() {
         auto std_pcm = std_pcm_path();
+        // std.pcm is built with compile/cpp flags and the active clang++; mtime vs
+        // std.cppm alone misses toolchain/profile changes that invalidate project TUs.
         if (fs::exists(std_pcm) and fs::exists(std_module_source) and
-            fs::last_write_time(std_pcm) >= fs::last_write_time(std_module_source))
+            fs::last_write_time(std_pcm) >= fs::last_write_time(std_module_source) and
+            std_module_profile_matches())
             return;
 
         execute_system_command(build_std_pcm_argv());
+        save_std_module_profile();
     }
 
     void build_std_o() {
@@ -2108,6 +2150,7 @@ public:
         const auto object_removed = remove_if_exists(object_cache_path());
         const auto executable_removed = remove_if_exists(executable_cache_path());
         const auto stamp_removed = remove_if_exists(cache_dir() + "/compiler-version.txt");
+        remove_if_exists(std_module_profile_path());
 
         output::notify(&output::observer::cache_invalidate_end, object_removed, executable_removed, stamp_removed);
     }
