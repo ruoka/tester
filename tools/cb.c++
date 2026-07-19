@@ -847,11 +847,13 @@ private:
         return path.string();
     }
 
-    std::string module_safe_name(std::string_view module_name) const {
+    // Artifact stems follow source naming: `foo:bar` / `foo.bar` → `foo-bar`.
+    // Keep '_' literal so `demo:part` and `demo_part` stay distinct.
+    std::string module_safe_name(std::string_view module_name) const
+    {
         auto safe = std::string{module_name};
-        std::ranges::replace(safe, ':', '_');
-        std::ranges::replace(safe, '-', '_');
-        std::ranges::replace(safe, '.', '_');
+        std::ranges::replace(safe, ':', '-');
+        std::ranges::replace(safe, '.', '-');
         return safe;
     }
 
@@ -1595,6 +1597,16 @@ private:
         auto unit_to_tu = unit_to_tu_map{};
 
         for (auto& tu : units) {
+            if(unit_to_tu.contains(tu.unit))
+            {
+                const auto& prior = *unit_to_tu.at(tu.unit);
+                const auto prior_path = prior.path.empty() ? prior.filename : prior.path + "/" + prior.filename;
+                const auto current_path = tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename;
+                throw std::runtime_error{
+                    "Duplicate translation unit key '" + tu.unit + "' from "
+                    + prior_path + " and " + current_path
+                    + " (object/module names must stay unique)"};
+            }
             unit_to_tu[tu.unit] = &tu;
             indegrees[tu.unit] = 0;
         }
@@ -1653,16 +1665,40 @@ private:
             throw std::runtime_error{message};
         }
 
+        auto object_owners = std::flat_map<std::string, std::string, std::less<>>{};
+        auto pcm_owners = std::flat_map<std::string, std::string, std::less<>>{};
+        auto executable_owners = std::flat_map<std::string, std::string, std::less<>>{};
+
         for (auto& tu : sorted) {
             // Attach builder-managed artifact paths once we know the full configuration.
             // Keeping them here keeps the translation unit metadata immutable while giving downstream
             // steps a single place to read object/PCM/binary locations from.
+            const auto source_label = tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename;
             tu.object_path = compute_object_path(tu);
+            if(object_owners.contains(tu.object_path))
+                throw std::runtime_error{
+                    "Duplicate object path '" + tu.object_path + "' from "
+                    + object_owners.at(tu.object_path) + " and " + source_label
+                    + " (object/module names must stay unique)"};
+            object_owners.emplace(tu.object_path, source_label);
+
             if (tu.is_modular) {
                 tu.pcm_path = compute_pcm_path(tu);
+                if(pcm_owners.contains(tu.pcm_path))
+                    throw std::runtime_error{
+                        "Duplicate PCM path '" + tu.pcm_path + "' from "
+                        + pcm_owners.at(tu.pcm_path) + " and " + source_label
+                        + " (object/module names must stay unique)"};
+                pcm_owners.emplace(tu.pcm_path, source_label);
             }
             if (tu.has_main) {
                 tu.executable_path = compute_executable_path(tu);
+                if(executable_owners.contains(tu.executable_path))
+                    throw std::runtime_error{
+                        "Duplicate executable path '" + tu.executable_path + "' from "
+                        + executable_owners.at(tu.executable_path) + " and " + source_label
+                        + " (object/module names must stay unique)"};
+                executable_owners.emplace(tu.executable_path, source_label);
             }
             validate_translation_unit(tu);
         }
