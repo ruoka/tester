@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, rebuild_summary, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
+      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, gmf_preamble, rebuild_summary, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
       exit 0
       ;;
     *)
@@ -250,6 +250,60 @@ test_implementation_pcm() {
   end_case implementation_pcm
 }
 
+test_dotted_module_name() {
+  should_run dotted_module_name || return 0
+  begin_case dotted_module_name
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+  rm -f "${work_dir}/hello.c++"
+
+  printf '%s\n' \
+    'export module demo.core;' \
+    'export int answer() { return 42; }' > "${work_dir}/core.c++m"
+  printf '%s\n' \
+    'export module demo.app;' \
+    'import demo.core;' \
+    'int main() { return answer() == 42 ? 0 : 1; }' > "${work_dir}/app.c++m"
+
+  run_cb_list "${work_dir}"
+  assert_jsonl_contains '"module":"demo.core"' "dotted_core_module"
+  assert_jsonl_contains '"module":"demo.app"' "dotted_app_module"
+  assert_jsonl_contains '"is_modular":true' "dotted_is_modular"
+  assert_jsonl_contains '"imports":["demo.core"]' "dotted_import_edge"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "dotted_module_build_ok"
+  end_case dotted_module_name
+}
+
+test_gmf_preamble() {
+  should_run gmf_preamble || return 0
+  begin_case gmf_preamble
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+  rm -f "${work_dir}/hello.c++"
+
+  printf '%s\n' \
+    'module;' \
+    'extern "C" {' \
+    'typedef int gmf_t;' \
+    '}' \
+    'export module gmf_demo;' \
+    'export int g() { return 1; }' > "${work_dir}/gmf.c++m"
+  printf '%s\n' \
+    'import gmf_demo;' \
+    'int main() { return g() == 1 ? 0 : 1; }' > "${work_dir}/main.c++"
+
+  run_cb_list "${work_dir}"
+  assert_jsonl_contains '"module":"gmf_demo"' "gmf_named_module"
+  assert_jsonl_contains '"kind":"interface"' "gmf_interface_kind"
+  assert_jsonl_contains '"is_modular":true' "gmf_is_modular"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "gmf_preamble_build_ok"
+  end_case gmf_preamble
+}
+
 test_rebuild_summary() {
   should_run rebuild_summary || return 0
   begin_case rebuild_summary
@@ -447,6 +501,8 @@ main() {
   test_test_link_failure
   test_link_rebuild_reason
   test_implementation_pcm
+  test_dotted_module_name
+  test_gmf_preamble
   test_rebuild_summary
   test_test_lifecycle
   test_cache_invalidate

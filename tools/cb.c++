@@ -387,10 +387,11 @@ private:
                      bool has_main_flag);
 
 
-    inline static const std::regex module_regex{R"(\s*(?:export\s+)?module\s+([\w:-]+)\s*;)"};
-    inline static const std::regex export_module_regex{R"(\s*export\s+module\s+([\w:-]+)\s*;)"};
+    // Module names may contain '.' (e.g. demo.core); partitions use ':' (demo.core:part).
+    inline static const std::regex module_regex{R"(\s*(?:export\s+)?module\s+([\w.:-]+)\s*;)"};
+    inline static const std::regex export_module_regex{R"(\s*export\s+module\s+([\w.:-]+)\s*;)"};
     inline static const std::regex fragment_regex{R"(\s*module\s*;)"};  // Global module fragment: just "module;"
-    inline static const std::regex import_regex{R"(\s*(?:export\s+)?(?:import|module)\s+([\w:-]+)\s*;)"};
+    inline static const std::regex import_regex{R"(\s*(?:export\s+)?(?:import|module)\s+([\w.:-]+)\s*;)"};
     inline static const std::regex main_regex{R"(\s*int\s+main\s*\()"};
     inline static const std::regex keyword_regex{R"(\b(class|struct|namespace|constexpr|inline|static)\b)"};
     inline static const std::regex using_namespace_regex{R"(\busing\s+namespace\b)"};
@@ -478,8 +479,10 @@ inline translation_unit parse_translation_unit(const fs::path& project_root, con
         }
 
         // === If we're clearly past the preamble, stop scanning for module stuff ===
-        // Use regex word boundaries to avoid false matches (e.g., "struct" in "structured_log_stream")
-        if (not seen_real_code) {
+        // Use regex word boundaries to avoid false matches (e.g., "struct" in "structured_log_stream").
+        // Do not end the preamble inside a global module fragment: it may contain braces,
+        // keywords, and declarations before the named `export module` / `module` line.
+        if (not seen_real_code and kind != unit_kind::global_fragment) {
             // Convert string_view to string for regex_search
             auto trimmed_str = std::string{trimmed};
             if (trimmed.contains('{') or
@@ -498,7 +501,6 @@ inline translation_unit parse_translation_unit(const fs::path& project_root, con
         }
         else if (std::regex_search(line, m, translation_unit::export_module_regex) and m.size() > 1) {
             module_name = m[1].str();
-            // Allow dots in module names
             kind = module_name.contains(':') ? unit_kind::partition_unit : unit_kind::interface_unit;
         }
         else if (std::regex_search(line, m, translation_unit::module_regex) and m.size() > 1) {
