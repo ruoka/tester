@@ -298,6 +298,15 @@ inline bool path_has_test_segment(std::string_view path) {
     return false;
 }
 
+// First-level deps/tester/tests/... (and tester/tests/...) smoke fixtures must not
+// join the consumer scan. determine_is_test treats every tester/ path as a library
+// source (is_test=false), so without this skip fixture mains such as hello.c++ are
+// compiled into parent builds and collide after duplicate-key fail-fast.
+inline bool is_tester_package_tests_path(std::string_view rel_path)
+{
+    return is_tester_framework_path(rel_path) and path_has_test_segment(rel_path);
+}
+
 inline bool determine_is_test(std::string_view rel_dir, std::string_view name, std::string_view suffix_value) {
     const auto combined = rel_dir.empty() ? std::string{name} : std::string{rel_dir} + "/" + std::string{name};
     if (is_tester_framework_path(combined))
@@ -1581,6 +1590,7 @@ private:
                 auto rel_path = entry.path().lexically_relative(path).string();
 
                 if (detail::is_nested_dependency_path(rel_path) or
+                    detail::is_tester_package_tests_path(rel_path) or
                     rel_path.contains("/test/") or rel_path.starts_with("test/") or
                     rel_path.contains("/tools/") or rel_path.starts_with("tools/") or
                     rel_path.contains("/.git/") or rel_path.starts_with(".git/"))
