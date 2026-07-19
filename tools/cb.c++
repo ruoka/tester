@@ -266,6 +266,23 @@ inline bool is_tester_framework_path(std::string_view path) {
     return path.contains("/tester/") or path.starts_with("tester/");
 }
 
+// Parent repos vendor packages under deps/<name>/. Nested checkouts such as
+// deps/net/deps/tester belong to the child package and must not join the parent
+// build — otherwise same-basename smoke fixtures collide across packages.
+inline bool is_nested_dependency_path(std::string_view rel_path)
+{
+    if(not rel_path.starts_with("deps/"))
+        return false;
+
+    const auto rest = rel_path.substr(5);
+    const auto slash = rest.find('/');
+    if(slash == std::string_view::npos)
+        return false;
+
+    const auto after_pkg = rest.substr(slash + 1);
+    return after_pkg.starts_with("deps/") or after_pkg == "deps";
+}
+
 inline bool path_has_test_segment(std::string_view path) {
     // Match path components named exactly "test" or "tests" (not "tester" / "test_exception_bug").
     auto rest = path;
@@ -1563,7 +1580,8 @@ private:
 
                 auto rel_path = entry.path().lexically_relative(path).string();
 
-                if (rel_path.contains("/test/") or rel_path.starts_with("test/") or
+                if (detail::is_nested_dependency_path(rel_path) or
+                    rel_path.contains("/test/") or rel_path.starts_with("test/") or
                     rel_path.contains("/tools/") or rel_path.starts_with("tools/") or
                     rel_path.contains("/.git/") or rel_path.starts_with(".git/"))
                     continue;

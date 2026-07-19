@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, gmf_preamble, module_safe_name, same_basename_collision, rebuild_summary, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
+      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, gmf_preamble, module_safe_name, same_basename_collision, nested_deps_skipped, rebuild_summary, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
       exit 0
       ;;
     *)
@@ -364,6 +364,30 @@ test_same_basename_collision() {
   end_case same_basename_collision
 }
 
+test_nested_deps_skipped() {
+  should_run nested_deps_skipped || return 0
+  begin_case nested_deps_skipped
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  # Nested package checkouts (deps/<pkg>/deps/...) must not join the parent scan,
+  # or vendored tester smoke fixtures collide across packages.
+  mkdir -p "${work_dir}/deps/net/deps/tester/tests/cb/fixture" \
+           "${work_dir}/deps/cryptic/deps/tester/tests/cb/fixture"
+  printf '%s\n' 'int nested_net() { return 1; }' > "${work_dir}/deps/net/deps/tester/tests/cb/fixture/hello.c++"
+  printf '%s\n' 'int nested_cryptic() { return 2; }' > "${work_dir}/deps/cryptic/deps/tester/tests/cb/fixture/hello.c++"
+
+  run_cb_list "${work_dir}"
+  assert_jsonl_event_count unit 1 "nested_deps_single_unit"
+  assert_jsonl_event_value unit path hello.c++ "nested_deps_root_hello"
+  assert_jsonl_not_contains 'deps/net/deps/' "nested_deps_net_absent"
+  assert_jsonl_not_contains 'deps/cryptic/deps/' "nested_deps_cryptic_absent"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "nested_deps_build_ok"
+  end_case nested_deps_skipped
+}
+
 test_rebuild_summary() {
   should_run rebuild_summary || return 0
   begin_case rebuild_summary
@@ -565,6 +589,7 @@ main() {
   test_gmf_preamble
   test_module_safe_name
   test_same_basename_collision
+  test_nested_deps_skipped
   test_rebuild_summary
   test_test_lifecycle
   test_cache_invalidate
