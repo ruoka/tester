@@ -54,18 +54,6 @@ inline auto& console_observer()
 
 enum class build_phase { none, build };
 
-inline bool select_output_observer(std::string_view name)
-{
-    static const auto registered = []
-    {
-        output::register_observer("console", console_observer());
-        output::register_observer("jsonl", jsonl_observer());
-        return true;
-    }();
-    (void)registered;
-    return output::select_observer(name);
-}
-
 enum class build_config { debug, release };
 
 enum class unit_kind : unsigned {
@@ -2390,8 +2378,11 @@ using namespace std::string_literals;
 
 int main(int argc, char* argv[])
 try {
+    cb::output::register_observer("console", cb::console_observer());
+    cb::output::register_observer("jsonl", cb::jsonl_observer());
+
     auto output_name = std::string_view{"console"};
-    cb::select_output_observer(output_name);
+    cb::output::select_observer(output_name);
     auto stdcppm = ""s;  // Empty string triggers auto-detection
     auto arg_index = 1;
     if (argc > 1) {
@@ -2426,7 +2417,7 @@ try {
         if (argument == "--jsonl") {
             cb::jsonl_observer().set_mode(cb::output::jsonl::jsonl_mode::failures);
             output_name = "jsonl";
-            cb::select_output_observer(output_name);
+            cb::output::select_observer(output_name);
             continue;
         }
         if(argument.starts_with("--jsonl="))
@@ -2444,7 +2435,7 @@ try {
                 return 1;
             }
             output_name = "jsonl";
-            cb::select_output_observer(output_name);
+            cb::output::select_observer(output_name);
             continue;
         }
         if (argument == "test") {
@@ -2556,7 +2547,7 @@ try {
         }
     }
 
-    if(not cb::select_output_observer(output_name))
+    if(not cb::output::select_observer(output_name))
     {
         cb::output::notify(&cb::output::observer::error, "Unknown output observer: "s + std::string{output_name});
         return 1;
