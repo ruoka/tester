@@ -330,13 +330,23 @@ test_cache_invalidate() {
 test_profile_change() {
   should_run profile_change || return 0
   begin_case profile_change
-  local work_dir first_jsonl
+  local work_dir first_jsonl std_pcm std_profile before_pcm_mtime after_pcm_mtime
   work_dir="$(prepare_work_dir)"
+  std_pcm="${work_dir}/${BUILD_DIR}/pcm/std.pcm"
+  std_profile="${work_dir}/${BUILD_DIR}/cache/std-module-profile.txt"
 
   run_cb_build "${work_dir}"
   first_jsonl="${LAST_JSONL}"
   assert_text_contains "${first_jsonl}" '"cache_hit":false' "seed_build"
+  if [[ -f "${std_pcm}" && -f "${std_profile}" ]]; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"std_module_profile_written"}'
+  else
+    fail "std.pcm and std-module-profile.txt should exist after seed build"
+  fi
+  before_pcm_mtime="$(stat -c %Y "${std_pcm}" 2>/dev/null || stat -f %m "${std_pcm}")"
 
+  # Ensure mtime granularity cannot hide a rebuild on fast filesystems.
+  sleep 1
   run_cb_build "${work_dir}" --compile-flags -DCB_SMOKE_FLAG=1
   assert_jsonl_contains '"type":"profile_changed"' "profile_changed_event"
   assert_jsonl_contains '"reason":"profile_change"' "profile_changed_reason"
@@ -346,6 +356,19 @@ test_profile_change() {
   assert_jsonl_contains '"rebuild_reason":"profile_change"' "compile_end_profile_change"
   assert_compile_end_has_no_profile_diff
   assert_jsonl_contains '"cache_hit":false' "recompile_after_profile_change"
+  assert_jsonl_contains 'std.cppm' "std_cppm_command_after_profile_change"
+  assert_jsonl_contains '--precompile' "std_precompile_after_profile_change"
+  after_pcm_mtime="$(stat -c %Y "${std_pcm}" 2>/dev/null || stat -f %m "${std_pcm}")"
+  if [[ "${after_pcm_mtime}" -gt "${before_pcm_mtime}" ]]; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"std_pcm_rebuilt_on_profile_change"}'
+  else
+    fail "std.pcm should be rebuilt when the object-cache profile changes"
+  fi
+  if grep -Fq 'DCB_SMOKE_FLAG=1' "${std_profile}"; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"std_module_profile_updated"}'
+  else
+    fail "std-module-profile.txt should record the new compile profile"
+  fi
   end_case profile_change
 }
 
