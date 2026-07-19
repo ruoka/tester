@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, gmf_preamble, rebuild_summary, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
+      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, gmf_preamble, module_safe_name, same_basename_collision, rebuild_summary, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
       exit 0
       ;;
     *)
@@ -304,6 +304,66 @@ test_gmf_preamble() {
   end_case gmf_preamble
 }
 
+test_module_safe_name() {
+  should_run module_safe_name || return 0
+  begin_case module_safe_name
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+  rm -f "${work_dir}/hello.c++"
+
+  # Partition demo:part and flat module demo_part must keep distinct artifacts.
+  # Convention: ':' / '.' fold to '-', while '_' stays literal.
+  printf '%s\n' \
+    'export module demo:part;' \
+    'export int part_value() { return 1; }' > "${work_dir}/demo-part.c++m"
+  printf '%s\n' \
+    'export module demo_part;' \
+    'export int flat_value() { return 2; }' > "${work_dir}/demo_part.c++m"
+  printf '%s\n' \
+    'export module demo.app;' \
+    'export int app_value() { return 3; }' > "${work_dir}/demo-app.c++m"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "module_safe_name_build_ok"
+  assert_jsonl_contains '-fmodule-file=demo:part=' "module_flag_partition"
+  assert_jsonl_contains '-fmodule-file=demo_part=' "module_flag_flat"
+  assert_jsonl_contains 'demo-part.pcm' "partition_pcm_hyphen"
+  assert_jsonl_contains 'demo_part.pcm' "flat_pcm_underscore"
+  assert_jsonl_contains 'demo-app.pcm' "dotted_pcm_hyphen"
+  assert_jsonl_not_contains "-fmodule-file=demo:part=${BUILD_DIR}/pcm/demo_part.pcm" "partition_not_collapsed"
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ -f "${work_dir}/${BUILD_DIR}/pcm/demo-part.pcm" && -f "${work_dir}/${BUILD_DIR}/pcm/demo_part.pcm" ]]; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"distinct_pcm_files"}'
+  else
+    fail "expected distinct pcm files for demo:part and demo_part under ${BUILD_DIR}/pcm"
+  fi
+  end_case module_safe_name
+}
+
+test_same_basename_collision() {
+  should_run same_basename_collision || return 0
+  begin_case same_basename_collision
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  # Same basename in different directories is unsupported: names must stay unique.
+  mkdir -p "${work_dir}/left" "${work_dir}/right"
+  printf '%s\n' 'int marker_left() { return 1; }' > "${work_dir}/left/util.c++"
+  printf '%s\n' 'int marker_right() { return 2; }' > "${work_dir}/right/util.c++"
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if run_cb_build "${work_dir}"; then
+    fail "same-basename sources in different directories should fail fast"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"same_basename_collision_exit"}'
+  fi
+  assert_jsonl_contains '"type":"cb_error"' "same_basename_cb_error"
+  assert_jsonl_contains 'Duplicate translation unit key' "same_basename_duplicate_key"
+  assert_jsonl_contains 'object/module names must stay unique' "same_basename_uniqueness_hint"
+  end_case same_basename_collision
+}
+
 test_rebuild_summary() {
   should_run rebuild_summary || return 0
   begin_case rebuild_summary
@@ -503,6 +563,8 @@ main() {
   test_implementation_pcm
   test_dotted_module_name
   test_gmf_preamble
+  test_module_safe_name
+  test_same_basename_collision
   test_rebuild_summary
   test_test_lifecycle
   test_cache_invalidate
