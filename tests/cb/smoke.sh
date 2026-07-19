@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, gmf_preamble, module_safe_name, same_basename_collision, nested_deps_skipped, rebuild_summary, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
+      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, gmf_preamble, module_safe_name, same_basename_collision, nested_deps_skipped, vendored_tester_tests_skipped, rebuild_summary, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
       exit 0
       ;;
     *)
@@ -388,6 +388,30 @@ test_nested_deps_skipped() {
   end_case nested_deps_skipped
 }
 
+test_vendored_tester_tests_skipped() {
+  should_run vendored_tester_tests_skipped || return 0
+  begin_case vendored_tester_tests_skipped
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  # First-level deps/tester/tests fixtures are still under tester/, so is_test stays
+  # false; skipping only nested deps/*/deps is not enough for parent repos.
+  mkdir -p "${work_dir}/deps/tester/tests/cb/fixture" \
+           "${work_dir}/deps/tester/tester"
+  printf '%s\n' 'int vendored_fixture() { return 1; }' > "${work_dir}/deps/tester/tests/cb/fixture/hello.c++"
+  printf '%s\n' 'int framework_lib() { return 2; }' > "${work_dir}/deps/tester/tester/lib.c++"
+
+  run_cb_list "${work_dir}"
+  assert_jsonl_event_count unit 2 "vendored_tester_unit_count"
+  assert_jsonl_contains '"path":"hello.c++"' "vendored_tester_root_hello"
+  assert_jsonl_contains '"path":"deps/tester/tester/lib.c++"' "vendored_tester_framework_lib"
+  assert_jsonl_not_contains 'deps/tester/tests/' "vendored_tester_tests_absent"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "vendored_tester_build_ok"
+  end_case vendored_tester_tests_skipped
+}
+
 test_rebuild_summary() {
   should_run rebuild_summary || return 0
   begin_case rebuild_summary
@@ -590,6 +614,7 @@ main() {
   test_module_safe_name
   test_same_basename_collision
   test_nested_deps_skipped
+  test_vendored_tester_tests_skipped
   test_rebuild_summary
   test_test_lifecycle
   test_cache_invalidate
