@@ -79,19 +79,30 @@ auto sort_test_cases()
 
     // Calculate dependency levels (tests with no dependencies = level 0, etc.)
     auto levels = std::map<test_case*, int>{};
+    auto visiting = std::flat_set<test_case*>{};
     auto calculate_level = [&](test_case* tc, auto& self) -> int
     {
         if(levels.contains(tc))
-            return levels[tc];
-        
+            return levels.at(tc);
+
+        // A re-visit while still resolving ancestors means depends_on formed a cycle.
+        // Fail clearly instead of recursing until the stack overflows.
+        if(visiting.contains(tc))
+        {
+            const auto label = tc->id.empty() ? tc->test_name : tc->id;
+            throw std::runtime_error{"Cyclic test dependency involving \"" + label + "\""};
+        }
+
+        visiting.insert(tc);
         int max_dep_level = -1;
         for(const auto& dep_id : tc->depends_on)
         {
             if(id_to_test.contains(dep_id))
                 max_dep_level = std::max(max_dep_level, self(id_to_test.at(dep_id), self));
         }
+        visiting.erase(tc);
         levels[tc] = max_dep_level + 1;
-        return levels[tc];
+        return levels.at(tc);
     };
 
     for(auto& tc : test_cases)
