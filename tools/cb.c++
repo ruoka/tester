@@ -601,15 +601,14 @@ private:
             if (auto env = std::getenv("LLVM_PATH"); env and *env) {
                 std_module_source = env;
             } else {
-                output::notify(&output::observer::error, "std.cppm path not provided. Pass it as the first argument or set LLVM_PATH.");
-                std::exit(1);
+                throw std::runtime_error{
+                    "std.cppm path not provided. Pass it as the first argument or set LLVM_PATH."};
             }
         }
 
         auto std_module_path = fs::path{std_module_source};
         if (not fs::exists(std_module_path)) {
-            output::notify(&output::observer::error, "std.cppm not found at: " + std_module_source);
-            std::exit(1);
+            throw std::runtime_error{"std.cppm not found at: " + std_module_source};
         }
 
         // Determine LLVM prefix from std.cppm path
@@ -639,8 +638,8 @@ private:
         if (not try_env_compiler()) {
             llvm_cxx = llvm_prefix + "/bin/clang++";
             if (!command_available(llvm_cxx)) {
-                output::notify(&output::observer::error, "clang++ not found. Expected: " + llvm_cxx + " (set LLVM_CXX to override).");
-                std::exit(1);
+                throw std::runtime_error{
+                    "clang++ not found. Expected: " + llvm_cxx + " (set LLVM_CXX to override)."};
             }
         }
 
@@ -815,8 +814,8 @@ private:
 #elif defined(__aarch64__) or defined(__arm64__)
         return "aarch64";
 #else
-        output::notify(&output::observer::error, "Unsupported architecture. Only x86_64 and aarch64 are supported.");
-        std::exit(1);
+        throw std::runtime_error{
+            "Unsupported architecture. Only x86_64 and aarch64 are supported."};
 #endif
     }
 
@@ -2139,7 +2138,8 @@ public:
         output::notify(&output::observer::success, "Build completed: "s + build_root());
     }
 
-    void run_tests(const std::vector<std::string>& args = {}) {
+    // Returns false when the test runner reports failures (normal outcome, not exceptional).
+    bool run_tests(const std::vector<std::string>& args = {}) {
         output::notify(&output::observer::info, "=== Running tests ===");
 
         include_tests = true;
@@ -2188,9 +2188,10 @@ public:
         current_phase = build_phase::none;
         if (r) {
             output::notify(&output::observer::error, "Some tests or assertions failed!");
-            std::exit(1);
+            return false;
         }
         output::notify(&output::observer::success, "All tests passed!");
+        return true;
     }
 
     void list_sources() {
@@ -2361,7 +2362,7 @@ try {
         } else if (argument == "cache") {
             if (i + 1 >= argc) {
                 cb::output::notify(&cb::output::observer::error, "Usage: cache status|invalidate");
-                std::exit(1);
+                return 1;
             }
             const auto cache_verb = std::string_view{argv[++i]};
             if (cache_verb == "status") {
@@ -2370,7 +2371,7 @@ try {
                 do_cache_invalidate = true;
             } else {
                 cb::output::notify(&cb::output::observer::error, "Usage: cache status|invalidate");
-                std::exit(1);
+                return 1;
             }
         } else if (argument == "static") {
             static_linking = true;
@@ -2387,21 +2388,21 @@ try {
                 include_paths.push_back(argv[++i]);
             } else {
                 cb::output::notify(&cb::output::observer::error, "Missing path after -I/--include");
-                std::exit(1);
+                return 1;
             }
         } else if (argument == "--link-flags") {
             if (i+1 < argc) {
                 extra_link_flags = cb::detail::parse_external_flag_text(argv[++i]);
             } else {
                 cb::output::notify(&cb::output::observer::error, "Missing flags after --link-flags");
-                std::exit(1);
+                return 1;
             }
         } else if (argument == "--compile-flags" or argument == "--extra-compile-flags") {
             if (i+1 < argc) {
                 extra_compile_flags = cb::detail::parse_external_flag_text(argv[++i]);
             } else {
                 cb::output::notify(&cb::output::observer::error, "Missing flags after --compile-flags");
-                std::exit(1);
+                return 1;
             }
         } else if (argument.starts_with("--compile-flags=") or argument.starts_with("--extra-compile-flags=")) {
             const auto eq = argument.find('=');
@@ -2502,7 +2503,8 @@ try {
         args.append_range(test_runner_args);
 
         // Build include_tests etc inside run_tests(), but pass args as tokens.
-        build_system.run_tests(args);
+        if(not build_system.run_tests(args))
+            return 1;
     }
     if (not do_clean and not do_list and not do_run_tests and not do_build
         and not do_cache_status and not do_cache_invalidate)
@@ -2511,8 +2513,8 @@ try {
     return 0;
 } catch (const std::exception& e) {
     cb::output::notify(&cb::output::observer::error, "Fatal error: "s + e.what());
-    std::exit(1);
+    return 1;
 } catch (...) {
     cb::output::notify(&cb::output::observer::error, "Fatal error: unknown exception");
-    std::exit(1);
+    return 1;
 }
