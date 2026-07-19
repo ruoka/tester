@@ -556,7 +556,8 @@ private:
     std::string llvm_prefix, llvm_cxx;
     std::string std_cppm_profile;
     std::string cxx_sig;
-    std::string clang_version;
+    // Lazily filled by ensure_toolchain_profile() from const cache queries.
+    mutable std::string clang_version;
     mutable bool toolchain_profile_probed = false;
     translation_unit_list units_in_topological_order;
     std::mutex cache_mutex;
@@ -654,13 +655,12 @@ private:
             return;
         toolchain_profile_probed = true;
 
-        auto self = const_cast<build_system*>(this);
         fs::create_directories(cache_dir());
 
         const auto stamp = cache_dir() + "/compiler-version.txt";
         const auto cmd = detail::shell_quote(llvm_cxx) + " --version > " + detail::shell_quote(stamp) + " 2>/dev/null";
         if(std::system(cmd.c_str()) == 0)
-            self->clang_version = detail::read_first_line(stamp);
+            clang_version = detail::read_first_line(stamp);
     }
 
     void initialize_build_flags()
