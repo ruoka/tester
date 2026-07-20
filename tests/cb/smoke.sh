@@ -454,8 +454,8 @@ test_project_test_dir_included() {
   assert_jsonl_contains '"path":"test/widget.test.c++"' "project_test_singular_path"
   assert_jsonl_contains '"path":"src/test/nested.test.c++"' "project_test_nested_path"
   assert_jsonl_contains '"path":"tests/plural.test.c++"' "project_test_plural_path"
-  assert_jsonl_contains '"path":"test/widget.test.c++","module":"","kind":"non_module","imports":[],"level":0,"has_main":false,"is_test":true' "project_test_singular_is_test"
-  assert_jsonl_contains '"path":"src/test/nested.test.c++","module":"","kind":"non_module","imports":[],"level":0,"has_main":false,"is_test":true' "project_test_nested_is_test"
+  assert_jsonl_contains '"path":"test/widget.test.c++","kind":"non_module","imports":[],"level":0,"has_main":false,"is_test":true' "project_test_singular_is_test"
+  assert_jsonl_contains '"path":"src/test/nested.test.c++","kind":"non_module","imports":[],"level":0,"has_main":false,"is_test":true' "project_test_nested_is_test"
   assert_jsonl_event_value list_summary test_count 3 "project_test_dir_test_count"
   assert_jsonl_not_contains 'deps/tester/test/' "project_test_vendored_tester_absent"
 
