@@ -77,7 +77,10 @@ auto register_tests()
 
         const auto summary_pos = result.stdout_text.rfind("\"type\":\"summary\"");
         require_neq(summary_pos, std::string::npos);
-        const auto summary_line = result.stdout_text.substr(summary_pos, 256);
+        const auto summary_end = result.stdout_text.find('\n', summary_pos);
+        const auto summary_line = result.stdout_text.substr(
+            summary_pos,
+            summary_end == std::string::npos ? std::string::npos : summary_end - summary_pos);
         require_true(summary_line.contains("\"passed\":false"));
         require_true(summary_line.contains("\"tests_total\":0"));
     };
