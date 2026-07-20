@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, rebuild_summary, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
+      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, project_test_dir_included, rebuild_summary, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
       exit 0
       ;;
     *)
@@ -434,6 +434,50 @@ test_vendored_tester_tests_skipped() {
   end_case vendored_tester_tests_skipped
 }
 
+test_project_test_dir_included() {
+  should_run project_test_dir_included || return 0
+  begin_case project_test_dir_included
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  # Conventional project test/ trees must join debug scans (include_tests=true).
+  # A hard-skip of test/ previously dropped them before is_test/include_tests ran.
+  mkdir -p "${work_dir}/test" "${work_dir}/src/test" "${work_dir}/tests" \
+           "${work_dir}/deps/tester/test/fixture"
+  printf '%s\n' 'int singular_test() { return 1; }' > "${work_dir}/test/widget.test.c++"
+  printf '%s\n' 'int nested_test() { return 2; }' > "${work_dir}/src/test/nested.test.c++"
+  printf '%s\n' 'int plural_test() { return 3; }' > "${work_dir}/tests/plural.test.c++"
+  printf '%s\n' 'int vendored_singular() { return 4; }' > "${work_dir}/deps/tester/test/fixture/hello.c++"
+
+  run_cb_list "${work_dir}"
+  assert_jsonl_event_count unit 4 "project_test_dir_unit_count"
+  assert_jsonl_contains '"path":"test/widget.test.c++"' "project_test_singular_path"
+  assert_jsonl_contains '"path":"src/test/nested.test.c++"' "project_test_nested_path"
+  assert_jsonl_contains '"path":"tests/plural.test.c++"' "project_test_plural_path"
+  assert_jsonl_contains '"path":"test/widget.test.c++","kind":"non_module","imports":[],"level":0,"has_main":false,"is_test":true' "project_test_singular_is_test"
+  assert_jsonl_contains '"path":"src/test/nested.test.c++","kind":"non_module","imports":[],"level":0,"has_main":false,"is_test":true' "project_test_nested_is_test"
+  assert_jsonl_event_value list_summary test_count 3 "project_test_dir_test_count"
+  assert_jsonl_not_contains 'deps/tester/test/' "project_test_vendored_tester_absent"
+
+  # Release keeps include_tests=false, so project test trees stay out of the inventory.
+  local status=0
+  LAST_JSONL="$(
+    cd "${work_dir}"
+    "${CB_BIN}" "${STD_CPPM}" release list --jsonl=trace 2>/dev/null
+  )" || status=$?
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ "${status}" -ne 0 ]]; then
+    fail "release list exited ${status}"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"project_test_release_list_exit"}'
+  fi
+  assert_jsonl_event_count unit 1 "project_test_release_unit_count"
+  assert_jsonl_event_value unit path hello.c++ "project_test_release_root_only"
+  assert_jsonl_not_contains '"path":"test/widget.test.c++"' "project_test_release_singular_absent"
+  assert_jsonl_not_contains '"path":"tests/plural.test.c++"' "project_test_release_plural_absent"
+  end_case project_test_dir_included
+}
+
 test_rebuild_summary() {
   should_run rebuild_summary || return 0
   begin_case rebuild_summary
@@ -662,6 +706,7 @@ main() {
   test_reserved_std_collision
   test_nested_deps_skipped
   test_vendored_tester_tests_skipped
+  test_project_test_dir_included
   test_rebuild_summary
   test_test_lifecycle
   test_cache_invalidate
