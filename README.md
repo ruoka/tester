@@ -209,12 +209,12 @@ Working copies: `examples/readme_unit_example.*`, `examples/readme_bdd_example.t
 ./tools/CB.sh debug test --list --jsonl=failures
 ```
 
-Pass options through to `test_runner` after `--`, or use CB shortcuts directly:
+Pass test_runner options directly (CB recognizes them):
 
 ```bash
-./tools/CB.sh debug test -- --jsonl=trace --slowest=10
+./tools/CB.sh debug test --jsonl=trace --slowest=10
 ./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'
-./tools/CB.sh debug test -- --result   # stable RESULT: line on stderr in JSONL mode
+./tools/CB.sh debug test --result   # stable RESULT: line on stderr in JSONL mode
 ```
 
 **Tag filtering:**
