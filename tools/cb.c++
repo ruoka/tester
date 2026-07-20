@@ -40,18 +40,6 @@ namespace cb {
 using namespace std::string_literals;
 using namespace std::string_view_literals;
 
-inline auto& jsonl_observer()
-{
-    static auto value = output::jsonl::observer{std::cout};
-    return value;
-}
-
-inline auto& console_observer()
-{
-    static auto value = output::console::observer{std::cerr};
-    return value;
-}
-
 enum class build_phase { none, build };
 
 enum class build_config { debug, release };
@@ -66,6 +54,31 @@ enum class unit_kind : unsigned {
 
 using suffix_list = std::vector<std::string>;
 using string_list = std::vector<std::string>;
+
+// ============================================================================
+// Project naming conventions — edit these for other layouts
+// ============================================================================
+
+// Source extensions CB will scan and compile. Prefixed forms (`.test.`, `.impl.`)
+// must appear before their base extension so `make_base_name` strips the longest match.
+inline const suffix_list supported_suffixes = {
+    ".test.c++m",
+    ".test.c++",
+    ".impl.c++",
+    ".c++m",
+    ".cppm",
+    ".c++",
+    ".cpp"
+};
+
+// Language extensions replaced by `.o` when naming object files (any prefix such as
+// `.test` / `.impl` is kept). Edit alongside `supported_suffixes` for other conventions.
+inline const suffix_list object_stem_suffixes = {
+    ".c++m",
+    ".cppm",
+    ".c++",
+    ".cpp"
+};
 
 namespace detail {
 
@@ -226,16 +239,6 @@ inline output::object_cache_profile_diff diff_object_cache_profiles(std::string_
     output::for_each_profile_tokens(diff, diff_tokens);
     return diff;
 }
-
-inline const suffix_list supported_suffixes = {
-    ".test.c++m",
-    ".test.c++",
-    ".impl.c++",
-    ".c++m",
-    ".cppm",
-    ".c++",
-    ".cpp"
-};
 
 inline std::string make_base_name(std::string_view filename)
 {
@@ -436,10 +439,10 @@ private:
 
 inline bool translation_unit::match_supported_suffix(std::string_view filename, std::string& out_suffix)
 {
-    const auto suffix = std::ranges::find_if(detail::supported_suffixes, [&](const std::string& s) {
+    const auto suffix = std::ranges::find_if(supported_suffixes, [&](const std::string& s) {
         return filename.ends_with(s);
     });
-    if(suffix == detail::supported_suffixes.end())
+    if(suffix == supported_suffixes.end())
         return false;
     out_suffix.assign(suffix->data(), suffix->size());
     return true;
@@ -894,15 +897,15 @@ private:
         return safe;
     }
 
-    std::string object_suffix(const translation_unit& tu) const {
-        static constexpr std::array<std::string_view, 4> endings{".c++m"sv,".c++"sv,".cpp"sv,".cppm"sv};
-        for (const auto ending : endings) {
-            if (tu.suffix.ends_with(ending)) {
-                auto prefix = tu.suffix.substr(0, tu.suffix.size() - ending.size());
-                return std::string{prefix} + ".o";
-            }
-        }
-        throw std::logic_error{"Unsupported suffix for object file: " + tu.suffix};
+    std::string object_suffix(const translation_unit& tu) const
+    {
+        const auto ending = std::ranges::find_if(object_stem_suffixes, [&](std::string_view s)
+        {
+            return tu.suffix.ends_with(s);
+        });
+        if(ending == object_stem_suffixes.end())
+            throw std::logic_error{"Unsupported suffix for object file: " + tu.suffix};
+        return std::string{tu.suffix.substr(0, tu.suffix.size() - ending->size())} + ".o";
     }
 
     std::string compute_object_path(const translation_unit& tu) const {
@@ -2360,7 +2363,7 @@ bool is_cb_token(std::string_view arg)
         || arg == "--include-examples" || arg == "--build-tests"
         || arg == "-I" || arg == "--include" || arg == "--link-flags"
         || arg == "--compile-flags" || arg == "--extra-compile-flags"
-        || arg == "--jsonl" || arg.starts_with("--jsonl=") || arg == "--";
+        || arg == "--jsonl" || arg.starts_with("--jsonl=");
 }
 
 bool is_test_runner_token(std::string_view arg)
@@ -2372,269 +2375,270 @@ bool is_test_runner_token(std::string_view arg)
         || arg.starts_with("--jsonl-output-max-bytes=");
 }
 
-void note_test_runner_jsonl(std::string_view arg, std::string_view& output_name)
-{
-    if(arg == "--jsonl")
-    {
-        output_name = "jsonl";
-        cb::jsonl_observer().set_mode(cb::output::jsonl::jsonl_mode::failures);
-    }
-    else if(arg.starts_with("--jsonl="))
-    {
-        output_name = "jsonl";
-        const auto mode = arg.substr(std::string_view{"--jsonl="}.size());
-        if(mode == "summary")
-            cb::jsonl_observer().set_mode(cb::output::jsonl::jsonl_mode::summary);
-        else if(mode == "trace")
-            cb::jsonl_observer().set_mode(cb::output::jsonl::jsonl_mode::trace);
-        else
-            cb::jsonl_observer().set_mode(cb::output::jsonl::jsonl_mode::failures);
-    }
-}
-
 } // namespace
 
 using namespace std::string_literals;
 
 int main(int argc, char* argv[])
-try {
-    cb::output::register_observer("console", cb::console_observer());
-    cb::output::register_observer("jsonl", cb::jsonl_observer());
+{
+    auto console_observer = cb::output::console::observer{std::cerr};
+    auto jsonl_observer = cb::output::jsonl::observer{std::cout};
+    cb::output::register_observer("console", console_observer);
+    cb::output::register_observer("jsonl", jsonl_observer);
 
-    auto output_name = std::string_view{"console"};
-    cb::output::select_observer(output_name);
-    auto stdcppm = ""s;  // Empty string triggers auto-detection
-    auto arg_index = 1;
-    if (argc > 1) {
-        auto candidate = fs::path{argv[1]};
-        if (fs::exists(candidate)) {
-            stdcppm = candidate.string();
-            ++arg_index;
-        }
-    }
+    // Emit JSONL eof (and any other observer teardown) on every exit path,
+    // including returns and exceptions — without std::atexit.
+    struct output_finish_guard
+    {
+        ~output_finish_guard() { cb::output::finish(); }
+    };
+    const auto finish_guard = output_finish_guard{};
 
-    auto config = cb::build_config::debug;  // default to debug
-    auto do_clean = false, do_list = false, do_build = false, do_run_tests = false;
-    auto do_cache_status = false, do_cache_invalidate = false;
-    auto test_filter = std::string{};
-    auto test_runner_args = std::vector<std::string>{};
-    auto static_linking = false;
-    auto include_examples = false;
-    auto build_tests = false;  // --build-tests flag: build tests but don't run them
-    auto include_paths = std::vector<std::string>{};
-    auto extra_compile_flags = cb::string_list{};
-    auto extra_link_flags = cb::string_list{};
+    try
+    {
+        auto output_name = std::string_view{"console"};
+        cb::output::select_observer(output_name);
+        auto stdcppm = ""s;  // Empty string triggers auto-detection
+        auto arg_index = 1;
+        if (argc > 1) {
+            auto candidate = fs::path{argv[1]};
+            if (fs::exists(candidate)) {
+                stdcppm = candidate.string();
+                ++arg_index;
+            }
+        }
 
-    for (int i = arg_index; i < argc; ++i) {
-        auto argument = std::string_view{argv[i]};
-        if (argument == "--") {
-            // Everything after "--" is passed to test_runner (only meaningful with "test").
-            test_runner_args.assign(argv + i + 1, argv + argc);
-            for(const auto& arg : test_runner_args)
-                note_test_runner_jsonl(arg, output_name);
-            break;
-        }
-        if (argument == "--jsonl") {
-            cb::jsonl_observer().set_mode(cb::output::jsonl::jsonl_mode::failures);
-            output_name = "jsonl";
-            cb::output::select_observer(output_name);
-            continue;
-        }
-        if(argument.starts_with("--jsonl="))
+        auto config = cb::build_config::debug;  // default to debug
+        auto do_clean = false, do_list = false, do_build = false, do_run_tests = false;
+        auto do_cache_status = false, do_cache_invalidate = false;
+        auto test_filter = std::string{};
+        auto test_runner_args = std::vector<std::string>{};
+        auto static_linking = false;
+        auto include_examples = false;
+        auto build_tests = false;  // --build-tests flag: build tests but don't run them
+        auto include_paths = std::vector<std::string>{};
+        auto extra_compile_flags = cb::string_list{};
+        auto extra_link_flags = cb::string_list{};
+
+        // Returns nullopt if not a --jsonl form; false if the mode is unknown.
+        const auto apply_jsonl_arg = [&](std::string_view argument) -> std::optional<bool>
         {
+            if(argument == "--jsonl")
+            {
+                jsonl_observer.set_mode(cb::output::jsonl::jsonl_mode::failures);
+                output_name = "jsonl";
+                return true;
+            }
+            if(not argument.starts_with("--jsonl="))
+                return std::nullopt;
+
             const auto mode = argument.substr(std::string_view{"--jsonl="}.size());
             if(mode == "summary")
-                cb::jsonl_observer().set_mode(cb::output::jsonl::jsonl_mode::summary);
+                jsonl_observer.set_mode(cb::output::jsonl::jsonl_mode::summary);
             else if(mode == "failures")
-                cb::jsonl_observer().set_mode(cb::output::jsonl::jsonl_mode::failures);
+                jsonl_observer.set_mode(cb::output::jsonl::jsonl_mode::failures);
             else if(mode == "trace")
-                cb::jsonl_observer().set_mode(cb::output::jsonl::jsonl_mode::trace);
+                jsonl_observer.set_mode(cb::output::jsonl::jsonl_mode::trace);
             else
-            {
-                cb::output::notify(&cb::output::observer::error, "Unknown JSONL mode: "s + std::string{mode});
-                return 1;
-            }
+                return false;
+
             output_name = "jsonl";
-            cb::output::select_observer(output_name);
-            continue;
+            return true;
+        };
+
+        for (int i = arg_index; i < argc; ++i) {
+            auto argument = std::string_view{argv[i]};
+            if(const auto applied = apply_jsonl_arg(argument))
+            {
+                if(not *applied)
+                {
+                    cb::output::notify(&cb::output::observer::error,
+                        "Unknown JSONL mode: "s + std::string{argument.substr(std::string_view{"--jsonl="}.size())});
+                    return 1;
+                }
+                cb::output::select_observer(output_name);
+                continue;
+            }
+            if (argument == "test") {
+                do_run_tests = true;
+                // Optional positional filter (substring); do not consume test_runner/CB flags.
+                if (i + 1 < argc) {
+                    const auto next = std::string_view{argv[i + 1]};
+                    if (!is_test_runner_token(next) && !is_cb_token(next) && !next.starts_with("-"))
+                        test_filter = argv[++i];
+                }
+            } else if (argument == "release") {
+                config = cb::build_config::release;
+            } else if (argument == "debug") {
+                config = cb::build_config::debug;
+            } else if (argument == "ci") {
+                do_clean = true;
+                do_run_tests = true;
+            } else if (argument == "clean") {
+                do_clean = true;
+            } else if (argument == "build") {
+                do_build = true;
+            } else if (argument == "list") {
+                do_list = true;
+            } else if (argument == "cache") {
+                if (i + 1 >= argc) {
+                    cb::output::notify(&cb::output::observer::error, "Usage: cache status|invalidate");
+                    return 1;
+                }
+                const auto cache_verb = std::string_view{argv[++i]};
+                if (cache_verb == "status") {
+                    do_cache_status = true;
+                } else if (cache_verb == "invalidate") {
+                    do_cache_invalidate = true;
+                } else {
+                    cb::output::notify(&cb::output::observer::error, "Usage: cache status|invalidate");
+                    return 1;
+                }
+            } else if (argument == "static") {
+                static_linking = true;
+            } else if (argument == "--include-examples") {
+                include_examples = true;
+            } else if (argument == "--build-tests") {
+                build_tests = true;
+            } else if (do_run_tests && is_test_runner_token(argument)) {
+                // Forward recognized test_runner flags (e.g. --tags=, --list, --result).
+                // (--jsonl is handled above; CB injects the mode into test_runner later if needed.)
+                test_runner_args.emplace_back(argv[i]);
+            } else if (argument == "-I" or argument == "--include") {
+                if (i+1 < argc) {
+                    include_paths.push_back(argv[++i]);
+                } else {
+                    cb::output::notify(&cb::output::observer::error, "Missing path after -I/--include");
+                    return 1;
+                }
+            } else if (argument == "--link-flags") {
+                if (i+1 < argc) {
+                    extra_link_flags = cb::detail::parse_external_flag_text(argv[++i]);
+                } else {
+                    cb::output::notify(&cb::output::observer::error, "Missing flags after --link-flags");
+                    return 1;
+                }
+            } else if (argument == "--compile-flags" or argument == "--extra-compile-flags") {
+                if (i+1 < argc) {
+                    extra_compile_flags = cb::detail::parse_external_flag_text(argv[++i]);
+                } else {
+                    cb::output::notify(&cb::output::observer::error, "Missing flags after --compile-flags");
+                    return 1;
+                }
+            } else if (argument.starts_with("--compile-flags=") or argument.starts_with("--extra-compile-flags=")) {
+                const auto eq = argument.find('=');
+                extra_compile_flags = cb::detail::parse_external_flag_text(argument.substr(eq + 1));
+            } else if (argument == "help" or argument == "-h" or argument == "--help") {
+                std::cout << "Usage: " << argv[0] << " [std.cppm] [options]\n\n"
+                          << "Options:\n"
+                          << "  release          Build in release mode (optimized, no tests)\n"
+                          << "  debug            Build in debug mode (with debug symbols, includes tests)\n"
+                          << "  build            Build the project (default if no action specified)\n"
+                          << "  clean            Remove build directories\n"
+                          << "  ci               Clean and run tests (shortcut for: clean test)\n"
+                          << "  list             List all translation units\n"
+                          << "  cache status     Inspect object-cache profile and entry counts\n"
+                          << "  cache invalidate Remove object/link cache indexes (lighter than clean)\n"
+                          << "  test [filter]  Build and run tests (optional substring filter)\n"
+                          << "                 Forward test_runner flags directly (e.g. --tags=, --list, --result)\n"
+                          << "  static           Enable static linking (C++ stdlib static)\n"
+                          << "  --include-examples Include examples directory in build (excluded by default)\n"
+                          << "  --build-tests    Build tests in release mode (useful for CI to verify compilation)\n"
+                          << "  --jsonl[=<summary|failures|trace>]  Machine-readable output (default: failures)\n"
+                          << "  -I, --include    Add include directory (can be specified multiple times)\n"
+                          << "  --link-flags     Add extra linker flags (e.g., --link-flags \"-lcrypto\")\n"
+                          << "  --compile-flags  Add extra compiler flags\n"
+                          << "  help, -h, --help Show this help message\n\n"
+                          << "Examples:\n"
+                          << "  " << argv[0] << " debug build\n"
+                          << "  " << argv[0] << " release build\n"
+                          << "  " << argv[0] << " release build --build-tests\n"
+                          << "  " << argv[0] << " -I include/path debug build\n"
+                          << "  " << argv[0] << " -I path1 -I path2 debug build\n"
+                          << "  " << argv[0] << " clean build\n"
+                          << "  " << argv[0] << " ci\n"
+                          << "  " << argv[0] << " test\n"
+                          << "  " << argv[0] << " test --tags=[module]\n"
+                          << "  " << argv[0] << " test --jsonl=failures --tags=[module]\n"
+                          << "  " << argv[0] << " debug build --jsonl=summary\n"
+                          << "  " << argv[0] << " test --jsonl=trace --slowest=10\n"
+                          << "  " << argv[0] << " clean\n";
+                return 0;
+            }
         }
-        if (argument == "test") {
-            do_run_tests = true;
-            // Optional positional filter (substring); do not consume test_runner/CB flags.
-            if (i + 1 < argc) {
-                const auto next = std::string_view{argv[i + 1]};
-                if (next != "--" && !is_test_runner_token(next) && !is_cb_token(next) && !next.starts_with("-"))
-                    test_filter = argv[++i];
-            }
-        } else if (argument == "release") {
-            config = cb::build_config::release;
-        } else if (argument == "debug") {
-            config = cb::build_config::debug;
-        } else if (argument == "ci") {
-            do_clean = true;
-            do_run_tests = true;
-        } else if (argument == "clean") {
-            do_clean = true;
-        } else if (argument == "build") {
-            do_build = true;
-        } else if (argument == "list") {
-            do_list = true;
-        } else if (argument == "cache") {
-            if (i + 1 >= argc) {
-                cb::output::notify(&cb::output::observer::error, "Usage: cache status|invalidate");
-                return 1;
-            }
-            const auto cache_verb = std::string_view{argv[++i]};
-            if (cache_verb == "status") {
-                do_cache_status = true;
-            } else if (cache_verb == "invalidate") {
-                do_cache_invalidate = true;
-            } else {
-                cb::output::notify(&cb::output::observer::error, "Usage: cache status|invalidate");
-                return 1;
-            }
-        } else if (argument == "static") {
-            static_linking = true;
-        } else if (argument == "--include-examples") {
-            include_examples = true;
-        } else if (argument == "--build-tests") {
-            build_tests = true;
-        } else if (do_run_tests && is_test_runner_token(argument)) {
-            // Convenience: forward test_runner flags without requiring "--"
-            test_runner_args.emplace_back(argv[i]);
-            note_test_runner_jsonl(argument, output_name);
-        } else if (argument == "-I" or argument == "--include") {
-            if (i+1 < argc) {
-                include_paths.push_back(argv[++i]);
-            } else {
-                cb::output::notify(&cb::output::observer::error, "Missing path after -I/--include");
-                return 1;
-            }
-        } else if (argument == "--link-flags") {
-            if (i+1 < argc) {
-                extra_link_flags = cb::detail::parse_external_flag_text(argv[++i]);
-            } else {
-                cb::output::notify(&cb::output::observer::error, "Missing flags after --link-flags");
-                return 1;
-            }
-        } else if (argument == "--compile-flags" or argument == "--extra-compile-flags") {
-            if (i+1 < argc) {
-                extra_compile_flags = cb::detail::parse_external_flag_text(argv[++i]);
-            } else {
-                cb::output::notify(&cb::output::observer::error, "Missing flags after --compile-flags");
-                return 1;
-            }
-        } else if (argument.starts_with("--compile-flags=") or argument.starts_with("--extra-compile-flags=")) {
-            const auto eq = argument.find('=');
-            extra_compile_flags = cb::detail::parse_external_flag_text(argument.substr(eq + 1));
-        } else if (argument == "help" or argument == "-h" or argument == "--help") {
-            std::cout << "Usage: " << argv[0] << " [std.cppm] [options]\n\n"
-                      << "Options:\n"
-                      << "  release          Build in release mode (optimized, no tests)\n"
-                      << "  debug            Build in debug mode (with debug symbols, includes tests)\n"
-                      << "  build            Build the project (default if no action specified)\n"
-                      << "  clean            Remove build directories\n"
-                      << "  ci               Clean and run tests (shortcut for: clean test)\n"
-                      << "  list             List all translation units\n"
-                      << "  cache status     Inspect object-cache profile and entry counts\n"
-                      << "  cache invalidate Remove object/link cache indexes (lighter than clean)\n"
-                      << "  test [filter] [-- <args...>]  Build and run tests (optional filter)\n"
-                      << "                 Forward test_runner flags directly (e.g. --tags=, --list)\n"
-                      << "                 or pass any args after '--'\n"
-                      << "  static           Enable static linking (C++ stdlib static)\n"
-                      << "  --include-examples Include examples directory in build (excluded by default)\n"
-                      << "  --build-tests    Build tests in release mode (useful for CI to verify compilation)\n"
-                      << "  --jsonl[=<summary|failures|trace>]  Machine-readable output (default: failures)\n"
-                      << "  -I, --include    Add include directory (can be specified multiple times)\n"
-                      << "  --link-flags     Add extra linker flags (e.g., --link-flags \"-lcrypto\")\n"
-                      << "  --compile-flags  Add extra compiler flags\n"
-                      << "  help, -h, --help Show this help message\n\n"
-                      << "Examples:\n"
-                      << "  " << argv[0] << " debug build\n"
-                      << "  " << argv[0] << " release build\n"
-                      << "  " << argv[0] << " release build --build-tests\n"
-                      << "  " << argv[0] << " -I include/path debug build\n"
-                      << "  " << argv[0] << " -I path1 -I path2 debug build\n"
-                      << "  " << argv[0] << " clean build\n"
-                      << "  " << argv[0] << " ci\n"
-                      << "  " << argv[0] << " test\n"
-                      << "  " << argv[0] << " test --tags=[module]\n"
-                      << "  " << argv[0] << " test --jsonl=failures --tags=[module]\n"
-                      << "  " << argv[0] << " debug build --jsonl=summary\n"
-                      << "  " << argv[0] << " test -- --jsonl=trace --slowest=10\n"
-                      << "  " << argv[0] << " clean\n";
+
+        if(not cb::output::select_observer(output_name))
+        {
+            cb::output::notify(&cb::output::observer::error, "Unknown output observer: "s + std::string{output_name});
+            return 1;
+        }
+
+        auto include_flags = cb::string_list{};
+        for(const auto& path : include_paths)
+        {
+            include_flags.push_back("-I");
+            include_flags.push_back(path);
+        }
+
+        auto build_system = cb::build_system{config, include_flags, {}, ".", stdcppm, static_linking, include_examples, extra_compile_flags, extra_link_flags};
+
+        if (do_list) build_system.list_sources();
+        if (do_cache_status) {
+            build_system.cache_status();
             return 0;
         }
-    }
+        if (do_cache_invalidate) {
+            build_system.cache_invalidate();
+            return 0;
+        }
+        if (do_clean) build_system.clean();
+        if (do_build) {
+            if (build_tests) {
+                // --build-tests: build tests but don't run them (useful for CI)
+                build_system.set_include_tests(true);
+            }
+            build_system.build();
+        }
+        if (do_run_tests) {
+            // Run tests with filter + optional extra args for test_runner.
+            // We pass both as argv-like tokens to avoid shell injection and to preserve spaces.
+            auto args = std::vector<std::string>{};
+            if (!test_filter.empty())
+                args.emplace_back(test_filter);
 
-    if(not cb::output::select_observer(output_name))
+            const auto has_jsonl_mode = std::ranges::any_of(test_runner_args, [](const auto& arg) {
+                return arg == "--jsonl" || arg.starts_with("--jsonl=");
+            });
+            if(output_name == "jsonl" && not has_jsonl_mode)
+            {
+                const auto mode = jsonl_observer.mode();
+                args.emplace_back(mode == cb::output::jsonl::jsonl_mode::summary
+                    ? "--jsonl=summary"
+                    : mode == cb::output::jsonl::jsonl_mode::trace
+                        ? "--jsonl=trace"
+                        : "--jsonl=failures");
+            }
+
+            args.append_range(test_runner_args);
+
+            // Build include_tests etc inside run_tests(), but pass args as tokens.
+            if(not build_system.run_tests(args))
+                return 1;
+        }
+        if (not do_clean and not do_list and not do_run_tests and not do_build
+            and not do_cache_status and not do_cache_invalidate)
+            build_system.build();
+
+        return 0;
+    }
+    catch (const std::exception& e)
     {
-        cb::output::notify(&cb::output::observer::error, "Unknown output observer: "s + std::string{output_name});
+        cb::output::notify(&cb::output::observer::error, "Fatal error: "s + e.what());
         return 1;
     }
-    std::atexit(cb::output::finish);
-
-    auto include_flags = cb::string_list{};
-    for(const auto& path : include_paths)
+    catch (...)
     {
-        include_flags.push_back("-I");
-        include_flags.push_back(path);
+        cb::output::notify(&cb::output::observer::error, "Fatal error: unknown exception");
+        return 1;
     }
-
-    auto build_system = cb::build_system{config, include_flags, {}, ".", stdcppm, static_linking, include_examples, extra_compile_flags, extra_link_flags};
-
-    if (do_list) build_system.list_sources();
-    if (do_cache_status) {
-        build_system.cache_status();
-        return 0;
-    }
-    if (do_cache_invalidate) {
-        build_system.cache_invalidate();
-        return 0;
-    }
-    if (do_clean) build_system.clean();
-    if (do_build) {
-        if (build_tests) {
-            // --build-tests: build tests but don't run them (useful for CI)
-            build_system.set_include_tests(true);
-        }
-        build_system.build();
-    }
-    if (do_run_tests) {
-        // Run tests with filter + optional extra args for test_runner.
-        // We pass both as argv-like tokens to avoid shell injection and to preserve spaces.
-        auto args = std::vector<std::string>{};
-        if (!test_filter.empty())
-            args.emplace_back(test_filter);
-
-        const auto has_jsonl_mode = std::ranges::any_of(test_runner_args, [](const std::string& arg) {
-            return arg == "--jsonl" || arg.starts_with("--jsonl=");
-        });
-        if(output_name == "jsonl" && not has_jsonl_mode)
-        {
-            const auto mode = cb::jsonl_observer().mode();
-            args.emplace_back(mode == cb::output::jsonl::jsonl_mode::summary
-                ? "--jsonl=summary"
-                : mode == cb::output::jsonl::jsonl_mode::trace
-                    ? "--jsonl=trace"
-                    : "--jsonl=failures");
-        }
-
-        args.append_range(test_runner_args);
-
-        // Build include_tests etc inside run_tests(), but pass args as tokens.
-        if(not build_system.run_tests(args))
-            return 1;
-    }
-    if (not do_clean and not do_list and not do_run_tests and not do_build
-        and not do_cache_status and not do_cache_invalidate)
-        build_system.build();
-
-    return 0;
-} catch (const std::exception& e) {
-    cb::output::notify(&cb::output::observer::error, "Fatal error: "s + e.what());
-    return 1;
-} catch (...) {
-    cb::output::notify(&cb::output::observer::error, "Fatal error: unknown exception");
-    return 1;
 }
