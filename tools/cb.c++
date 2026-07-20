@@ -48,26 +48,69 @@ using namespace std::string_view_literals;
 using suffix_list = std::vector<std::string_view>;
 using string_list = std::vector<std::string>;
 
+constexpr auto test_cxxm_suffix = ".test.c++m"sv;
+constexpr auto test_cxx_suffix = ".test.c++"sv;
+constexpr auto impl_cxx_suffix = ".impl.c++"sv;
+constexpr auto cxxm_suffix = ".c++m"sv;
+constexpr auto cppm_suffix = ".cppm"sv;
+constexpr auto cxx_suffix = ".c++"sv;
+constexpr auto cpp_suffix = ".cpp"sv;
+
 // Source extensions CB will scan and compile. Prefixed forms (`.test.`, `.impl.`)
 // must appear before their base extension so `make_base_name` strips the longest match.
-inline const suffix_list supported_suffixes = {
-    ".test.c++m"sv,
-    ".test.c++"sv,
-    ".impl.c++"sv,
-    ".c++m"sv,
-    ".cppm"sv,
-    ".c++"sv,
-    ".cpp"sv
+const suffix_list supported_suffixes = {
+    test_cxxm_suffix,
+    test_cxx_suffix,
+    impl_cxx_suffix,
+    cxxm_suffix,
+    cppm_suffix,
+    cxx_suffix,
+    cpp_suffix
 };
 
 // Language extensions replaced by `.o` when naming object files (any prefix such as
 // `.test` / `.impl` is kept). Edit alongside `supported_suffixes` for other conventions.
-inline const suffix_list object_stem_suffixes = {
-    ".c++m"sv,
-    ".cppm"sv,
-    ".c++"sv,
-    ".cpp"sv
+const suffix_list object_stem_suffixes = {
+    cxxm_suffix,
+    cppm_suffix,
+    cxx_suffix,
+    cpp_suffix
 };
+
+// Build tree layout under `build-<os>-{debug|release}/`
+constexpr auto build_root_prefix = "build-"sv;
+constexpr auto debug_build_suffix = "-debug"sv;
+constexpr auto release_build_suffix = "-release"sv;
+constexpr auto pcm_dir_name = "pcm"sv;
+constexpr auto obj_dir_name = "obj"sv;
+constexpr auto bin_dir_name = "bin"sv;
+constexpr auto cache_dir_name = "cache"sv;
+constexpr auto object_cache_filename = "object-cache.txt"sv;
+constexpr auto executable_cache_filename = "executable-cache.txt"sv;
+constexpr auto std_module_profile_filename = "std-module-profile.txt"sv;
+constexpr auto compiler_version_filename = "compiler-version.txt"sv;
+constexpr auto std_pcm_filename = "std.pcm"sv;
+constexpr auto std_obj_filename = "std.o"sv;
+constexpr auto pcm_extension = ".pcm"sv;
+constexpr auto object_extension = ".o"sv;
+constexpr auto test_runner_name = "test_runner"sv;
+
+constexpr auto module_file_flag_prefix = "-fmodule-file="sv;
+constexpr auto prebuilt_module_path_flag_prefix = "-fprebuilt-module-path="sv;
+
+// Source-scan directory names (exact path components unless noted).
+constexpr auto deps_dir_prefix = "deps/"sv;
+constexpr auto deps_dir_name = "deps"sv;
+constexpr auto tester_dir_name = "tester"sv;
+constexpr auto test_dir_name = "test"sv;
+constexpr auto tests_dir_name = "tests"sv;
+constexpr auto tools_dir_name = "tools"sv;
+constexpr auto examples_dir_name = "examples"sv;
+constexpr auto git_dir_name = ".git"sv;
+
+// Env vars CB sets when spawning test_runner.
+constexpr auto tester_config_env = "TESTER_CONFIG"sv;
+constexpr auto tester_parent_run_id_env = "TESTER_PARENT_RUN_ID"sv;
 
 enum class unit_kind : unsigned {
     non_module,          // non-modular source, no module declaration at all  (.c++ .cpp)
@@ -81,7 +124,44 @@ enum class build_config { debug, release };
 
 namespace detail {
 
-inline std::string shell_quote(std::string_view arg)
+std::string join_dir(std::string_view root, std::string_view name)
+{
+    auto out = std::string{root};
+    out.push_back('/');
+    out.append(name);
+    return out;
+}
+
+// True for `dir/...` or `.../dir/...` (not a bare `dir` leaf, not `dirfoo`).
+bool path_under_dir(std::string_view path, std::string_view dir)
+{
+    if(path.starts_with(dir) and path.size() > dir.size() and path[dir.size()] == '/')
+        return true;
+    auto needle = std::string{};
+    needle.reserve(dir.size() + 2);
+    needle.push_back('/');
+    needle.append(dir);
+    needle.push_back('/');
+    return path.contains(needle);
+}
+
+// True for `dir` or `dir/...`.
+bool is_dir_or_under(std::string_view path, std::string_view dir)
+{
+    return path == dir
+        or (path.starts_with(dir) and path.size() > dir.size() and path[dir.size()] == '/');
+}
+
+std::string module_file_flag(std::string_view module_name, std::string_view pcm_path)
+{
+    auto out = std::string{module_file_flag_prefix};
+    out.append(module_name);
+    out.push_back('=');
+    out.append(pcm_path);
+    return out;
+}
+
+std::string shell_quote(std::string_view arg)
 {
     // POSIX: wrap in single quotes; internal ' becomes '\''.
     auto out = std::ranges::fold_left(arg, "'"s, [](std::string acc, char c)
@@ -96,7 +176,7 @@ inline std::string shell_quote(std::string_view arg)
     return out;
 }
 
-inline std::string_view config_name(build_config cfg)
+std::string_view config_name(build_config cfg)
 {
     switch(cfg)
     {
@@ -106,7 +186,7 @@ inline std::string_view config_name(build_config cfg)
     return "debug";
 }
 
-inline std::string_view unit_kind_name(unit_kind kind)
+std::string_view unit_kind_name(unit_kind kind)
 {
     switch(kind)
     {
@@ -120,7 +200,7 @@ inline std::string_view unit_kind_name(unit_kind kind)
 }
 
 // Collapse any isspace run to a single space; trim leading/trailing whitespace.
-inline std::string collapse_whitespace(std::string_view text)
+std::string collapse_whitespace(std::string_view text)
 {
     auto out = std::ranges::fold_left(
         text,
@@ -143,7 +223,7 @@ inline std::string collapse_whitespace(std::string_view text)
 // Parse external flag text only (CLI --compile-flags, object-cache profile fields).
 // CB stores flags as string_list; this runs at text boundaries, not in argv builders.
 // Symmetric with flags_profile_string (views::join_with on ' '); not POSIX shell parsing.
-inline string_list parse_external_flag_text(std::string_view text)
+string_list parse_external_flag_text(std::string_view text)
 {
     const auto normalized = collapse_whitespace(text);
     return normalized
@@ -154,12 +234,12 @@ inline string_list parse_external_flag_text(std::string_view text)
         | std::ranges::to<string_list>();
 }
 
-inline std::string flags_profile_string(const string_list& flags)
+std::string flags_profile_string(const string_list& flags)
 {
     return flags | std::views::join_with(" "sv) | std::ranges::to<std::string>();
 }
 
-inline std::string join_argv(const string_list& argv)
+std::string join_argv(const string_list& argv)
 {
     return argv
         | std::views::transform([](const std::string& arg) { return shell_quote(arg); })
@@ -170,7 +250,7 @@ inline std::string join_argv(const string_list& argv)
 using profile_fields = std::flat_map<std::string, std::string, std::less<>>;
 
 // Object-cache profile values must not contain '\t', '\n', '\r', or '%' (tab-delimited format).
-inline void append_profile_field(std::string& profile, std::string_view key, std::string_view value)
+void append_profile_field(std::string& profile, std::string_view key, std::string_view value)
 {
     if(not profile.empty())
         profile += '\t';
@@ -179,7 +259,7 @@ inline void append_profile_field(std::string& profile, std::string_view key, std
     profile += value;
 }
 
-inline std::pair<std::string, std::string> parse_profile_field(std::string_view segment)
+std::pair<std::string, std::string> parse_profile_field(std::string_view segment)
 {
     const auto eq = segment.find('=');
     return {
@@ -187,7 +267,7 @@ inline std::pair<std::string, std::string> parse_profile_field(std::string_view 
         std::string{segment.substr(eq + 1)}};
 }
 
-inline profile_fields parse_object_cache_profile_fields(std::string_view profile)
+profile_fields parse_object_cache_profile_fields(std::string_view profile)
 {
     return profile
         | std::views::split('\t')
@@ -195,7 +275,7 @@ inline profile_fields parse_object_cache_profile_fields(std::string_view profile
         | std::ranges::to<profile_fields>();
 }
 
-inline output::profile_token_change diff_profile_tokens(std::string_view old_text, std::string_view new_text)
+output::profile_token_change diff_profile_tokens(std::string_view old_text, std::string_view new_text)
 {
     auto old_tokens = parse_external_flag_text(old_text);
     auto new_tokens = parse_external_flag_text(new_text);
@@ -208,7 +288,7 @@ inline output::profile_token_change diff_profile_tokens(std::string_view old_tex
     return change;
 }
 
-inline output::object_cache_profile_diff diff_object_cache_profiles(std::string_view old_profile, std::string_view new_profile)
+output::object_cache_profile_diff diff_object_cache_profiles(std::string_view old_profile, std::string_view new_profile)
 {
     const auto old_fields = parse_object_cache_profile_fields(old_profile);
     const auto new_fields = parse_object_cache_profile_fields(new_profile);
@@ -239,7 +319,7 @@ inline output::object_cache_profile_diff diff_object_cache_profiles(std::string_
     return diff;
 }
 
-inline std::string make_base_name(std::string_view filename)
+std::string make_base_name(std::string_view filename)
 {
     const auto suffix = std::ranges::find_if(supported_suffixes, [&](std::string_view s) {
         return filename.ends_with(s);
@@ -249,41 +329,41 @@ inline std::string make_base_name(std::string_view filename)
     return std::string{filename};
 }
 
-inline std::string normalize_relative_dir(const fs::path& dir) {
+std::string normalize_relative_dir(const fs::path& dir) {
     if (dir.empty()) return "";
     auto str = dir.string();
     return str == "." ? "" : str;
 }
 
-inline bool is_tester_framework_path(std::string_view path) {
+bool is_tester_framework_path(std::string_view path) {
     // Nested or top-level tester library trees (not *.test.c++ sources).
-    return path.contains("/tester/") or path.starts_with("tester/");
+    return path_under_dir(path, tester_dir_name);
 }
 
 // Parent repos vendor packages under deps/<name>/. Nested checkouts such as
 // deps/net/deps/tester belong to the child package and must not join the parent
 // build — otherwise same-basename smoke fixtures collide across packages.
-inline bool is_nested_dependency_path(std::string_view rel_path)
+bool is_nested_dependency_path(std::string_view rel_path)
 {
-    if(not rel_path.starts_with("deps/"))
+    if(not rel_path.starts_with(deps_dir_prefix))
         return false;
 
-    const auto rest = rel_path.substr(5);
+    const auto rest = rel_path.substr(deps_dir_prefix.size());
     const auto slash = rest.find('/');
     if(slash == std::string_view::npos)
         return false;
 
     const auto after_pkg = rest.substr(slash + 1);
-    return after_pkg.starts_with("deps/") or after_pkg == "deps";
+    return is_dir_or_under(after_pkg, deps_dir_name);
 }
 
-inline bool path_has_test_segment(std::string_view path) {
+bool path_has_test_segment(std::string_view path) {
     // Match path components named exactly "test" or "tests" (not "tester" / "test_exception_bug").
     auto rest = path;
     while (not rest.empty()) {
         const auto slash = rest.find('/');
         const auto segment = slash == std::string_view::npos ? rest : rest.substr(0, slash);
-        if (segment == "test" or segment == "tests")
+        if (segment == test_dir_name or segment == tests_dir_name)
             return true;
         if (slash == std::string_view::npos)
             break;
@@ -296,7 +376,7 @@ inline bool path_has_test_segment(std::string_view path) {
 // join the consumer scan. determine_is_test treats every tester/ path as a library
 // source (is_test=false), so without this skip fixture mains such as hello.c++ are
 // compiled into parent builds and collide after duplicate-key fail-fast.
-inline bool is_tester_package_tests_path(std::string_view rel_path)
+bool is_tester_package_tests_path(std::string_view rel_path)
 {
     return is_tester_framework_path(rel_path) and path_has_test_segment(rel_path);
 }
@@ -305,31 +385,30 @@ inline bool is_tester_package_tests_path(std::string_view rel_path)
 // deps/<pkg>/test and deps/<pkg>/tests must stay out of the parent build.
 // Those belong to the vendored package (benchmarks, package-local suites) and
 // are not the consumer's tests. Co-located deps/<pkg>/*.test.c++ still joins.
-inline bool is_dependency_package_tests_path(std::string_view rel_path)
+bool is_dependency_package_tests_path(std::string_view rel_path)
 {
-    if(not rel_path.starts_with("deps/"))
+    if(not rel_path.starts_with(deps_dir_prefix))
         return false;
 
-    const auto rest = rel_path.substr(5);
+    const auto rest = rel_path.substr(deps_dir_prefix.size());
     const auto slash = rest.find('/');
     if(slash == std::string_view::npos)
         return false;
 
     const auto after_pkg = rest.substr(slash + 1);
-    return after_pkg.starts_with("test/") or after_pkg.starts_with("tests/")
-        or after_pkg == "test" or after_pkg == "tests";
+    return is_dir_or_under(after_pkg, test_dir_name) or is_dir_or_under(after_pkg, tests_dir_name);
 }
 
-inline bool determine_is_test(std::string_view rel_dir, std::string_view name, std::string_view suffix_value) {
+bool determine_is_test(std::string_view rel_dir, std::string_view name, std::string_view suffix_value) {
     const auto combined = rel_dir.empty() ? std::string{name} : std::string{rel_dir} + "/" + std::string{name};
     if (is_tester_framework_path(combined))
         return false;
-    if (suffix_value == ".test.c++" or suffix_value == ".test.c++m")
+    if (suffix_value == test_cxx_suffix or suffix_value == test_cxxm_suffix)
         return true;
     return path_has_test_segment(combined);
 }
 
-inline std::string make_unit(std::string_view module_value, unit_kind kind, std::string_view filename_value) {
+std::string make_unit(std::string_view module_value, unit_kind kind, std::string_view filename_value) {
     switch (kind) {
         case unit_kind::interface_unit:
         case unit_kind::partition_unit:
@@ -342,7 +421,7 @@ inline std::string make_unit(std::string_view module_value, unit_kind kind, std:
     return std::string{filename_value};
 }
 
-inline std::string make_full_path(const fs::path& file_path) {
+std::string make_full_path(const fs::path& file_path) {
     auto absolute = file_path;
     if (absolute.is_relative()) absolute = fs::absolute(absolute);
     try {
@@ -353,7 +432,7 @@ inline std::string make_full_path(const fs::path& file_path) {
     return absolute.string();
 }
 
-inline std::string binary_signature(const std::string& path)
+std::string binary_signature(const std::string& path)
 {
     if(not fs::exists(path))
         return {};
@@ -364,7 +443,7 @@ inline std::string binary_signature(const std::string& path)
     return std::to_string(size) + ':' + std::to_string(ticks);
 }
 
-inline std::string read_first_line(const std::string& path)
+std::string read_first_line(const std::string& path)
 {
     auto file = std::ifstream{path};
     if(not file)
@@ -379,7 +458,7 @@ inline std::string read_first_line(const std::string& path)
     return line;
 }
 
-inline constexpr std::string_view object_cache_format = "cb-object-cache-v3"sv;
+constexpr std::string_view object_cache_format = "cb-object-cache-v3"sv;
 
 } // namespace detail
 
@@ -436,7 +515,7 @@ private:
     inline static const std::regex using_namespace_regex{R"(\busing\s+namespace\b)"};
 };
 
-inline bool translation_unit::match_supported_suffix(std::string_view filename, std::string& out_suffix)
+bool translation_unit::match_supported_suffix(std::string_view filename, std::string& out_suffix)
 {
     const auto suffix = std::ranges::find_if(supported_suffixes, [&](std::string_view s) {
         return filename.ends_with(s);
@@ -449,7 +528,7 @@ inline bool translation_unit::match_supported_suffix(std::string_view filename, 
 
 namespace detail {
 
-inline std::string extract_suffix(std::string_view filename) {
+std::string extract_suffix(std::string_view filename) {
     auto suffix = std::string{};
     if (not translation_unit::match_supported_suffix(filename, suffix))
         throw std::runtime_error{"unsupported source suffix"};
@@ -458,13 +537,13 @@ inline std::string extract_suffix(std::string_view filename) {
 
 } // namespace detail
 
-inline bool translation_unit::is_supported(const fs::path& file_path) {
+bool translation_unit::is_supported(const fs::path& file_path) {
     auto name = file_path.filename().string();
     auto suffix = std::string{};
     return match_supported_suffix(name, suffix);
 }
 
-inline translation_unit::translation_unit(const fs::path& relative,
+translation_unit::translation_unit(const fs::path& relative,
                                           const fs::path& full_path,
                                           std::string module_value,
                                           string_list imports_value,
@@ -484,7 +563,7 @@ inline translation_unit::translation_unit(const fs::path& relative,
       is_modular(kind_value == unit_kind::interface_unit or kind_value == unit_kind::partition_unit),
       last_modified(fs::last_write_time(full_path)) {}
 
-inline translation_unit parse_translation_unit(const fs::path& project_root, const fs::path& file_path) {
+translation_unit parse_translation_unit(const fs::path& project_root, const fs::path& file_path) {
     auto relative_path = file_path.lexically_relative(project_root);
     if (relative_path.empty() or relative_path == ".") relative_path = file_path.filename();
 
@@ -699,7 +778,7 @@ private:
 
         fs::create_directories(cache_dir());
 
-        const auto stamp = cache_dir() + "/compiler-version.txt";
+        const auto stamp = detail::join_dir(cache_dir(), compiler_version_filename);
         const auto cmd = detail::shell_quote(llvm_cxx) + " --version > " + detail::shell_quote(stamp) + " 2>/dev/null";
         if(std::system(cmd.c_str()) == 0)
             clang_version = detail::read_first_line(stamp);
@@ -827,8 +906,8 @@ private:
         module_flags = {
             "-fno-implicit-modules",
             "-fno-implicit-module-maps",
-            "-fmodule-file=std=" + std_pcm_path(),
-            "-fprebuilt-module-path=" + module_cache_dir(),
+            detail::module_file_flag("std", std_pcm_path()),
+            std::string{prebuilt_module_path_flag_prefix} + module_cache_dir(),
         };
     }
 
@@ -864,18 +943,19 @@ private:
 
     // COMPUTED ON DEMAND — NEVER CACHED
     std::string build_root() const {
-        return "build-" + os_name() + (config == build_config::release ? "-release" : "-debug");
+        return std::string{build_root_prefix} + os_name()
+            + std::string{config == build_config::release ? release_build_suffix : debug_build_suffix};
     }
 
-    std::string module_cache_dir() const      { return build_root() + "/pcm"; }
-    std::string object_dir() const            { return build_root() + "/obj"; }
-    std::string binary_dir() const            { return build_root() + "/bin"; }
-    std::string cache_dir() const             { return build_root() + "/cache"; }
-    std::string object_cache_path() const     { return cache_dir() + "/object-cache.txt"; }
-    std::string executable_cache_path() const { return cache_dir() + "/executable-cache.txt"; }
-    std::string std_module_profile_path() const { return cache_dir() + "/std-module-profile.txt"; }
-    std::string std_pcm_path() const          { return module_cache_dir() + "/std.pcm"; }
-    std::string std_obj_path() const          { return object_dir() + "/std.o"; }
+    std::string module_cache_dir() const      { return detail::join_dir(build_root(), pcm_dir_name); }
+    std::string object_dir() const            { return detail::join_dir(build_root(), obj_dir_name); }
+    std::string binary_dir() const            { return detail::join_dir(build_root(), bin_dir_name); }
+    std::string cache_dir() const             { return detail::join_dir(build_root(), cache_dir_name); }
+    std::string object_cache_path() const     { return detail::join_dir(cache_dir(), object_cache_filename); }
+    std::string executable_cache_path() const { return detail::join_dir(cache_dir(), executable_cache_filename); }
+    std::string std_module_profile_path() const { return detail::join_dir(cache_dir(), std_module_profile_filename); }
+    std::string std_pcm_path() const          { return detail::join_dir(module_cache_dir(), std_pcm_filename); }
+    std::string std_obj_path() const          { return detail::join_dir(object_dir(), std_obj_filename); }
 
     // ============================================================================
     // Path Computation Utilities
@@ -906,7 +986,7 @@ private:
         });
         if(ending == object_stem_suffixes.end())
             throw std::logic_error{"Unsupported suffix for object file: " + tu.suffix};
-        return std::string{tu.suffix.substr(0, tu.suffix.size() - ending->size())} + ".o";
+        return std::string{tu.suffix.substr(0, tu.suffix.size() - ending->size())} + std::string{object_extension};
     }
 
     std::string compute_object_path(const translation_unit& tu) const {
@@ -917,7 +997,7 @@ private:
     std::string compute_pcm_path(const translation_unit& tu) const {
         if (tu.module.empty())
             throw std::logic_error{"compute_pcm_path called on translation unit without module: " + tu.filename};
-        return module_cache_dir() + "/" + module_safe_name(tu.module) + ".pcm";
+        return detail::join_dir(module_cache_dir(), module_safe_name(tu.module) + std::string{pcm_extension});
     }
 
     std::string compute_executable_path(const translation_unit& tu) const {
@@ -1167,7 +1247,7 @@ private:
         argv.append_range(module_flags);
         if (tu.kind == unit_kind::implementation_unit) {
             auto module_pcm = compute_pcm_path(tu);
-            argv.push_back("-fmodule-file=" + tu.module + "=" + module_pcm);
+            argv.push_back(detail::module_file_flag(tu.module, module_pcm));
         }
         argv.push_back(tu.full_path);
         argv.push_back("-c");
@@ -1599,12 +1679,12 @@ private:
                 if (detail::is_nested_dependency_path(rel_path) or
                     detail::is_dependency_package_tests_path(rel_path) or
                     detail::is_tester_package_tests_path(rel_path) or
-                    rel_path.contains("/tools/") or rel_path.starts_with("tools/") or
-                    rel_path.contains("/.git/") or rel_path.starts_with(".git/"))
+                    detail::path_under_dir(rel_path, tools_dir_name) or
+                    detail::path_under_dir(rel_path, git_dir_name))
                     continue;
 
                 // Exclude examples by default, include only if flag is set
-                if (not include_examples and (rel_path.contains("/examples/") or rel_path.starts_with("examples/")))
+                if (not include_examples and detail::path_under_dir(rel_path, examples_dir_name))
                     continue;
 
                 if (not translation_unit::is_supported(entry.path()))
@@ -1838,7 +1918,7 @@ private:
             | std::views::filter([](const translation_unit& tu) { return tu.is_modular; })
             | std::views::transform([](const translation_unit& tu)
             {
-                return "-fmodule-file=" + tu.module + "=" + tu.pcm_path;
+                return detail::module_file_flag(tu.module, tu.pcm_path);
             })
             | std::views::filter([&](const auto& flag)
             {
@@ -1966,7 +2046,7 @@ private:
         auto failure = std::exception_ptr{};
         auto failure_mutex = std::mutex{};
         for (const auto& tu : units_in_topological_order)
-            if (tu.has_main and not tu.filename.contains("test_runner")) {
+            if (tu.has_main and not tu.filename.contains(test_runner_name)) {
                 auto signature = compute_link_signature(tu, shared_objects);
                 auto link_reason = needs_relinking(tu.executable_path, signature, link_cache);
                 if (not link_reason) {
@@ -2056,7 +2136,7 @@ private:
 
     void link_test_runner() {
         const auto runner_it = std::ranges::find_if(units_in_topological_order, [](const translation_unit& tu) {
-            return tu.has_main and tu.base_name.contains("test_runner");
+            return tu.has_main and tu.base_name.contains(test_runner_name);
         });
         const auto has_runner_unit = runner_it != units_in_topological_order.end();
 
@@ -2065,7 +2145,7 @@ private:
             return;
         }
 
-        auto test_runner_path = binary_dir() + "/test_runner";
+        auto test_runner_path = detail::join_dir(binary_dir(), test_runner_name);
         auto test_runner_obj = std::string{};
         if(has_runner_unit)
         {
@@ -2228,7 +2308,7 @@ public:
 
         const auto object_removed = remove_if_exists(object_cache_path());
         const auto executable_removed = remove_if_exists(executable_cache_path());
-        const auto stamp_removed = remove_if_exists(cache_dir() + "/compiler-version.txt");
+        const auto stamp_removed = remove_if_exists(detail::join_dir(cache_dir(), compiler_version_filename));
         remove_if_exists(std_module_profile_path());
 
         output::notify(&output::observer::cache_invalidate_end, object_removed, executable_removed, stamp_removed);
@@ -2271,7 +2351,7 @@ public:
         build_end_emitted = false;
         output::notify(&output::observer::build_start, detail::config_name(config), true, include_examples);
 
-        auto runner = binary_dir() + "/test_runner";
+        auto runner = detail::join_dir(binary_dir(), test_runner_name);
         try {
             build_steps();
             link_test_runner();
@@ -2289,14 +2369,14 @@ public:
         current_phase = build_phase::none;
         output::notify(&output::observer::success, "Build completed: "s + build_root());
 
-        const auto set_env = [](const char* key, std::string_view value)
+        const auto set_env = [](std::string_view key, std::string_view value)
         {
-            if(::setenv(key, std::string{value}.c_str(), /*overwrite=*/1) != 0)
+            if(::setenv(std::string{key}.c_str(), std::string{value}.c_str(), /*overwrite=*/1) != 0)
                 throw std::system_error{errno, std::generic_category(), "setenv"};
         };
-        set_env("TESTER_CONFIG", detail::config_name(config));
+        set_env(tester_config_env, detail::config_name(config));
         if(const auto parent = output::run_id(); not parent.empty())
-            set_env("TESTER_PARENT_RUN_ID", parent);
+            set_env(tester_parent_run_id_env, parent);
 
         const auto test_started = std::chrono::steady_clock::now();
         output::notify(&output::observer::test_start, runner);
