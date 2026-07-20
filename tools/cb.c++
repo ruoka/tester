@@ -295,6 +295,25 @@ inline bool is_tester_package_tests_path(std::string_view rel_path)
     return is_tester_framework_path(rel_path) and path_has_test_segment(rel_path);
 }
 
+// After project test/ trees were allowed into the scan (#14), first-level
+// deps/<pkg>/test and deps/<pkg>/tests must stay out of the parent build.
+// Those belong to the vendored package (benchmarks, package-local suites) and
+// are not the consumer's tests. Co-located deps/<pkg>/*.test.c++ still joins.
+inline bool is_dependency_package_tests_path(std::string_view rel_path)
+{
+    if(not rel_path.starts_with("deps/"))
+        return false;
+
+    const auto rest = rel_path.substr(5);
+    const auto slash = rest.find('/');
+    if(slash == std::string_view::npos)
+        return false;
+
+    const auto after_pkg = rest.substr(slash + 1);
+    return after_pkg.starts_with("test/") or after_pkg.starts_with("tests/")
+        or after_pkg == "test" or after_pkg == "tests";
+}
+
 inline bool determine_is_test(std::string_view rel_dir, std::string_view name, std::string_view suffix_value) {
     const auto combined = rel_dir.empty() ? std::string{name} : std::string{rel_dir} + "/" + std::string{name};
     if (is_tester_framework_path(combined))
@@ -1566,10 +1585,11 @@ private:
 
                 auto rel_path = entry.path().lexically_relative(path).string();
 
-                // Skip nested package checkouts, vendored tester package tests, tools/, and .git/.
+                // Skip nested package checkouts, vendored package test trees, tools/, and .git/.
                 // Do not hard-skip project test/ trees here — determine_is_test marks them as
                 // is_test, and include_tests (debug / --build-tests) decides whether they join.
                 if (detail::is_nested_dependency_path(rel_path) or
+                    detail::is_dependency_package_tests_path(rel_path) or
                     detail::is_tester_package_tests_path(rel_path) or
                     rel_path.contains("/tools/") or rel_path.starts_with("tools/") or
                     rel_path.contains("/.git/") or rel_path.starts_with(".git/"))

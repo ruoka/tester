@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, project_test_dir_included, rebuild_summary, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
+      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, project_test_dir_included, deps_package_tests_skipped, rebuild_summary, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
       exit 0
       ;;
     *)
@@ -478,6 +478,36 @@ test_project_test_dir_included() {
   end_case project_test_dir_included
 }
 
+test_deps_package_tests_skipped() {
+  should_run deps_package_tests_skipped || return 0
+  begin_case deps_package_tests_skipped
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  # Project test/ must still join, but first-level deps/<pkg>/test and
+  # deps/<pkg>/tests belong to the vendored package and must not.
+  mkdir -p "${work_dir}/test" \
+           "${work_dir}/deps/xson/test/fixture" \
+           "${work_dir}/deps/cryptic/tests" \
+           "${work_dir}/deps/xson"
+  printf '%s\n' 'int project_test() { return 1; }' > "${work_dir}/test/widget.test.c++"
+  printf '%s\n' 'int xson_lib() { return 2; }' > "${work_dir}/deps/xson/lib.c++"
+  printf '%s\n' 'int xson_pkg_test() { return 3; }' > "${work_dir}/deps/xson/pkg.test.c++"
+  printf '%s\n' 'int xson_dir_test() { return 4; }' > "${work_dir}/deps/xson/test/fixture/suite.test.c++"
+  printf '%s\n' 'int cryptic_bench() { return 5; }' > "${work_dir}/deps/cryptic/tests/benchmark.c++"
+
+  run_cb_list "${work_dir}"
+  assert_jsonl_contains '"path":"test/widget.test.c++"' "deps_pkg_tests_project_test_present"
+  assert_jsonl_contains '"path":"deps/xson/lib.c++"' "deps_pkg_tests_lib_present"
+  assert_jsonl_contains '"path":"deps/xson/pkg.test.c++"' "deps_pkg_tests_colocated_present"
+  assert_jsonl_not_contains 'deps/xson/test/' "deps_pkg_tests_xson_test_absent"
+  assert_jsonl_not_contains 'deps/cryptic/tests/' "deps_pkg_tests_cryptic_tests_absent"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "deps_pkg_tests_build_ok"
+  end_case deps_package_tests_skipped
+}
+
 test_rebuild_summary() {
   should_run rebuild_summary || return 0
   begin_case rebuild_summary
@@ -707,6 +737,7 @@ main() {
   test_nested_deps_skipped
   test_vendored_tester_tests_skipped
   test_project_test_dir_included
+  test_deps_package_tests_skipped
   test_rebuild_summary
   test_test_lifecycle
   test_cache_invalidate
