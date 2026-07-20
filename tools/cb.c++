@@ -40,9 +40,33 @@ namespace cb {
 using namespace std::string_literals;
 using namespace std::string_view_literals;
 
-enum class build_phase { none, build };
+// ============================================================================
+// Project naming conventions — edit these for other layouts
+// ============================================================================
 
-enum class build_config { debug, release };
+using suffix_list = std::vector<std::string_view>;
+using string_list = std::vector<std::string>;
+
+// Source extensions CB will scan and compile. Prefixed forms (`.test.`, `.impl.`)
+// must appear before their base extension so `make_base_name` strips the longest match.
+inline const suffix_list supported_suffixes = {
+    ".test.c++m"sv,
+    ".test.c++"sv,
+    ".impl.c++"sv,
+    ".c++m"sv,
+    ".cppm"sv,
+    ".c++"sv,
+    ".cpp"sv
+};
+
+// Language extensions replaced by `.o` when naming object files (any prefix such as
+// `.test` / `.impl` is kept). Edit alongside `supported_suffixes` for other conventions.
+inline const suffix_list object_stem_suffixes = {
+    ".c++m"sv,
+    ".cppm"sv,
+    ".c++"sv,
+    ".cpp"sv
+};
 
 enum class unit_kind : unsigned {
     non_module,          // non-modular source, no module declaration at all  (.c++ .cpp)
@@ -52,33 +76,7 @@ enum class unit_kind : unsigned {
     global_fragment      // global module fragment, only contains "module;"   (.c++m .cppm)
 };
 
-using suffix_list = std::vector<std::string>;
-using string_list = std::vector<std::string>;
-
-// ============================================================================
-// Project naming conventions — edit these for other layouts
-// ============================================================================
-
-// Source extensions CB will scan and compile. Prefixed forms (`.test.`, `.impl.`)
-// must appear before their base extension so `make_base_name` strips the longest match.
-inline const suffix_list supported_suffixes = {
-    ".test.c++m",
-    ".test.c++",
-    ".impl.c++",
-    ".c++m",
-    ".cppm",
-    ".c++",
-    ".cpp"
-};
-
-// Language extensions replaced by `.o` when naming object files (any prefix such as
-// `.test` / `.impl` is kept). Edit alongside `supported_suffixes` for other conventions.
-inline const suffix_list object_stem_suffixes = {
-    ".c++m",
-    ".cppm",
-    ".c++",
-    ".cpp"
-};
+enum class build_config { debug, release };
 
 namespace detail {
 
@@ -439,12 +437,12 @@ private:
 
 inline bool translation_unit::match_supported_suffix(std::string_view filename, std::string& out_suffix)
 {
-    const auto suffix = std::ranges::find_if(supported_suffixes, [&](const std::string& s) {
+    const auto suffix = std::ranges::find_if(supported_suffixes, [&](std::string_view s) {
         return filename.ends_with(s);
     });
     if(suffix == supported_suffixes.end())
         return false;
-    out_suffix.assign(suffix->data(), suffix->size());
+    out_suffix.assign(*suffix);
     return true;
 }
 
@@ -590,6 +588,8 @@ using executable_cache_map = std::flat_map<std::string, std::string, std::less<>
 
 class build_system {
 private:
+    enum class build_phase { none, build };
+
     std::string source_dir;
     string_list compile_flags, link_flags, cpp_flags;
     module_to_ldflags_map module_ldflags;
@@ -1832,16 +1832,17 @@ private:
 
     void update_module_flags()
     {
-        const auto discovered_flags =
+        module_flags.append_range(
             units_in_topological_order
             | std::views::filter([](const translation_unit& tu) { return tu.is_modular; })
-            | std::views::transform([](const translation_unit& tu) {
+            | std::views::transform([](const translation_unit& tu)
+            {
                 return "-fmodule-file=" + tu.module + "=" + tu.pcm_path;
             })
-            | std::ranges::to<string_list>();
-        for(const auto& flag : discovered_flags)
-            if(not std::ranges::contains(module_flags, flag))
-                module_flags.push_back(flag);
+            | std::views::filter([&](const auto& flag)
+            {
+                return not std::ranges::contains(module_flags, flag);
+            }));
     }
 
     void compile_units() {
@@ -2573,12 +2574,14 @@ int main(int argc, char* argv[])
             return 1;
         }
 
-        auto include_flags = cb::string_list{};
-        for(const auto& path : include_paths)
-        {
-            include_flags.push_back("-I");
-            include_flags.push_back(path);
-        }
+        auto include_flags =
+            include_paths
+            | std::views::transform([](const auto& path)
+            {
+                return std::array{"-I"s, path};
+            })
+            | std::views::join
+            | std::ranges::to<cb::string_list>();
 
         auto build_system = cb::build_system{config, include_flags, {}, ".", stdcppm, static_linking, include_examples, extra_compile_flags, extra_link_flags};
 
