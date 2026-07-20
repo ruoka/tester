@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, project_test_dir_included, deps_package_tests_skipped, rebuild_summary, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
+      echo "cases: profile_header, cache_hit, link_cache_hit, parallel_main_link, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, project_test_dir_included, deps_package_tests_skipped, rebuild_summary, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
       exit 0
       ;;
     *)
@@ -88,6 +88,34 @@ test_link_cache_hit() {
   run_cb_build "${work_dir}"
   assert_link_cache_hits 1 "second_build_link_cache_hit"
   end_case link_cache_hit
+}
+
+test_parallel_main_link() {
+  should_run parallel_main_link || return 0
+  begin_case parallel_main_link
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  # Two mains exercise parallel link_executables workers; decisions must be
+  # snapshotted before any thread mutates the in-memory link cache.
+  printf '%s\n' \
+    'import std;' \
+    'int main() { std::puts("cb-smoke-world"); return 0; }' > "${work_dir}/world.c++"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "parallel_main_build_ok"
+  assert_jsonl_event_count link_end 2 "parallel_main_two_links"
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ -x "${work_dir}/${BUILD_DIR}/bin/hello" && -x "${work_dir}/${BUILD_DIR}/bin/world" ]]; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"parallel_main_binaries"}'
+  else
+    fail "expected both ${BUILD_DIR}/bin/hello and ${BUILD_DIR}/bin/world after parallel link"
+  fi
+
+  run_cb_build "${work_dir}"
+  assert_link_cache_hits 2 "parallel_main_second_build_link_cache_hits"
+  end_case parallel_main_link
 }
 
 test_compile_start() {
@@ -721,6 +749,7 @@ main() {
   test_profile_header
   test_cache_hit
   test_link_cache_hit
+  test_parallel_main_link
   test_compile_start
   test_source_stale
   test_source_list
