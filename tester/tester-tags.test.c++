@@ -65,6 +65,23 @@ auto register_tests()
         require_true(tagged_list.stdout_text.contains("\"tags\":[\".hidden-probe\"]"));
     };
 
+    test_case("test_case [self] unmatched tag filter fails the run") = []
+    {
+        const auto result = run_test_runner({
+            "--jsonl=failures",
+            "--tags=[.no-such-tag-ever]"});
+
+        // system() status: normal exit keeps the low 7 bits clear; signals do not.
+        require_eq(result.exit_code & 0x7f, 0);
+        require_neq(result.exit_code, 0);
+
+        const auto summary_pos = result.stdout_text.rfind("\"type\":\"summary\"");
+        require_neq(summary_pos, std::string::npos);
+        const auto summary_line = result.stdout_text.substr(summary_pos, 256);
+        require_true(summary_line.contains("\"passed\":false"));
+        require_true(summary_line.contains("\"tests_total\":0"));
+    };
+
     return 0;
 }
 
