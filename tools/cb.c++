@@ -1566,9 +1566,11 @@ private:
 
                 auto rel_path = entry.path().lexically_relative(path).string();
 
+                // Skip nested package checkouts, vendored tester package tests, tools/, and .git/.
+                // Do not hard-skip project test/ trees here — determine_is_test marks them as
+                // is_test, and include_tests (debug / --build-tests) decides whether they join.
                 if (detail::is_nested_dependency_path(rel_path) or
                     detail::is_tester_package_tests_path(rel_path) or
-                    rel_path.contains("/test/") or rel_path.starts_with("test/") or
                     rel_path.contains("/tools/") or rel_path.starts_with("tools/") or
                     rel_path.contains("/.git/") or rel_path.starts_with(".git/"))
                     continue;
