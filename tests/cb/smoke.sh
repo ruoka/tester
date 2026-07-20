@@ -553,6 +553,30 @@ test_profile_change() {
   else
     fail "std-module-profile.txt should record the new compile profile"
   fi
+  # std.o must use the same compile_flags as std.pcm / project TUs (not a
+  # hardcoded subset that drops --compile-flags such as sanitizers).
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if CB_SMOKE_JSONL="${LAST_JSONL}" python3 - <<'PY'
+import json, os, sys
+text = os.environ.get("CB_SMOKE_JSONL", "")
+for line in text.splitlines():
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if event.get("type") != "command_start":
+        continue
+    argv = event.get("argv") or []
+    joined = " ".join(argv)
+    if "std.o" in joined and "-c" in argv and "DCB_SMOKE_FLAG=1" in joined:
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+  then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"std_o_uses_compile_flags"}'
+  else
+    fail "std.o compile command should include --compile-flags (DCB_SMOKE_FLAG=1)"
+  fi
   end_case profile_change
 }
 
