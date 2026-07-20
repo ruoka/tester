@@ -583,20 +583,6 @@ translation_unit parse_translation_unit(const fs::path& project_root, const fs::
             has_main = true;
         }
 
-        // === If we're clearly past the preamble, stop scanning for module stuff ===
-        // Use regex word boundaries to avoid false matches (e.g., "struct" in "structured_log_stream").
-        // Do not end the preamble inside a global module fragment: it may contain braces,
-        // keywords, and declarations before the named `export module` / `module` line.
-        if (not seen_real_code and kind != unit_kind::global_fragment) {
-            // Convert string_view to string for regex_search
-            auto trimmed_str = std::string{trimmed};
-            if (trimmed.contains('{') or
-                std::regex_search(trimmed_str, translation_unit::keyword_regex) or
-                std::regex_search(trimmed_str, translation_unit::using_namespace_regex)) {
-                seen_real_code = true;
-            }
-        }
-
         // === Only scan module/import if we haven't seen real code yet ===
         if (seen_real_code) continue;
 
@@ -623,6 +609,25 @@ translation_unit parse_translation_unit(const fs::path& project_root, const fs::
                 imp = base + imp;
             }
             if (not imp.empty() and imp != "std") imports.push_back(std::move(imp));
+        }
+
+        // End the preamble only after recording any module/import on this line.
+        // Strip // comments first so `import foo; // class helpers` keeps the edge
+        // and does not also drop later imports on following lines.
+        // Do not end the preamble inside a global module fragment: it may contain braces,
+        // keywords, and declarations before the named `export module` / `module` line.
+        // Use regex word boundaries to avoid false matches (e.g., "struct" in "structured_log_stream").
+        if (kind != unit_kind::global_fragment) {
+            auto code = trimmed;
+            if (const auto comment = code.find("//"); comment != std::string_view::npos)
+                code = trim(code.substr(0, comment));
+            if (code.empty()) continue;
+            auto code_str = std::string{code};
+            if (code.contains('{') or
+                std::regex_search(code_str, translation_unit::keyword_regex) or
+                std::regex_search(code_str, translation_unit::using_namespace_regex)) {
+                seen_real_code = true;
+            }
         }
     }
 
