@@ -142,9 +142,7 @@ export void print_test_failures()
 export void print_test_statistics(std::optional<bool>& pending_run_end_passed_ref, bool& run_end_emitted_ref, std::string_view run_mode_param)
 {
     const auto& stats = data::statistics();
-    const auto failed_tests = stats.total_tests - stats.successful_tests;
-    const auto failed_assertions = stats.total_assertions - stats.successful_assertions;
-    const auto passed = (failed_tests == 0 && failed_assertions == 0);
+    const auto passed = data::run_passed(stats);
     const auto slow_n = cfg().slowest;
 
     auto slowest = std::vector<const data::test_result*>{};

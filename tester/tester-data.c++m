@@ -63,6 +63,17 @@ export struct test_statistics
     std::string run_tags{};
 };
 
+// Shared pass/fail verdict for exit status, summary.passed, and RESULT lines.
+// A non-empty tag filter that matches nothing must fail — otherwise scoped CI
+// runs (e.g. --tags='[typo]') silently pass via 0==0 totals.
+export bool run_passed(const test_statistics& stats)
+{
+    if(not stats.run_tags.empty() and stats.total_tests == 0)
+        return false;
+    return stats.total_tests == stats.successful_tests
+        and stats.total_assertions == stats.successful_assertions;
+}
+
 export inline test_statistics& statistics()
 {
     static test_statistics stats{};
