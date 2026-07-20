@@ -1966,7 +1966,8 @@ private:
         auto failure = std::exception_ptr{};
         auto failure_mutex = std::mutex{};
         for (const auto& tu : units_in_topological_order)
-            if (tu.has_main and not tu.filename.contains("test_runner")) {
+            // Exact stem only — substring matches (e.g. aaa_test_runner) are ordinary mains.
+            if (tu.has_main and tu.base_name != "test_runner") {
                 auto signature = compute_link_signature(tu, shared_objects);
                 auto link_reason = needs_relinking(tu.executable_path, signature, link_cache);
                 if (not link_reason) {
@@ -2055,8 +2056,11 @@ private:
     }
 
     void link_test_runner() {
+        // Match the execute path in run_tests() (always bin/test_runner). Substring
+        // contains("test_runner") previously selected aaa_test_runner first, linked
+        // bin/aaa_test_runner, and left a stale bin/test_runner for execution.
         const auto runner_it = std::ranges::find_if(units_in_topological_order, [](const translation_unit& tu) {
-            return tu.has_main and tu.base_name.contains("test_runner");
+            return tu.has_main and tu.base_name == "test_runner";
         });
         const auto has_runner_unit = runner_it != units_in_topological_order.end();
 
@@ -2065,13 +2069,8 @@ private:
             return;
         }
 
-        auto test_runner_path = binary_dir() + "/test_runner";
-        auto test_runner_obj = std::string{};
-        if(has_runner_unit)
-        {
-            test_runner_path = runner_it->executable_path;
-            test_runner_obj = runner_it->object_path;
-        }
+        const auto test_runner_path = binary_dir() + "/test_runner";
+        const auto test_runner_obj = has_runner_unit ? runner_it->object_path : std::string{};
 
         const auto link_module_ldflags = has_runner_unit
             ? collect_module_ldflags(runner_it->imports)
