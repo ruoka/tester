@@ -141,8 +141,7 @@ public:
 
     bool all_tests_passed() const
     {
-        return data::statistics().total_tests == data::statistics().successful_tests 
-            && data::statistics().total_assertions == data::statistics().successful_assertions;
+        return data::run_passed(data::statistics());
     }
 
     bool included(const test_case& tc) const

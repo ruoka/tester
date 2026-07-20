@@ -388,7 +388,7 @@ export struct observer final : tester::output::observer
             return 100.0 * static_cast<double>(ok) / static_cast<double>(total);
         };
 
-        const auto passed = (failed_tests == 0 && failed_assertions == 0);
+        const auto passed = data::run_passed(stats);
 
         auto slowest = std::vector<const data::test_result*>{};
         if(slowest_n > 0)
