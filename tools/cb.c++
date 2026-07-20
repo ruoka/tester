@@ -71,13 +71,17 @@ namespace detail {
 
 inline std::string shell_quote(std::string_view arg)
 {
-    // POSIX: wrap in single quotes; internal ' becomes '\'' (split/join idiom).
-    const auto inner = arg
-        | std::views::split('\'')
-        | std::views::transform([](auto&& part) { return std::string_view{part}; })
-        | std::views::join_with("'\\''"sv)
-        | std::ranges::to<std::string>();
-    return std::string{'\''} + inner + '\'';
+    // POSIX: wrap in single quotes; internal ' becomes '\''.
+    auto out = std::ranges::fold_left(arg, "'"s, [](std::string acc, char c)
+    {
+        if(c == '\'')
+            acc += "'\\''"sv;
+        else
+            acc += c;
+        return acc;
+    });
+    out += '\'';
+    return out;
 }
 
 inline std::string_view config_name(build_config cfg)
