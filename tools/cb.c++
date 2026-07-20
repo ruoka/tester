@@ -29,6 +29,7 @@
 #include <ranges>
 #include <utility>
 #include <stdexcept>
+#include <system_error>
 #include <cctype>
 #include "cb-jsonl_observer.h++"
 #include "cb-console_observer.h++"
@@ -2288,17 +2289,14 @@ public:
         current_phase = build_phase::none;
         output::notify(&output::observer::success, "Build completed: "s + build_root());
 
-        static auto env_storage = std::array<std::string, 2>{};
-        auto env_count = std::size_t{};
-        const auto store_env = [&](std::string_view key, std::string_view value) {
-            env_storage[env_count++] = std::string{key} + '=' + std::string{value};
+        const auto set_env = [](const char* key, std::string_view value)
+        {
+            if(::setenv(key, std::string{value}.c_str(), /*overwrite=*/1) != 0)
+                throw std::system_error{errno, std::generic_category(), "setenv"};
         };
-        store_env("TESTER_CONFIG", detail::config_name(config));
-        const auto parent = output::run_id();
-        if(not parent.empty())
-            store_env("TESTER_PARENT_RUN_ID", parent);
-        for(auto i = std::size_t{}; i < env_count; ++i)
-            ::putenv(env_storage[i].data());
+        set_env("TESTER_CONFIG", detail::config_name(config));
+        if(const auto parent = output::run_id(); not parent.empty())
+            set_env("TESTER_PARENT_RUN_ID", parent);
 
         const auto test_started = std::chrono::steady_clock::now();
         output::notify(&output::observer::test_start, runner);
