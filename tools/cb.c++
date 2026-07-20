@@ -2174,13 +2174,19 @@ private:
         });
         const auto has_runner_unit = runner_it != units_in_topological_order.end();
 
+        // Always emit the canonical path that run_tests executes.
+        const auto test_runner_path = detail::join_dir(binary_dir(), test_runner_name);
+
         if(not has_test_runner_link_inputs(has_runner_unit)) {
+            // Drop any leftover binary so run_tests does not execute a previous
+            // build's runner after all test_runner / non-main inputs disappear
+            // (e.g. only mains remain) — that would be a silent CI pass.
             output::notify(&output::observer::info, "No objects to link for test_runner");
+            auto ignored = std::error_code{};
+            fs::remove(test_runner_path, ignored);
             return;
         }
 
-        // Always emit the canonical path that run_tests executes.
-        const auto test_runner_path = detail::join_dir(binary_dir(), test_runner_name);
         auto test_runner_obj = std::string{};
         if(has_runner_unit)
             test_runner_obj = runner_it->object_path;

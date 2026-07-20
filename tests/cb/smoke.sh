@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, parallel_main_link, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, project_test_dir_included, deps_package_tests_skipped, rebuild_summary, test_lifecycle, test_runner_exact_name, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
+      echo "cases: profile_header, cache_hit, link_cache_hit, parallel_main_link, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, project_test_dir_included, deps_package_tests_skipped, rebuild_summary, test_lifecycle, test_runner_exact_name, test_runner_stale_without_inputs, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
       exit 0
       ;;
     *)
@@ -628,6 +628,40 @@ test_test_runner_exact_name() {
   end_case test_runner_exact_name
 }
 
+test_test_runner_stale_without_inputs() {
+  should_run test_runner_stale_without_inputs || return 0
+  begin_case test_runner_stale_without_inputs
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+  rm -f "${work_dir}/hello.c++"
+
+  # Seed a fresh passing bin/test_runner.
+  printf '%s\n' 'int main() { return 0; }' > "${work_dir}/test_runner.c++"
+  run_cb_test "${work_dir}"
+  assert_jsonl_event_value test_end ok true "seed_stale_runner_ok"
+
+  # Replace with mains only — no test_runner source and no non-main objects.
+  # link_test_runner used to early-return while leaving the old binary in place,
+  # so run_tests executed the stale runner and reported a silent pass.
+  rm -f "${work_dir}/test_runner.c++"
+  printf '%s\n' 'int main() { return 0; }' > "${work_dir}/hello.c++"
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if run_cb_test "${work_dir}"; then
+    fail "stale bin/test_runner executed after all link inputs disappeared"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"stale_test_runner_rejected"}'
+  fi
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ ! -e "${work_dir}/${BUILD_DIR}/bin/test_runner" ]]; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"stale_test_runner_removed"}'
+  else
+    fail "expected stale bin/test_runner to be removed when link inputs are gone"
+  fi
+  end_case test_runner_stale_without_inputs
+}
+
 test_cache_invalidate() {
   should_run cache_invalidate || return 0
   begin_case cache_invalidate
@@ -812,6 +846,7 @@ main() {
   test_rebuild_summary
   test_test_lifecycle
   test_test_runner_exact_name
+  test_test_runner_stale_without_inputs
   test_cache_invalidate
   test_profile_change
   test_cache_status
