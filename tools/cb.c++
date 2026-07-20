@@ -2046,7 +2046,9 @@ private:
         auto failure = std::exception_ptr{};
         auto failure_mutex = std::mutex{};
         for (const auto& tu : units_in_topological_order)
-            if (tu.has_main and not tu.filename.contains(test_runner_name)) {
+            // Exact base name only — substring matches like contest_runner / aaa_test_runner
+            // are ordinary mains and must not be excluded from normal linking.
+            if (tu.has_main and tu.base_name != test_runner_name) {
                 auto signature = compute_link_signature(tu, shared_objects);
                 auto link_reason = needs_relinking(tu.executable_path, signature, link_cache);
                 if (not link_reason) {
@@ -2135,8 +2137,20 @@ private:
     }
 
     void link_test_runner() {
+        // Require an exact base name. Substring selection (e.g. aaa_test_runner /
+        // contest_runner) can link a different bin/<name> while run_tests always
+        // executes bin/test_runner — leaving a stale runner and silent CI passes.
+        const auto runner_count = std::ranges::count_if(
+            units_in_topological_order,
+            [](const translation_unit& tu) {
+                return tu.has_main and tu.base_name == test_runner_name;
+            });
+        if(runner_count > 1)
+            throw std::runtime_error{
+                "multiple test_runner mains found — keep a single source named test_runner"};
+
         const auto runner_it = std::ranges::find_if(units_in_topological_order, [](const translation_unit& tu) {
-            return tu.has_main and tu.base_name.contains(test_runner_name);
+            return tu.has_main and tu.base_name == test_runner_name;
         });
         const auto has_runner_unit = runner_it != units_in_topological_order.end();
 
@@ -2145,13 +2159,11 @@ private:
             return;
         }
 
-        auto test_runner_path = detail::join_dir(binary_dir(), test_runner_name);
+        // Always emit the canonical path that run_tests executes.
+        const auto test_runner_path = detail::join_dir(binary_dir(), test_runner_name);
         auto test_runner_obj = std::string{};
         if(has_runner_unit)
-        {
-            test_runner_path = runner_it->executable_path;
             test_runner_obj = runner_it->object_path;
-        }
 
         const auto link_module_ldflags = has_runner_unit
             ? collect_module_ldflags(runner_it->imports)
