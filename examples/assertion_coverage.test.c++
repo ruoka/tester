@@ -1,5 +1,7 @@
+// Copyright (c) 2025-2026 Kaius Ruokonen. All rights reserved.
 // SPDX-License-Identifier: MIT
 // See the LICENSE file in the project root for full license text.
+
 //
 // Comprehensive test coverage for all assertion functions
 // This file ensures both check_* (non-fatal) and require_* (fatal) versions are tested
