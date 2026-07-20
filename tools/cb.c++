@@ -2041,46 +2041,66 @@ private:
     void link_executables() {
         auto shared_objects = linkable_object_paths();
         auto link_cache = load_executable_cache();
+
+        // Snapshot relink decisions before workers mutate link_cache. Interleaving
+        // needs_relinking (unlocked reads) with parallel operator[] writes is a data race.
+        struct link_decision {
+            const translation_unit* tu = nullptr;
+            std::string signature{};
+            std::optional<output::rebuild_info> reason{};
+        };
+        auto decisions = std::vector<link_decision>{};
+        for(const auto& tu : units_in_topological_order)
+        {
+            // Exact base name only — substring matches like contest_runner / aaa_test_runner
+            // are ordinary mains and must not be excluded from normal linking.
+            if(not tu.has_main or tu.base_name == test_runner_name)
+                continue;
+            auto signature = compute_link_signature(tu, shared_objects);
+            auto reason = needs_relinking(tu.executable_path, signature, link_cache);
+            decisions.push_back(link_decision{&tu, std::move(signature), std::move(reason)});
+        }
+
         auto threads = thread_list{};
         auto failed = std::atomic_bool{false};
         auto failure = std::exception_ptr{};
         auto failure_mutex = std::mutex{};
-        for (const auto& tu : units_in_topological_order)
-            // Exact base name only — substring matches like contest_runner / aaa_test_runner
-            // are ordinary mains and must not be excluded from normal linking.
-            if (tu.has_main and tu.base_name != test_runner_name) {
-                auto signature = compute_link_signature(tu, shared_objects);
-                auto link_reason = needs_relinking(tu.executable_path, signature, link_cache);
-                if (not link_reason) {
-                        output::notify(&output::observer::info, "Skipping link (up-to-date): "s + tu.executable_path);
-                        const auto now = std::chrono::steady_clock::now();
-                        emit_link_end(tu.executable_path, true, true, now, now);
-                        continue;
-                }
-                threads.emplace_back([this, tu, &shared_objects, signature, link_reason, &link_cache, &failed, &failure, &failure_mutex]() {
-                    if(failed.load(std::memory_order_relaxed))
-                        return;
-                    const auto started = std::chrono::steady_clock::now();
-                    auto linked = false;
-                    try {
-                        link_executable(tu, shared_objects);
-                        linked = true;
-                        const auto finished = std::chrono::steady_clock::now();
-                        emit_link_end(tu.executable_path, true, false, started, finished, *link_reason);
-                        auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
-                        link_cache[tu.executable_path] = signature;
-                    } catch (...) {
-                        if(not linked)
-                            emit_link_end(tu.executable_path, false, false, started, std::chrono::steady_clock::now(), *link_reason);
-                        failed.store(true, std::memory_order_relaxed);
-                        auto lock = std::lock_guard<std::mutex>{failure_mutex};
-                        if(not failure)
-                            failure = std::current_exception();
-                        return;
-                    }
-                });
+        for(const auto& decision : decisions)
+        {
+            const auto& tu = *decision.tu;
+            if(not decision.reason)
+            {
+                output::notify(&output::observer::info, "Skipping link (up-to-date): "s + tu.executable_path);
+                const auto now = std::chrono::steady_clock::now();
+                emit_link_end(tu.executable_path, true, true, now, now);
+                continue;
             }
-        for (auto& thread : threads) thread.join();
+            // Capture decision by reference — it outlives join(); do not bind a per-iteration local.
+            threads.emplace_back([this, &decision, &shared_objects, &link_cache, &failed, &failure, &failure_mutex]() {
+                if(failed.load(std::memory_order_relaxed))
+                    return;
+                const auto& tu = *decision.tu;
+                const auto started = std::chrono::steady_clock::now();
+                auto linked = false;
+                try {
+                    link_executable(tu, shared_objects);
+                    linked = true;
+                    const auto finished = std::chrono::steady_clock::now();
+                    emit_link_end(tu.executable_path, true, false, started, finished, *decision.reason);
+                    auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
+                    link_cache[tu.executable_path] = decision.signature;
+                } catch (...) {
+                    if(not linked)
+                        emit_link_end(tu.executable_path, false, false, started, std::chrono::steady_clock::now(), *decision.reason);
+                    failed.store(true, std::memory_order_relaxed);
+                    auto lock = std::lock_guard<std::mutex>{failure_mutex};
+                    if(not failure)
+                        failure = std::current_exception();
+                    return;
+                }
+            });
+        }
+        for(auto& thread : threads) thread.join();
         if(failure)
             std::rethrow_exception(failure);
         save_executable_cache(link_cache);
