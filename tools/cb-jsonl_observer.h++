@@ -92,14 +92,15 @@ inline void write_rebuild(std::ostream& os, const rebuild_info& rebuild)
 {
     os << '{';
     auto first = true;
-    write_rebuild_field(os, "kind", rebuild.kind, first);
+    write_rebuild_field(os, "kind", rebuild_kind_name(rebuild.kind), first);
     write_rebuild_field(os, "module", rebuild.module, first);
     write_rebuild_field(os, "pcm_path", rebuild.pcm_path, first);
     write_rebuild_field(os, "object_path", rebuild.object_path, first);
     write_rebuild_field(os, "trigger_path", rebuild.trigger_path, first);
     write_rebuild_field(os, "hint", rebuild.hint, first);
     write_rebuild_field(os, "message", rebuild.message, first);
-    write_rebuild_field(os, "see_event", rebuild.see_event, first);
+    if(rebuild.kind == rebuild_kind::profile_change)
+        write_rebuild_field(os, "see_event", "profile_changed", first);
     os << '}';
 }
 
@@ -128,7 +129,7 @@ struct observer final : cb::output::observer
         {
             if(rebuild.empty())
                 return;
-            ++rebuild_by_kind[rebuild.kind];
+            ++rebuild_by_kind[std::string{rebuild_kind_name(rebuild.kind)}];
             if(not rebuild.module.empty())
                 ++rebuild_modules[rebuild.module];
         }
@@ -308,14 +309,14 @@ struct observer final : cb::output::observer
         };
     }
 
-    void profile_changed(std::string_view reason, const object_cache_profile_diff& diff) override
+    void profile_changed(rebuild_kind reason, const object_cache_profile_diff& diff) override
     {
         if(m.mode == jsonl_mode::summary)
             return;
 
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("profile_changed") << [&](std::ostream& os){
-            os << ",\"reason\":\"" << escape(reason) << "\"";
+            os << ",\"reason\":\"" << escape(rebuild_kind_name(reason)) << "\"";
             if(!diff.empty())
             {
                 os << ",\"profile_diff\":";
@@ -375,7 +376,7 @@ struct observer final : cb::output::observer
                 os << ",\"module_name\":\"" << escape(module_name) << "\"";
             if(not rebuild.empty())
             {
-                os << ",\"rebuild_reason\":\"" << escape(rebuild.kind) << "\"";
+                os << ",\"rebuild_reason\":\"" << escape(rebuild_kind_name(rebuild.kind)) << "\"";
                 os << ",\"rebuild\":";
                 write_rebuild(os, rebuild);
                 if(not rebuild.message.empty())
@@ -407,7 +408,7 @@ struct observer final : cb::output::observer
             os << ",\"cache_hit\":" << (cache_hit ? "true" : "false");
             if(not cache_hit and not rebuild.empty())
             {
-                os << ",\"rebuild_reason\":\"" << escape(rebuild.kind) << "\"";
+                os << ",\"rebuild_reason\":\"" << escape(rebuild_kind_name(rebuild.kind)) << "\"";
                 os << ",\"rebuild\":";
                 write_rebuild(os, rebuild);
             }
@@ -451,7 +452,7 @@ struct observer final : cb::output::observer
             os << ",\"cache_hit\":" << (cache_hit ? "true" : "false");
             if(not cache_hit and not rebuild.empty())
             {
-                os << ",\"rebuild_reason\":\"" << escape(rebuild.kind) << "\"";
+                os << ",\"rebuild_reason\":\"" << escape(rebuild_kind_name(rebuild.kind)) << "\"";
                 os << ",\"rebuild\":";
                 write_rebuild(os, rebuild);
             }

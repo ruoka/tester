@@ -91,7 +91,7 @@ struct observer final : cb::output::observer
     {
         if(rebuild.empty())
             return;
-        ++rebuild_by_kind[rebuild.kind];
+        ++rebuild_by_kind[std::string{rebuild_kind_name(rebuild.kind)}];
         if(not rebuild.module.empty())
             ++rebuild_modules[rebuild.module];
     }
@@ -152,7 +152,7 @@ struct observer final : cb::output::observer
         write("COMMAND", color::bold::blue, cmd);
     }
 
-    void profile_changed(std::string_view reason, const object_cache_profile_diff& diff) override
+    void profile_changed(rebuild_kind, const object_cache_profile_diff& diff) override
     {
         auto msg = std::string{"Object cache profile changed; invalidating compile cache"};
         if(!diff.empty())

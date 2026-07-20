@@ -95,19 +95,59 @@ struct source_inventory
     int max_level;
 };
 
+// Rebuild telemetry kinds for compile/link (wire name is also rebuild_reason).
+enum class rebuild_kind
+{
+    none,
+    not_in_cache,
+    source_stale,
+    object_missing,
+    object_stale,
+    own_pcm_missing,
+    own_pcm_stale,
+    pcm_stale,
+    dependency_pcm_stale,
+    profile_change,
+    missing_executable,
+    object_changed,
+    link_flags_changed,
+    signature_changed,
+};
+
+constexpr std::string_view rebuild_kind_name(rebuild_kind kind)
+{
+    switch(kind)
+    {
+        case rebuild_kind::none: return {};
+        case rebuild_kind::not_in_cache: return "not_in_cache";
+        case rebuild_kind::source_stale: return "source_stale";
+        case rebuild_kind::object_missing: return "object_missing";
+        case rebuild_kind::object_stale: return "object_stale";
+        case rebuild_kind::own_pcm_missing: return "own_pcm_missing";
+        case rebuild_kind::own_pcm_stale: return "own_pcm_stale";
+        case rebuild_kind::pcm_stale: return "pcm_stale";
+        case rebuild_kind::dependency_pcm_stale: return "dependency_pcm_stale";
+        case rebuild_kind::profile_change: return "profile_change";
+        case rebuild_kind::missing_executable: return "missing_executable";
+        case rebuild_kind::object_changed: return "object_changed";
+        case rebuild_kind::link_flags_changed: return "link_flags_changed";
+        case rebuild_kind::signature_changed: return "signature_changed";
+    }
+    return {};
+}
+
 // Structured rebuild telemetry for compile/link JSONL (kind is also rebuild_reason).
 struct rebuild_info
 {
-    std::string kind;
+    rebuild_kind kind = rebuild_kind::none;
     std::string module;
     std::string pcm_path;
     std::string object_path;
     std::string trigger_path;
     std::string hint;
     std::string message;
-    std::string see_event;
 
-    bool empty() const { return kind.empty(); }
+    bool empty() const { return kind == rebuild_kind::none; }
 };
 
 class observer
@@ -123,7 +163,7 @@ public:
     virtual void info(std::string_view) {}
     virtual void success(std::string_view) {}
     virtual void command(std::string_view) {}
-    virtual void profile_changed(std::string_view, const object_cache_profile_diff&) {}
+    virtual void profile_changed(rebuild_kind, const object_cache_profile_diff&) {}
     virtual void profile_change_rebuild(std::string_view) {}
 
     virtual void cache_status(

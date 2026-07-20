@@ -120,8 +120,6 @@ enum class unit_kind : unsigned {
     global_fragment      // global module fragment, only contains "module;"   (.c++m .cppm)
 };
 
-enum class build_config { debug, release };
-
 namespace detail {
 
 std::string join_dir(std::string_view root, std::string_view name)
@@ -174,16 +172,6 @@ std::string shell_quote(std::string_view arg)
     });
     out += '\'';
     return out;
-}
-
-std::string_view config_name(build_config cfg)
-{
-    switch(cfg)
-    {
-        case build_config::debug: return "debug";
-        case build_config::release: return "release";
-    }
-    return "debug";
 }
 
 std::string_view unit_kind_name(unit_kind kind)
@@ -667,6 +655,9 @@ using module_to_ldflags_map = std::flat_map<std::string, std::string, std::less<
 using executable_cache_map = std::flat_map<std::string, std::string, std::less<>>;
 
 class build_system {
+public:
+    enum class build_config { debug, release };
+
 private:
     enum class build_phase { none, build };
 
@@ -690,13 +681,23 @@ private:
     bool include_examples = false;
     string_list extra_compile_flag_tokens;
     string_list extra_link_flag_tokens;
-    std::optional<std::string> object_cache_miss_reason;
+    std::optional<output::rebuild_kind> object_cache_miss_reason;
     output::object_cache_profile_diff profile_diff;
     
     // JSONL phase tracking state
     build_phase current_phase = build_phase::none;
     std::chrono::steady_clock::time_point phase_started{};
     bool build_end_emitted = false;
+
+    std::string_view config_name() const
+    {
+        switch(config)
+        {
+            case build_config::debug: return "debug";
+            case build_config::release: return "release";
+        }
+        std::unreachable();
+    }
     
     void emit_failed_build_end()
     {
@@ -1052,34 +1053,39 @@ private:
             throw std::runtime_error{"Command failed: " + detail::join_argv(argv)};
     }
 
-    static std::string_view rebuild_hint(std::string_view kind)
+    static std::string_view rebuild_hint(output::rebuild_kind kind)
     {
-        if(kind == "not_in_cache"sv)
-            return "Source path not present in object cache for this config.";
-        if(kind == "source_stale"sv)
-            return "Source mtime newer than cached compile timestamp.";
-        if(kind == "object_missing"sv)
-            return "Object file missing on disk.";
-        if(kind == "object_stale"sv)
-            return "Object file older than cached source timestamp.";
-        if(kind == "own_pcm_missing"sv)
-            return "Module PCM missing on disk.";
-        if(kind == "own_pcm_stale"sv)
-            return "Module PCM older than its source.";
-        if(kind == "pcm_stale"sv)
-            return "Imported PCM newer than this object; recompile follows module graph.";
-        if(kind == "dependency_pcm_stale"sv)
-            return "Imported module PCM is missing or older than its source.";
-        if(kind == "profile_change"sv)
-            return "Object-cache toolchain profile changed; see profile_changed event.";
-        if(kind == "missing_executable"sv)
-            return "Linked executable missing on disk.";
-        if(kind == "object_changed"sv)
-            return "One or more input objects changed since the last link.";
-        if(kind == "link_flags_changed"sv)
-            return "Link/compile/module flags changed since the last link.";
-        if(kind == "signature_changed"sv)
-            return "Link signature changed since the last successful link.";
+        switch(kind)
+        {
+            case output::rebuild_kind::none:
+                return {};
+            case output::rebuild_kind::not_in_cache:
+                return "Source path not present in object cache for this config.";
+            case output::rebuild_kind::source_stale:
+                return "Source mtime newer than cached compile timestamp.";
+            case output::rebuild_kind::object_missing:
+                return "Object file missing on disk.";
+            case output::rebuild_kind::object_stale:
+                return "Object file older than cached source timestamp.";
+            case output::rebuild_kind::own_pcm_missing:
+                return "Module PCM missing on disk.";
+            case output::rebuild_kind::own_pcm_stale:
+                return "Module PCM older than its source.";
+            case output::rebuild_kind::pcm_stale:
+                return "Imported PCM newer than this object; recompile follows module graph.";
+            case output::rebuild_kind::dependency_pcm_stale:
+                return "Imported module PCM is missing or older than its source.";
+            case output::rebuild_kind::profile_change:
+                return "Object-cache toolchain profile changed; see profile_changed event.";
+            case output::rebuild_kind::missing_executable:
+                return "Linked executable missing on disk.";
+            case output::rebuild_kind::object_changed:
+                return "One or more input objects changed since the last link.";
+            case output::rebuild_kind::link_flags_changed:
+                return "Link/compile/module flags changed since the last link.";
+            case output::rebuild_kind::signature_changed:
+                return "Link signature changed since the last successful link.";
+        }
         return {};
     }
 
@@ -1091,44 +1097,44 @@ private:
     static std::string format_rebuild_message(const translation_unit& tu, const output::rebuild_info& info)
     {
         const auto label = tu_label(tu);
-        if(info.kind == "profile_change"sv)
-            return "Rebuilding " + label + " because compile profile changed";
-        if(info.kind == "not_in_cache"sv)
-            return "Rebuilding " + label + " because it is not in the object cache";
-        if(info.kind == "source_stale"sv)
+        switch(info.kind)
         {
-            if(not info.trigger_path.empty() and info.trigger_path != tu.full_path)
-                return "Rebuilding " + label + " because dependency " + info.trigger_path + " is newer than its cached object";
-            return "Rebuilding " + label + " because source is newer than the cached object";
+            case output::rebuild_kind::profile_change:
+                return "Rebuilding " + label + " because compile profile changed";
+            case output::rebuild_kind::not_in_cache:
+                return "Rebuilding " + label + " because it is not in the object cache";
+            case output::rebuild_kind::source_stale:
+                if(not info.trigger_path.empty() and info.trigger_path != tu.full_path)
+                    return "Rebuilding " + label + " because dependency " + info.trigger_path + " is newer than its cached object";
+                return "Rebuilding " + label + " because source is newer than the cached object";
+            case output::rebuild_kind::pcm_stale:
+                return "Rebuilding " + label + " because PCM " + info.module + " is newer than the object (import graph)";
+            case output::rebuild_kind::dependency_pcm_stale:
+                return "Rebuilding " + label + " because imported module " + info.module + " PCM is missing or stale";
+            case output::rebuild_kind::object_missing:
+                return "Rebuilding " + label + " because object file is missing";
+            case output::rebuild_kind::object_stale:
+                return "Rebuilding " + label + " because object file is older than the cached source timestamp";
+            case output::rebuild_kind::own_pcm_missing:
+                return "Rebuilding " + label + " because its PCM is missing";
+            case output::rebuild_kind::own_pcm_stale:
+                return "Rebuilding " + label + " because its PCM is older than the source";
+            default:
+                return "Rebuilding " + label + " (" + std::string{output::rebuild_kind_name(info.kind)} + ")";
         }
-        if(info.kind == "pcm_stale"sv)
-            return "Rebuilding " + label + " because PCM " + info.module + " is newer than the object (import graph)";
-        if(info.kind == "dependency_pcm_stale"sv)
-            return "Rebuilding " + label + " because imported module " + info.module + " PCM is missing or stale";
-        if(info.kind == "object_missing"sv)
-            return "Rebuilding " + label + " because object file is missing";
-        if(info.kind == "object_stale"sv)
-            return "Rebuilding " + label + " because object file is older than the cached source timestamp";
-        if(info.kind == "own_pcm_missing"sv)
-            return "Rebuilding " + label + " because its PCM is missing";
-        if(info.kind == "own_pcm_stale"sv)
-            return "Rebuilding " + label + " because its PCM is older than the source";
-        return "Rebuilding " + label + " (" + info.kind + ")";
     }
 
-    static output::rebuild_info make_rebuild(std::string kind,
+    static output::rebuild_info make_rebuild(output::rebuild_kind kind,
                                              std::string module = {},
                                              std::string pcm_path = {},
                                              std::string trigger_path = {})
     {
         auto info = output::rebuild_info{};
-        info.kind = std::move(kind);
+        info.kind = kind;
         info.module = std::move(module);
         info.pcm_path = std::move(pcm_path);
         info.trigger_path = std::move(trigger_path);
-        info.hint = std::string{rebuild_hint(info.kind)};
-        if(info.kind == "profile_change"sv)
-            info.see_event = "profile_changed";
+        info.hint = std::string{rebuild_hint(kind)};
         return info;
     }
 
@@ -1141,15 +1147,20 @@ private:
 
     static std::string format_link_message(std::string_view executable_path, const output::rebuild_info& info)
     {
-        if(info.kind == "missing_executable"sv)
-            return "Linking " + std::string{executable_path} + " because executable is missing";
-        if(info.kind == "not_in_cache"sv)
-            return "Linking " + std::string{executable_path} + " because it is not in the link cache";
-        if(info.kind == "object_changed"sv)
-            return "Linking " + std::string{executable_path} + " because input objects changed";
-        if(info.kind == "link_flags_changed"sv)
-            return "Linking " + std::string{executable_path} + " because link flags changed";
-        return "Linking " + std::string{executable_path} + " (" + info.kind + ")";
+        switch(info.kind)
+        {
+            case output::rebuild_kind::missing_executable:
+                return "Linking " + std::string{executable_path} + " because executable is missing";
+            case output::rebuild_kind::not_in_cache:
+                return "Linking " + std::string{executable_path} + " because it is not in the link cache";
+            case output::rebuild_kind::object_changed:
+                return "Linking " + std::string{executable_path} + " because input objects changed";
+            case output::rebuild_kind::link_flags_changed:
+                return "Linking " + std::string{executable_path} + " because link flags changed";
+            default:
+                return "Linking " + std::string{executable_path} + " ("
+                    + std::string{output::rebuild_kind_name(info.kind)} + ")";
+        }
     }
 
     static output::rebuild_info finalize_link_rebuild(output::rebuild_info info, std::string_view executable_path)
@@ -1202,7 +1213,7 @@ private:
 
     void emit_profile_changed()
     {
-        if(object_cache_miss_reason != "profile_change"sv)
+        if(object_cache_miss_reason != output::rebuild_kind::profile_change)
             return;
 
         output::notify(&output::observer::profile_changed, *object_cache_miss_reason, profile_diff);
@@ -1362,7 +1373,7 @@ private:
         auto profile = ""s;
         profile.reserve(768);
         detail::append_profile_field(profile, "format", detail::object_cache_format);
-        detail::append_profile_field(profile, "config", detail::config_name(config));
+        detail::append_profile_field(profile, "config", config_name());
         detail::append_profile_field(profile, "static_link", static_link ? "1" : "0");
         detail::append_profile_field(profile, "llvm", llvm_prefix);
         detail::append_profile_field(profile, "cxx", llvm_cxx);
@@ -1406,7 +1417,7 @@ private:
         if (header.starts_with("profile\t")) {
             const auto stored_profile = header.substr(std::string_view{"profile\t"}.size());
             if (stored_profile != current_profile) {
-                object_cache_miss_reason = "profile_change";
+                object_cache_miss_reason = output::rebuild_kind::profile_change;
                 profile_diff = detail::diff_object_cache_profiles(stored_profile, current_profile);
                 return cache;
             }
@@ -1488,7 +1499,7 @@ private:
 
             if (dep_tu.is_modular && fs::exists(dep_tu.pcm_path)) {
                 if (fs::last_write_time(dep_tu.pcm_path) > object_timestamp) {
-                    stale = make_rebuild("pcm_stale", dep_tu.module, dep_tu.pcm_path, dep_tu.full_path);
+                    stale = make_rebuild(output::rebuild_kind::pcm_stale, dep_tu.module, dep_tu.pcm_path, dep_tu.full_path);
                     return true;
                 }
             }
@@ -1508,18 +1519,18 @@ private:
         if (not c.contains(tu.full_path)) {
             if (object_cache_miss_reason)
                 return make_rebuild(*object_cache_miss_reason, {}, {}, tu.full_path);
-            return make_rebuild("not_in_cache", {}, {}, tu.full_path);
+            return make_rebuild(output::rebuild_kind::not_in_cache, {}, {}, tu.full_path);
         }
         if (c.at(tu.full_path) < tu.last_modified)
-            return make_rebuild("source_stale", {}, {}, tu.full_path);
+            return make_rebuild(output::rebuild_kind::source_stale, {}, {}, tu.full_path);
 
         // Ensure the object file exists and is up-to-date versus the source timestamp we cached.
         if (not fs::exists(tu.object_path))
-            return make_rebuild("object_missing", {}, {}, tu.full_path);
+            return make_rebuild(output::rebuild_kind::object_missing, {}, {}, tu.full_path);
 
         auto object_timestamp = fs::last_write_time(tu.object_path);
         if (object_timestamp < c.at(tu.full_path))
-            return make_rebuild("object_stale", {}, {}, tu.full_path);
+            return make_rebuild(output::rebuild_kind::object_stale, {}, {}, tu.full_path);
 
         // Implementation units consume their interface PCM implicitly through
         // -fmodule-file=<module>=<pcm>, even when they do not import that module.
@@ -1527,9 +1538,9 @@ private:
         {
             const auto& interface = *u2tu.at(tu.module);
             if(not fs::exists(interface.pcm_path))
-                return make_rebuild("dependency_pcm_stale", interface.module, interface.pcm_path, interface.full_path);
+                return make_rebuild(output::rebuild_kind::dependency_pcm_stale, interface.module, interface.pcm_path, interface.full_path);
             if(fs::last_write_time(interface.pcm_path) > object_timestamp)
-                return make_rebuild("pcm_stale", interface.module, interface.pcm_path, interface.full_path);
+                return make_rebuild(output::rebuild_kind::pcm_stale, interface.module, interface.pcm_path, interface.full_path);
             if(auto interface_reason = needs_recompile(interface, c, u2tu))
             {
                 auto info = *interface_reason;
@@ -1544,10 +1555,10 @@ private:
         // For modular units, also check if .pcm file is stale
         if (tu.is_modular) {
             if (not fs::exists(tu.pcm_path))
-                return make_rebuild("own_pcm_missing", tu.module, tu.pcm_path, tu.full_path);
+                return make_rebuild(output::rebuild_kind::own_pcm_missing, tu.module, tu.pcm_path, tu.full_path);
             auto pcm_timestamp = fs::last_write_time(tu.pcm_path);
             if (pcm_timestamp < tu.last_modified)
-                return make_rebuild("own_pcm_stale", tu.module, tu.pcm_path, tu.full_path);
+                return make_rebuild(output::rebuild_kind::own_pcm_stale, tu.module, tu.pcm_path, tu.full_path);
         }
 
         // Rebuild when any transitive import PCM is newer than this object file.
@@ -1565,7 +1576,7 @@ private:
                 if (dep_tu.is_modular) {
                     if (not fs::exists(dep_tu.pcm_path) or 
                         fs::last_write_time(dep_tu.pcm_path) < dep_tu.last_modified) {
-                        return make_rebuild("dependency_pcm_stale", dep_tu.module, dep_tu.pcm_path, dep_tu.full_path);
+                        return make_rebuild(output::rebuild_kind::dependency_pcm_stale, dep_tu.module, dep_tu.pcm_path, dep_tu.full_path);
                     }
                 }
                 // Also recursively check if the imported module needs recompiling
@@ -1631,10 +1642,10 @@ private:
                                                         const executable_cache_map& link_cache) const
     {
         if(not fs::exists(executable_path))
-            return finalize_link_rebuild(make_rebuild("missing_executable"), executable_path);
+            return finalize_link_rebuild(make_rebuild(output::rebuild_kind::missing_executable), executable_path);
 
         if(not link_cache.contains(executable_path))
-            return finalize_link_rebuild(make_rebuild("not_in_cache"), executable_path);
+            return finalize_link_rebuild(make_rebuild(output::rebuild_kind::not_in_cache), executable_path);
 
         const auto& previous = link_cache.at(executable_path);
         if(previous == signature)
@@ -1648,12 +1659,12 @@ private:
             const auto previous_objects = previous.substr(0, previous_flags);
             const auto current_objects = signature.substr(0, current_flags);
             if(previous_objects != current_objects)
-                return finalize_link_rebuild(make_rebuild("object_changed"), executable_path);
+                return finalize_link_rebuild(make_rebuild(output::rebuild_kind::object_changed), executable_path);
             if(previous.substr(previous_flags) != signature.substr(current_flags))
-                return finalize_link_rebuild(make_rebuild("link_flags_changed"), executable_path);
+                return finalize_link_rebuild(make_rebuild(output::rebuild_kind::link_flags_changed), executable_path);
         }
 
-        return finalize_link_rebuild(make_rebuild("signature_changed"), executable_path);
+        return finalize_link_rebuild(make_rebuild(output::rebuild_kind::signature_changed), executable_path);
     }
 
     // ============================================================================
@@ -2355,7 +2366,7 @@ public:
         current_phase = build_phase::build;
         phase_started = build_started;
         build_end_emitted = false;
-        output::notify(&output::observer::build_start, detail::config_name(config), include_tests, include_examples);
+        output::notify(&output::observer::build_start, config_name(), include_tests, include_examples);
 
         try {
             build_steps();
@@ -2381,7 +2392,7 @@ public:
         current_phase = build_phase::build;
         phase_started = build_started;
         build_end_emitted = false;
-        output::notify(&output::observer::build_start, detail::config_name(config), true, include_examples);
+        output::notify(&output::observer::build_start, config_name(), true, include_examples);
 
         auto runner = detail::join_dir(binary_dir(), test_runner_name);
         try {
@@ -2406,7 +2417,7 @@ public:
             if(::setenv(std::string{key}.c_str(), std::string{value}.c_str(), /*overwrite=*/1) != 0)
                 throw std::system_error{errno, std::generic_category(), "setenv"};
         };
-        set_env(tester_config_env, detail::config_name(config));
+        set_env(tester_config_env, config_name());
         if(const auto parent = output::run_id(); not parent.empty())
             set_env(tester_parent_run_id_env, parent);
 
@@ -2428,7 +2439,7 @@ public:
     void list_sources() {
         scan_and_order();
         auto inventory = output::source_inventory{
-            std::string{detail::config_name(config)},
+            std::string{config_name()},
             include_tests,
             include_examples,
             source_dir,
@@ -2519,7 +2530,7 @@ int main(int argc, char* argv[])
             }
         }
 
-        auto config = cb::build_config::debug;  // default to debug
+        auto config = cb::build_system::build_config::debug;  // default to debug
         auto do_clean = false, do_list = false, do_build = false, do_run_tests = false;
         auto do_cache_status = false, do_cache_invalidate = false;
         auto test_filter = std::string{};
@@ -2579,9 +2590,9 @@ int main(int argc, char* argv[])
                         test_filter = argv[++i];
                 }
             } else if (argument == "release") {
-                config = cb::build_config::release;
+                config = cb::build_system::build_config::release;
             } else if (argument == "debug") {
-                config = cb::build_config::debug;
+                config = cb::build_system::build_config::debug;
             } else if (argument == "ci") {
                 do_clean = true;
                 do_run_tests = true;
