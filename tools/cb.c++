@@ -1169,27 +1169,16 @@ private:
         return argv;
     }
 
+    // Compile std.pcm → std.o with the same compile_flags as project TUs and
+    // build_std_pcm_argv. A hardcoded subset previously dropped --compile-flags
+    // (e.g. -fsanitize=address), so std.o disagreed with an ASAN-built std.pcm
+    // and instrumented project objects.
     string_list build_std_o_argv() const
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
-        argv.append_range(string_list{
-            "-std=c++23",
-            "-pthread",
-            "-fPIC",
-            "-fexperimental-library",
-            "-Wall",
-            "-Wextra",
-        });
-        if(os_name() == "darwin")
-            argv.push_back("-fapplication-extension");
-        if(config == build_config::release)
-            argv.append_range(string_list{"-O3", "-DNDEBUG"});
-        else
-            argv.append_range(string_list{"-O0", "-g"});
-        argv.push_back("-fno-implicit-modules");
-        argv.push_back("-fno-implicit-module-maps");
-        argv.push_back("-fmodule-file=std=" + std_pcm_path());
+        argv.append_range(compile_flags);
+        argv.append_range(module_flags);
         argv.push_back(std_pcm_path());
         argv.push_back("-c");
         argv.push_back("-o");
