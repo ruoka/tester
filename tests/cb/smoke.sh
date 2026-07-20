@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, project_test_dir_included, deps_package_tests_skipped, rebuild_summary, test_lifecycle, test_runner_exact_name, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
+      echo "cases: profile_header, cache_hit, link_cache_hit, parallel_main_link, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, project_test_dir_included, deps_package_tests_skipped, rebuild_summary, test_lifecycle, test_runner_exact_name, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
       exit 0
       ;;
     *)
@@ -88,6 +88,34 @@ test_link_cache_hit() {
   run_cb_build "${work_dir}"
   assert_link_cache_hits 1 "second_build_link_cache_hit"
   end_case link_cache_hit
+}
+
+test_parallel_main_link() {
+  should_run parallel_main_link || return 0
+  begin_case parallel_main_link
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  # Two mains exercise parallel link_executables workers; decisions must be
+  # snapshotted before any thread mutates the in-memory link cache.
+  printf '%s\n' \
+    'import std;' \
+    'int main() { std::puts("cb-smoke-world"); return 0; }' > "${work_dir}/world.c++"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "parallel_main_build_ok"
+  assert_jsonl_event_count link_end 2 "parallel_main_two_links"
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ -x "${work_dir}/${BUILD_DIR}/bin/hello" && -x "${work_dir}/${BUILD_DIR}/bin/world" ]]; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"parallel_main_binaries"}'
+  else
+    fail "expected both ${BUILD_DIR}/bin/hello and ${BUILD_DIR}/bin/world after parallel link"
+  fi
+
+  run_cb_build "${work_dir}"
+  assert_link_cache_hits 2 "parallel_main_second_build_link_cache_hits"
+  end_case parallel_main_link
 }
 
 test_compile_start() {
@@ -563,29 +591,39 @@ test_test_runner_exact_name() {
   begin_case test_runner_exact_name
   local work_dir
   work_dir="$(prepare_work_dir)"
+  rm -f "${work_dir}/hello.c++"
 
-  # Seed a successful bin/test_runner, then introduce an earlier *test_runner*
-  # main and make the real runner fail. Substring selection used to relink
-  # bin/aaa_test_runner while still executing the stale bin/test_runner.
+  # Seed a fresh bin/test_runner that passes.
   printf '%s\n' 'int main() { return 0; }' > "${work_dir}/test_runner.c++"
   run_cb_test "${work_dir}"
   assert_jsonl_event_value test_end ok true "seed_test_runner_ok"
 
-  printf '%s\n' 'int main() { return 0; }' > "${work_dir}/aaa_test_runner.c++"
+  # Real runner now fails. A substring impostor (aaa_test_runner / contest_runner)
+  # used to steal link_test_runner while run_tests still executed the stale
+  # bin/test_runner — a silent CI pass.
   printf '%s\n' 'int main() { return 1; }' > "${work_dir}/test_runner.c++"
+  printf '%s\n' 'int main() { return 0; }' > "${work_dir}/aaa_test_runner.c++"
+  printf '%s\n' 'int main() { return 0; }' > "${work_dir}/contest_runner.c++"
 
   TESTS_RUN=$((TESTS_RUN + 1))
   if run_cb_test "${work_dir}"; then
-    fail "stale bin/test_runner executed despite failing test_runner.c++"
+    fail "stale or impostor test_runner executed (expected failing exact test_runner)"
   else
-    jsonl_emit '{"type":"smoke_assert_passed","matcher":"test_runner_exact_name_rerun_fails"}'
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"exact_test_runner_executed"}'
   fi
 
   TESTS_RUN=$((TESTS_RUN + 1))
-  if [[ -x "${work_dir}/${BUILD_DIR}/bin/test_runner" && -x "${work_dir}/${BUILD_DIR}/bin/aaa_test_runner" ]]; then
-    jsonl_emit '{"type":"smoke_assert_passed","matcher":"test_runner_and_sibling_binaries"}'
+  if [[ -x "${work_dir}/${BUILD_DIR}/bin/test_runner" ]]; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"canonical_test_runner_present"}'
   else
-    fail "expected both bin/test_runner and bin/aaa_test_runner after exact-name link"
+    fail "expected bin/test_runner"
+  fi
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ -x "${work_dir}/${BUILD_DIR}/bin/aaa_test_runner" && -x "${work_dir}/${BUILD_DIR}/bin/contest_runner" ]]; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"impostor_mains_linked_normally"}'
+  else
+    fail "expected substring impostors linked as ordinary mains"
   fi
   end_case test_runner_exact_name
 }
@@ -753,6 +791,7 @@ main() {
   test_profile_header
   test_cache_hit
   test_link_cache_hit
+  test_parallel_main_link
   test_compile_start
   test_source_stale
   test_source_list
