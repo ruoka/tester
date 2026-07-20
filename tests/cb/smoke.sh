@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, project_test_dir_included, deps_package_tests_skipped, rebuild_summary, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
+      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, project_test_dir_included, deps_package_tests_skipped, rebuild_summary, test_lifecycle, test_runner_exact_name, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
       exit 0
       ;;
     *)
@@ -558,6 +558,48 @@ test_test_lifecycle() {
   end_case test_lifecycle
 }
 
+test_test_runner_exact_name() {
+  should_run test_runner_exact_name || return 0
+  begin_case test_runner_exact_name
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+  rm -f "${work_dir}/hello.c++"
+
+  # Seed a fresh bin/test_runner that passes.
+  printf '%s\n' 'int main() { return 0; }' > "${work_dir}/test_runner.c++"
+  run_cb_test "${work_dir}"
+  assert_jsonl_event_value test_end ok true "seed_test_runner_ok"
+
+  # Real runner now fails. A substring impostor (aaa_test_runner / contest_runner)
+  # used to steal link_test_runner while run_tests still executed the stale
+  # bin/test_runner — a silent CI pass.
+  printf '%s\n' 'int main() { return 1; }' > "${work_dir}/test_runner.c++"
+  printf '%s\n' 'int main() { return 0; }' > "${work_dir}/aaa_test_runner.c++"
+  printf '%s\n' 'int main() { return 0; }' > "${work_dir}/contest_runner.c++"
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if run_cb_test "${work_dir}"; then
+    fail "stale or impostor test_runner executed (expected failing exact test_runner)"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"exact_test_runner_executed"}'
+  fi
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ -x "${work_dir}/${BUILD_DIR}/bin/test_runner" ]]; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"canonical_test_runner_present"}'
+  else
+    fail "expected bin/test_runner"
+  fi
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ -x "${work_dir}/${BUILD_DIR}/bin/aaa_test_runner" && -x "${work_dir}/${BUILD_DIR}/bin/contest_runner" ]]; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"impostor_mains_linked_normally"}'
+  else
+    fail "expected substring impostors linked as ordinary mains"
+  fi
+  end_case test_runner_exact_name
+}
+
 test_cache_invalidate() {
   should_run cache_invalidate || return 0
   begin_case cache_invalidate
@@ -740,6 +782,7 @@ main() {
   test_deps_package_tests_skipped
   test_rebuild_summary
   test_test_lifecycle
+  test_test_runner_exact_name
   test_cache_invalidate
   test_profile_change
   test_cache_status
