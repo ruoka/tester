@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, gmf_preamble, module_safe_name, same_basename_collision, nested_deps_skipped, vendored_tester_tests_skipped, rebuild_summary, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
+      echo "cases: profile_header, cache_hit, link_cache_hit, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, rebuild_summary, test_lifecycle, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
       exit 0
       ;;
     *)
@@ -364,6 +364,28 @@ test_same_basename_collision() {
   end_case same_basename_collision
 }
 
+test_reserved_std_collision() {
+  should_run reserved_std_collision || return 0
+  begin_case reserved_std_collision
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  # Project sources named std map onto CB's reserved libc++ std.pcm / std.o paths.
+  printf '%s\n' 'int project_std() { return 1; }' > "${work_dir}/std.c++"
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if run_cb_build "${work_dir}"; then
+    fail "project source std.c++ should fail fast instead of overwriting reserved std.o"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"reserved_std_collision_exit"}'
+  fi
+  assert_jsonl_contains '"type":"cb_error"' "reserved_std_cb_error"
+  assert_jsonl_contains 'Duplicate object path' "reserved_std_duplicate_object"
+  assert_jsonl_contains 'reserved std module object' "reserved_std_object_label"
+  assert_jsonl_contains 'object/module names must stay unique' "reserved_std_uniqueness_hint"
+  end_case reserved_std_collision
+}
+
 test_nested_deps_skipped() {
   should_run nested_deps_skipped || return 0
   begin_case nested_deps_skipped
@@ -613,6 +635,7 @@ main() {
   test_gmf_preamble
   test_module_safe_name
   test_same_basename_collision
+  test_reserved_std_collision
   test_nested_deps_skipped
   test_vendored_tester_tests_skipped
   test_rebuild_summary

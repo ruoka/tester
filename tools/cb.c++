@@ -1685,6 +1685,11 @@ private:
         auto pcm_owners = std::flat_map<std::string, std::string, std::less<>>{};
         auto executable_owners = std::flat_map<std::string, std::string, std::less<>>{};
 
+        // Reserve the libc++ std module artifacts so a project TU named `std`
+        // (std.c++ / export module std;) cannot silently overwrite them.
+        object_owners.emplace(std_obj_path(), "reserved std module object");
+        pcm_owners.emplace(std_pcm_path(), "reserved std module PCM");
+
         for (auto& tu : sorted) {
             // Attach builder-managed artifact paths once we know the full configuration.
             // Keeping them here keeps the translation unit metadata immutable while giving downstream
