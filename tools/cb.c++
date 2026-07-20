@@ -317,6 +317,16 @@ std::string make_base_name(std::string_view filename)
     return std::string{filename};
 }
 
+std::string extract_suffix(std::string_view filename)
+{
+    const auto suffix = std::ranges::find_if(supported_suffixes, [&](std::string_view s) {
+        return filename.ends_with(s);
+    });
+    if(suffix == supported_suffixes.end())
+        throw std::runtime_error{"unsupported source suffix"};
+    return std::string{*suffix};
+}
+
 std::string normalize_relative_dir(const fs::path& dir) {
     if (dir.empty()) return "";
     auto str = dir.string();
@@ -513,17 +523,6 @@ bool translation_unit::match_supported_suffix(std::string_view filename, std::st
     out_suffix.assign(*suffix);
     return true;
 }
-
-namespace detail {
-
-std::string extract_suffix(std::string_view filename) {
-    auto suffix = std::string{};
-    if (not translation_unit::match_supported_suffix(filename, suffix))
-        throw std::runtime_error{"unsupported source suffix"};
-    return suffix;
-}
-
-} // namespace detail
 
 bool translation_unit::is_supported(const fs::path& file_path) {
     auto name = file_path.filename().string();
