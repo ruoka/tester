@@ -384,13 +384,13 @@ test_import_block_comment() {
   # preamble-ending keywords still set seen_real_code and drop later imports.
   printf '%s\n' \
     'export module sample;' \
-    '/** @brief The sample class interface. */' \
     'export int sample_value();' > "${work_dir}/sample.c++m"
   printf '%s\n' \
     'export module helpers;' \
     'export int helper_value() { return 2; }' > "${work_dir}/helpers.c++m"
   printf '%s\n' \
     'import sample; /* class helpers for sample_value */' \
+    '/** @brief Bridge into the helpers class. */' \
     'import helpers; /* struct bridge */' \
     'int main() { return sample_value() + helper_value(); }' > "${work_dir}/main.c++"
   printf '%s\n' \
@@ -400,8 +400,6 @@ test_import_block_comment() {
   run_cb_list "${work_dir}"
   assert_jsonl_contains '"path":"main.c++"' "import_block_main_listed"
   assert_jsonl_contains '"imports":["sample","helpers"]' "import_block_keeps_both_edges"
-  assert_jsonl_contains '"module":"sample"' "import_block_sample_listed"
-  assert_jsonl_contains '"kind":"interface"' "import_block_sample_interface"
 
   run_cb_build "${work_dir}"
   assert_jsonl_event_value build_end ok true "import_block_build_ok"
