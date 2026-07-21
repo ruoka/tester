@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, parallel_main_link, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, import_trailing_comment, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, project_test_dir_included, deps_package_tests_skipped, rebuild_summary, test_lifecycle, test_runner_exact_name, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
+      echo "cases: profile_header, cache_hit, link_cache_hit, parallel_main_link, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, import_trailing_comment, import_block_comment, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, project_test_dir_included, deps_package_tests_skipped, rebuild_summary, test_lifecycle, test_runner_exact_name, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
       exit 0
       ;;
     *)
@@ -371,6 +371,48 @@ test_import_trailing_comment() {
   assert_compile_end "main.c++" false pcm_stale true "import_comment_importer_rebuilt"
   assert_jsonl_contains '"module":"sample"' "import_comment_rebuild_module"
   end_case import_trailing_comment
+}
+
+test_import_block_comment() {
+  should_run import_block_comment || return 0
+  begin_case import_block_comment
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+  rm -f "${work_dir}/hello.c++"
+
+  # Residual of the // fix: /* */ comments (trailing or doc-lines) that mention
+  # preamble-ending keywords still set seen_real_code and drop later imports.
+  printf '%s\n' \
+    'export module sample;' \
+    '/** @brief The sample class interface. */' \
+    'export int sample_value();' > "${work_dir}/sample.c++m"
+  printf '%s\n' \
+    'export module helpers;' \
+    'export int helper_value() { return 2; }' > "${work_dir}/helpers.c++m"
+  printf '%s\n' \
+    'import sample; /* class helpers for sample_value */' \
+    'import helpers; /* struct bridge */' \
+    'int main() { return sample_value() + helper_value(); }' > "${work_dir}/main.c++"
+  printf '%s\n' \
+    'module sample;' \
+    'int sample_value() { return 1; }' > "${work_dir}/sample.impl.c++"
+
+  run_cb_list "${work_dir}"
+  assert_jsonl_contains '"path":"main.c++"' "import_block_main_listed"
+  assert_jsonl_contains '"imports":["sample","helpers"]' "import_block_keeps_both_edges"
+  assert_jsonl_contains '"module":"sample"' "import_block_sample_listed"
+  assert_jsonl_contains '"kind":"interface"' "import_block_sample_interface"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "import_block_build_ok"
+  run_cb_build "${work_dir}"
+  assert_compile_cache_hits 4 "import_block_seed_cache_hits"
+
+  printf '%s\n' '// interface changed' >> "${work_dir}/sample.c++m"
+  run_cb_build "${work_dir}"
+  assert_compile_end "main.c++" false pcm_stale true "import_block_importer_rebuilt"
+  assert_jsonl_contains '"module":"sample"' "import_block_rebuild_module"
+  end_case import_block_comment
 }
 
 test_module_safe_name() {
@@ -843,6 +885,7 @@ main() {
   test_implementation_pcm
   test_dotted_module_name
   test_import_trailing_comment
+  test_import_block_comment
   test_gmf_preamble
   test_module_safe_name
   test_same_basename_collision

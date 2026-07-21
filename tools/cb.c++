@@ -573,13 +573,48 @@ translation_unit parse_translation_unit(const fs::path& project_root, const fs::
     };
 
     bool seen_real_code = false;
+    bool in_block_comment = false;
+
+    // Strip // line comments and /* */ block comments (including spans across lines).
+    // Keywords inside comments must not end the module preamble or invent import edges.
+    auto strip_comments = [&](std::string_view input) -> std::string {
+        auto out = std::string{};
+        out.reserve(input.size());
+        for (std::size_t i = 0; i < input.size();) {
+            if (in_block_comment) {
+                const auto end = input.find("*/", i);
+                if (end == std::string_view::npos)
+                    return out;
+                in_block_comment = false;
+                i = end + 2;
+                continue;
+            }
+            if (i + 1 < input.size() and input[i] == '/' and input[i + 1] == '/')
+                break;
+            if (i + 1 < input.size() and input[i] == '/' and input[i + 1] == '*') {
+                in_block_comment = true;
+                i += 2;
+                continue;
+            }
+            out.push_back(input[i]);
+            ++i;
+        }
+        return out;
+    };
 
     while (std::getline(file, line) and ++lines_scanned < max_lines) {
         auto trimmed = trim(line);
-        if (trimmed.empty() or trimmed.starts_with("//") or trimmed.starts_with("#")) continue;
+        if (trimmed.empty() or trimmed.starts_with("#")) continue;
+        // Fast path for whole-line // comments (still respects open /* */ from prior lines).
+        if (not in_block_comment and trimmed.starts_with("//")) continue;
+
+        auto code_str = strip_comments(trimmed);
+        auto code = trim(code_str);
+        if (code.empty()) continue;
+        code_str.assign(code);
 
         // === ALWAYS CHECK FOR main() — ON EVERY LINE ===
-        if (std::regex_search(line, translation_unit::main_regex)) {
+        if (std::regex_search(code_str, translation_unit::main_regex)) {
             has_main = true;
         }
 
@@ -587,21 +622,21 @@ translation_unit parse_translation_unit(const fs::path& project_root, const fs::
         if (seen_real_code) continue;
 
         std::smatch m;
-        if (std::regex_search(line, m, translation_unit::fragment_regex)) {
+        if (std::regex_search(code_str, m, translation_unit::fragment_regex)) {
             if (kind == unit_kind::non_module) kind = unit_kind::global_fragment;
         }
-        else if (std::regex_search(line, m, translation_unit::export_module_regex) and m.size() > 1) {
+        else if (std::regex_search(code_str, m, translation_unit::export_module_regex) and m.size() > 1) {
             module_name = m[1].str();
             kind = module_name.contains(':') ? unit_kind::partition_unit : unit_kind::interface_unit;
         }
-        else if (std::regex_search(line, m, translation_unit::module_regex) and m.size() > 1) {
+        else if (std::regex_search(code_str, m, translation_unit::module_regex) and m.size() > 1) {
             auto mod = m[1].str();
             if (kind == unit_kind::non_module or kind == unit_kind::global_fragment) {
                 module_name = mod;
                 kind = unit_kind::implementation_unit;
             }
         }
-        else if (std::regex_search(line, m, translation_unit::import_regex) and m.size() > 1) {
+        else if (std::regex_search(code_str, m, translation_unit::import_regex) and m.size() > 1) {
             std::string imp = m[1].str();
             if (not imp.empty() and imp[0] == ':' and not module_name.empty()) {
                 auto colon = module_name.find(':');
@@ -612,17 +647,14 @@ translation_unit parse_translation_unit(const fs::path& project_root, const fs::
         }
 
         // End the preamble only after recording any module/import on this line.
-        // Strip // comments first so `import foo; // class helpers` keeps the edge
-        // and does not also drop later imports on following lines.
+        // Comments are already stripped so `import foo; // class helpers` and
+        // `import foo; /* class helpers */` keep the edge, and doc comments like
+        // `/** @brief The Foo class */` between module/import lines do not drop
+        // later imports (missing edges → stale incremental binaries).
         // Do not end the preamble inside a global module fragment: it may contain braces,
         // keywords, and declarations before the named `export module` / `module` line.
         // Use regex word boundaries to avoid false matches (e.g., "struct" in "structured_log_stream").
         if (kind != unit_kind::global_fragment) {
-            auto code = trimmed;
-            if (const auto comment = code.find("//"); comment != std::string_view::npos)
-                code = trim(code.substr(0, comment));
-            if (code.empty()) continue;
-            auto code_str = std::string{code};
             if (code.contains('{') or
                 std::regex_search(code_str, translation_unit::keyword_regex) or
                 std::regex_search(code_str, translation_unit::using_namespace_regex)) {
