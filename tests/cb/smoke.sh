@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, parallel_main_link, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, project_test_dir_included, deps_package_tests_skipped, rebuild_summary, test_lifecycle, test_runner_exact_name, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
+      echo "cases: profile_header, cache_hit, link_cache_hit, parallel_main_link, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, import_trailing_comment, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, project_test_dir_included, deps_package_tests_skipped, rebuild_summary, test_lifecycle, test_runner_exact_name, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
       exit 0
       ;;
     *)
@@ -330,6 +330,47 @@ test_gmf_preamble() {
   run_cb_build "${work_dir}"
   assert_jsonl_event_value build_end ok true "gmf_preamble_build_ok"
   end_case gmf_preamble
+}
+
+test_import_trailing_comment() {
+  should_run import_trailing_comment || return 0
+  begin_case import_trailing_comment
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+  rm -f "${work_dir}/hello.c++"
+
+  # Trailing // comments that mention preamble-ending keywords (class/struct/...)
+  # used to set seen_real_code before the import on that line was recorded, and
+  # then also drop later imports. That erased the module graph edge so interface
+  # edits no longer rebuilt importers (stale binaries).
+  printf '%s\n' \
+    'export module sample;' \
+    'export int sample_value();' > "${work_dir}/sample.c++m"
+  printf '%s\n' \
+    'export module helpers;' \
+    'export int helper_value() { return 2; }' > "${work_dir}/helpers.c++m"
+  printf '%s\n' \
+    'import sample; // class helpers for sample_value' \
+    'import helpers; // struct bridge' \
+    'int main() { return sample_value() + helper_value(); }' > "${work_dir}/main.c++"
+  printf '%s\n' \
+    'module sample;' \
+    'int sample_value() { return 1; }' > "${work_dir}/sample.impl.c++"
+
+  run_cb_list "${work_dir}"
+  assert_jsonl_contains '"path":"main.c++"' "import_comment_main_listed"
+  assert_jsonl_contains '"imports":["sample","helpers"]' "import_comment_keeps_both_edges"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "import_comment_build_ok"
+  run_cb_build "${work_dir}"
+  assert_compile_cache_hits 4 "import_comment_seed_cache_hits"
+
+  printf '%s\n' '// interface changed' >> "${work_dir}/sample.c++m"
+  run_cb_build "${work_dir}"
+  assert_compile_end "main.c++" false pcm_stale true "import_comment_importer_rebuilt"
+  assert_jsonl_contains '"module":"sample"' "import_comment_rebuild_module"
+  end_case import_trailing_comment
 }
 
 test_module_safe_name() {
@@ -801,6 +842,7 @@ main() {
   test_link_rebuild_reason
   test_implementation_pcm
   test_dotted_module_name
+  test_import_trailing_comment
   test_gmf_preamble
   test_module_safe_name
   test_same_basename_collision
