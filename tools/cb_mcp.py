@@ -60,19 +60,39 @@ def _parse_jsonl(stdout: str) -> list[dict[str, Any]]:
 
 
 def _pick_summary(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    # Prefer test outcome events over build_end: a green build_end is emitted
+    # before test_runner runs, and must not be treated as the command result when
+    # the runner crashes without a `summary` (only a `crash` + CB `test_end`).
     preferred = (
         "summary",
+        "run_end",
+        "test_end",
         "build_end",
         "list_summary",
         "test_list_summary",
         "cache_status",
-        "run_end",
     )
     for kind in preferred:
         for event in reversed(events):
             if event.get("type") == kind:
                 return event
     return events[-1] if events else None
+
+
+def _outcome_ok(summary: dict[str, Any] | None, returncode: int, events: list[dict[str, Any]]) -> bool:
+    """Derive tool ok from JSONL + exit status (never mask a failed exit with build_end.ok)."""
+    if any(event.get("type") == "crash" for event in events):
+        return False
+
+    ok = returncode == 0
+    if isinstance(summary, dict) and "passed" in summary:
+        # Authoritative test aggregate — may disagree with process exit quirks.
+        return bool(summary.get("passed"))
+    if isinstance(summary, dict) and "ok" in summary:
+        # build_end/test_end/cache ok must not report success when the process failed
+        # (e.g. test_runner SIGSEGV after a successful build_end).
+        return bool(summary.get("ok")) and ok
+    return ok
 
 
 def _run_cb(argv_tail: list[str], *, timeout: int | None = None) -> dict[str, Any]:
@@ -114,11 +134,7 @@ def _run_cb(argv_tail: list[str], *, timeout: int | None = None) -> dict[str, An
 
     events = _parse_jsonl(proc.stdout or "")
     summary = _pick_summary(events)
-    ok = proc.returncode == 0
-    if isinstance(summary, dict) and "passed" in summary:
-        ok = bool(summary.get("passed"))
-    elif isinstance(summary, dict) and "ok" in summary:
-        ok = bool(summary.get("ok"))
+    ok = _outcome_ok(summary, proc.returncode, events)
 
     return {
         "ok": ok,

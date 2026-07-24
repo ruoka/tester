@@ -160,6 +160,36 @@ expected = {"cb_list", "cb_build", "cb_test", "cb_test_list", "cb_cache_status"}
 ok(len(tools) == 5, "tools_count_5", f"got {len(tools)}")
 ok(names == expected, "tools_names", f"got {sorted(names)}")
 
+# Pure helpers: test_runner crash after green build must not report ok=true.
+import importlib.util
+
+spec = importlib.util.spec_from_file_location("cb_mcp", MCP_PY)
+assert spec and spec.loader
+cb_mcp = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cb_mcp)
+
+crash_stdout = "\n".join(
+    [
+        '{"schema":"tester-jsonl","type":"build_end","ok":true}',
+        '{"schema":"tester-jsonl","type":"crash","signal":11}',
+        '{"schema":"tester-jsonl","type":"test_end","ok":false,"exit_code":11}',
+        '{"schema":"tester-jsonl","type":"eof"}',
+    ]
+)
+crash_events = cb_mcp._parse_jsonl(crash_stdout)
+crash_summary = cb_mcp._pick_summary(crash_events)
+ok(crash_summary is not None and crash_summary.get("type") == "test_end", "crash_picks_test_end", str(crash_summary))
+ok(
+    cb_mcp._outcome_ok(crash_summary, 11, crash_events) is False,
+    "crash_outcome_not_ok",
+    f"summary={crash_summary}",
+)
+# Defense in depth: even if only build_end were picked, non-zero exit stays failed.
+ok(
+    cb_mcp._outcome_ok({"type": "build_end", "ok": True}, 134, crash_events) is False,
+    "build_end_ok_does_not_mask_crash_exit",
+)
+
 
 def tool(name: str, arguments: dict | None = None) -> dict:
     reply = call("tools/call", {"name": name, "arguments": arguments or {}})
