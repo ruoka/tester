@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "tester-cb": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["${workspaceFolder}/tools/cb_mcp.py"],
+      "env": {
+        "CB_PROJECT_ROOT": "${workspaceFolder}",
+        "CB_MCP_DEFAULT_CONFIG": "debug",
+        "CB_MCP_DEFAULT_TAGS": "[self]"
+      }
+    }
+  }
+}

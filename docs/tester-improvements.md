@@ -235,6 +235,7 @@ Per-project wrappers compile `cb.c++` and invoke it with the right include paths
 ### 6.3 Automation guide
 
 - ✅ `AGENTS.md` at repo root (canonical JSONL commands, triage workflow, event reference for agents/CI).
+- ✅ MCP stdio bridge `tools/cb_mcp.py` + `.cursor/mcp.json` for CB agent tools (`cb_list` / `cb_build` / `cb_test` / …); smoke `./tests/mcp/smoke.sh`.
 - 📋 JSONL assertion event table in README (see §3.1).
 
 ---

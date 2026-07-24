@@ -35,4 +35,7 @@ Makefile.deps
 # Visual Studio Code
 .vscode/
 .vscode-test/
-.cursor/
+.cursor/*
+!.cursor/mcp.json
+**/__pycache__/
+*.py[cod]

@@ -127,6 +127,35 @@ jobs:
           name: cb-smoke-results
           path: cb_smoke.jsonl
 
+  mcp-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Setup LLVM (shared)
+        uses: ./.github/actions/setup-llvm
+
+      - name: Build CB (debug)
+        run: ./tools/CB.sh debug build
+
+      - name: Run MCP CB bridge smoke tests
+        run: |
+          set -euo pipefail
+          ./tests/mcp/smoke.sh --jsonl | tee mcp_smoke.jsonl
+          grep '"type":"smoke_end"' mcp_smoke.jsonl | tail -1 | grep -q '"passed":true'
+
+      - name: Upload MCP smoke results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mcp-smoke-results
+          path: mcp_smoke.jsonl
+
   test-examples:
     runs-on: ubuntu-latest
     timeout-minutes: 15

@@ -262,6 +262,8 @@ Tester emits **JSONL on stdout** (`schema: "tester-jsonl"`) for test runs and CB
 
 **For AI agents and automation**, start with [`AGENTS.md`](AGENTS.md). For a practical assessment and token-efficient workflow, see [Recommendation for AI Coding Agents](docs/ai-agent-recommendation.md).
 
+**MCP (Model Context Protocol):** stdio bridge [`tools/cb_mcp.py`](tools/cb_mcp.py) exposes `cb_list` / `cb_build` / `cb_test` / `cb_test_list` / `cb_cache_status` for Cursor and other IDEs. Config: [`.cursor/mcp.json`](.cursor/mcp.json). Smoke: `./tests/mcp/smoke.sh`. See [AGENTS.md — MCP bridge](AGENTS.md#mcp-bridge-cursor--ides).
+
 ### Canonical commands
 
 ```bash

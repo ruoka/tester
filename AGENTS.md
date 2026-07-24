@@ -223,6 +223,24 @@ Do **not** add defensive parsers or legacy upgrade paths for on-disk formats tha
 
 **When custom code is fine** — topological sort, module graph walks, percent-encoding, and domain-specific cache logic. Do not reimplement `set_difference`, substring search, map membership, or **delimiter-join loops** by hand.
 
+## MCP bridge (Cursor / IDEs)
+
+Stdio MCP server wrapping the canonical CB commands above: [`tools/cb_mcp.py`](tools/cb_mcp.py).
+
+Cursor config: [`.cursor/mcp.json`](.cursor/mcp.json) (`tester-cb`).
+
+| Tool | CB command |
+|------|------------|
+| `cb_list` | `./tools/CB.sh <config> list --jsonl=…` |
+| `cb_build` | `./tools/CB.sh <config> build --jsonl=…` |
+| `cb_test` | `./tools/CB.sh <config> test --jsonl=… [--tags=…] [filter]` |
+| `cb_test_list` | `./tools/CB.sh <config> test --list --jsonl=…` |
+| `cb_cache_status` | `./tools/CB.sh <config> cache status --jsonl=…` |
+
+Tools return **parsed stdout JSONL** (prefer `summary` / `build_end` / `list_summary` / `test_list_summary`), not raw logs. Default tags for `cb_test` are `[self]` (`CB_MCP_DEFAULT_TAGS`); in parent repos set `CB_PROJECT_ROOT` / `CB_SH` / `CB_MCP_DEFAULT_TAGS` (e.g. `[yardb]`).
+
+Smoke: `./tests/mcp/smoke.sh --jsonl`.
+
 ## Do not
 
 - Infer pass/fail from exit code alone — read `summary.passed` or `run_end.passed`
