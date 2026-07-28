@@ -260,6 +260,8 @@ Artifacts land in `build-<os>-<config>/` (`pcm/`, `obj/`, `bin/`, `cache/`). Obj
 
 Tester emits **JSONL on stdout** (`schema: "tester-jsonl"`) for test runs and CB JSONL for builds. Parse stdout only; treat stderr as human wrapper logs.
 
+Every line is valid UTF-8 and valid JSON regardless of what the test data contains: invalid byte sequences in assertion operands are replaced with U+FFFD rather than passed through. The event contract is published as JSON Schema 2020-12 in [`docs/jsonl-schema.json`](docs/jsonl-schema.json); [`tests/jsonl/validate.py`](tests/jsonl/validate.py) runs the canonical commands and validates every emitted line against it.
+
 **For AI agents and automation**, start with [`AGENTS.md`](AGENTS.md). For a practical assessment and token-efficient workflow, see [Recommendation for AI Coding Agents](docs/ai-agent-recommendation.md).
 
 **MCP (Model Context Protocol):** stdio bridge [`tools/cb_mcp.py`](tools/cb_mcp.py) exposes `cb_list` / `cb_build` / `cb_test` / `cb_test_list` / `cb_cache_status` for Cursor and other IDEs. Config: [`.cursor/mcp.json`](.cursor/mcp.json). Smoke: `./tests/mcp/smoke.sh`. See [AGENTS.md — MCP bridge](AGENTS.md#mcp-bridge-cursor--ides).

@@ -27,6 +27,8 @@ Use **`--jsonl=failures`**. Parse **stdout only** (one JSON object per line, `sc
 
 **Tag syntax:** bracket tags must be escaped in shell: `--tags='\[self\]'`. Substring/regex filters also work: `--tags='Test case 3'`.
 
+**Unknown arguments are fatal.** CB exits `2` on an argument it does not recognise, so a typo such as `--tag=` (for `--tags=`) fails loudly instead of silently running the whole suite. Add `--jobs=N` to cap concurrent compile/link processes (default: CPU count).
+
 **Hidden tags:** bracket tags starting with `.` (Catch2-style, e.g. `[.demo]`, `[.jsonl-probe]`) are **skipped on unfiltered runs**. Select explicitly: `--tags='\[.demo\]'`.
 
 **Scoped runs:** Prefer `--tags='\[self\]'` for framework work. Unfiltered standalone `./tools/CB.sh debug test` should report `summary.passed: true` — intentional failure demos in `examples/` use `[.demo]` (hidden unless requested).
@@ -43,10 +45,12 @@ Use **`--jsonl=failures`**. Parse **stdout only** (one JSON object per line, `sc
 1. Find the last `summary` on stdout (`run_end` is trace-only).
 
 2. Check the result:
-   - If `passed` is `true` → this scoped run succeeded. You're done.
-   - If `false`:
-     - Read `first_failure` — `file`, `line`, `message`, and usually the failing `matcher` with `actual` / `expected`. Open the source at that location.
-     - Read `failed_test_ids` for the full failure set.
+ - If `passed` is `true` → this scoped run succeeded. You're done.
+ - If `false`:
+ - Read `first_failure` — `file`, `line`, `message`, and usually the failing `matcher` with `actual` / `expected`. Open the source at that location.
+ - Read `failed_test_ids` for the full failure set.
+
+`tests_ok` counts only tests whose assertions all passed, including non-fatal `check_*` failures, so `tests_ok == tests_total` never contradicts a non-empty `failed_test_ids`. Assertion operands are always valid UTF-8 (invalid bytes in test data become U+FFFD) and strings are reported verbatim; only exception matchers report type names, and those are demangled (`std::runtime_error`, not `St13runtime_error`).
 
 3. For detailed diagnosis, inspect `assertion_failed`:
    - `matcher` — e.g. `require_eq`, `check_contains` (not generic `require` / `check`)
@@ -59,9 +63,11 @@ If `matcher` is `"require"` or `"check"` on a `require_eq` / `check_eq` line, st
 ## Triage workflow (build failure)
 
 1. Find `command_end` with `"ok":false` — use the `argv` array to rerun without shell parsing.
-2. In failures mode, inspect failed `compile_end` and `command_end` events. Use trace mode when successful per-TU cache/rebuild telemetry is needed.
-3. A failed compiler invocation emits `compile_end` with `ok:false`; CB joins the remaining workers before emitting one failed `build_end` and exiting.
-4. Rebuild: `./tools/CB.sh debug build --jsonl=failures`, then re-run tests.
+2. Read `diagnostics.text` on the failed `compile_end` / `link_end` / `command_end`: it holds the compiler or linker output (truncated to 8 KiB, with `diagnostics.path` pointing at the full capture and `truncated` saying whether it was cut). You do not need to rerun the build to see the error.
+3. `exit_code` is the child's own exit code. `wait_status` is the raw `std::system` value, and `signaled` / `signal` distinguish a crashed toolchain process from one that exited non-zero.
+4. In failures mode, inspect failed `compile_end` and `command_end` events. Use trace mode when successful per-TU cache/rebuild telemetry is needed.
+5. A failed compiler invocation emits `compile_end` with `ok:false`; CB joins the remaining workers before emitting one failed `build_end` and exiting.
+6. Rebuild: `./tools/CB.sh debug build --jsonl=failures`, then re-run tests.
 
 ## Event reference (stdout)
 
@@ -93,7 +99,7 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 | `assertion_failed` | Failures and trace modes (`matcher`, `actual`, `expected`, optional `message`) |
 | `assertion_passed` | Trace mode |
 | `test` | Failed tests in failures mode; every test in trace mode |
-| `summary` | `tests_ok`/`tests_total`, `failed_test_ids`, `first_failure` |
+| `summary` | `tests_ok`/`tests_total`, `assertions_ok`/`assertions_total`, `passed`, `failed_test_ids`, `first_failure` |
 | `exception` | Uncaught exceptions (`exception_type`, `message`, `file`, `line`) |
 | `eof` | End of JSONL stream |
 
@@ -105,16 +111,16 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 | `unit` | Per translation unit (`path`, `module`, `kind`, `imports[]`, `level`, `has_main`, `is_test`, `is_modular`) |
 | `list_summary` | Inventory totals (`units_total`, `main_count`, `test_count`, `max_level`) |
 | `build_start` / `build_end` | Whole build; compact modes add aggregate compile/link/cache/failure counts; `rebuild_summary` lists compile rebuilds by `kind` plus `top_modules` |
-| `command_start` / `command_end` | Every command in trace; failed commands only in failures |
+| `command_start` / `command_end` | Every command in trace; failed commands only in failures. `command_end` carries decoded `exit_code` / `wait_status` / `signaled` and, on failure, `diagnostics` |
 | `profile_changed` | Once per build when object-cache profile mismatches (`reason`, `profile_diff`) |
 | `cache_status` | `cache status` subcommand (`object_cache_path`, `profile_match`, entry counts, `current_profile`) |
 | `cache_invalidate_end` | `cache invalidate` subcommand (`object_cache_removed`, `executable_cache_removed`, `compiler_stamp_removed`) |
 | `compile_start` | Per TU in trace mode; on rebuild includes `rebuild_reason`, structured `rebuild`, and `message` |
-| `compile_end` | Per TU in trace; failed compilations only in failures; on `cache_hit:false` includes short `rebuild_reason` + `rebuild` (`kind`, optional `module` / `trigger_path` / `hint` / …) |
-| `link_end` | Per executable in trace; failed links only in failures; relinks include `rebuild_reason` / `rebuild` |
+| `compile_end` | Per TU in trace; failed compilations only in failures; on `cache_hit:false` includes short `rebuild_reason` + `rebuild` (`kind`, optional `module` / `trigger_path` / `hint` / …); on `ok:false` includes `diagnostics` (compiler output) |
+| `link_end` | Per executable in trace; failed links only in failures; relinks include `rebuild_reason` / `rebuild`; on `ok:false` includes `diagnostics` (linker output) |
 | `cb_error` | CB fatal/diagnostic |
 
-**Compile `rebuild_reason` kinds:** `not_in_cache` (first seen), `source_stale` (edited), `object_missing`, `object_stale`, `own_pcm_missing`, `own_pcm_stale`, `pcm_stale`, `dependency_pcm_stale`, `profile_change` (see `profile_changed`; `rebuild.see_event` is `"profile_changed"`). Module name is in `rebuild.module`, not encoded in the reason string.
+**Compile `rebuild_reason` kinds:** `not_in_cache` (first seen), `source_stale` (edited), `header_stale` (an `#include`d header in the project tree is newer than the object, resolved from the compiler depfile — the header is in `rebuild.trigger_path`), `object_missing`, `object_stale`, `own_pcm_missing`, `own_pcm_stale`, `pcm_stale`, `dependency_pcm_stale`, `profile_change` (see `profile_changed`; `rebuild.see_event` is `"profile_changed"`). Module name is in `rebuild.module`, not encoded in the reason string.
 
 **`unit.is_test`:** `true` for `*.test.c++` / `*.test.c++m`, or when a path segment is exactly `test/` or `tests/`. `false` for sources under a `tester/` framework tree (library modules, not project tests) — including nested paths like `deps/xson/deps/tester/`. Does not match the substring `test` inside names such as `tester` or `test_exception_bug`.
 
@@ -245,6 +251,8 @@ Smoke: `./tests/mcp/smoke.sh --jsonl`.
 
 - Infer pass/fail from exit code alone — read `summary.passed` or `run_end.passed`
 - Parse stderr as structured JSONL
+- Rerun a build just to see a compiler error — it is already in `diagnostics.text` on the failed `compile_end`
+- Treat `wait_status` as an exit code — use `exit_code`, and check `signaled` for crashes
 - Use an unfiltered full-suite run as the default fix loop — scope with `--tags='\[self\]'` for framework work
 - Expect `summary.passed: true` on standalone `./tools/CB.sh debug test` (demo failures are `[.demo]` hidden tags)
 - Run `[.tag]` probe fixtures unless explicitly selected (they are hidden by default)
@@ -254,5 +262,6 @@ Smoke: `./tests/mcp/smoke.sh --jsonl`.
 
 ## More detail
 
+- Machine-readable contract: [docs/jsonl-schema.json](docs/jsonl-schema.json) (JSON Schema 2020-12). Validate a live stream with `./tests/jsonl/validate.py`, which runs the canonical commands and checks every line — including a probe that emits non-UTF-8 assertion data.
 - Event fields and examples: [README.md — JSONL sections](README.md#jsonl-assertion-events)
 - Improvement backlog: [docs/tester-improvements.md](docs/tester-improvements.md)

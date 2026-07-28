@@ -89,6 +89,17 @@ jobs:
             fi
           fi
 
+      # Structural jq checks above cannot catch a line that is unparseable, or one
+      # missing a field agents depend on. This validates every line of the canonical
+      # commands against docs/jsonl-schema.json, including a probe that deliberately
+      # emits non-UTF-8 assertion data.
+      - name: Validate JSONL against schema
+        if: matrix.config == 'debug'
+        run: |
+          python3 -m pip install --quiet jsonschema
+          ./tests/jsonl/validate.py --require-schema --jsonl | tee jsonl_validate.jsonl
+          grep '"type":"jsonl_validate_summary"' jsonl_validate.jsonl | tail -1 | grep -q '"passed":true'
+
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: always()

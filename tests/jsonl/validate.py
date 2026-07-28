@@ -14,9 +14,11 @@ deliberately emits non-UTF-8 assertion data) and asserts, for every line:
   - json.loads accepts the line
   - the required envelope fields are present
   - the per-type required fields are present
+  - the line validates against docs/jsonl-schema.json (when jsonschema is
+    installed; skipped with a notice otherwise, so CI works without it)
 
 Usage:
-  ./tests/jsonl/validate.py [--cb PATH] [--jsonl]
+  ./tests/jsonl/validate.py [--cb PATH] [--jsonl] [--require-schema]
 
 Exit status is 0 only when every line of every command validates.
 """
@@ -31,6 +33,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+SCHEMA_PATH = REPO_ROOT / "docs" / "jsonl-schema.json"
 
 ENVELOPE_FIELDS = ("type", "schema", "version", "pid", "ts_unix_ms")
 
@@ -76,7 +79,22 @@ class Failure(Exception):
     pass
 
 
-def validate_stream(label: str, raw: bytes) -> int:
+def load_schema_validator(required: bool):
+    """Return a jsonschema validator, or None when the library is unavailable."""
+    try:
+        from jsonschema import Draft202012Validator
+    except ImportError:
+        if required:
+            raise Failure("jsonschema is not installed but --require-schema was given")
+        print("note: jsonschema not installed, schema checks skipped", file=sys.stderr)
+        return None
+
+    schema = json.loads(SCHEMA_PATH.read_text())
+    Draft202012Validator.check_schema(schema)
+    return Draft202012Validator(schema)
+
+
+def validate_stream(label: str, raw: bytes, validator=None) -> int:
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -106,6 +124,14 @@ def validate_stream(label: str, raw: bytes) -> int:
         if missing:
             raise Failure(
                 f"{label}:{number}: {event['type']} missing fields {missing}")
+
+        if validator is not None:
+            errors = sorted(validator.iter_errors(event), key=lambda e: e.path)
+            if errors:
+                detail = "; ".join(
+                    f"{'/'.join(str(p) for p in e.path) or '<root>'}: {e.message}"
+                    for e in errors[:3])
+                raise Failure(f"{label}:{number}: schema: {detail}")
         lines += 1
 
     if lines == 0:
@@ -118,10 +144,18 @@ def main() -> int:
     parser.add_argument("--cb", default=str(REPO_ROOT / "tools" / "CB.sh"))
     parser.add_argument("--jsonl", action="store_true",
                         help="emit machine-readable results on stdout")
+    parser.add_argument("--require-schema", action="store_true",
+                        help="fail instead of skipping when jsonschema is missing")
     args = parser.parse_args()
 
     failures: list[str] = []
     total_lines = 0
+
+    try:
+        validator = load_schema_validator(args.require_schema)
+    except Failure as exc:
+        print(f"FAIL {exc}", file=sys.stderr)
+        return 1
 
     for label, tail in COMMANDS:
         proc = subprocess.run(
@@ -132,7 +166,7 @@ def main() -> int:
             check=False,
         )
         try:
-            total_lines += validate_stream(label, proc.stdout)
+            total_lines += validate_stream(label, proc.stdout, validator)
             print(f"ok   {label}", file=sys.stderr)
         except Failure as exc:
             failures.append(str(exc))
