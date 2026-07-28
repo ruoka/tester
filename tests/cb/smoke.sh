@@ -470,6 +470,17 @@ test_commented_out_imports() {
   printf '%s\n' \
     'export module literal_scan;' \
     'export const char* text = "import phantom_literal; /* not a comment";' > "${work_dir}/literal_scan.c++m"
+  # Raw strings span lines and embed quotes; the ordinary quote regex stops at either,
+  # so import text inside R"(...)" used to become a real edge.
+  printf '%s\n' \
+    'export module raw_literal_scan;' \
+    'export const char* multi = R"(' \
+    'import phantom_raw_multi;' \
+    ')";' \
+    'export const char* quoted = R"(prefix "import phantom_raw_quote;" suffix)";' \
+    'export const char* delim = R"abc(' \
+    'import phantom_raw_delim;' \
+    ')abc";' > "${work_dir}/raw_literal_scan.c++m"
   printf '%s\n' \
     'import scanned;' \
     'int main() { return scanned_value() - 2; }' > "${work_dir}/main.c++"
@@ -480,6 +491,9 @@ test_commented_out_imports() {
   assert_jsonl_not_contains 'phantom_dead' "commented_imports_no_if_zero_edge"
   assert_jsonl_not_contains 'phantom_nested' "commented_imports_no_nested_if_zero_edge"
   assert_jsonl_not_contains 'phantom_literal' "commented_imports_no_string_literal_edge"
+  assert_jsonl_not_contains 'phantom_raw_multi' "commented_imports_no_raw_string_edge"
+  assert_jsonl_not_contains 'phantom_raw_quote' "commented_imports_no_raw_embedded_quote_edge"
+  assert_jsonl_not_contains 'phantom_raw_delim' "commented_imports_no_raw_custom_delim_edge"
 
   run_cb_build "${work_dir}"
   assert_jsonl_event_value build_end ok true "commented_imports_build_ok"
@@ -590,6 +604,72 @@ test_commented_import_no_false_cycle() {
   assert_jsonl_event_value build_end ok true "false_cycle_build_ok"
   assert_jsonl_not_contains 'Cyclic dependency' "false_cycle_no_cycle_error"
   end_case commented_import_no_false_cycle
+}
+
+test_raw_string_import_no_false_cycle() {
+  should_run raw_string_import_no_false_cycle || return 0
+  begin_case raw_string_import_no_false_cycle
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+  rm -f "${work_dir}/hello.c++"
+
+  # Same false-cycle shape as the comment case, but the phantom lives in a multi-line
+  # raw string. export char const* does not trip keyword_regex, so the preamble stays
+  # open across the literal — without raw-string stripping, cycle_a gains a phantom
+  # edge to cycle_b and the build aborts.
+  printf '%s\n' \
+    'export module cycle_a;' \
+    'export char const* note = R"(' \
+    'import cycle_b;' \
+    ')";' \
+    'export int a_value() { return 1; }' > "${work_dir}/cycle_a.c++m"
+  printf '%s\n' \
+    'export module cycle_b;' \
+    'import cycle_a;' \
+    'export int b_value() { return a_value() + 1; }' > "${work_dir}/cycle_b.c++m"
+  printf '%s\n' \
+    'import cycle_b;' \
+    'int main() { return b_value() == 2 ? 0 : 1; }' > "${work_dir}/main.c++"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "raw_false_cycle_build_ok"
+  assert_jsonl_not_contains 'Cyclic dependency' "raw_false_cycle_no_cycle_error"
+  end_case raw_string_import_no_false_cycle
+}
+
+test_raw_string_if_zero_keeps_live_import() {
+  should_run raw_string_if_zero_keeps_live_import || return 0
+  begin_case raw_string_if_zero_keeps_live_import
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+  rm -f "${work_dir}/hello.c++"
+
+  # A `#if 0` inside a raw string in the global module fragment used to start skip with
+  # no matching `#endif`, so the real `export module` / `import` below were treated as
+  # inactive and the TU was scanned as a non-modular fragment.
+  printf '%s\n' \
+    'module;' \
+    'char const* doc = R"(' \
+    '#if 0' \
+    'snippet' \
+    ')";' \
+    'export module scanned;' \
+    'import helpers;' \
+    'export int scanned_value() { return helper_value(); }' > "${work_dir}/scanned.c++m"
+  printf '%s\n' \
+    'export module helpers;' \
+    'export int helper_value() { return 2; }' > "${work_dir}/helpers.c++m"
+  printf '%s\n' \
+    'import scanned;' \
+    'int main() { return scanned_value() - 2; }' > "${work_dir}/main.c++"
+
+  run_cb_list "${work_dir}"
+  assert_jsonl_contains '"module":"scanned"' "raw_if_zero_module_kept"
+  assert_jsonl_contains '"imports":["helpers"]' "raw_if_zero_live_import_kept"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "raw_if_zero_build_ok"
+  end_case raw_string_if_zero_keeps_live_import
 }
 
 test_module_safe_name() {
@@ -1067,6 +1147,8 @@ main() {
   test_commented_out_imports
   test_dead_conditional_arms
   test_commented_import_no_false_cycle
+  test_raw_string_import_no_false_cycle
+  test_raw_string_if_zero_keeps_live_import
   test_gmf_preamble
   test_module_safe_name
   test_same_basename_collision

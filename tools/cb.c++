@@ -547,6 +547,75 @@ constexpr std::string_view object_cache_format = "cb-object-cache-v3"sv;
 // Comments, string literals and `#if 0` blocks are not declarations, and matching the
 // module regexes against them invents edges in the module graph.
 
+// Raw string literals (`R"(...)"`, `R"delim(... )delim"`, and the u8/u/U/L prefixes)
+// can span lines and embed unescaped quotes. The ordinary quote regex below cannot see
+// either shape: it stops at newlines, and an embedded `"` closes the match early, so
+// `import` text inside a raw string survives as a phantom edge — and a `#if 0` inside
+// one starts skip without a matching `#endif`, dropping later real module/import lines.
+// std::regex also cannot bind the closing delimiter to the opening one portably (libc++
+// rejects a backreference inside the lookahead), so raw strings are peeled with a linear
+// scan first.
+constexpr bool is_identifier_char(char c)
+{
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+           (c >= '0' and c <= '9') or c == '_';
+}
+
+// Length of the encoding-prefix + `R` at `i`, or nullopt when this is not a raw-string
+// token start (e.g. an identifier that merely ends in `R`).
+inline std::optional<std::size_t> raw_string_prefix_length(std::string_view text, std::size_t i)
+{
+    if(i > 0 and is_identifier_char(text[i - 1]))
+        return std::nullopt;
+    const auto rest = text.substr(i);
+    if(rest.starts_with("u8R\""))
+        return 3;
+    if(rest.starts_with("uR\"") or rest.starts_with("UR\"") or rest.starts_with("LR\""))
+        return 2;
+    if(rest.starts_with("R\""))
+        return 1;
+    return std::nullopt;
+}
+
+inline std::string strip_raw_string_literals(std::string_view text)
+{
+    auto out = std::string{};
+    out.reserve(text.size());
+    for(std::size_t i = 0; i < text.size(); )
+    {
+        const auto prefix = raw_string_prefix_length(text, i);
+        if(not prefix)
+        {
+            out.push_back(text[i]);
+            ++i;
+            continue;
+        }
+        // After the prefix comes `"`, then an optional delimiter, then `(`.
+        auto j = i + *prefix + 1;
+        const auto delim_begin = j;
+        while(j < text.size() and text[j] != '(')
+            ++j;
+        if(j >= text.size())
+        {
+            out.append(text.substr(i));
+            break;
+        }
+        const auto delim = text.substr(delim_begin, j - delim_begin);
+        ++j; // skip '('
+        const auto closer = std::string{")"} + std::string{delim} + "\"";
+        const auto pos = text.find(closer, j);
+        if(pos == std::string_view::npos)
+        {
+            out.append(text.substr(i));
+            break;
+        }
+        // Collapse the whole literal to a space so `import` / `#if` text inside cannot match.
+        out.push_back(' ');
+        i = pos + closer.size();
+    }
+    return out;
+}
+
 // One alternation over the whole preamble, because a block comment or a literal can
 // span lines and so cannot be recognised a line at a time. Alternation also gets the
 // interleaving right for free: whichever construct opens first wins, so `"/*"` inside
@@ -557,14 +626,17 @@ constexpr std::string_view object_cache_format = "cb-object-cache-v3"sv;
 // The block-comment branch is the unrolled form (`[^*]*\*+(?:[^/*][^*]*\*+)*/`) rather
 // than a lazy `[\s\S]*?`, and the two quote branches are spelled out rather than sharing
 // a backreference: both avoid the backtracking that made this pass dominate scan time.
+// Raw strings are handled by `strip_raw_string_literals` before this pass runs.
 inline static const std::regex comment_or_literal_regex{
     R"(//[^\n]*|/\*[^*]*\*+(?:[^/*][^*]*\*+)*/|(")(?:[^"\\\n]|\\.)*"|(')(?:[^'\\\n]|\\.)*')"};
 
 inline std::string strip_comments_and_literals(const std::string& text)
 {
-    // Comments collapse to a single space; a literal keeps its delimiters via whichever
-    // quote group matched, so `"import foo;"` cannot register as an edge.
-    return std::regex_replace(text, comment_or_literal_regex, " $1$1$2$2");
+    // Raw strings first (they can embed quotes and newlines), then comments and
+    // ordinary quotes. Comments collapse to a single space; an ordinary literal keeps
+    // its delimiters via whichever quote group matched, so `"import foo;"` cannot
+    // register as an edge.
+    return std::regex_replace(strip_raw_string_literals(text), comment_or_literal_regex, " $1$1$2$2");
 }
 
 // `#if 0` is the commented-out idiom, so its body must be elided wholesale, and the idiom
