@@ -382,6 +382,7 @@ Namespace `tester::assertions` — matching `check_*` (non-fatal) and `require_*
 - `check_eq`, `check_neq`, `check_lt`, `check_lteq`, `check_gt`, `check_gteq`
 - `require_eq`, `require_neq`, `require_lt`, `require_lteq`, `require_gt`, `require_gteq`
 - Floating-point: automatic epsilon comparison; `check_near` / `require_near` for explicit tolerance. The default tolerance is floored at four times the type's machine epsilon, so `float` is compared sensibly rather than against an unreachable `1e-9`
+- `check_neq` is the negation of `check_eq`, so a floating-point pair inside the tolerance is *not* unequal. Ordering (`lt`, `lteq`, `gt`, `gteq`) stays exact
 - Signed against unsigned operands are compared as mathematical values via `std::cmp_*`, so `check_eq(-1, 4294967295u)` fails and `check_lt(-1, 1u)` passes. Comparing through `std::common_type_t` would convert the signed operand and invert both answers
 
 ### Boolean

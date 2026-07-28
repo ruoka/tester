@@ -83,25 +83,36 @@ namespace tester::assertions
         not std::same_as<std::remove_cv_t<T>, char32_t> and
         not std::same_as<std::remove_cv_t<T>, wchar_t>;
 
-    // Comparators mirroring the std ones, differing only in that integers are compared as
-    // mathematical values. Comparing through std::common_type_t converts the signed
-    // operand — common_type_t<int,unsigned> is unsigned, so -1 becomes 4294967295 and
-    // check_eq(-1, 4294967295u) reports equal — and std::equal_to, std::ranges::equal_to
-    // and the built-in operators all convert identically. std::cmp_* is the standard's
-    // answer, but it ships as function templates rather than function objects, so this
-    // thin adaptation is what the matchers need.
+    // Comparators mirroring the std ones, and the single home for every type-dependent
+    // comparison rule, so that each matcher is the same one-line shape: name the
+    // comparator, instantiate it on the common type, pass the operands as written.
     //
-    // Matching signedness needs no special case: std::cmp_equal is then specified as plain
-    // t == u, which makes the integer path exact for every pair. Each call operator is a
-    // template so the operands arrive with their own types, since converting them is the
-    // bug; T drives the ordinary path, which keeps its existing conversion behaviour.
+    //   - floating point compares within an epsilon, for equality only. Ordering stays
+    //     exact, as it is in every framework; check_near takes an explicit tolerance.
+    //   - integers compare as mathematical values through std::cmp_*
+    //   - everything else uses the std comparator on the common type, as before
+    //
+    // Integers are the reason this layer exists. std::common_type_t<int,unsigned> is
+    // unsigned, so comparing through it converted -1 to 4294967295 and check_eq(-1,
+    // 4294967295u) reported equal; std::equal_to, std::ranges::equal_to and the built-in
+    // operators all convert the same way. std::cmp_* answers correctly but ships as
+    // function templates rather than function objects, so this adaptation is what the
+    // matchers need. Matching signedness needs no special case, since std::cmp_equal is
+    // then specified as plain t == u, which makes the integer path exact for every pair.
+    //
+    // Each call operator is a template so the operands arrive with their own types:
+    // converting them is the bug. Conversion to T still happens on the other two paths,
+    // in the parameters of the comparator being delegated to, where it is harmless — a
+    // float widened to the common type is lossless, and it is what the ordinary
+    // comparators did all along.
 
     template<typename T> struct numeric_equal_to
     {
         template<typename A, typename E>
         constexpr bool operator()(A actual, E expected) const
         {
-            if constexpr (comparable_integer<A> and comparable_integer<E>) return std::cmp_equal(actual, expected);
+            if constexpr (both_are_floating_point_v<A,E>) return floating_point_equal<T>{}(actual, expected);
+            else if constexpr (comparable_integer<A> and comparable_integer<E>) return std::cmp_equal(actual, expected);
             else return std::equal_to<T>{}(actual, expected);
         }
     };
@@ -111,7 +122,10 @@ namespace tester::assertions
         template<typename A, typename E>
         constexpr bool operator()(A actual, E expected) const
         {
-            if constexpr (comparable_integer<A> and comparable_integer<E>) return std::cmp_not_equal(actual, expected);
+            // Negating the equality keeps the pair coherent: without this, two values
+            // within the epsilon satisfied check_eq and check_neq at the same time.
+            if constexpr (both_are_floating_point_v<A,E>) return not numeric_equal_to<T>{}(actual, expected);
+            else if constexpr (comparable_integer<A> and comparable_integer<E>) return std::cmp_not_equal(actual, expected);
             else return std::not_equal_to<T>{}(actual, expected);
         }
     };
@@ -186,34 +200,19 @@ namespace tester::assertions
     auto check_eq(A actual, E expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        if constexpr (both_are_floating_point_v<A,E>)
-        {
-            using common_type = std::common_type_t<A, E>;
-            auto comparator = floating_point_equal<common_type>{};
-            return check(comparator, static_cast<common_type>(actual), static_cast<common_type>(expected), location, matcher_location);
-        }
-        else
-        {
-            return check(numeric_equal_to<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
-        }
+        return check(numeric_equal_to<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
     };
 
     export template<typename A, typename E>
     void require_eq(A actual, E expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        if constexpr (both_are_floating_point_v<A,E>)
-        {
-            using common_type = std::common_type_t<A, E>;
-            auto comparator = floating_point_equal<common_type>{};
-            require(comparator, static_cast<common_type>(actual), static_cast<common_type>(expected), location, matcher_location);
-        }
-        else
-        {
-            require(numeric_equal_to<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
-        }
+        require(numeric_equal_to<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
     };
 
+    // Unlike the matchers above, these cast the operands. T is deducible from the epsilon
+    // argument, so check_near(1.0f, 2.0f, 0.1) makes T double while common_type_t<A,E> is
+    // float; the cast is what keeps the operands and the comparator on one type.
     export template<typename A, typename E, typename T = std::common_type_t<A,E>>
     requires std::is_floating_point_v<T>
     auto check_near(A actual, E expected, T epsilon = floating_point_equal<T>::default_epsilon, const std::source_location location = std::source_location::current())
