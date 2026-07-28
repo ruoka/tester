@@ -113,7 +113,7 @@ namespace tester::assertions
     template<typename T> struct numeric_equal_to
     {
         template<typename A, typename E>
-        constexpr bool operator()(A actual, E expected) const
+        constexpr bool operator()(const A& actual, const E& expected) const
         {
             if constexpr (both_are_floating_point_v<A,E>) return floating_point_equal<T>{}(actual, expected);
             else if constexpr (both_are_comparable_integers_v<A,E>) return std::cmp_equal(actual, expected);
@@ -124,7 +124,7 @@ namespace tester::assertions
     template<typename T> struct numeric_not_equal_to
     {
         template<typename A, typename E>
-        constexpr bool operator()(A actual, E expected) const
+        constexpr bool operator()(const A& actual, const E& expected) const
         {
             // The epsilon has to appear here too, negated: while this compared floating
             // point exactly, two values within the tolerance satisfied check_eq and
@@ -138,7 +138,7 @@ namespace tester::assertions
     template<typename T> struct numeric_less
     {
         template<typename A, typename E>
-        constexpr bool operator()(A actual, E expected) const
+        constexpr bool operator()(const A& actual, const E& expected) const
         {
             if constexpr (both_are_comparable_integers_v<A,E>) return std::cmp_less(actual, expected);
             else return std::less<T>{}(actual, expected);
@@ -148,7 +148,7 @@ namespace tester::assertions
     template<typename T> struct numeric_less_equal
     {
         template<typename A, typename E>
-        constexpr bool operator()(A actual, E expected) const
+        constexpr bool operator()(const A& actual, const E& expected) const
         {
             if constexpr (both_are_comparable_integers_v<A,E>) return std::cmp_less_equal(actual, expected);
             else return std::less_equal<T>{}(actual, expected);
@@ -158,7 +158,7 @@ namespace tester::assertions
     template<typename T> struct numeric_greater
     {
         template<typename A, typename E>
-        constexpr bool operator()(A actual, E expected) const
+        constexpr bool operator()(const A& actual, const E& expected) const
         {
             if constexpr (both_are_comparable_integers_v<A,E>) return std::cmp_greater(actual, expected);
             else return std::greater<T>{}(actual, expected);
@@ -168,16 +168,25 @@ namespace tester::assertions
     template<typename T> struct numeric_greater_equal
     {
         template<typename A, typename E>
-        constexpr bool operator()(A actual, E expected) const
+        constexpr bool operator()(const A& actual, const E& expected) const
         {
             if constexpr (both_are_comparable_integers_v<A,E>) return std::cmp_greater_equal(actual, expected);
             else return std::greater_equal<T>{}(actual, expected);
         }
     };
 
+    // Operands are taken by forwarding reference and only ever read: the comparator and
+    // the publisher both take them by const reference, so nothing is forwarded onward and
+    // nothing is consumed. By value copied each operand once per layer, which ruled out
+    // move-only types entirely. A plain const A& would not do, because deduction against
+    // it drops the const of a string literal's element type — A becomes char[4], whose
+    // common type is char*, which cannot hold the const char* the literal decays to.
+    // std::common_type_t already decays, so it yields the same T the by-value parameters
+    // did, and every comparator still sees exactly the type it saw before.
+
     // Non-fatal assertion helper (check_*)
     export template<template <typename> class M, typename A, typename E>
-    auto check(M<std::common_type_t<A,E>> match, A actual, E expected, const std::source_location location = std::source_location::current(), const std::source_location matcher_location = std::source_location::current())
+    auto check(M<std::common_type_t<A,E>> match, A&& actual, E&& expected, const std::source_location location = std::source_location::current(), const std::source_location matcher_location = std::source_location::current())
     {
         ++data::statistics().total_assertions;
         const auto ok = match(actual,expected);
@@ -188,7 +197,7 @@ namespace tester::assertions
 
     // Fatal assertion helper (require_*)
     export template<template <typename> class M, typename A, typename E>
-    void require(M<std::common_type_t<A,E>> match, A actual, E expected, const std::source_location location = std::source_location::current(), const std::source_location matcher_location = std::source_location::current())
+    void require(M<std::common_type_t<A,E>> match, A&& actual, E&& expected, const std::source_location location = std::source_location::current(), const std::source_location matcher_location = std::source_location::current())
     {
         ++data::statistics().total_assertions;
         const auto ok = match(actual,expected);
@@ -202,17 +211,17 @@ namespace tester::assertions
 
     // Equality and relational assertions (paired non-fatal/fatal helpers)
     export template<typename A, typename E>
-    auto check_eq(A actual, E expected, const std::source_location location = std::source_location::current())
+    auto check_eq(A&& actual, E&& expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        return check(numeric_equal_to<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        return check(numeric_equal_to<std::common_type_t<A,E>>{},std::forward<A>(actual),std::forward<E>(expected),location,matcher_location);
     };
 
     export template<typename A, typename E>
-    void require_eq(A actual, E expected, const std::source_location location = std::source_location::current())
+    void require_eq(A&& actual, E&& expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        require(numeric_equal_to<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        require(numeric_equal_to<std::common_type_t<A,E>>{},std::forward<A>(actual),std::forward<E>(expected),location,matcher_location);
     };
 
     // Unlike the matchers above, these cast the operands. T is deducible from the epsilon
@@ -220,7 +229,7 @@ namespace tester::assertions
     // float; the cast is what keeps the operands and the comparator on one type.
     export template<typename A, typename E, typename T = std::common_type_t<A,E>>
     requires std::is_floating_point_v<T>
-    auto check_near(A actual, E expected, T epsilon = floating_point_equal<T>::default_epsilon, const std::source_location location = std::source_location::current())
+    auto check_near(A&& actual, E&& expected, T epsilon = floating_point_equal<T>::default_epsilon, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
         auto comparator = floating_point_equal<T>{epsilon};
@@ -229,7 +238,7 @@ namespace tester::assertions
 
     export template<typename A, typename E, typename T = std::common_type_t<A,E>>
     requires std::is_floating_point_v<T>
-    void require_near(A actual, E expected, T epsilon = floating_point_equal<T>::default_epsilon, const std::source_location location = std::source_location::current())
+    void require_near(A&& actual, E&& expected, T epsilon = floating_point_equal<T>::default_epsilon, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
         auto comparator = floating_point_equal<T>{epsilon};
@@ -237,73 +246,73 @@ namespace tester::assertions
     };
 
     export template<typename A, typename E>
-    auto check_neq(A actual, E expected, const std::source_location location = std::source_location::current())
+    auto check_neq(A&& actual, E&& expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        return check(numeric_not_equal_to<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        return check(numeric_not_equal_to<std::common_type_t<A,E>>{},std::forward<A>(actual),std::forward<E>(expected),location,matcher_location);
     };
 
     export template<typename A, typename E>
-    void require_neq(A actual, E expected, const std::source_location location = std::source_location::current())
+    void require_neq(A&& actual, E&& expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        require(numeric_not_equal_to<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        require(numeric_not_equal_to<std::common_type_t<A,E>>{},std::forward<A>(actual),std::forward<E>(expected),location,matcher_location);
     };
 
     export template<typename A, typename E>
-    auto check_lt(A actual, E expected, const std::source_location location = std::source_location::current())
+    auto check_lt(A&& actual, E&& expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        return check(numeric_less<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        return check(numeric_less<std::common_type_t<A,E>>{},std::forward<A>(actual),std::forward<E>(expected),location,matcher_location);
     };
 
     export template<typename A, typename E>
-    void require_lt(A actual, E expected, const std::source_location location = std::source_location::current())
+    void require_lt(A&& actual, E&& expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        require(numeric_less<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        require(numeric_less<std::common_type_t<A,E>>{},std::forward<A>(actual),std::forward<E>(expected),location,matcher_location);
     };
 
     export template<typename A, typename E>
-    auto check_lteq(A actual, E expected, const std::source_location location = std::source_location::current())
+    auto check_lteq(A&& actual, E&& expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        return check(numeric_less_equal<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        return check(numeric_less_equal<std::common_type_t<A,E>>{},std::forward<A>(actual),std::forward<E>(expected),location,matcher_location);
     };
 
     export template<typename A, typename E>
-    void require_lteq(A actual, E expected, const std::source_location location = std::source_location::current())
+    void require_lteq(A&& actual, E&& expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        require(numeric_less_equal<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        require(numeric_less_equal<std::common_type_t<A,E>>{},std::forward<A>(actual),std::forward<E>(expected),location,matcher_location);
     };
 
     export template<typename A, typename E>
-    auto check_gt(A actual, E expected, const std::source_location location = std::source_location::current())
+    auto check_gt(A&& actual, E&& expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        return check(numeric_greater<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        return check(numeric_greater<std::common_type_t<A,E>>{},std::forward<A>(actual),std::forward<E>(expected),location,matcher_location);
     };
 
     export template<typename A, typename E>
-    void require_gt(A actual, E expected, const std::source_location location = std::source_location::current())
+    void require_gt(A&& actual, E&& expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        require(numeric_greater<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        require(numeric_greater<std::common_type_t<A,E>>{},std::forward<A>(actual),std::forward<E>(expected),location,matcher_location);
     };
 
     export template<typename A, typename E>
-    auto check_gteq(A actual, E expected, const std::source_location location = std::source_location::current())
+    auto check_gteq(A&& actual, E&& expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        return check(numeric_greater_equal<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        return check(numeric_greater_equal<std::common_type_t<A,E>>{},std::forward<A>(actual),std::forward<E>(expected),location,matcher_location);
     };
 
     export template<typename A, typename E>
-    void require_gteq(A actual, E expected, const std::source_location location = std::source_location::current())
+    void require_gteq(A&& actual, E&& expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        require(numeric_greater_equal<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        require(numeric_greater_equal<std::common_type_t<A,E>>{},std::forward<A>(actual),std::forward<E>(expected),location,matcher_location);
     };
 
     export auto check_true(bool actual, const std::source_location location = std::source_location::current())
@@ -539,25 +548,25 @@ namespace tester::assertions
         require_throws_as<E>(std::forward<decltype(t)>(t), location);
     }
 
-    export auto message(const bool ok, auto msg, const std::source_location location = std::source_location::current())
+    export auto message(const bool ok, auto&& msg, const std::source_location location = std::source_location::current())
     {
         publisher::message(ok,msg,location);
     }
 
-    export auto succeed(auto msg, const std::source_location location = std::source_location::current())
+    export auto succeed(auto&& msg, const std::source_location location = std::source_location::current())
     {
         ++data::statistics().total_assertions;
         ++data::statistics().successful_assertions;
         message(true,msg,location);
     }
 
-    export auto failed(auto msg, const std::source_location location = std::source_location::current())
+    export auto failed(auto&& msg, const std::source_location location = std::source_location::current())
     {
         ++data::statistics().total_assertions;
         message(false,msg,location);
     }
 
-    export auto warning(auto msg, const std::source_location location = std::source_location::current())
+    export auto warning(auto&& msg, const std::source_location location = std::source_location::current())
     {
         message(true,msg,location);
     }

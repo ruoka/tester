@@ -250,7 +250,7 @@ observed_value observe_value(const V& val)
                 }
                 else
                 {
-                    return std::string{typeid(std::decay_t<decltype(pointed)>).name()};
+                    return demangle_type(typeid(std::decay_t<decltype(pointed)>));
                 }
             };
             value = format_pointer(*val);
@@ -280,7 +280,9 @@ observed_value observe_value(const V& val)
     }
     else
     {
-        value = typeid(T).name();
+        // A type the framework cannot print is reported by name, and a mangled name is
+        // not a name anyone reads: exception types already go through demangle_type.
+        value = demangle_type(typeid(T));
     }
 
     return observed_value{value_to_display_string(val), std::move(value), kind};
