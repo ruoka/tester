@@ -25,7 +25,8 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, parallel_main_link, compile_start, source_stale, header_stale, strict_arguments, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, import_trailing_comment, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, project_test_dir_included, deps_package_tests_skipped, rebuild_summary, test_lifecycle, test_runner_exact_name, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
+      # Read from the cases themselves; the hand-written list had already gone stale.
+      echo "cases: $(grep -oE '^  should_run [a-z_]+' "${BASH_SOURCE[0]}" | awk '{print $2}' | paste -sd, - | sed 's/,/, /g')"
       exit 0
       ;;
     *)
@@ -483,6 +484,83 @@ test_commented_out_imports() {
   run_cb_build "${work_dir}"
   assert_jsonl_event_value build_end ok true "commented_imports_build_ok"
   end_case commented_out_imports
+}
+
+test_dead_conditional_arms() {
+  should_run dead_conditional_arms || return 0
+  begin_case dead_conditional_arms
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+  rm -f "${work_dir}/hello.c++"
+
+  # `#if 0` has more spellings than the bare constant, and the scanner recognised only
+  # the bare one: parentheses hid the constant, a short-circuited operand made the
+  # directive match nothing at all — leaving its body live and the `#endif` depth off by
+  # one — and every `#elif` revived the region, dead condition or not. Each one leaks a
+  # phantom edge, and the whole point is that dead branches are where you park the import
+  # you no longer use.
+  printf '%s\n' \
+    'export module scanned;' \
+    '#if (0)' \
+    'import phantom_paren;' \
+    '#endif' \
+    '#if ((false))' \
+    'import phantom_double_paren;' \
+    '#endif' \
+    '#if 0 && OLD_FEATURE' \
+    'import phantom_and;' \
+    '#endif' \
+    '#if false && ALSO_OLD' \
+    'import phantom_false_and;' \
+    '#endif' \
+    '#if 0&&TIGHT' \
+    'import phantom_tight;' \
+    '#endif' \
+    '#if 0' \
+    'import phantom_first_arm;' \
+    '#elif 0' \
+    'import phantom_elif;' \
+    '#endif' \
+    '#if 1' \
+    'import helpers;' \
+    '#elif 0' \
+    'import phantom_elif_after_live;' \
+    '#endif' \
+    '#if 0' \
+    'import phantom_before_live_arm;' \
+    '#elif 1' \
+    'import extras;' \
+    '#endif' \
+    'export int scanned_value() { return helper_value() + extra_value(); }' > "${work_dir}/scanned.c++m"
+  printf '%s\n' \
+    'export module helpers;' \
+    'export int helper_value() { return 2; }' > "${work_dir}/helpers.c++m"
+  printf '%s\n' \
+    'export module extras;' \
+    'export int extra_value() { return 3; }' > "${work_dir}/extras.c++m"
+  printf '%s\n' \
+    'import scanned;' \
+    'int main() { return scanned_value() - 5; }' > "${work_dir}/main.c++"
+
+  run_cb_list "${work_dir}"
+  # Both live imports sit in taken arms of the same conditionals that hold the phantoms,
+  # so they pin the other half of the contract: elide the dead arm, keep the live one.
+  assert_jsonl_contains '"imports":["helpers","extras"]' "dead_arms_live_edges_kept"
+  assert_jsonl_not_contains 'phantom_paren' "dead_arms_no_paren_edge"
+  assert_jsonl_not_contains 'phantom_double_paren' "dead_arms_no_double_paren_edge"
+  assert_jsonl_not_contains 'phantom_and' "dead_arms_no_short_circuit_edge"
+  assert_jsonl_not_contains 'phantom_false_and' "dead_arms_no_false_short_circuit_edge"
+  assert_jsonl_not_contains 'phantom_tight' "dead_arms_no_unspaced_short_circuit_edge"
+  assert_jsonl_not_contains 'phantom_first_arm' "dead_arms_no_first_arm_edge"
+  assert_jsonl_not_contains 'phantom_elif' "dead_arms_no_dead_elif_edge"
+  assert_jsonl_not_contains 'phantom_elif_after_live' "dead_arms_no_dead_elif_after_live_edge"
+  assert_jsonl_not_contains 'phantom_before_live_arm' "dead_arms_no_arm_before_live_elif_edge"
+
+  # The build proves the surviving edges are the right ones: `scanned` calls into both
+  # modules, so it only compiles if both were ordered ahead of it.
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "dead_arms_build_ok"
+  end_case dead_conditional_arms
 }
 
 test_commented_import_no_false_cycle() {
@@ -987,6 +1065,7 @@ main() {
   test_dotted_module_name
   test_import_trailing_comment
   test_commented_out_imports
+  test_dead_conditional_arms
   test_commented_import_no_false_cycle
   test_gmf_preamble
   test_module_safe_name
