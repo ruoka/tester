@@ -28,12 +28,17 @@ auto& make_test_case(std::string_view description, int priority, std::vector<std
         return false;
     };
 
-    if(drop_prefix("behavior_driven_development::"))
-        ;
-    else if(drop_prefix("basic::"))
-        ;
-    else
-        std::terminate();
+    // Strip the qualification of the registering wrapper, leaving the bare name
+    // (test_case, section, scenario, given, when, then) for the display name.
+    // Registration only ever comes from tester::basic or
+    // tester::behavior_driven_development; a wrapper added elsewhere degrades to its
+    // own unqualified name rather than aborting the process.
+    if(not drop_prefix("behavior_driven_development::") and not drop_prefix("basic::"))
+    {
+        const auto paren = test_type.find('(');
+        if(const auto pos = test_type.rfind("::", paren); pos != std::string_view::npos)
+            test_type.remove_prefix(pos + 2);
+    }
 
     if(const auto paren = test_type.find('('); paren != std::string_view::npos)
         test_type.remove_suffix(test_type.length() - paren);

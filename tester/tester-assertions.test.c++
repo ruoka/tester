@@ -143,7 +143,7 @@ auto register_tests()
         check_eq(0.5, 0.5 + 5e-9);        // absolute tolerance exceeded below 1.0
         check_eq(1e6, 1e6 + 1e-2);        // relative tolerance exceeded above 1.0
         check_eq(std::nan(""), 1.0);      // NaN never equals a number
-        check_eq(1.0f + 1e-6f, 1.0f);     // see float note below
+        check_eq(1.0f + 1e-6f, 1.0f);     // ~8 ulps of float, past the default tolerance
     };
 
     test_case("test_case [self] check_eq on floating point is approximate") = []
@@ -170,14 +170,20 @@ auto register_tests()
         require_eq(field(failure(result.stdout_text, 4), "matcher"), std::string{"\"check_eq\""});
     };
 
-    test_case("test_case [self] the default epsilon does not scale with the type") = []
+    test_case("test_case [self] the default epsilon scales with the type") = []
     {
-        // Pins current behaviour rather than endorsing it: the default epsilon is a
-        // fixed 1e-9 for every floating-point type, which is far below float's
-        // machine epsilon (~1.19e-7). Two floats differing by 1e-6 — a handful of
-        // ulps, ordinary float rounding error — are therefore reported unequal.
-        // Scaling the default by std::numeric_limits<T>::epsilon() would change this
-        // assertion; use check_near with an explicit tolerance for float today.
+        // The default is floored at four times the type's machine epsilon, so float
+        // gets a usable ~4.77e-7 tolerance instead of an unreachable 1e-9. One ulp of
+        // float rounding error compares equal.
+        require_eq(1.0f + 1e-7f, 1.0f);
+
+        // The floor does not loosen the wider types: their machine epsilon is well
+        // below 1e-9, so double keeps the historical default.
+        require_eq(0.5, 0.5 + 5e-10);
+        require_eq(1e6, 1e6 + 1e-4);
+
+        // Tolerance is bounded, not permissive: the probe's ~8 ulp float difference
+        // is still reported as a failure.
         const auto result = probe("[.probe-float]");
         const auto line = failure(result.stdout_text, 5);
         require_false(line.empty());
@@ -221,17 +227,28 @@ auto register_tests()
     {
         check_nothrow([] { throw std::runtime_error{"boom"}; });
         check_throws([] {});
-        check_throws_as([] { throw std::logic_error{"wrong type"}; }, std::runtime_error{"x"});
-        check_throws_as([] {}, std::runtime_error{"x"});
+        check_throws_as<std::runtime_error>([] { throw std::logic_error{"wrong type"}; });
+        check_throws_as<std::runtime_error>([] {});
     };
 
     test_case("test_case [self] exception matchers on the happy path") = []
     {
         require_nothrow([] {});
         require_throws([] { throw std::runtime_error{"expected"}; });
-        require_throws_as([] { throw std::out_of_range{"expected"}; }, std::out_of_range{"x"});
+        require_throws_as<std::out_of_range>([] { throw std::out_of_range{"expected"}; });
         // A derived exception satisfies a base-class expectation.
-        require_throws_as([] { throw std::out_of_range{"derived"}; }, std::logic_error{"x"});
+        require_throws_as<std::logic_error>([] { throw std::out_of_range{"derived"}; });
+    };
+
+    test_case("test_case [self] the deprecated throws_as instance form still works") = []
+    {
+        // Kept so consumers pinning an older tester keep compiling; the exception
+        // argument is discarded and only its type is used.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        require_throws_as([] { throw std::out_of_range{"x"}; }, std::out_of_range{"unused"});
+        check_throws_as([] { throw std::runtime_error{"x"}; }, std::runtime_error{"unused"});
+#pragma clang diagnostic pop
     };
 
     test_case("test_case [self] exception matchers name the matcher and reason") = []

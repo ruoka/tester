@@ -36,7 +36,10 @@ namespace tester::assertions
     requires std::is_floating_point_v<T>
     struct floating_point_equal
     {
-        static constexpr T default_epsilon = T{1e-9};
+        // A flat 1e-9 is unreachable for float, whose machine epsilon (~1.19e-7) is
+        // larger: a few ulps of ordinary rounding error would compare unequal. Floor
+        // the default at four ulps; double and long double keep the historical 1e-9.
+        static constexpr T default_epsilon = std::max(T{1e-9}, std::numeric_limits<T>::epsilon() * T{4});
         
         explicit floating_point_equal(T epsilon = default_epsilon) : m_epsilon(epsilon) {}
         
@@ -301,10 +304,9 @@ namespace tester::assertions
     }
 
     export template<typename E>
-    auto check_throws_as(auto&& t, E exception, const std::source_location location = std::source_location::current())
+    auto check_throws_as(auto&& t, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        static_cast<void>(exception);
         auto ok = true;
         auto actual = std::string{"?"};
         const auto expected = output::demangle_type(typeid(E));
@@ -329,6 +331,15 @@ namespace tester::assertions
         }
         data::statistics().successful_assertions += ok;
         publisher::assertion(ok, actual, expected, location, matcher_location, ok ? ""sv : throws_as_failure_message(actual));
+    }
+
+    // Deprecated: the exception argument was only ever used to deduce E, forcing
+    // callers to construct a throwaway object whose value was discarded.
+    export template<typename E>
+    [[deprecated("name the exception type instead: check_throws_as<E>(callable)")]]
+    auto check_throws_as(auto&& t, E, const std::source_location location = std::source_location::current())
+    {
+        return check_throws_as<E>(std::forward<decltype(t)>(t), location);
     }
 
     // Fatal exception assertions (require_*)
@@ -390,10 +401,9 @@ namespace tester::assertions
     }
 
     export template<typename E>
-    void require_throws_as(auto&& t, E exception, const std::source_location location = std::source_location::current())
+    void require_throws_as(auto&& t, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        static_cast<void>(exception);
         auto actual = std::string{"?"};
         const auto expected = output::demangle_type(typeid(E));
         try
@@ -426,6 +436,14 @@ namespace tester::assertions
             publisher::assertion(false, actual, expected, location, matcher_location, msg_wrong_exception_type);
             throw assertion_failure{"Assertion failed: expected exception of type " + std::string{expected}};
         }
+    }
+
+    // Deprecated: see check_throws_as above.
+    export template<typename E>
+    [[deprecated("name the exception type instead: require_throws_as<E>(callable)")]]
+    void require_throws_as(auto&& t, E, const std::source_location location = std::source_location::current())
+    {
+        require_throws_as<E>(std::forward<decltype(t)>(t), location);
     }
 
     export auto message(const bool ok, auto msg, const std::source_location location = std::source_location::current())

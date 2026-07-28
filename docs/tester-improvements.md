@@ -127,6 +127,7 @@ Machine-parseable test and build output for CI and automation. Human output rema
 - ✅ Structured `rebuild` object on compile/link events (`kind`, `module`, paths, `hint`, `message`, optional `see_event`) plus `build_end.rebuild_summary` (`by kind` counts + `top_modules`).
 - ✅ `profile_changed` event with `profile_diff` on profile mismatch (scalar fields + token diff on `compile`/`cpp`; not repeated on each `compile_end`).
 - ✅ Compact CB modes suppress successful command/TU events and enrich `build_end` with compile/link/cache/failure totals.
+- 📋 Surface compiler **warnings** from successful compiles. `diagnostics` is only attached when `ok:false`, so warnings on a TU that compiles reach neither stdout JSONL nor stderr — a project can accumulate them invisibly. Verified by replaying a `command_start` argv by hand: clang reports the warning, CB reports nothing.
 
 ### 3.7 Recommended automation invocation
 

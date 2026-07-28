@@ -387,9 +387,10 @@ Namespace `tester::assertions` — matching `check_*` (non-fatal) and `require_*
 - `check_true`, `check_false`, `require_true`, `require_false`
 
 ### Exceptions
-- `check_nothrow`, `check_throws`, `check_throws_as`
-- `require_nothrow`, `require_throws`, `require_throws_as`
-- `require_throws_as<ExceptionType>(callable)`
+- `check_nothrow`, `check_throws`, `require_nothrow`, `require_throws`
+- `check_throws_as<ExceptionType>(callable)`, `require_throws_as<ExceptionType>(callable)`
+- A derived exception satisfies a base-class expectation
+- Passing an exception *instance* (`require_throws_as(callable, E{"..."})`) is deprecated — the value was always discarded; name the type instead
 
 ### Containers & strings
 - `check_container_eq`, `require_container_eq`
