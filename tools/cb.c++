@@ -441,6 +441,56 @@ std::string binary_signature(const std::string& path)
     return std::to_string(size) + ':' + std::to_string(ticks);
 }
 
+// Make-style depfile (clang -MMD -MF): `target: prereq prereq \<newline> prereq`.
+// Spaces inside a path are backslash-escaped; a trailing backslash continues the line.
+// Returns prerequisites only — the target and the source itself are handled elsewhere.
+string_list parse_depfile(const std::string& path)
+{
+    auto file = std::ifstream{path};
+    if(not file)
+        return {};
+
+    auto text = std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+    if(const auto colon = text.find(':'); colon != std::string::npos)
+        text.erase(0, colon + 1);
+    else
+        return {};
+
+    auto prerequisites = string_list{};
+    auto current = std::string{};
+    const auto flush = [&]
+    {
+        if(not current.empty())
+            prerequisites.push_back(std::exchange(current, std::string{}));
+    };
+
+    for(auto index = std::size_t{}; index < text.size(); ++index)
+    {
+        const auto ch = text[index];
+        if(ch == '\\' and index + 1 < text.size())
+        {
+            const auto next = text[index + 1];
+            // Line continuation: the backslash and the newline both vanish.
+            if(next == '\n' or next == '\r')
+            {
+                flush();
+                continue;
+            }
+            // Escaped literal (most often `\ ` in a path).
+            current.push_back(next);
+            ++index;
+            continue;
+        }
+        if(std::isspace(static_cast<unsigned char>(ch)) != 0)
+            flush();
+        else
+            current.push_back(ch);
+    }
+    flush();
+
+    return prerequisites;
+}
+
 std::string read_first_line(const std::string& path)
 {
     auto file = std::ifstream{path};
@@ -1067,6 +1117,8 @@ private:
                 return "Source path not present in object cache for this config.";
             case output::rebuild_kind::source_stale:
                 return "Source mtime newer than cached compile timestamp.";
+            case output::rebuild_kind::header_stale:
+                return "An included header is newer than this object (from the compiler depfile).";
             case output::rebuild_kind::object_missing:
                 return "Object file missing on disk.";
             case output::rebuild_kind::object_stale:
@@ -1111,6 +1163,8 @@ private:
                 if(not info.trigger_path.empty() and info.trigger_path != tu.full_path)
                     return "Rebuilding " + label + " because dependency " + info.trigger_path + " is newer than its cached object";
                 return "Rebuilding " + label + " because source is newer than the cached object";
+            case output::rebuild_kind::header_stale:
+                return "Rebuilding " + label + " because included header " + info.trigger_path + " is newer than its object";
             case output::rebuild_kind::pcm_stale:
                 return "Rebuilding " + label + " because PCM " + info.module + " is newer than the object (import graph)";
             case output::rebuild_kind::dependency_pcm_stale:
@@ -1232,10 +1286,23 @@ private:
         return argv;
     }
 
+    // Header dependencies live next to the object file. Written by the step that
+    // actually reads the source: --precompile for modular units, -c otherwise.
+    std::string depfile_path(const translation_unit& tu) const
+    {
+        return tu.object_path + ".d";
+    }
+
+    string_list depfile_argv(const translation_unit& tu) const
+    {
+        return string_list{"-MMD", "-MF", depfile_path(tu)};
+    }
+
     string_list precompile_argv(const translation_unit& tu) const
     {
         auto argv = base_compile_argv();
         argv.append_range(module_flags);
+        argv.append_range(depfile_argv(tu));
         argv.push_back(tu.full_path);
         argv.push_back("--precompile");
         argv.push_back("-o");
@@ -1260,6 +1327,7 @@ private:
     {
         auto argv = base_compile_argv();
         argv.append_range(module_flags);
+        argv.append_range(depfile_argv(tu));
         if (tu.kind == unit_kind::implementation_unit) {
             auto module_pcm = compute_pcm_path(tu);
             argv.push_back(detail::module_file_flag(tu.module, module_pcm));
@@ -1518,6 +1586,27 @@ private:
         return false;
     }
 
+    // Prerequisites are restricted to the project tree: toolchain headers change as a
+    // unit and are already covered by the object-cache profile (cxx_sig / clang_ver),
+    // so scanning them here would only add thousands of stat calls per build.
+    std::optional<std::string> stale_header(const translation_unit& tu,
+                                            fs::file_time_type object_timestamp) const
+    {
+        for(const auto& prerequisite : detail::parse_depfile(depfile_path(tu)))
+        {
+            if(prerequisite == tu.full_path or not prerequisite.starts_with(source_dir))
+                continue;
+
+            auto error = std::error_code{};
+            const auto timestamp = fs::last_write_time(prerequisite, error);
+            if(error)
+                continue;
+            if(timestamp > object_timestamp)
+                return prerequisite;
+        }
+        return std::nullopt;
+    }
+
     std::optional<output::rebuild_info> needs_recompile(const translation_unit& tu, object_cache_map& c, const unit_to_tu_map& u2tu) const {
         // First-seen path for this config vs edited source after a prior compile.
         if (not c.contains(tu.full_path)) {
@@ -1535,6 +1624,11 @@ private:
         auto object_timestamp = fs::last_write_time(tu.object_path);
         if (object_timestamp < c.at(tu.full_path))
             return make_rebuild(output::rebuild_kind::object_stale, {}, {}, tu.full_path);
+
+        // Textual #include dependencies are invisible to the module graph, so the
+        // compiler's own depfile is the only record of them.
+        if (auto header = stale_header(tu, object_timestamp))
+            return make_rebuild(output::rebuild_kind::header_stale, {}, {}, *header);
 
         // Implementation units consume their interface PCM implicitly through
         // -fmodule-file=<module>=<pcm>, even when they do not import that module.

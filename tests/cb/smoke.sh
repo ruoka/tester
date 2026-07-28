@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, parallel_main_link, compile_start, source_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, import_trailing_comment, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, project_test_dir_included, deps_package_tests_skipped, rebuild_summary, test_lifecycle, test_runner_exact_name, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
+      echo "cases: profile_header, cache_hit, link_cache_hit, parallel_main_link, compile_start, source_stale, header_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, import_trailing_comment, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, project_test_dir_included, deps_package_tests_skipped, rebuild_summary, test_lifecycle, test_runner_exact_name, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
       exit 0
       ;;
     *)
@@ -152,6 +152,33 @@ test_source_stale() {
   assert_jsonl_contains '"hint":"Source mtime newer than cached compile timestamp."' "edited_source_hint"
   assert_rebuild_summary source_stale 1 "" "edited_source_summary"
   end_case source_stale
+}
+
+test_header_stale() {
+  should_run header_stale || return 0
+  begin_case header_stale
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  # A textual #include is invisible to the module graph; only the compiler depfile
+  # records it. Without -MMD tracking this edit rebuilt nothing.
+  printf '%s\n' '#pragma once' 'inline int header_value() { return 1; }' > "${work_dir}/value.h++"
+  printf '%s\n' '#include "value.h++"' 'int main() { return header_value() - 1; }' > "${work_dir}/hello.c++"
+
+  run_cb_build "${work_dir}"
+  run_cb_build "${work_dir}"
+  assert_compile_cache_hits 1 "header_stale_seed_cache_hit"
+
+  printf '%s\n' '// touched header' >> "${work_dir}/value.h++"
+  run_cb_build "${work_dir}"
+  assert_compile_end "hello.c++" false header_stale true "edited_header_rebuild"
+  assert_jsonl_contains '"rebuild":{"kind":"header_stale"' "edited_header_rebuild_object"
+  assert_jsonl_contains '"trigger_path":' "edited_header_trigger_path"
+  assert_rebuild_summary header_stale 1 "" "edited_header_summary"
+
+  run_cb_build "${work_dir}"
+  assert_compile_cache_hits 1 "header_stale_settles_to_cache_hit"
+  end_case header_stale
 }
 
 test_source_list() {
@@ -835,6 +862,7 @@ main() {
   test_parallel_main_link
   test_compile_start
   test_source_stale
+  test_header_stale
   test_source_list
   test_compile_failure
   test_link_failure
