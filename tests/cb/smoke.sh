@@ -669,8 +669,8 @@ test_spliced_string_import() {
     'int main() { return b_value() == 2 ? 0 : 1; }' > "${work_dir}/main.c++"
 
   run_cb_list "${work_dir}"
-  assert_jsonl_contains '"module":"cycle_a","imports":[]' "spliced_string_no_phantom_edge"
-  assert_jsonl_not_contains '"module":"cycle_a","imports":["cycle_b"]' "spliced_string_no_cycle_a_imports_b"
+  assert_jsonl_contains '"module":"cycle_a","kind":"interface_unit","imports":[]' "spliced_string_no_phantom_edge"
+  assert_jsonl_not_contains '"module":"cycle_a","kind":"interface_unit","imports":["cycle_b"]' "spliced_string_no_cycle_a_imports_b"
 
   run_cb_build "${work_dir}"
   assert_jsonl_event_value build_end ok true "spliced_string_build_ok"
