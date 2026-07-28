@@ -132,6 +132,54 @@ auto register_tests()
         require_lt(1, 2.5);
     };
 
+    test_case("test_case [.probe-signedness] mixed-signedness failures") = []
+    {
+        check_eq(-1, 4294967295u);   // equal only after -1 converts to unsigned
+        check_neq(1, 1u);            // equal as values, so neq must fail
+        check_gt(-1, 1u);            // -1 is not greater than 1
+        check_gteq(-1, 0u);          // nor greater or equal
+        check_lt(1u, -1);            // 1 is not less than -1
+    };
+
+    test_case("test_case [self] mixed-signedness comparisons compare values") = []
+    {
+        // std::common_type_t<int,unsigned> is unsigned, so comparing through it
+        // converts a negative operand: -1 became 4294967295. These matchers route
+        // mixed signedness through std::cmp_*, which compares mathematical values.
+        require_lt(-1, 1u);
+        require_lteq(-1, 0u);
+        require_neq(-1, 4294967295u);
+        require_gt(1u, -1);
+
+        // Equal values still compare equal across signedness, including the common
+        // container-size idiom where an unsigned size meets a signed literal.
+        require_eq(1, 1u);
+        require_eq(std::vector<int>{1, 2, 3}.size(), 3);
+        require_eq(-1, -1);
+
+        // Same-signedness comparisons are untouched, including the unsigned extreme.
+        require_eq(4294967295u, 4294967295u);
+        require_lt(0u, 4294967295u);
+
+        // Types excluded from std::cmp_* still compile and behave: bool and the
+        // character types are not signed or unsigned integer types.
+        require_eq('a', 'a');
+        require_true(true);
+        require_eq(static_cast<unsigned char>(1), 1);
+
+        const auto result = probe("[.probe-signedness]");
+        require_neq(result.exit_code, 0);
+        const auto matchers = std::vector<std::string>{
+            "\"check_eq\"", "\"check_neq\"", "\"check_gt\"",
+            "\"check_gteq\"", "\"check_lt\""};
+        for(auto index = std::size_t{0}; index < matchers.size(); ++index)
+            require_eq(field(failure(result.stdout_text, index), "matcher"), matchers[index]);
+
+        // Operands are reported as written, not as converted.
+        require_eq(field(failure(result.stdout_text, 0), "actual"), std::string{"-1"});
+        require_eq(field(failure(result.stdout_text, 0), "expected"), std::string{"4294967295"});
+    };
+
     // ========================================================================
     // Floating point
     // ========================================================================

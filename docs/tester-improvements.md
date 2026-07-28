@@ -46,7 +46,7 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 
 ### 1.7 Comparison semantics & argument passing
 
-- 📋 **Mixed-signedness comparisons pass silently.** `check_eq` compares through `std::equal_to<std::common_type_t<A,E>>`, and `std::common_type_t<int, unsigned>` is `unsigned`, so `check_eq(-1, 4294967295u)` converts both operands and reports them **equal**. Prefer the `std::cmp_equal` / `std::cmp_less` family, which compares mathematical values: that makes the comparison *correct* rather than rejecting it with a `static_assert`.
+- ✅ Mixed-signedness comparisons compare mathematical values. Comparing through `std::common_type_t<int, unsigned>` (which is `unsigned`) converted the signed operand, so `check_eq(-1, 4294967295u)` reported **equal** and `check_lt(-1, 1u)` reported **not less**. The six relational matchers now route mixed signedness through the `std::cmp_*` family, which is correct rather than rejecting the comparison with a `static_assert`. Equal values still match across signedness, so `require_eq(v.size(), 3)` keeps working; same-signedness comparisons are untouched; and `bool` plus the character types stay on the ordinary path because `std::cmp_*` is ill-formed for them. Operands are still reported as written, not as converted.
 - 📋 Assertions take operands **by value**, copying every argument and rejecting move-only types. Take `const&` and drop the `std::common_type_t` requirement in favour of transparent comparators. Same plumbing as the item above — worth doing together.
 
 ### 1.8 Matcher naming
@@ -335,8 +335,7 @@ Ordered by consequence, not by effort. Items marked **verified** were reproduced
 
 | Priority | Item | Rationale |
 |----------|------|-----------|
-| **High** | Mixed-signedness comparisons (§1.7) | **Verified:** `check_eq(-1, 4294967295u)` passes. A framework that silently passes a wrong test is the worst available failure mode — same class as the `tests_ok` false positive already fixed |
-| Medium | `const&` assertion operands (§1.7) | Copies every operand and rejects move-only types; same plumbing as mixed-signedness, so do them together |
+| **High** | `const&` assertion operands (§1.7) | Copies every operand and rejects move-only types outright; now the largest remaining gap in the comparison plumbing |
 | Medium | Warnings from successful compiles are invisible (§3.6) | **Verified:** clang reports them, CB attaches them to no event, so they reach neither JSONL nor stderr — warnings accumulate unnoticed |
 | Medium | Unresolved `depends_on` / duplicate test ids (§2.3) | Silently ignored today, so a typo'd dependency looks like a passing run |
 | Medium | JUnit XML observer (§3.8) | Cheap against the existing observer contract; unlocks CI test UIs |
