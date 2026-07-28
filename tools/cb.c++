@@ -903,6 +903,27 @@ output::source_unit source_unit_of(const translation_unit& tu)
             .is_modular = tu.is_modular};
 }
 
+// The third projection: every module-artefact reason (own_pcm_missing, own_pcm_stale,
+// pcm_stale, dependency_pcm_stale) names the same three things about the unit whose module
+// triggered it — which is this unit for the own_ reasons and an imported one for the others.
+// Callers have already established that the unit is modular, since that is what made the
+// reason apply.
+output::rebuild_info pcm_rebuild(output::rebuild_kind kind, const translation_unit& tu)
+{
+    return {.kind = kind, .module = tu.module, .pcm_path = tu.pcm_path, .trigger_path = tu.full_path};
+}
+
+// A reason travelling up from a dependency keeps its own trigger — the header or source that
+// actually changed — and names the dependency only for the fields it left blank.
+output::rebuild_info attributed_to(output::rebuild_info reason, const translation_unit& tu)
+{
+    if(reason.trigger_path.empty())
+        reason.trigger_path = tu.full_path;
+    if(reason.module.empty())
+        reason.module = tu.module;
+    return reason;
+}
+
 using dependency_graph = std::flat_map<std::string, string_list, std::less<>>;
 using indegree_map = std::flat_map<std::string, int, std::less<>>;
 using unit_to_tu_map = std::flat_map<std::string, translation_unit*, std::less<>>;
@@ -1677,11 +1698,13 @@ private:
         }
     }
 
-    bool any_transitive_pcm_newer_than_object(const translation_unit& tu,
-                                              fs::file_time_type object_timestamp,
-                                              const unit_to_tu_map& u2tu,
-                                              std::flat_set<std::string>& visited,
-                                              output::rebuild_info& stale) const
+    // The reason is the return value: a bool plus an out-parameter that only means something
+    // when it is true is what optional says. visited stays a parameter — it is the walk's own
+    // state, shared across the recursion rather than an answer travelling back.
+    std::optional<output::rebuild_info> transitive_pcm_newer_than_object(const translation_unit& tu,
+                                                                        fs::file_time_type object_timestamp,
+                                                                        const unit_to_tu_map& u2tu,
+                                                                        std::flat_set<std::string>& visited) const
     {
         for (const auto& dependency_key : tu.imports) {
             if (not u2tu.contains(dependency_key))
@@ -1689,24 +1712,18 @@ private:
 
             const auto& dep_tu = *u2tu.at(dependency_key);
 
-            if (dep_tu.is_modular && fs::exists(dep_tu.pcm_path)) {
-                if (fs::last_write_time(dep_tu.pcm_path) > object_timestamp) {
-                    stale = output::rebuild_info{.kind = output::rebuild_kind::pcm_stale,
-                                                 .module = dep_tu.module,
-                                                 .pcm_path = dep_tu.pcm_path,
-                                                 .trigger_path = dep_tu.full_path};
-                    return true;
-                }
-            }
+            if (dep_tu.is_modular && fs::exists(dep_tu.pcm_path)
+                && fs::last_write_time(dep_tu.pcm_path) > object_timestamp)
+                return pcm_rebuild(output::rebuild_kind::pcm_stale, dep_tu);
 
             if (visited.contains(dep_tu.unit))
                 continue;
             visited.insert(dep_tu.unit);
 
-            if (any_transitive_pcm_newer_than_object(dep_tu, object_timestamp, u2tu, visited, stale))
-                return true;
+            if (auto stale = transitive_pcm_newer_than_object(dep_tu, object_timestamp, u2tu, visited))
+                return stale;
         }
-        return false;
+        return std::nullopt;
     }
 
     // Prerequisites are restricted to the project tree: toolchain headers change as a
@@ -1770,46 +1787,26 @@ private:
         {
             const auto& interface = *u2tu.at(tu.module);
             if(not fs::exists(interface.pcm_path))
-                return output::rebuild_info{.kind = output::rebuild_kind::dependency_pcm_stale,
-                                            .module = interface.module,
-                                            .pcm_path = interface.pcm_path,
-                                            .trigger_path = interface.full_path};
+                return pcm_rebuild(output::rebuild_kind::dependency_pcm_stale, interface);
             if(fs::last_write_time(interface.pcm_path) > object_timestamp)
-                return output::rebuild_info{.kind = output::rebuild_kind::pcm_stale,
-                                            .module = interface.module,
-                                            .pcm_path = interface.pcm_path,
-                                            .trigger_path = interface.full_path};
+                return pcm_rebuild(output::rebuild_kind::pcm_stale, interface);
             if(auto interface_reason = needs_recompile(interface, cache, u2tu))
-            {
-                auto info = *interface_reason;
-                if(info.trigger_path.empty())
-                    info.trigger_path = interface.full_path;
-                if(info.module.empty())
-                    info.module = interface.module;
-                return info;
-            }
+                return attributed_to(*interface_reason, interface);
         }
 
         // For modular units, also check if .pcm file is stale
         if (tu.is_modular) {
             if (not fs::exists(tu.pcm_path))
-                return output::rebuild_info{.kind = output::rebuild_kind::own_pcm_missing,
-                                            .module = tu.module,
-                                            .pcm_path = tu.pcm_path,
-                                            .trigger_path = tu.full_path};
+                return pcm_rebuild(output::rebuild_kind::own_pcm_missing, tu);
             auto pcm_timestamp = fs::last_write_time(tu.pcm_path);
             if (pcm_timestamp < tu.last_modified)
-                return output::rebuild_info{.kind = output::rebuild_kind::own_pcm_stale,
-                                            .module = tu.module,
-                                            .pcm_path = tu.pcm_path,
-                                            .trigger_path = tu.full_path};
+                return pcm_rebuild(output::rebuild_kind::own_pcm_stale, tu);
         }
 
         // Rebuild when any transitive import PCM is newer than this object file.
         // Catches partition updates (e.g. tester:assertions) for test TUs that import an umbrella module.
         auto visited = std::flat_set<std::string>{};
-        auto stale = output::rebuild_info{};
-        if (any_transitive_pcm_newer_than_object(tu, object_timestamp, u2tu, visited, stale))
+        if (auto stale = transitive_pcm_newer_than_object(tu, object_timestamp, u2tu, visited))
             return stale;
 
         // Rebuild if any imported modules have changed (their .pcm files are stale or they need recompiling)
@@ -1820,22 +1817,12 @@ private:
                 if (dep_tu.is_modular) {
                     if (not fs::exists(dep_tu.pcm_path) or 
                         fs::last_write_time(dep_tu.pcm_path) < dep_tu.last_modified) {
-                        return output::rebuild_info{.kind = output::rebuild_kind::dependency_pcm_stale,
-                                                    .module = dep_tu.module,
-                                                    .pcm_path = dep_tu.pcm_path,
-                                                    .trigger_path = dep_tu.full_path};
+                        return pcm_rebuild(output::rebuild_kind::dependency_pcm_stale, dep_tu);
                     }
                 }
                 // Also recursively check if the imported module needs recompiling
                 if (auto dep_reason = needs_recompile(dep_tu, cache, u2tu))
-                {
-                    auto info = *dep_reason;
-                    if(info.trigger_path.empty())
-                        info.trigger_path = dep_tu.full_path;
-                    if(info.module.empty() and not dep_tu.module.empty())
-                        info.module = dep_tu.module;
-                    return info;
-                }
+                    return attributed_to(*dep_reason, dep_tu);
             }
         }
 
