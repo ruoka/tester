@@ -45,6 +45,14 @@ export std::string demangle(std::string_view name)
     return std::string{name};
 }
 
+// Demangle at the point where a type name is produced. Applying demangle() later, to
+// whatever string reaches the reporting layer, corrupts ordinary test data that
+// happens to look like a mangled symbol.
+export std::string demangle_type(const std::type_info& info)
+{
+    return demangle(info.name());
+}
+
 // Bracket tags from scenario/test names, e.g. "scenario [fixer][board] ..." → ["fixer", "board"]
 export std::vector<std::string> extract_bracket_tags(std::string_view test_name)
 {
@@ -163,12 +171,15 @@ std::string value_to_display_string(const V& val)
     using T = std::remove_cvref_t<V>;
     auto stream = std::ostringstream{};
 
+    // Strings are reported verbatim. Demangling here rewrote any test data shaped
+    // like a mangled symbol — "_ZNSt6vectorIiEC1Ev" was displayed as
+    // "std::vector<int>::vector()" — silently misreporting what the test compared.
     if constexpr (std::is_same_v<T, std::string>)
-        stream << demangle(val);
+        stream << val;
     else if constexpr (std::is_same_v<T, std::string_view>)
-        stream << demangle(val);
+        stream << val;
     else if constexpr (std::is_same_v<T, const char*> || std::is_same_v<T, char*>)
-        stream << demangle(val != nullptr ? std::string_view{val} : std::string_view{"nullptr"});
+        stream << (val != nullptr ? std::string_view{val} : std::string_view{"nullptr"});
     else if constexpr (std::is_pointer_v<T>)
     {
         if(val != nullptr)

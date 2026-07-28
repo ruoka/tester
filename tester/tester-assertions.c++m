@@ -5,6 +5,7 @@
 export module tester:assertions;
 import :publisher;
 import :data;
+import :utils;
 import std;
 
 namespace tester::assertions
@@ -253,7 +254,7 @@ namespace tester::assertions
     {
         const auto matcher_location = std::source_location::current();
         auto ok = true;
-        auto actual = "none"sv;
+        auto actual = std::string{"none"};
         const auto expected = "none"sv;
         try
         {
@@ -263,7 +264,7 @@ namespace tester::assertions
         catch(const std::exception& e)
         {
             ok = not ok;
-            actual = typeid(e).name();
+            actual = output::demangle_type(typeid(e));
         }
         catch(...)
         {
@@ -278,7 +279,7 @@ namespace tester::assertions
     {
         const auto matcher_location = std::source_location::current();
         auto ok = true;
-        auto actual = "?"sv;
+        auto actual = std::string{"?"};
         const auto expected = "any"sv;
         try
         {
@@ -289,7 +290,7 @@ namespace tester::assertions
         }
         catch(const std::exception& e)
         {
-            actual = typeid(e).name();
+            actual = output::demangle_type(typeid(e));
         }
         catch(...)
         {
@@ -305,8 +306,8 @@ namespace tester::assertions
         const auto matcher_location = std::source_location::current();
         static_cast<void>(exception);
         auto ok = true;
-        auto actual = "?"sv;
-        const auto expected = typeid(E).name();
+        auto actual = std::string{"?"};
+        const auto expected = output::demangle_type(typeid(E));
         try
         {
             ++data::statistics().total_assertions;
@@ -315,12 +316,12 @@ namespace tester::assertions
         }
         catch(const E&)
         {
-            actual = typeid(E).name();
+            actual = output::demangle_type(typeid(E));
         }
         catch(const std::exception& e)
         {
             ok = not ok;
-            actual = typeid(e).name();
+            actual = output::demangle_type(typeid(e));
         }
         catch(...)
         {
@@ -334,7 +335,7 @@ namespace tester::assertions
     export void require_nothrow(auto&& t, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        auto actual = "none"sv;
+        auto actual = std::string{"none"};
         const auto expected = "none"sv;
         try
         {
@@ -345,7 +346,7 @@ namespace tester::assertions
         }
         catch(const std::exception& e)
         {
-            actual = typeid(e).name();
+            actual = output::demangle_type(typeid(e));
             publisher::assertion(false, actual, expected, location, matcher_location, msg_expected_no_exception);
             throw assertion_failure{"Assertion failed: expected no exception"};
         }
@@ -360,7 +361,7 @@ namespace tester::assertions
     export void require_throws(auto&& t, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        auto actual = "?"sv;
+        auto actual = std::string{"?"};
         const auto expected = "any"sv;
         try
         {
@@ -376,7 +377,7 @@ namespace tester::assertions
         }
         catch(const std::exception& e)
         {
-            actual = typeid(e).name();
+            actual = output::demangle_type(typeid(e));
             ++data::statistics().successful_assertions;
             publisher::assertion(true,actual,expected,location,matcher_location);
         }
@@ -393,8 +394,8 @@ namespace tester::assertions
     {
         const auto matcher_location = std::source_location::current();
         static_cast<void>(exception);
-        auto actual = "?"sv;
-        const auto expected = typeid(E).name();
+        auto actual = std::string{"?"};
+        const auto expected = output::demangle_type(typeid(E));
         try
         {
             ++data::statistics().total_assertions;
@@ -409,13 +410,13 @@ namespace tester::assertions
         }
         catch(const E&)
         {
-            actual = typeid(E).name();
+            actual = output::demangle_type(typeid(E));
             ++data::statistics().successful_assertions;
             publisher::assertion(true,actual,expected,location,matcher_location);
         }
         catch(const std::exception& e)
         {
-            actual = typeid(e).name();
+            actual = output::demangle_type(typeid(e));
             publisher::assertion(false, actual, expected, location, matcher_location, msg_wrong_exception_type);
             throw assertion_failure{"Assertion failed: expected exception of type " + std::string{expected} + " but got " + std::string{actual}};
         }

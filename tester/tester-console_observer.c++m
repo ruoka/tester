@@ -158,12 +158,14 @@ export struct observer final : tester::output::observer
     {
         using T = std::remove_cvref_t<V>;
 
+        // Verbatim: see value_to_display_string in tester:utils. Type names are
+        // demangled by the matcher that produces them, not by the reporting layer.
         if constexpr (std::is_same_v<T, std::string>)
-            stream << demangle_impl(val);
+            stream << val;
         else if constexpr (std::is_same_v<T, std::string_view>)
-            stream << demangle_impl(std::string{val});
+            stream << val;
         else if constexpr (std::is_same_v<T, const char*> || std::is_same_v<T, char*>)
-            stream << demangle_impl(val != nullptr ? std::string{val} : std::string{"nullptr"});
+            stream << (val != nullptr ? std::string_view{val} : std::string_view{"nullptr"});
         else if constexpr (std::is_pointer_v<T>)
             stream << (val != nullptr ? val : "nullptr");
         else if constexpr (std::is_enum_v<T>)
