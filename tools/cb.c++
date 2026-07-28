@@ -567,11 +567,12 @@ inline std::string strip_comments_and_literals(const std::string& text)
     return std::regex_replace(text, comment_or_literal_regex, " $1$1$2$2");
 }
 
-// `#if 0` is the commented-out idiom, so its body must be elided wholesale. Nesting is
-// the one part a regex cannot express — balanced delimiters are not a regular language
-// — so the regex recognises directives and the depth is counted. Genuine conditionals
-// are deliberately left alone: over-approximating an `#ifdef` by scanning both branches
-// costs a spurious edge, while guessing which branch is live risks dropping a real one.
+// `#if 0` / `#elif 0` is the commented-out idiom, so dead arms must be elided wholesale.
+// Nesting is the one part a regex cannot express — balanced delimiters are not a regular
+// language — so the regex recognises directives and the depth is counted. Genuine
+// conditionals are deliberately left alone: over-approximating an `#ifdef` by scanning
+// both branches costs a spurious edge, while guessing which branch is live risks
+// dropping a real one.
 class conditional_filter
 {
 public:
@@ -612,7 +613,13 @@ private:
         }
         else if(name == "else" or name == "elif")
         {
-            if(skipping and m_if_depth == m_skip_depth)
+            // `#if 0` / `#elif 0` / `#elif false` is the multi-arm commented-out
+            // idiom. Clearing skip on every `#elif` would revive the next arm's
+            // body and invent module edges (and false cycles) from dead imports.
+            // Stay in the skip region across known-false `#elif` arms; leave it
+            // only for `#else` or an `#elif` whose condition is not a known false.
+            if(skipping and m_if_depth == m_skip_depth
+               and not (name == "elif" and (condition == "0" or condition == "false")))
                 m_skip_depth = 0;
         }
     }

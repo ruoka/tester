@@ -458,6 +458,8 @@ test_commented_out_imports() {
     '#if 1' \
     'import phantom_nested;' \
     '#endif' \
+    '#elif 0' \
+    'import phantom_elif;' \
     '#endif' \
     'import helpers; // struct bridge must survive' \
     'export int scanned_value() { return helper_value(); }' > "${work_dir}/scanned.c++m"
@@ -478,6 +480,7 @@ test_commented_out_imports() {
   assert_jsonl_not_contains 'phantom_block' "commented_imports_no_block_comment_edge"
   assert_jsonl_not_contains 'phantom_dead' "commented_imports_no_if_zero_edge"
   assert_jsonl_not_contains 'phantom_nested' "commented_imports_no_nested_if_zero_edge"
+  assert_jsonl_not_contains 'phantom_elif' "commented_imports_no_elif_zero_edge"
   assert_jsonl_not_contains 'phantom_literal' "commented_imports_no_string_literal_edge"
 
   run_cb_build "${work_dir}"
@@ -499,6 +502,11 @@ test_commented_import_no_false_cycle() {
   printf '%s\n' \
     'export module cycle_a;' \
     '/* import cycle_b; */' \
+    '#if 0' \
+    'import never_taken;' \
+    '#elif 0' \
+    'import cycle_b;' \
+    '#endif' \
     'export int a_value() { return 1; }' > "${work_dir}/cycle_a.c++m"
   printf '%s\n' \
     'export module cycle_b;' \
