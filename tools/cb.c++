@@ -560,8 +560,13 @@ constexpr std::string_view object_cache_format = "cb-object-cache-v3"sv;
 // The block-comment branch is the unrolled form (`[^*]*\*+(?:[^/*][^*]*\*+)*/`) rather
 // than a lazy `[\s\S]*?`, and the two quote branches are spelled out rather than sharing
 // a backreference: both avoid the backtracking that made this pass dominate scan time.
+// Ordinary strings also admit a physical backslash-newline splice (`"…\<newline>…"`): that
+// is translation phase 2, which CB never runs, and ECMAScript `.` does not match `\n`, so
+// a plain `\\.` escape arm stops at the splice and leaves the rest of the literal — and any
+// `import` it spells — as live text. `\\(?:\r?\n|.)` consumes the splice the same way it
+// consumes `\n` / `\"`, so the whole continued literal collapses in one match.
 inline static const std::regex comment_or_literal_regex{
-    R"(//[^\n]*|/\*[^*]*\*+(?:[^/*][^*]*\*+)*/|(")(?:[^"\\\n]|\\.)*"|(')(?:[^'\\\n]|\\.)*')"};
+    R"(//[^\n]*|/\*[^*]*\*+(?:[^/*][^*]*\*+)*/|(")(?:[^"\\\n]|\\(?:\r?\n|.))*"|(')(?:[^'\\\n]|\\(?:\r?\n|.))*')"};
 
 inline std::string strip_comments_and_literals(const std::string& text)
 {

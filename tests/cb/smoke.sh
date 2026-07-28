@@ -641,6 +641,43 @@ test_commented_import_no_false_cycle() {
   end_case commented_import_no_false_cycle
 }
 
+test_spliced_string_import() {
+  should_run spliced_string_import || return 0
+  begin_case spliced_string_import
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+  rm -f "${work_dir}/hello.c++"
+
+  # Ordinary string literals can span physical lines via a backslash-newline splice
+  # (translation phase 2). CB never runs that phase, and the quote regex's `\\.` arm
+  # stops at the newline (ECMAScript `.` does not match it), so the continued body —
+  # including an `import` spelling — used to survive as a phantom module edge. Same
+  # false-cycle shape as a commented-out import, different literal.
+  # Keep the preamble open: `const` / `char` are not in keyword_regex.
+  printf '%s\n' \
+    'export module cycle_a;' \
+    'export char const* note = "\' \
+    'import cycle_b;\' \
+    '";' \
+    'export int a_value() { return 1; }' > "${work_dir}/cycle_a.c++m"
+  printf '%s\n' \
+    'export module cycle_b;' \
+    'import cycle_a;' \
+    'export int b_value() { return a_value() + 1; }' > "${work_dir}/cycle_b.c++m"
+  printf '%s\n' \
+    'import cycle_b;' \
+    'int main() { return b_value() == 2 ? 0 : 1; }' > "${work_dir}/main.c++"
+
+  run_cb_list "${work_dir}"
+  assert_jsonl_contains '"module":"cycle_a","imports":[]' "spliced_string_no_phantom_edge"
+  assert_jsonl_not_contains '"module":"cycle_a","imports":["cycle_b"]' "spliced_string_no_cycle_a_imports_b"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "spliced_string_build_ok"
+  assert_jsonl_not_contains 'Cyclic dependency' "spliced_string_no_cycle_error"
+  end_case spliced_string_import
+}
+
 test_module_safe_name() {
   should_run module_safe_name || return 0
   begin_case module_safe_name
@@ -1117,6 +1154,7 @@ main() {
   test_commented_out_imports
   test_dead_conditional_arms
   test_commented_import_no_false_cycle
+  test_spliced_string_import
   test_gmf_preamble
   test_module_safe_name
   test_same_basename_collision
