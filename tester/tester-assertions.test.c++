@@ -284,6 +284,14 @@ auto register_tests()
         require_neq(legacy_flag::minus_one, 4294967295u);
         require_eq(legacy_flag::two, 2u);
 
+        // A wide character operand is comparable and reportable at all only because it is
+        // promoted: C++20 deleted the narrow stream inserters these types used to reach.
+        // 0x161 is also the value an unsigned char cast would truncate to 'a', which is why
+        // the printable test asks about the code point and not about a byte.
+        require_eq(char16_t{0x161}, char16_t{0x161});
+        require_neq(char16_t{0x161}, 97u);
+        require_eq(L'a', 97u);
+
         // An enumeration measured against its own type keeps the comparison the type
         // provides, which promoting both sides would bypass. This one counts every call.
         require_eq(sloppy_enum::a, sloppy_enum::b);
