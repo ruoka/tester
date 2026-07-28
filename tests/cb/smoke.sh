@@ -446,9 +446,9 @@ test_commented_out_imports() {
   rm -f "${work_dir}/hello.c++"
 
   # The scanner matched module regexes against raw lines, so text that is not code
-  # became real edges: an import inside a block comment, inside `#if 0`, or inside a
-  # string literal. Comments and literals can span lines, and `#if 0` bodies do not
-  # start with `#`, so none of them are visible one line at a time.
+  # became real edges: an import inside a block comment, inside `#if 0` / `#elif 0`, or
+  # inside a string literal. Comments and literals can span lines, and `#if 0` bodies do
+  # not start with `#`, so none of them are visible one line at a time.
   printf '%s\n' \
     'export module scanned;' \
     '/* import phantom_block;' \
