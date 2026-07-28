@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <format>
@@ -20,27 +21,91 @@
 
 namespace jsonl {
 
+// Length of the well-formed UTF-8 sequence starting at index, or 0 if the bytes
+// there are not valid UTF-8. Rejects overlong encodings, surrogates, and anything
+// above U+10FFFF, so the result is always a legal JSON string body.
+inline std::size_t utf8_sequence_length(std::string_view sv, std::size_t index)
+{
+    const auto byte = static_cast<unsigned char>(sv[index]);
+
+    auto length = std::size_t{0};
+    auto code_point = 0u;
+    if(byte < 0x80)
+        return 1;
+    else if((byte & 0xe0) == 0xc0) { length = 2; code_point = byte & 0x1fu; }
+    else if((byte & 0xf0) == 0xe0) { length = 3; code_point = byte & 0x0fu; }
+    else if((byte & 0xf8) == 0xf0) { length = 4; code_point = byte & 0x07u; }
+    else
+        return 0; // continuation byte or invalid lead byte
+
+    if(index + length > sv.size())
+        return 0;
+
+    for(auto offset = std::size_t{1}; offset < length; ++offset)
+    {
+        const auto continuation = static_cast<unsigned char>(sv[index + offset]);
+        if((continuation & 0xc0) != 0x80)
+            return 0;
+        code_point = (code_point << 6) | (continuation & 0x3fu);
+    }
+
+    if(length == 2 && code_point < 0x80) return 0;
+    if(length == 3 && code_point < 0x800) return 0;
+    if(length == 4 && code_point < 0x10000) return 0;
+    if(code_point > 0x10ffff) return 0;
+    if(code_point >= 0xd800 && code_point <= 0xdfff) return 0;
+
+    return length;
+}
+
+// JSON requires valid UTF-8. Test data is arbitrary bytes, so invalid sequences are
+// replaced with U+FFFD rather than passed through — a single stray byte otherwise
+// makes the whole line unparseable for every downstream consumer.
 inline std::string escape(std::string_view sv)
 {
+    constexpr auto replacement_character = "\xef\xbf\xbd";
+
     auto out = std::string{};
     out.reserve(sv.size() + 16);
-    for(const unsigned char ch : sv)
+    for(std::size_t index = 0; index < sv.size();)
     {
+        const auto ch = static_cast<unsigned char>(sv[index]);
         switch(ch)
         {
-            case '\\': out += "\\\\"; break;
-            case '"':  out += "\\\""; break;
-            case '\b': out += "\\b"; break;
-            case '\f': out += "\\f"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if(ch < 0x20)
-                    out += std::format("\\u{:04x}", static_cast<unsigned int>(ch));
-                else
-                    out.push_back(static_cast<char>(ch));
+            case '\\': out += "\\\\"; ++index; continue;
+            case '"':  out += "\\\""; ++index; continue;
+            case '\b': out += "\\b"; ++index; continue;
+            case '\f': out += "\\f"; ++index; continue;
+            case '\n': out += "\\n"; ++index; continue;
+            case '\r': out += "\\r"; ++index; continue;
+            case '\t': out += "\\t"; ++index; continue;
+            default: break;
         }
+
+        if(ch < 0x20)
+        {
+            out += std::format("\\u{:04x}", static_cast<unsigned int>(ch));
+            ++index;
+            continue;
+        }
+
+        if(ch < 0x80)
+        {
+            out.push_back(static_cast<char>(ch));
+            ++index;
+            continue;
+        }
+
+        if(const auto length = utf8_sequence_length(sv, index); length > 0)
+        {
+            out.append(sv.substr(index, length));
+            index += length;
+            continue;
+        }
+
+        // Invalid byte: emit one replacement character and resynchronise by one byte.
+        out += replacement_character;
+        ++index;
     }
     return out;
 }
