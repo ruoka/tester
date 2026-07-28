@@ -51,6 +51,17 @@ struct counted
     auto operator<=>(const counted& other) const { return value <=> other.value; }
 };
 
+// An unscoped enumeration carrying a negative value, for the conversion that made
+// check_eq(legacy_flag::minus_one, 4294967295u) report equal.
+enum legacy_flag { minus_one = -1, two = 2 };
+
+// An enumeration with a comparison of its own, and one that disagrees with its values on
+// purpose: if the matchers promoted both operands they would answer from the values and
+// never call this.
+enum sloppy_enum { a = 1, b = 2 };
+int sloppy_comparisons = 0;
+bool operator==(sloppy_enum, sloppy_enum) { ++sloppy_comparisons; return true; }
+
 } // namespace
 
 auto register_tests()
@@ -229,6 +240,13 @@ auto register_tests()
         check_gt(-1, 1u);            // -1 is not greater than 1
         check_gteq(-1, 0u);          // nor greater or equal
         check_lt(1u, -1);            // 1 is not less than -1
+
+        // The same conversion, through operand types that cannot be handed to std::cmp_*
+        // as written and were therefore left out of it.
+        check_eq(char{-1}, 4294967295u);
+        check_gt(char{-1}, 0u);
+        check_eq(legacy_flag::minus_one, 4294967295u);
+        check_eq('a', 98u);          // a printable character, reported by value as 97
     };
 
     test_case("test_case [self] mixed-signedness comparisons compare values") = []
@@ -251,23 +269,49 @@ auto register_tests()
         require_eq(4294967295u, 4294967295u);
         require_lt(0u, 4294967295u);
 
-        // Types excluded from std::cmp_* still compile and behave: bool and the
-        // character types are not signed or unsigned integer types.
+        // bool, the character types and enumerations are not signed or unsigned integer
+        // types, so std::cmp_* rejects them as written. Promoting first is what lets them
+        // take the same path: excluding them instead left the wraparound in place for
+        // exactly these operands.
         require_eq('a', 'a');
         require_true(true);
         require_eq(static_cast<unsigned char>(1), 1);
+        require_neq(char{-1}, 4294967295u);
+        require_lt(char{-1}, 0u);
+        require_eq('a', 97u);
+        require_eq(true, 1u);
+        require_neq(true, 2u);
+        require_neq(legacy_flag::minus_one, 4294967295u);
+        require_eq(legacy_flag::two, 2u);
+
+        // An enumeration measured against its own type keeps the comparison the type
+        // provides, which promoting both sides would bypass. This one counts every call.
+        require_eq(sloppy_enum::a, sloppy_enum::b);
+        require_gt(sloppy_comparisons, 0);
 
         const auto result = probe("[.probe-signedness]");
         require_neq(result.exit_code, 0);
         const auto matchers = std::vector<std::string>{
             "\"check_eq\"", "\"check_neq\"", "\"check_gt\"",
-            "\"check_gteq\"", "\"check_lt\""};
+            "\"check_gteq\"", "\"check_lt\"",
+            "\"check_eq\"", "\"check_gt\"", "\"check_eq\"", "\"check_eq\""};
         for(auto index = std::size_t{0}; index < matchers.size(); ++index)
             require_eq(field(failure(result.stdout_text, index), "matcher"), matchers[index]);
 
         // Operands are reported as written, not as converted.
         require_eq(field(failure(result.stdout_text, 0), "actual"), std::string{"-1"});
         require_eq(field(failure(result.stdout_text, 0), "expected"), std::string{"4294967295"});
+
+        // A char operand is reported by value, in a field the schema calls a number.
+        // Streamed as itself it put a bare `a` there for 'a', and for char{-1} a stray
+        // 0xff byte that is not even valid UTF-8, leaving a line no parser could read —
+        // and stdout is the whole contract with agents. The last three probe failures are
+        // the two char ones and the enumeration.
+        for(auto index = std::size_t{5}; index < 8; ++index)
+            require_eq(field(failure(result.stdout_text, index), "actual"), std::string{"-1"});
+        require_eq(field(failure(result.stdout_text, 8), "actual"), std::string{"97"});
+        require_false(std::ranges::any_of(result.stdout_text,
+            [](char byte){ return static_cast<unsigned char>(byte) >= 0x80; }));
     };
 
     // ========================================================================

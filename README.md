@@ -384,6 +384,8 @@ Namespace `tester::assertions` — matching `check_*` (non-fatal) and `require_*
 - Floating-point: automatic epsilon comparison; `check_near` / `require_near` for explicit tolerance. The default tolerance is floored at four times the type's machine epsilon, so `float` is compared sensibly rather than against an unreachable `1e-9`
 - `check_neq` is the negation of `check_eq`, so a floating-point pair inside the tolerance is *not* unequal. Ordering (`lt`, `lteq`, `gt`, `gteq`) stays exact
 - Signed against unsigned operands are compared as mathematical values via `std::cmp_*`, so `check_eq(-1, 4294967295u)` fails and `check_lt(-1, 1u)` passes. Comparing through `std::common_type_t` would convert the signed operand and invert both answers
+- This covers every integer operand, not only `int` against `unsigned`. `bool`, the character types and unscoped enumerations are promoted first, since `std::cmp_*` does not accept them as written, so `check_eq(char{-1}, 4294967295u)` fails as well while `check_eq('a', 97u)` and `check_eq(true, 1u)` pass. An enumeration compared against its own type keeps whatever comparison the type provides
+- A character operand is reported by value: `97` in JSONL, `'a' (97)` on the console. The character alone would put a raw byte where the schema promises a number, and for a negative `char` it would hide the value that was compared
 
 ### Boolean
 - `check_true`, `check_false`, `require_true`, `require_false`
