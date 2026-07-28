@@ -178,6 +178,35 @@ auto register_tests()
         require_eq(left, left);
     };
 
+    test_case("test_case [.probe-array-operands] failures with array operands") = []
+    {
+        check_eq("hello", "world");
+        const char* pointer = "hello";
+        check_eq(pointer, "world");
+    };
+
+    test_case("test_case [self] array operands are reported by content, not by type") = []
+    {
+        // A forwarding reference preserves char[N] where a by-value parameter decayed it
+        // to const char*, so operands are decayed at the hub. Without that, a literal is
+        // reported as its array type and a non-const array does not compile at all,
+        // because the comparator is instantiated on the decayed pointer type.
+        const auto result = probe("[.probe-array-operands]");
+        require_neq(result.exit_code, 0);
+        for(auto index = std::size_t{0}; index < 2; ++index)
+        {
+            const auto line = failure(result.stdout_text, index);
+            require_eq(field(line, "actual"), std::string{"\"hello\""});
+            require_eq(field(line, "expected"), std::string{"\"world\""});
+        }
+
+        // Arrays compare as pointers, exactly as they did when taken by value.
+        char text[6] = "hello";
+        int numbers[3] = {1, 2, 3};
+        require_eq(text, text);
+        require_eq(numbers, numbers);
+    };
+
     test_case("test_case [.probe-opaque] failure on an operand the framework cannot print") = []
     {
         check_eq(counted{1}, counted{2});

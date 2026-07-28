@@ -184,14 +184,29 @@ namespace tester::assertions
     // std::common_type_t already decays, so it yields the same T the by-value parameters
     // did, and every comparator still sees exactly the type it saw before.
 
+    // Arrays are the one kind of operand that has to be decayed here. A forwarding
+    // reference preserves char[N] where a by-value parameter produced const char*, and
+    // both layers below expect the pointer: the comparator is instantiated on
+    // std::common_type_t, which is the decayed type, so a non-const array cannot bind to
+    // it at all, and the publisher reports a pointer as its characters but an array as its
+    // type name. Everything else is forwarded untouched.
+    template<typename T>
+    constexpr decltype(auto) decayed(T&& value)
+    {
+        if constexpr (std::is_array_v<std::remove_reference_t<T>>)
+            return static_cast<std::decay_t<T>>(value);
+        else
+            return std::forward<T>(value);
+    }
+
     // Non-fatal assertion helper (check_*)
     export template<template <typename> class M, typename A, typename E>
     auto check(M<std::common_type_t<A,E>> match, A&& actual, E&& expected, const std::source_location location = std::source_location::current(), const std::source_location matcher_location = std::source_location::current())
     {
         ++data::statistics().total_assertions;
-        const auto ok = match(actual,expected);
+        const auto ok = match(decayed(actual),decayed(expected));
         data::statistics().successful_assertions += ok;
-        publisher::assertion(ok,actual,expected,location,matcher_location);
+        publisher::assertion(ok,decayed(actual),decayed(expected),location,matcher_location);
         return ok;
     };
 
@@ -200,9 +215,9 @@ namespace tester::assertions
     void require(M<std::common_type_t<A,E>> match, A&& actual, E&& expected, const std::source_location location = std::source_location::current(), const std::source_location matcher_location = std::source_location::current())
     {
         ++data::statistics().total_assertions;
-        const auto ok = match(actual,expected);
+        const auto ok = match(decayed(actual),decayed(expected));
         data::statistics().successful_assertions += ok;
-        publisher::assertion(ok,actual,expected,location,matcher_location);
+        publisher::assertion(ok,decayed(actual),decayed(expected),location,matcher_location);
         if(not ok)
         {
             throw assertion_failure{"Assertion failed"};
