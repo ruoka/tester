@@ -229,6 +229,12 @@ auto register_tests()
         check_gt(-1, 1u);            // -1 is not greater than 1
         check_gteq(-1, 0u);          // nor greater or equal
         check_lt(1u, -1);            // 1 is not less than -1
+        // Character types are integral but not signed/unsigned integer types, so a
+        // direct std::cmp_* call is ill-formed. Without promoting them first they
+        // stayed on equal_to<common_type> and wrapped the same way int did.
+        check_eq(char{-1}, 4294967295u);
+        check_gt(char{-1}, 0u);
+        check_eq(char{-1}, static_cast<std::size_t>(-1));
     };
 
     test_case("test_case [self] mixed-signedness comparisons compare values") = []
@@ -251,23 +257,34 @@ auto register_tests()
         require_eq(4294967295u, 4294967295u);
         require_lt(0u, 4294967295u);
 
-        // Types excluded from std::cmp_* still compile and behave: bool and the
-        // character types are not signed or unsigned integer types.
+        // Bool and character types promote via unary + into the same std::cmp_*
+        // path, so they compare as values rather than wrapping through common_type.
         require_eq('a', 'a');
+        require_eq('a', 97u);
         require_true(true);
+        require_eq(true, 1u);
         require_eq(static_cast<unsigned char>(1), 1);
+        require_neq(char{-1}, 4294967295u);
+        require_lt(char{-1}, 0u);
+        require_neq(char{-1}, static_cast<std::size_t>(-1));
+        require_eq(char{-1}, -1);
 
         const auto result = probe("[.probe-signedness]");
         require_neq(result.exit_code, 0);
         const auto matchers = std::vector<std::string>{
             "\"check_eq\"", "\"check_neq\"", "\"check_gt\"",
-            "\"check_gteq\"", "\"check_lt\""};
+            "\"check_gteq\"", "\"check_lt\"",
+            "\"check_eq\"", "\"check_gt\"", "\"check_eq\""};
         for(auto index = std::size_t{0}; index < matchers.size(); ++index)
             require_eq(field(failure(result.stdout_text, index), "matcher"), matchers[index]);
 
         // Operands are reported as written, not as converted.
         require_eq(field(failure(result.stdout_text, 0), "actual"), std::string{"-1"});
         require_eq(field(failure(result.stdout_text, 0), "expected"), std::string{"4294967295"});
+        // char is streamed as a character: the byte 0xFF is not valid UTF-8, so JSONL
+        // replaces it — still not the converted unsigned value 4294967295.
+        require_eq(field(failure(result.stdout_text, 5), "expected"), std::string{"4294967295"});
+        require_neq(field(failure(result.stdout_text, 5), "actual"), std::string{"4294967295"});
     };
 
     // ========================================================================

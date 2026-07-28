@@ -31,25 +31,16 @@ namespace tester::assertions
     template<typename A, typename E>
     constexpr bool both_are_floating_point_v = is_floating_point_v<A> and is_floating_point_v<E>;
 
-    // Check if type is one std::cmp_* accepts: passing bool or a character type is
-    // ill-formed. The standard offers no trait for that set, because an integral type is
-    // not the same set as the signed and unsigned integer types ([basic.fundamental]/p11
-    // versus /p2) — the standard library carries its own reserved-name equivalent for
-    // exactly this reason. Spelled as integral minus bool and the character types, so
-    // extended integer types such as __int128 are admitted where the implementation
-    // accepts them.
-    template<typename T>
-    constexpr bool is_comparable_integer_v =
-        std::integral<T> and
-        not std::same_as<std::remove_cv_t<T>, bool> and
-        not std::same_as<std::remove_cv_t<T>, char> and
-        not std::same_as<std::remove_cv_t<T>, char8_t> and
-        not std::same_as<std::remove_cv_t<T>, char16_t> and
-        not std::same_as<std::remove_cv_t<T>, char32_t> and
-        not std::same_as<std::remove_cv_t<T>, wchar_t>;
-
+    // Every integral pair goes through std::cmp_* after unary +. Passing bool or a
+    // character type to std::cmp_* directly is ill-formed (those are integral types but
+    // not signed or unsigned integer types — [basic.fundamental]/p11 versus /p2), so the
+    // earlier gate excluded them and left them on equal_to<common_type>, which still
+    // wrapped: check_eq(char{-1}, UINT_MAX) and check_gt(char{-1}, 0u) both passed.
+    // Unary + performs integral promotions, yielding a type std::cmp_* accepts, so the
+    // whole integral set — including bool, char, wchar_t, charN_t, and extended integers
+    // such as __int128 — compares as mathematical values.
     template<typename A, typename E>
-    constexpr bool both_are_comparable_integers_v = is_comparable_integer_v<A> and is_comparable_integer_v<E>;
+    constexpr bool both_are_integral_v = std::integral<A> and std::integral<E>;
 
     // Floating-point comparator with epsilon tolerance
     template<typename T>
@@ -93,7 +84,8 @@ namespace tester::assertions
     //
     //   - floating point compares within an epsilon, for equality only. Ordering stays
     //     exact, as it is in every framework; check_near takes an explicit tolerance.
-    //   - integers compare as mathematical values through std::cmp_*
+    //   - integers (the full std::integral set) compare as mathematical values through
+    //     std::cmp_* after unary + — see both_are_integral_v above
     //   - everything else uses the std comparator on the common type, as before
     //
     // Integers are the reason this layer exists. std::common_type_t<int,unsigned> is
@@ -116,7 +108,7 @@ namespace tester::assertions
         constexpr bool operator()(const A& actual, const E& expected) const
         {
             if constexpr (both_are_floating_point_v<A,E>) return floating_point_equal<T>{}(actual, expected);
-            else if constexpr (both_are_comparable_integers_v<A,E>) return std::cmp_equal(actual, expected);
+            else if constexpr (both_are_integral_v<A,E>) return std::cmp_equal(+actual, +expected);
             else return std::equal_to<T>{}(actual, expected);
         }
     };
@@ -130,7 +122,7 @@ namespace tester::assertions
             // point exactly, two values within the tolerance satisfied check_eq and
             // check_neq at the same time.
             if constexpr (both_are_floating_point_v<A,E>) return not floating_point_equal<T>{}(actual, expected);
-            else if constexpr (both_are_comparable_integers_v<A,E>) return std::cmp_not_equal(actual, expected);
+            else if constexpr (both_are_integral_v<A,E>) return std::cmp_not_equal(+actual, +expected);
             else return std::not_equal_to<T>{}(actual, expected);
         }
     };
@@ -140,7 +132,7 @@ namespace tester::assertions
         template<typename A, typename E>
         constexpr bool operator()(const A& actual, const E& expected) const
         {
-            if constexpr (both_are_comparable_integers_v<A,E>) return std::cmp_less(actual, expected);
+            if constexpr (both_are_integral_v<A,E>) return std::cmp_less(+actual, +expected);
             else return std::less<T>{}(actual, expected);
         }
     };
@@ -150,7 +142,7 @@ namespace tester::assertions
         template<typename A, typename E>
         constexpr bool operator()(const A& actual, const E& expected) const
         {
-            if constexpr (both_are_comparable_integers_v<A,E>) return std::cmp_less_equal(actual, expected);
+            if constexpr (both_are_integral_v<A,E>) return std::cmp_less_equal(+actual, +expected);
             else return std::less_equal<T>{}(actual, expected);
         }
     };
@@ -160,7 +152,7 @@ namespace tester::assertions
         template<typename A, typename E>
         constexpr bool operator()(const A& actual, const E& expected) const
         {
-            if constexpr (both_are_comparable_integers_v<A,E>) return std::cmp_greater(actual, expected);
+            if constexpr (both_are_integral_v<A,E>) return std::cmp_greater(+actual, +expected);
             else return std::greater<T>{}(actual, expected);
         }
     };
@@ -170,7 +162,7 @@ namespace tester::assertions
         template<typename A, typename E>
         constexpr bool operator()(const A& actual, const E& expected) const
         {
-            if constexpr (both_are_comparable_integers_v<A,E>) return std::cmp_greater_equal(actual, expected);
+            if constexpr (both_are_integral_v<A,E>) return std::cmp_greater_equal(+actual, +expected);
             else return std::greater_equal<T>{}(actual, expected);
         }
     };
