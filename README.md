@@ -399,6 +399,7 @@ Namespace `tester::assertions` — matching `check_*` (non-fatal) and `require_*
 ### Containers & strings
 - `check_container_eq`, `require_container_eq`
 - `check_contains`, `require_contains` (string or container element)
+- Container element comparisons use the same mathematical-value rule as the scalar matchers, so `check_contains(std::vector<std::size_t>{npos}, -1)` fails and `check_container_eq(std::vector<int>{-1}, std::vector<unsigned>{UINT_MAX})` fails. Language `==` / `std::ranges::contains` would convert and report equal
 - `check_starts_with`, `require_starts_with`, `check_ends_with`, `require_ends_with`
 
 ### Messaging

@@ -527,6 +527,27 @@ auto register_tests()
         require_contains(std::vector<int>{1, 2, 3}, 2);
         // Different container types with equal contents compare equal.
         require_container_eq(std::vector<int>{1, 2}, std::list<int>{1, 2});
+        // Equal values across signedness still match (container-size idiom).
+        require_contains(std::vector<std::size_t>{3}, 3);
+        require_container_eq(std::vector<int>{2}, std::vector<unsigned>{2u});
+    };
+
+    test_case("test_case [.probe-container-signedness] mixed-signedness wraparound") = []
+    {
+        // Language == / ranges::contains convert the signed operand, so both of these
+        // reported equal before elements_equal routed integers through std::cmp_*.
+        check_contains(std::vector<std::size_t>{std::string::npos}, -1);
+        check_container_eq(std::vector<int>{-1}, std::vector<unsigned>{4294967295u});
+    };
+
+    test_case("test_case [self] container matchers reject mixed-signedness wraparound") = []
+    {
+        const auto result = probe("[.probe-container-signedness]");
+        require_neq(result.exit_code, 0);
+
+        require_eq(field(failure(result.stdout_text, 0), "matcher"), std::string{"\"check_contains\""});
+        require_eq(field(failure(result.stdout_text, 1), "matcher"), std::string{"\"check_container_eq\""});
+        require_contains(field(failure(result.stdout_text, 1), "expected"), std::string{"mismatch at index 0"});
     };
 
     test_case("test_case [self] container diffs locate the mismatch") = []
