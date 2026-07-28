@@ -40,6 +40,14 @@ constexpr bool is_character_v =
     or std::is_same_v<T, char8_t> or std::is_same_v<T, char16_t> or std::is_same_v<T, char32_t>
     or std::is_same_v<T, wchar_t>;
 
+// See is_ascii_printable in tester:utils, which explains why this is a value range and not
+// std::isprint: that classifies a byte, and the cast it needs turns char16_t{0x161} into
+// 'a' while the global locale can make it admit bytes from 0x80 up.
+constexpr bool is_ascii_printable(auto code)
+{
+    return code >= 0x20 and code < 0x7f;
+}
+
 } // namespace
 
 export struct observer final : tester::output::observer
@@ -190,7 +198,7 @@ export struct observer final : tester::output::observer
             // -1 it compared nowhere in sight, while the value alone turns an ordinary
             // character comparison into 97 against 98.
             const auto code = +val;
-            if(code >= 0x20 and code < 0x7f)
+            if(is_ascii_printable(code))
                 stream << '\'' << static_cast<char>(code) << "' (" << code << ')';
             else
                 stream << code;

@@ -176,6 +176,17 @@ constexpr bool is_character_v =
     or std::is_same_v<T, char8_t> or std::is_same_v<T, char16_t> or std::is_same_v<T, char32_t>
     or std::is_same_v<T, wchar_t>;
 
+// Where a character can be shown as a glyph and nothing else has to be said about it. Not
+// std::isprint: that classifies a byte, so it needs an unsigned char cast, and the cast
+// truncates — char16_t{0x161} would arrive as 0x61 and be shown as 'a', a character the
+// operand never held. It also follows the global locale, which can admit bytes from 0x80 up
+// and would put a raw non-UTF-8 byte back in the output. The question here is about the
+// value, which may be any code point up to 0x10ffff.
+constexpr bool is_ascii_printable(auto code)
+{
+    return code >= 0x20 and code < 0x7f;
+}
+
 export template<typename V>
 std::string value_to_display_string(const V& val)
 {
@@ -209,7 +220,7 @@ std::string value_to_display_string(const V& val)
         // reported a replacement glyph with the -1 it compared nowhere in sight, while
         // the value alone turns an ordinary character comparison into 97 against 98.
         const auto code = +val;
-        if(code >= 0x20 and code < 0x7f)
+        if(is_ascii_printable(code))
             stream << '\'' << static_cast<char>(code) << "' (" << code << ')';
         else
             stream << code;
