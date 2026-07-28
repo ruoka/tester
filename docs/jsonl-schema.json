@@ -137,7 +137,7 @@
       "properties": {
         "kind": {
           "enum": [
-            "not_in_cache", "source_stale", "header_stale", "object_missing",
+            "not_in_cache", "source_stale", "header_stale", "depfile_unusable", "object_missing",
             "object_stale", "own_pcm_missing", "own_pcm_stale", "pcm_stale",
             "dependency_pcm_stale", "profile_change", "missing_executable",
             "object_changed", "link_flags_changed", "signature_changed"
@@ -148,7 +148,7 @@
         "object_path": { "type": "string" },
         "trigger_path": {
           "type": "string",
-          "description": "The file whose change forced the rebuild; the header itself for header_stale."
+          "description": "The file whose change forced the rebuild; the header itself for header_stale, the .d path for depfile_unusable."
         },
         "hint": { "type": "string" },
         "message": { "type": "string" },

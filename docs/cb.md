@@ -224,6 +224,8 @@ Cache indexes are written through a checked temporary file and atomically rename
 
 The object cache tracks module imports and source mtimes, neither of which sees a textual `#include`. CB therefore compiles with `-MMD -MF <object>.d` — emitted by the step that actually reads the source (`--precompile` for modular units, `-c` otherwise) — and compares each prerequisite's mtime against the object. A newer header yields `rebuild_reason: "header_stale"` with the header in `rebuild.trigger_path`.
 
+A depfile that cannot be read — missing, unreadable, or lacking the `target:` prefix — yields `rebuild_reason: "depfile_unusable"` with the `.d` path in `rebuild.trigger_path`. It is the only record of a unit's textual includes, so "no parseable prerequisites" cannot be read as "no headers": that would hold a cache hit while ignoring every header edit until the source itself changed. Since `-MMD` writes a depfile even for a unit that includes nothing, this fires once after an upgrade or a wiped `obj/` and then settles.
+
 Prerequisites are filtered to the project tree. Toolchain headers change as a unit and are already covered by the `cxx_sig` and `clang_ver` profile fields, so scanning them would add thousands of `stat` calls per build for no additional coverage.
 
 **Human logs** (stderr, non-JSONL): `Object cache profile changed; invalidating compile cache (compile: + -DFOO)`.
@@ -232,7 +234,7 @@ Prerequisites are filtered to the project tree. Toolchain headers change as a un
 
 **Invalidate indexes:** `./tools/CB.sh debug cache invalidate` removes `object-cache.txt`, `executable-cache.txt`, and `compiler-version.txt` only — lighter than `clean`; artifacts in `obj/` / `pcm/` remain. JSONL: `cache_invalidate_end`.
 
-**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job) — `profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `source_stale`, `header_stale`, `strict_arguments`, `source_list`, `compile_failure`, `link_failure`, `test_link_failure`, `link_rebuild_reason`, `implementation_pcm`, `rebuild_summary`, `test_lifecycle`, `cache_invalidate`, `profile_change`, `cache_status`, `jsonl_modes`, `jsonl_failure_mode`.
+**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job) — `profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `source_stale`, `header_stale`, `depfile_unusable`, `strict_arguments`, `source_list`, `compile_failure`, `link_failure`, `test_link_failure`, `link_rebuild_reason`, `implementation_pcm`, `rebuild_summary`, `test_lifecycle`, `cache_invalidate`, `profile_change`, `cache_status`, `jsonl_modes`, `jsonl_failure_mode`.
 
 **Optional follow-up:** `cache prune` for disk/orphan cleanup — backlog only; see [tester-improvements.md §4.4](tester-improvements.md#44-cache-maintenance-optional--add-if-operational-issues-appear).
 
@@ -256,6 +258,7 @@ Useful compile/link fields for debugging stale builds:
 - `rebuild_reason: "not_in_cache"` — first compile of this source for the current config (distinct from an edit)
 - `rebuild_reason: "source_stale"` — TU source newer than cached object
 - `rebuild_reason: "header_stale"` — an `#include`d project header is newer than the object; the header is in `rebuild.trigger_path` (see [Header dependencies](#header-dependencies))
+- `rebuild_reason: "depfile_unusable"` — the compiler `.d` is missing, unreadable, or malformed, so header freshness is unknown; the `.d` path is in `rebuild.trigger_path`
 - `rebuild_reason: "pcm_stale"` — imported PCM (including an implementation unit's implicit interface PCM) newer than this object; module and trigger source are in `rebuild`
 
 Example rebuild object:
