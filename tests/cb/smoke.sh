@@ -438,6 +438,82 @@ test_import_trailing_comment() {
   end_case import_trailing_comment
 }
 
+test_commented_out_imports() {
+  should_run commented_out_imports || return 0
+  begin_case commented_out_imports
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+  rm -f "${work_dir}/hello.c++"
+
+  # The scanner matched module regexes against raw lines, so text that is not code
+  # became real edges: an import inside a block comment, inside `#if 0`, or inside a
+  # string literal. Comments and literals can span lines, and `#if 0` bodies do not
+  # start with `#`, so none of them are visible one line at a time.
+  printf '%s\n' \
+    'export module scanned;' \
+    '/* import phantom_block;' \
+    '   import phantom_second; */' \
+    '#if 0' \
+    'import phantom_dead;' \
+    '#if 1' \
+    'import phantom_nested;' \
+    '#endif' \
+    '#endif' \
+    'import helpers; // struct bridge must survive' \
+    'export int scanned_value() { return helper_value(); }' > "${work_dir}/scanned.c++m"
+  printf '%s\n' \
+    'export module helpers;' \
+    'export int helper_value() { return 2; }' > "${work_dir}/helpers.c++m"
+  # Separate unit: a literal can only be mistaken for an import while the preamble is
+  # still being scanned, and a declaration may not precede an import in one preamble.
+  printf '%s\n' \
+    'export module literal_scan;' \
+    'export const char* text = "import phantom_literal; /* not a comment";' > "${work_dir}/literal_scan.c++m"
+  printf '%s\n' \
+    'import scanned;' \
+    'int main() { return scanned_value() - 2; }' > "${work_dir}/main.c++"
+
+  run_cb_list "${work_dir}"
+  assert_jsonl_contains '"imports":["helpers"]' "commented_imports_only_real_edge"
+  assert_jsonl_not_contains 'phantom_block' "commented_imports_no_block_comment_edge"
+  assert_jsonl_not_contains 'phantom_dead' "commented_imports_no_if_zero_edge"
+  assert_jsonl_not_contains 'phantom_nested' "commented_imports_no_nested_if_zero_edge"
+  assert_jsonl_not_contains 'phantom_literal' "commented_imports_no_string_literal_edge"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "commented_imports_build_ok"
+  end_case commented_out_imports
+}
+
+test_commented_import_no_false_cycle() {
+  should_run commented_import_no_false_cycle || return 0
+  begin_case commented_import_no_false_cycle
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+  rm -f "${work_dir}/hello.c++"
+
+  # A phantom edge from a commented-out import is not merely spurious: pointing it at
+  # a module that really exists closes a loop through the real edge, and the build dies
+  # with a cyclic-dependency error naming modules the source never connected. Commenting
+  # out an import you used to have is the ordinary way to hit this.
+  printf '%s\n' \
+    'export module cycle_a;' \
+    '/* import cycle_b; */' \
+    'export int a_value() { return 1; }' > "${work_dir}/cycle_a.c++m"
+  printf '%s\n' \
+    'export module cycle_b;' \
+    'import cycle_a;' \
+    'export int b_value() { return a_value() + 1; }' > "${work_dir}/cycle_b.c++m"
+  printf '%s\n' \
+    'import cycle_b;' \
+    'int main() { return b_value() == 2 ? 0 : 1; }' > "${work_dir}/main.c++"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "false_cycle_build_ok"
+  assert_jsonl_not_contains 'Cyclic dependency' "false_cycle_no_cycle_error"
+  end_case commented_import_no_false_cycle
+}
+
 test_module_safe_name() {
   should_run module_safe_name || return 0
   begin_case module_safe_name
@@ -910,6 +986,8 @@ main() {
   test_implementation_pcm
   test_dotted_module_name
   test_import_trailing_comment
+  test_commented_out_imports
+  test_commented_import_no_false_cycle
   test_gmf_preamble
   test_module_safe_name
   test_same_basename_collision
