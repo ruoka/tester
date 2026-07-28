@@ -165,6 +165,17 @@ export std::string display_matcher_name(const std::source_location sl)
     return display;
 }
 
+// The character types, which both reporting channels have to treat apart from the other
+// arithmetic ones: streamed as themselves they emit a raw byte, which is not readable on a
+// console and not valid JSON. Spelled out because there is no trait for the set, and
+// because the wide ones have no narrow stream inserter left to fall back on — C++20 deleted
+// those overloads, so reaching this branch is what lets them be reported at all.
+template<typename T>
+constexpr bool is_character_v =
+    std::is_same_v<T, char> or std::is_same_v<T, signed char> or std::is_same_v<T, unsigned char>
+    or std::is_same_v<T, char8_t> or std::is_same_v<T, char16_t> or std::is_same_v<T, char32_t>
+    or std::is_same_v<T, wchar_t>;
+
 export template<typename V>
 std::string value_to_display_string(const V& val)
 {
@@ -191,6 +202,18 @@ std::string value_to_display_string(const V& val)
         stream << std::to_underlying(val);
     else if constexpr (chrono_clock<T>)
         stream << std::format("{0:%F}T{0:%T}", val);
+    else if constexpr (is_character_v<T>)
+    {
+        // Both forms, because either one alone hides something: streaming the character
+        // put a raw byte on the console, so a failing check_eq(char{-1}, 4294967295u)
+        // reported a replacement glyph with the -1 it compared nowhere in sight, while
+        // the value alone turns an ordinary character comparison into 97 against 98.
+        const auto code = +val;
+        if(code >= 0x20 and code < 0x7f)
+            stream << '\'' << static_cast<char>(code) << "' (" << code << ')';
+        else
+            stream << code;
+    }
     else if constexpr (std::is_arithmetic_v<T>)
         stream << std::boolalpha << val;
     else if constexpr (requires { val.index(); })
@@ -261,6 +284,17 @@ observed_value observe_value(const V& val)
     else if constexpr (std::is_enum_v<T>)
     {
         value = std::to_string(std::to_underlying(val));
+        kind = value_kind::number;
+    }
+    else if constexpr (is_character_v<T>)
+    {
+        // Promoted, so the value lands in a field the schema calls a number. Streamed as
+        // itself the character went there raw — `"actual":a` for 'a', and a stray 0xff byte
+        // for char{-1}, which is not even valid UTF-8 — leaving a line no parser could read,
+        // and stdout is the whole contract with agents. Quoting it instead would lose the
+        // value: escaping replaces a stray byte with U+FFFD, and char{-1} is exactly the
+        // operand a mixed-signedness failure has to report. The console shows both forms.
+        value = std::to_string(+val);
         kind = value_kind::number;
     }
     else if constexpr (std::is_arithmetic_v<T>)
