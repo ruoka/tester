@@ -296,12 +296,12 @@ struct observer final : cb::output::observer
         };
     }
 
-    void test_end(bool ok, const process_status& status, const interval& timing) override
+    void test_end(const process_result& result, const interval& timing) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("test_end") << [&](std::ostream& os){
-            os << ",\"ok\":" << (ok ? "true" : "false");
-            write_process_status(os, status);
+            os << ",\"ok\":" << (result.ok() ? "true" : "false");
+            write_process_status(os, result.status);
             os << ",\"duration_ms\":" << timing.elapsed_ms();
         };
     }
@@ -326,9 +326,13 @@ struct observer final : cb::output::observer
         };
     }
 
-    void command_end(std::string_view cmd, std::span<const std::string> argv, bool ok, const process_status& status, const diagnostics& diag, const interval& timing) override
+    void command_end(std::string_view cmd,
+                     std::span<const std::string> argv,
+                     const process_result& result,
+                     const interval& timing) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
+        const auto ok = result.ok();
         if(not ok)
             ++m.commands_failed;
         if(m.mode == jsonl_mode::summary || (m.mode == jsonl_mode::failures && ok))
@@ -339,8 +343,8 @@ struct observer final : cb::output::observer
                 os << ",\"cmd\":\"" << escape(cmd) << "\"";
             write_argv(os, argv);
             os << ",\"ok\":" << (ok ? "true" : "false");
-            write_process_status(os, status);
-            write_diagnostics(os, diag);
+            write_process_status(os, result.status);
+            write_diagnostics(os, result.diag);
             os << ",\"duration_ms\":" << timing.elapsed_ms();
         };
     }

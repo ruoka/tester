@@ -1340,19 +1340,11 @@ private:
     // General Utilities
     // ============================================================================
 
-    struct shell_result
-    {
-        output::process_status status;
-        output::diagnostics diag;
-
-        bool ok() const { return status.ok(); }
-    };
-
     // Sole shell boundary: argv is non-empty (contract); join_argv quotes each element with join_with.
     // When capture_path is given, the child's stdout and stderr are redirected there
     // and read back on failure. The test runner must not be captured — its stdout is
     // the JSONL stream the caller is forwarding.
-    shell_result invoke_shell(const string_list& argv, std::string_view capture_path = {}) const
+    output::process_result invoke_shell(const string_list& argv, std::string_view capture_path = {}) const
     {
         if(argv.empty())
             throw std::logic_error{"invoke_shell: empty argv"};
@@ -1369,12 +1361,12 @@ private:
         const auto raw = system(shell_line.c_str());
         const auto finished = std::chrono::steady_clock::now();
 
-        auto result = shell_result{.status = detail::decode_wait_status(raw)};
+        auto result = output::process_result{.status = detail::decode_wait_status(raw)};
         if(not result.ok() and not capture_path.empty())
             result.diag = detail::read_diagnostics(capture_path);
 
-        output::notify(&output::observer::command_end, cmd_str, argv, result.ok(),
-                       result.status, result.diag, output::interval{started, finished});
+        output::notify(&output::observer::command_end, cmd_str, argv, result,
+                       output::interval{started, finished});
         return result;
     }
 
@@ -1384,7 +1376,7 @@ private:
             throw std::runtime_error{command_failure_message(argv, result)};
     }
 
-    static std::string command_failure_message(const string_list& argv, const shell_result& result)
+    static std::string command_failure_message(const string_list& argv, const output::process_result& result)
     {
         auto message = "Command failed: " + detail::join_argv(argv);
         if(result.status.signaled)
@@ -2752,8 +2744,7 @@ public:
         // Not captured: the runner's stdout is the JSONL stream being forwarded.
         const auto result = invoke_shell(test_runner_argv(runner, args));
         const auto test_finished = std::chrono::steady_clock::now();
-        output::notify(&output::observer::test_end, result.ok(), result.status,
-                       output::interval{test_started, test_finished});
+        output::notify(&output::observer::test_end, result, output::interval{test_started, test_finished});
         if (not result.ok()) {
             if(result.status.signaled)
                 output::notify(&output::observer::error,

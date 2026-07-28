@@ -238,6 +238,18 @@ struct diagnostics
     bool empty() const { return head.empty() and path.empty(); }
 };
 
+// How a spawned toolchain process ended: the wait status, plus whatever it printed if it
+// failed. One value because ok is not independent of the status — it is status.ok() — and
+// reporting them as separate arguments let an event claim success beside a status saying
+// otherwise.
+struct process_result
+{
+    process_status status{};
+    diagnostics diag{};
+
+    bool ok() const { return status.ok(); }
+};
+
 // Why a compile or link ran (kind is also rebuild_reason on the wire). Facts only: the hint
 // and the sentence are derived from these by the functions below, so a producer cannot ship
 // telemetry whose prose disagrees with its fields. Members default so a designated
@@ -361,9 +373,7 @@ public:
 
     virtual void test_start(std::string_view /*runner*/) {}
 
-    virtual void test_end(bool /*ok*/,
-                          const process_status& /*status*/,
-                          const interval& /*timing*/) {}
+    virtual void test_end(const process_result& /*result*/, const interval& /*timing*/) {}
 
     virtual void command_start(std::string_view /*cmd*/,
                                std::span<const std::string> /*argv*/) {}
@@ -371,9 +381,7 @@ public:
     virtual void command_end(
         std::string_view /*cmd*/,
         std::span<const std::string> /*argv*/,
-        bool /*ok*/,
-        const process_status& /*status*/,
-        const diagnostics& /*diag*/,
+        const process_result& /*result*/,
         const interval& /*timing*/) {}
 
     virtual void compile_start(const compile_unit& /*unit*/, const rebuild_info& /*rebuild*/) {}
