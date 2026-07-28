@@ -569,7 +569,8 @@ inline std::string strip_comments_and_literals(const std::string& text)
 
 // `#if 0` is the commented-out idiom, so its body must be elided wholesale. Nesting is
 // the one part a regex cannot express — balanced delimiters are not a regular language
-// — so the regex recognises directives and the depth is counted. Genuine conditionals
+// — so the regex recognises directives and the depth is counted. Parenthesized forms
+// (`#if (0)`, `#if ((false))`) collapse to the same constant. Genuine conditionals
 // are deliberately left alone: over-approximating an `#ifdef` by scanning both branches
 // costs a spurious edge, while guessing which branch is live risks dropping a real one.
 class conditional_filter
@@ -594,13 +595,24 @@ public:
     }
 
 private:
+    // `#if 0` and `#if (0)` / `#if ((0))` (and the same with `false`) are the
+    // commented-out idioms. Drop only grouping parentheses so a parenthesized
+    // constant still elides its body; any other token stays live (over-approx).
+    static bool is_false_constant(std::string_view condition)
+    {
+        const auto collapsed = condition
+            | std::views::filter([](char c) { return c != '(' and c != ')'; })
+            | std::ranges::to<std::string>();
+        return collapsed == "0" or collapsed == "false";
+    }
+
     void apply(std::string_view name, std::string_view condition)
     {
         const auto skipping = m_skip_depth > 0;
         if(name == "if" or name == "ifdef" or name == "ifndef")
         {
             ++m_if_depth;
-            if(not skipping and name == "if" and (condition == "0" or condition == "false"))
+            if(not skipping and name == "if" and is_false_constant(condition))
                 m_skip_depth = m_if_depth;
         }
         else if(name == "endif")

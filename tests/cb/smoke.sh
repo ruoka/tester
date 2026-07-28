@@ -449,6 +449,8 @@ test_commented_out_imports() {
   # became real edges: an import inside a block comment, inside `#if 0`, or inside a
   # string literal. Comments and literals can span lines, and `#if 0` bodies do not
   # start with `#`, so none of them are visible one line at a time.
+  # `#if (0)` / `#if ((0))` are the same commented-out idiom with grouping parens —
+  # treating only the bare `0` token as dead left those bodies live and invented edges.
   printf '%s\n' \
     'export module scanned;' \
     '/* import phantom_block;' \
@@ -458,6 +460,12 @@ test_commented_out_imports() {
     '#if 1' \
     'import phantom_nested;' \
     '#endif' \
+    '#endif' \
+    '#if (0)' \
+    'import phantom_paren;' \
+    '#endif' \
+    '#if ((0))' \
+    'import phantom_double_paren;' \
     '#endif' \
     'import helpers; // struct bridge must survive' \
     'export int scanned_value() { return helper_value(); }' > "${work_dir}/scanned.c++m"
@@ -478,6 +486,8 @@ test_commented_out_imports() {
   assert_jsonl_not_contains 'phantom_block' "commented_imports_no_block_comment_edge"
   assert_jsonl_not_contains 'phantom_dead' "commented_imports_no_if_zero_edge"
   assert_jsonl_not_contains 'phantom_nested' "commented_imports_no_nested_if_zero_edge"
+  assert_jsonl_not_contains 'phantom_paren' "commented_imports_no_paren_if_zero_edge"
+  assert_jsonl_not_contains 'phantom_double_paren' "commented_imports_no_double_paren_if_zero_edge"
   assert_jsonl_not_contains 'phantom_literal' "commented_imports_no_string_literal_edge"
 
   run_cb_build "${work_dir}"
@@ -495,10 +505,14 @@ test_commented_import_no_false_cycle() {
   # A phantom edge from a commented-out import is not merely spurious: pointing it at
   # a module that really exists closes a loop through the real edge, and the build dies
   # with a cyclic-dependency error naming modules the source never connected. Commenting
-  # out an import you used to have is the ordinary way to hit this.
+  # out an import you used to have is the ordinary way to hit this — including the common
+  # `#if (0)` spelling, which must elide the same way as bare `#if 0`.
   printf '%s\n' \
     'export module cycle_a;' \
     '/* import cycle_b; */' \
+    '#if (0)' \
+    'import cycle_b;' \
+    '#endif' \
     'export int a_value() { return 1; }' > "${work_dir}/cycle_a.c++m"
   printf '%s\n' \
     'export module cycle_b;' \
