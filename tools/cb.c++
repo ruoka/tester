@@ -544,6 +544,85 @@ std::string read_first_line(const std::string& path)
 
 constexpr std::string_view object_cache_format = "cb-object-cache-v3"sv;
 
+// Comments, string literals and `#if 0` blocks are not declarations, and matching the
+// module regexes against them invents edges in the module graph.
+
+// One alternation over the whole preamble, because a block comment or a literal can
+// span lines and so cannot be recognised a line at a time. Alternation also gets the
+// interleaving right for free: whichever construct opens first wins, so `"/*"` inside
+// a string does not start a comment, and a quote inside a comment stays inert.
+// Comments collapse to a space, since a comment separates tokens (`import/*x*/foo`).
+// Literals keep their delimiters but lose their contents, which may spell `import foo;`
+// — the matchers run unanchored and would otherwise find it.
+// The block-comment branch is the unrolled form (`[^*]*\*+(?:[^/*][^*]*\*+)*/`) rather
+// than a lazy `[\s\S]*?`, and the two quote branches are spelled out rather than sharing
+// a backreference: both avoid the backtracking that made this pass dominate scan time.
+inline static const std::regex comment_or_literal_regex{
+    R"(//[^\n]*|/\*[^*]*\*+(?:[^/*][^*]*\*+)*/|(")(?:[^"\\\n]|\\.)*"|(')(?:[^'\\\n]|\\.)*')"};
+
+inline std::string strip_comments_and_literals(const std::string& text)
+{
+    // Comments collapse to a single space; a literal keeps its delimiters via whichever
+    // quote group matched, so `"import foo;"` cannot register as an edge.
+    return std::regex_replace(text, comment_or_literal_regex, " $1$1$2$2");
+}
+
+// `#if 0` is the commented-out idiom, so its body must be elided wholesale. Nesting is
+// the one part a regex cannot express — balanced delimiters are not a regular language
+// — so the regex recognises directives and the depth is counted. Genuine conditionals
+// are deliberately left alone: over-approximating an `#ifdef` by scanning both branches
+// costs a spurious edge, while guessing which branch is live risks dropping a real one.
+class conditional_filter
+{
+public:
+    // True when a line carries no live code: a preprocessor directive, or any line
+    // inside an `#if 0` region.
+    bool is_inactive(const std::string& line)
+    {
+        // Directives are a tiny minority of lines; the cheap check keeps the regex off
+        // the hot path of a scan that runs on every build, cached or not.
+        if(line.find('#') != std::string::npos)
+        {
+            auto m = std::smatch{};
+            if(std::regex_match(line, m, directive_regex))
+            {
+                apply(m[1].str(), m[2].str());
+                return true;
+            }
+        }
+        return m_skip_depth > 0;
+    }
+
+private:
+    void apply(std::string_view name, std::string_view condition)
+    {
+        const auto skipping = m_skip_depth > 0;
+        if(name == "if" or name == "ifdef" or name == "ifndef")
+        {
+            ++m_if_depth;
+            if(not skipping and name == "if" and (condition == "0" or condition == "false"))
+                m_skip_depth = m_if_depth;
+        }
+        else if(name == "endif")
+        {
+            if(skipping and m_if_depth == m_skip_depth)
+                m_skip_depth = 0;
+            if(m_if_depth > 0)
+                --m_if_depth;
+        }
+        else if(name == "else" or name == "elif")
+        {
+            if(skipping and m_if_depth == m_skip_depth)
+                m_skip_depth = 0;
+        }
+    }
+
+    inline static const std::regex directive_regex{R"(\s*#\s*(\w+)\s*([^\s]*)\s*)"};
+
+    int m_if_depth = 0;
+    int m_skip_depth = 0;
+};
+
 } // namespace detail
 
 class translation_unit {
@@ -660,12 +739,24 @@ translation_unit parse_translation_unit(const fs::path& project_root, const fs::
 
     bool seen_real_code = false;
 
-    while (std::getline(file, line) and ++lines_scanned < max_lines) {
-        auto trimmed = trim(line);
-        if (trimmed.empty() or trimmed.starts_with("//") or trimmed.starts_with("#")) continue;
+    // Read the bounded preamble first, then clean it in one pass: block comments and
+    // literals span lines, so a per-line view cannot see them.
+    auto raw = std::string{};
+    while (lines_scanned++ < max_lines and std::getline(file, line)) {
+        raw += line;
+        raw += '\n';
+    }
+    const auto cleaned = detail::strip_comments_and_literals(raw);
+    auto conditionals = detail::conditional_filter{};
+
+    for (const auto part : std::views::split(cleaned, '\n')) {
+        const auto code_line = std::string{std::string_view{part}};
+        if (conditionals.is_inactive(code_line)) continue;
+        auto trimmed = trim(code_line);
+        if (trimmed.empty()) continue;
 
         // === ALWAYS CHECK FOR main() — ON EVERY LINE ===
-        if (std::regex_search(line, translation_unit::main_regex)) {
+        if (std::regex_search(code_line, translation_unit::main_regex)) {
             has_main = true;
         }
 
@@ -673,21 +764,21 @@ translation_unit parse_translation_unit(const fs::path& project_root, const fs::
         if (seen_real_code) continue;
 
         std::smatch m;
-        if (std::regex_search(line, m, translation_unit::fragment_regex)) {
+        if (std::regex_search(code_line, m, translation_unit::fragment_regex)) {
             if (kind == unit_kind::non_module) kind = unit_kind::global_fragment;
         }
-        else if (std::regex_search(line, m, translation_unit::export_module_regex) and m.size() > 1) {
+        else if (std::regex_search(code_line, m, translation_unit::export_module_regex) and m.size() > 1) {
             module_name = m[1].str();
             kind = module_name.contains(':') ? unit_kind::partition_unit : unit_kind::interface_unit;
         }
-        else if (std::regex_search(line, m, translation_unit::module_regex) and m.size() > 1) {
+        else if (std::regex_search(code_line, m, translation_unit::module_regex) and m.size() > 1) {
             auto mod = m[1].str();
             if (kind == unit_kind::non_module or kind == unit_kind::global_fragment) {
                 module_name = mod;
                 kind = unit_kind::implementation_unit;
             }
         }
-        else if (std::regex_search(line, m, translation_unit::import_regex) and m.size() > 1) {
+        else if (std::regex_search(code_line, m, translation_unit::import_regex) and m.size() > 1) {
             std::string imp = m[1].str();
             if (not imp.empty() and imp[0] == ':' and not module_name.empty()) {
                 auto colon = module_name.find(':');
@@ -698,16 +789,11 @@ translation_unit parse_translation_unit(const fs::path& project_root, const fs::
         }
 
         // End the preamble only after recording any module/import on this line.
-        // Strip // comments first so `import foo; // class helpers` keeps the edge
-        // and does not also drop later imports on following lines.
         // Do not end the preamble inside a global module fragment: it may contain braces,
         // keywords, and declarations before the named `export module` / `module` line.
         // Use regex word boundaries to avoid false matches (e.g., "struct" in "structured_log_stream").
         if (kind != unit_kind::global_fragment) {
-            auto code = trimmed;
-            if (const auto comment = code.find("//"); comment != std::string_view::npos)
-                code = trim(code.substr(0, comment));
-            if (code.empty()) continue;
+            const auto code = trimmed;
             auto code_str = std::string{code};
             if (code.contains('{') or
                 std::regex_search(code_str, translation_unit::keyword_regex) or
