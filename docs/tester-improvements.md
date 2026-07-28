@@ -13,6 +13,7 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 ### 1.1 Approximate comparisons
 
 - ✅ `check_near` / `require_near` wrap `floating_point_equal` with per-call epsilon control.
+- ✅ Default epsilon floored at four times `std::numeric_limits<T>::epsilon()`. A flat `1e-9` was unreachable for `float`, whose machine epsilon (~1.19e-7) is larger, so a single ulp of ordinary rounding error compared unequal. `double` / `long double` keep the historical `1e-9` — their epsilon is far below it, so the floor never applies.
 - 📋 Extend approximate comparisons to user-defined types (e.g. `std::vector<double>`) with element-wise tolerance helpers.
 
 ### 1.2 Container and range assertions
@@ -21,6 +22,7 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 - ✅ `check_contains` / `require_contains` — element membership.
 - 📋 Sequence prefix/suffix matchers for containers (mirror string `starts_with` / `ends_with`).
 - 📋 Permutation / order-insensitive container equality.
+- 📋 Broaden `is_container` to `std::ranges::input_range`; support `std::formatter`-only element types in `format_container`.
 
 ### 1.3 String-focused assertions
 
@@ -35,7 +37,21 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 
 ### 1.5 Death / termination tests
 
-- 📋 Verify code aborts or exits with a signal; optionally capture stderr/stdout for diagnostics.
+- 📋 Verify code aborts or exits with a signal; optionally capture stderr/stdout for diagnostics. The child-spawn and wait-status decoding helpers this needs already exist in `tester/details/selftest_spawn.h++` (`signaled` / `signal`).
+
+### 1.6 Exception assertions
+
+- ✅ `check_throws_as<E>(callable)` / `require_throws_as<E>(callable)` name the expected type as a template argument; a derived exception satisfies a base-class expectation.
+- ✅ The older form taking an exception *instance* survives as a deprecated forwarder, so consumers pinning an older tester keep compiling. The instance's value was always discarded — it existed only to deduce `E`.
+
+### 1.7 Comparison semantics & argument passing
+
+- 📋 **Mixed-signedness comparisons pass silently.** `check_eq` compares through `std::equal_to<std::common_type_t<A,E>>`, and `std::common_type_t<int, unsigned>` is `unsigned`, so `check_eq(-1, 4294967295u)` converts both operands and reports them **equal**. Prefer the `std::cmp_equal` / `std::cmp_less` family, which compares mathematical values: that makes the comparison *correct* rather than rejecting it with a `static_assert`.
+- 📋 Assertions take operands **by value**, copying every argument and rejecting move-only types. Take `const&` and drop the `std::common_type_t` requirement in favour of transparent comparators. Same plumbing as the item above — worth doing together.
+
+### 1.8 Matcher naming
+
+- 📋 Rename `check_neq` / `check_lteq` / `check_gteq` to `_ne` / `_le` / `_ge` (keeping aliases), and reconsider `succeed` / `failed` / `warning`.
 
 ---
 
@@ -45,6 +61,7 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 
 - ✅ Regex and substring tag filters via `--tags=`.
 - 📋 Document bracket-tag convention (`[module]` in scenario names) in one canonical example table.
+- 📋 Make tags first-class via `test_order{ .tags = {…} }` rather than encoding them in the test name, and extend the query language with OR (`[a],[b]`) and negation (`~[a]`).
 - ✅ `test_runner --list --jsonl=failures`: `test_list_start`, `registered_test`, `test_list_summary`.
 
 ### 2.2 BDD ergonomics
@@ -58,6 +75,8 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 - ✅ `priority` and `depends_on` fields on `test_case`.
 - 📋 Expose dependency graph in `--list` output.
 - 📋 Fail fast with a clear message when dependency cycle is detected.
+- 📋 Report unresolved `depends_on` ids and duplicate test ids instead of silently ignoring them.
+- 📋 Re-sort test cases after nested registration so `priority` / `depends_on` take effect inside `scenario`.
 - ✅ Framework self-tests in `tester/*.test.c++` tagged `[self]`; CI runs `./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'` and requires `summary.passed`.
 
 ### 2.4 Matcher naming in JSONL
@@ -68,6 +87,12 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 - 📋 After changing `tester:assertions`, recompile **test** translation units (`*.test.c++`), not only `tester_assertions.pcm` — template wrappers are instantiated in each test object.
 - ✅ Matcher naming on `check_nothrow` / `check_throws` / `check_throws_as` / `require_nothrow` / `require_throws` / `require_throws_as`.
 - 📋 Extend the same naming to non-comparison paths (`message` events, custom predicates) where `matcher` is absent or generic today.
+
+### 2.5 Registration & execution control
+
+- ✅ `make_test_case` no longer calls `std::terminate()` when the registering wrapper lives outside `tester::basic` / `tester::behavior_driven_development`; it falls back to the wrapper's unqualified name. Unreachable today (`make_test_case` is not exported and both wrappers match a prefix), so this removed a trap rather than fixing a live defect.
+- 📋 Let `runner` own its tag string, and make the observer instance non-latching.
+- 📋 `--shuffle` / `--seed` / `--repeat` flags, and per-test timeouts.
 
 ---
 
@@ -137,6 +162,16 @@ Machine-parseable test and build output for CI and automation. Human output rema
 
 `--tags` and `--list` may be passed directly after `test` (no `--` required). Use `--` only for uncommon `test_runner` flags.
 
+### 3.8 Additional report formats
+
+- 📋 JUnit XML observer. Small against the existing observer contract, and it unlocks the native test UI on every major CI platform.
+
+### 3.9 Output performance & shared code
+
+- ✅ One JSONL implementation shared by both sides: `jsonl::escape` and the envelope helpers live in `tester/details/jsonl.h++`, included by `tester-jsonl_observer.c++m`, `test_runner.c++` and `tools/cb-jsonl_observer.h++`.
+- 🔶 CB joins JSON string arrays through `join_json_strings`, but `tester-jsonl_observer.c++m` still hand-rolls index loops with `if(i) os << ','` in `write_string_array`, `write_string_map` and `write_failed_test_ids` — the pattern `AGENTS.md` explicitly prohibits. `write_failed_test_ids` also duplicates `write_string_array`.
+- 📋 Batch the per-event `std::flush` in `trace` mode.
+
 ---
 
 ## 4. C++ Builder (cb.c++)
@@ -163,9 +198,12 @@ Design rationale and comparison with CMake, Make, and other build tools: [`docs/
 - ✅ `debug` / `release` configurations; `clean`, `list`, `ci`, `--build-tests`.
 - 📋 Multiple custom configurations beyond debug/release (e.g. `asan`, `coverage`).
 - 📋 Export compile/link graph as JSON for external tools.
-- 📋 CMake / `compile_commands.json` export (optional; conflicts with “zero config” philosophy).
+- 📋 Emit `compile_commands.json` from `list` — nearly free given the existing argv builders, and it unblocks clangd. (Full CMake export stays optional and does conflict with the “zero config” philosophy; `compile_commands.json` alone does not.)
 - 📋 Richer diagnostics on module dependency cycles and missing PCM.
 - 📋 Support alternate module naming conventions beyond current `*.c++m` / `*.impl.c++` rules.
+- 📋 **Replace the line-oriented regex import scanner.** It does not understand block comments or `#if` nesting, so it invents dependencies: a fixture declaring `import` inside `/* … */` and inside `#if 0` is reported as `imports: ["phantom_in_block_comment", "phantom_in_if_zero"]`, i.e. false edges in the module graph that drive build order and rebuild decisions. Prefer `clang-scan-deps -format=p1689`, or a preamble tokenizer that understands comments, string literals and `#if`. This is a correctness argument, not a throughput one — a fully cached 35-TU build is ~190 ms, and the per-file scan is already capped by `max_lines`.
+- 📋 Extract `translation_unit` / source scanning, the cache layer, and CLI parsing out of `cb.c++`. The single-file property is already gone; what remains is one very large file.
+- 📋 Use `std::from_chars` in `parse_usize`; consider content hashing instead of mtime in the object cache.
 
 ### 4.2 Test integration
 
@@ -220,6 +258,7 @@ Per-project wrappers compile `cb.c++` and invoke it with the right include paths
 - ✅ Bootstrap watches `tester/details/*.h++` as well as `tools/*.h++`: `cb-jsonl_observer.h++` includes the shared JSONL header from outside `tools/`, so editing it previously rebuilt nothing.
 - ✅ JSONL-safe wrapper logging (`cb_log` → stderr when `--jsonl[=summary|failures|trace]`).
 - ✅ `NET_DISABLE_NETWORK_TESTS` sandbox hook only enabled in net wrapper (`CB_SANDBOX_DISABLE_NETWORK_TESTS=1`).
+- 📋 Remove the hardcoded `--branch grok` from `CB.sh.core`.
 
 ### 5.3 Sandbox & CI
 
@@ -247,6 +286,7 @@ Per-project wrappers compile `cb.c++` and invoke it with the right include paths
 
 - ✅ `AGENTS.md` at repo root (canonical JSONL commands, triage workflow, event reference for agents/CI).
 - ✅ MCP stdio bridge `tools/cb_mcp.py` + `.cursor/mcp.json` for CB agent tools (`cb_list` / `cb_build` / `cb_test` / …); smoke `./tests/mcp/smoke.sh`.
+- 📋 Verify the MCP bridge against a spec-compliant client, and switch to newline-delimited stdio framing if that confirms a mismatch. The smoke test currently mirrors the bridge's own framing rather than exercising the wire format independently.
 - 📋 JSONL assertion event table in README (see §3.1).
 
 ---
@@ -282,17 +322,30 @@ When tester is used as `deps/tester` inside a larger repo:
 
 ---
 
-## Priority sketch (suggested)
+## 9. Code style & tooling
+
+- 📋 Add `.clang-format` / `.clang-tidy`, and normalize `!` / `&&` against `not` / `and` in `tester-assertions.c++m` (the file mixes both today).
+
+---
+
+## Priority sketch
+
+Ordered by consequence, not by effort. Items marked **verified** were reproduced against the current tree — the reproduction is recorded in the linked section so the next person need not rediscover it. Everything above `Low` is open; completed work is marked ✅ in its own section rather than repeated here.
 
 | Priority | Item | Rationale |
 |----------|------|-----------|
-| — | `first_failure` + `failed_test_ids` in JSONL summary | ✅ Done |
-| — | CB forward `--tags` without `--` | ✅ Done |
-| — | Precise matcher names in assertion JSONL (`check_eq`, …) | ✅ Done |
-| — | `compile_end` + structured `argv` in CB JSONL | ✅ Done |
-| — | Unified `CB.sh` template | ✅ Done (`tools/CB.sh.core`) |
-| Low | Death tests, regex matchers, CMake export | Nice-to-have framework parity |
-| Low | `cache status` / `invalidate` / `prune` subcommands | Only if disk/orphan/stale-cache issues show up in practice |
+| **High** | Mixed-signedness comparisons (§1.7) | **Verified:** `check_eq(-1, 4294967295u)` passes. A framework that silently passes a wrong test is the worst available failure mode — same class as the `tests_ok` false positive already fixed |
+| **High** | Import scanner invents dependencies (§4.1) | **Verified:** `import` inside a block comment or `#if 0` becomes a real module-graph edge, affecting build order and rebuild decisions |
+| Medium | `const&` assertion operands (§1.7) | Copies every operand and rejects move-only types; same plumbing as mixed-signedness, so do them together |
+| Medium | Warnings from successful compiles are invisible (§3.6) | **Verified:** clang reports them, CB attaches them to no event, so they reach neither JSONL nor stderr — warnings accumulate unnoticed |
+| Medium | Unresolved `depends_on` / duplicate test ids (§2.3) | Silently ignored today, so a typo'd dependency looks like a passing run |
+| Medium | JUnit XML observer (§3.8) | Cheap against the existing observer contract; unlocks CI test UIs |
+| Medium | `compile_commands.json` from `list` (§4.1) | Nearly free given existing argv builders; unblocks clangd |
+| Low | Death tests, regex / predicate matchers, container prefix-suffix (§1.2–1.5) | Framework parity. Death tests are cheaper than they look — the spawn and signal-decode helpers already exist |
+| Low | Index-loop joins in tester's observer (§3.9) | Violates the project's own `AGENTS.md` rule; no behavioural impact |
+| Low | Decompose `cb.c++` (§4.1) | Large refactor with no user-visible change; the smoke suite is strong enough to support it when desired |
+| Low | `--shuffle` / `--seed` / `--repeat`, timeouts (§2.5) | Nice-to-have; flushes out inter-test coupling |
+| Low | `cache prune` (§4.4) | Only if disk bloat or orphaned artifacts show up in practice |
 
 ---
 
