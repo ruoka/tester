@@ -236,6 +236,14 @@ observed_value observe_value(const V& val)
         value = val;
     else if constexpr (std::is_same_v<T, const char*> || std::is_same_v<T, char*>)
         value = val != nullptr ? val : "nullptr";
+    else if constexpr (std::is_array_v<T> and std::is_same_v<std::remove_extent_t<T>, char>)
+    {
+        // Forwarding-reference matchers keep string literals as char[N] instead of
+        // decaying them to const char*. Report the characters — the same content the
+        // by-value path emitted after array-to-pointer decay — not the demangled
+        // array type name ("char [6]"), which is useless in assertion_failed JSONL.
+        value = static_cast<const char*>(val);
+    }
     else if constexpr (std::is_pointer_v<T>)
     {
         if(val != nullptr)

@@ -193,6 +193,29 @@ auto register_tests()
         require_false(reported.contains("_GLOBAL__N_"));  // the mangled spelling
     };
 
+    test_case("test_case [.probe-string-literal] string literal failure operands") = []
+    {
+        check_eq("hello", "world");
+        const char* got = "hello";
+        check_eq(got, "world");
+    };
+
+    test_case("test_case [self] string literal operands are reported verbatim") = []
+    {
+        const auto result = probe("[.probe-string-literal]");
+        require_neq(result.exit_code, 0);
+
+        // Forwarding references preserve char[N]; reporting must still emit the
+        // characters, not the demangled array type name ("char [6]").
+        const auto both_literals = failure(result.stdout_text, 0);
+        require_eq(field(both_literals, "actual"), std::string{"\"hello\""});
+        require_eq(field(both_literals, "expected"), std::string{"\"world\""});
+
+        const auto pointer_and_literal = failure(result.stdout_text, 1);
+        require_eq(field(pointer_and_literal, "actual"), std::string{"\"hello\""});
+        require_eq(field(pointer_and_literal, "expected"), std::string{"\"world\""});
+    };
+
     test_case("test_case [.probe-signedness] mixed-signedness failures") = []
     {
         check_eq(-1, 4294967295u);   // equal only after -1 converts to unsigned
