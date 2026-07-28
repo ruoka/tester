@@ -71,9 +71,9 @@ auto register_tests()
             "--jsonl=failures",
             "--tags=[.no-such-tag-ever]"});
 
-        // system() status: normal exit keeps the low 7 bits clear; signals do not.
-        require_eq(result.exit_code & 0x7f, 0);
-        require_neq(result.exit_code, 0);
+        // A filter that matches nothing must fail the run, not crash it.
+        require_false(result.signaled);
+        require_eq(result.exit_code, 1);
 
         const auto summary_pos = result.stdout_text.rfind("\"type\":\"summary\"");
         require_neq(summary_pos, std::string::npos);

@@ -713,7 +713,7 @@ namespace tester::assertions
         ++data::statistics().total_assertions;
         const auto ok = haystack.contains(needle);
         data::statistics().successful_assertions += ok;
-        auto needle_str = std::string{1, needle};
+        auto needle_str = std::string(1, needle);
         publisher::assertion(ok, haystack, std::string{"contains: '"} + needle_str + "'", location);
         return ok;
     }
@@ -723,7 +723,7 @@ namespace tester::assertions
         ++data::statistics().total_assertions;
         const auto ok = haystack.contains(needle);
         data::statistics().successful_assertions += ok;
-        auto needle_str = std::string{1, needle};
+        auto needle_str = std::string(1, needle);
         publisher::assertion(ok, haystack, std::string{"contains: '"} + needle_str + "'", location);
         if (!ok) {
             throw assertion_failure{"String does not contain expected character: '" + needle_str + "'"};
