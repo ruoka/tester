@@ -81,9 +81,9 @@ auto register_tests()
             {"--tags=[.depends-on-cycle-probe]"},
             "TESTER_DEPENDS_ON_CYCLE_PROBE=1 ");
 
-        // system() status: normal exit keeps the low 7 bits clear; signals do not.
-        require_eq(result.exit_code & 0x7f, 0);
-        require_neq(result.exit_code, 0);
+        // A dependency cycle must be reported as a failure, not a crash.
+        require_false(result.signaled);
+        require_eq(result.exit_code, 1);
     };
 
     test_case("test_case [self] summary records passing run") = []

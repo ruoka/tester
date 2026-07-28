@@ -39,3 +39,6 @@ Makefile.deps
 !.cursor/mcp.json
 **/__pycache__/
 *.py[cod]
+
+# macOS Finder metadata
+.DS_Store

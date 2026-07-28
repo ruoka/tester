@@ -191,6 +191,45 @@ assert_jsonl_not_contains() {
   assert_text_not_contains "${LAST_JSONL}" "$1" "${2:-jsonl_not_contains}"
 }
 
+# Assert that some event of the given type carries diagnostics whose text contains
+# the needle. Checks the parsed value, so it also proves the text survived escaping.
+assert_jsonl_diagnostics_contain() {
+  local event_type=$1
+  local needle=$2
+  local label=${3:-jsonl_diagnostics}
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if python3 - "${event_type}" "${needle}" "${LAST_JSONL}" <<'PY'
+import json, sys
+event_type, needle = sys.argv[1], sys.argv[2]
+seen = 0
+for line in sys.argv[3].splitlines():
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if event.get("type") != event_type:
+        continue
+    diagnostics = event.get("diagnostics")
+    if not diagnostics:
+        continue
+    seen += 1
+    if needle in diagnostics.get("text", ""):
+        if not diagnostics.get("path"):
+            print("diagnostics missing path", file=sys.stderr)
+            raise SystemExit(1)
+        raise SystemExit(0)
+print(f"no {event_type} diagnostics containing {needle!r} ({seen} with diagnostics)",
+      file=sys.stderr)
+raise SystemExit(1)
+PY
+  then
+    jsonl_emit "{\"type\":\"smoke_assert_passed\",\"matcher\":\"${label}\"}"
+    return 0
+  fi
+  fail "expected ${event_type} diagnostics containing: ${needle}"
+  return 0
+}
+
 assert_jsonl_event_count() {
   local event_type=$1
   local expected=$2

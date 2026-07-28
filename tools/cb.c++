@@ -31,6 +31,9 @@
 #include <stdexcept>
 #include <system_error>
 #include <cctype>
+#include <charconv>
+#include <cstddef>
+#include <semaphore>
 #include "cb-jsonl_observer.h++"
 #include "cb-console_observer.h++"
 
@@ -441,6 +444,89 @@ std::string binary_signature(const std::string& path)
     return std::to_string(size) + ':' + std::to_string(ticks);
 }
 
+// Make-style depfile (clang -MMD -MF): `target: prereq prereq \<newline> prereq`.
+// Spaces inside a path are backslash-escaped; a trailing backslash continues the line.
+// Returns prerequisites only — the target and the source itself are handled elsewhere.
+string_list parse_depfile(const std::string& path)
+{
+    auto file = std::ifstream{path};
+    if(not file)
+        return {};
+
+    auto text = std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+    if(const auto colon = text.find(':'); colon != std::string::npos)
+        text.erase(0, colon + 1);
+    else
+        return {};
+
+    auto prerequisites = string_list{};
+    auto current = std::string{};
+    const auto flush = [&]
+    {
+        if(not current.empty())
+            prerequisites.push_back(std::exchange(current, std::string{}));
+    };
+
+    for(auto index = std::size_t{}; index < text.size(); ++index)
+    {
+        const auto ch = text[index];
+        if(ch == '\\' and index + 1 < text.size())
+        {
+            const auto next = text[index + 1];
+            // Line continuation: the backslash and the newline both vanish.
+            if(next == '\n' or next == '\r')
+            {
+                flush();
+                continue;
+            }
+            // Escaped literal (most often `\ ` in a path).
+            current.push_back(next);
+            ++index;
+            continue;
+        }
+        if(std::isspace(static_cast<unsigned char>(ch)) != 0)
+            flush();
+        else
+            current.push_back(ch);
+    }
+    flush();
+
+    return prerequisites;
+}
+
+// std::system yields a wait status: a child exiting 1 reports 256, and a child killed
+// by SIGSEGV reports 11. Reporting the raw value as exit_code made command_end and
+// test_end.exit_code disagree with what the child actually returned.
+inline output::process_status decode_wait_status(int status)
+{
+    if(status < 0) // the shell itself could not be started
+        return {.exit_code = status, .wait_status = status};
+    if((status & 0x7f) != 0 and (status & 0x7f) != 0x7f)
+        return {.exit_code = -1, .wait_status = status, .signaled = true, .signal = status & 0x7f};
+    return {.exit_code = (status >> 8) & 0xff, .wait_status = status};
+}
+
+// Compiler output can run to megabytes on a template error; only the head is worth
+// putting on a JSONL line, and the full capture stays on disk for the human.
+inline output::diagnostics read_diagnostics(std::string_view path)
+{
+    constexpr auto head_limit = std::size_t{8192};
+
+    auto file = std::ifstream{std::string{path}, std::ios::binary};
+    if(not file)
+        return {};
+
+    auto text = std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+    auto diag = output::diagnostics{.path = std::string{path}, .bytes = text.size()};
+    if(text.size() > head_limit)
+    {
+        text.resize(head_limit);
+        diag.truncated = true;
+    }
+    diag.head = std::move(text);
+    return diag;
+}
+
 std::string read_first_line(const std::string& path)
 {
     auto file = std::ifstream{path};
@@ -658,6 +744,30 @@ using thread_list = std::vector<std::jthread>;
 using module_to_ldflags_map = std::flat_map<std::string, std::string, std::less<>>;
 using executable_cache_map = std::flat_map<std::string, std::string, std::less<>>;
 
+// Bounds concurrent toolchain processes. CB spawned one jthread per translation unit
+// in a dependency level, so a level with hundreds of units launched hundreds of
+// clang++ processes at once — each one a multi-hundred-megabyte peak.
+class job_gate
+{
+public:
+    explicit job_gate(std::ptrdiff_t limit) : slots{limit} {}
+
+    class slot
+    {
+    public:
+        explicit slot(job_gate& gate) : gate{gate} { gate.slots.acquire(); }
+        ~slot() { gate.slots.release(); }
+        slot(const slot&) = delete;
+        slot& operator=(const slot&) = delete;
+
+    private:
+        job_gate& gate;
+    };
+
+private:
+    std::counting_semaphore<> slots;
+};
+
 class build_system {
 public:
     enum class build_config { debug, release };
@@ -683,6 +793,7 @@ private:
     const bool static_link;
     bool include_tests = false;
     bool include_examples = false;
+    int max_jobs = 0;
     string_list extra_compile_flag_tokens;
     string_list extra_link_flag_tokens;
     std::optional<output::rebuild_kind> object_cache_miss_reason;
@@ -1033,28 +1144,60 @@ private:
     // General Utilities
     // ============================================================================
 
+    struct shell_result
+    {
+        output::process_status status;
+        output::diagnostics diag;
+
+        bool ok() const { return status.ok(); }
+    };
+
     // Sole shell boundary: argv is non-empty (contract); join_argv quotes each element with join_with.
-    int invoke_shell(const string_list& argv) const
+    // When capture_path is given, the child's stdout and stderr are redirected there
+    // and read back on failure. The test runner must not be captured — its stdout is
+    // the JSONL stream the caller is forwarding.
+    shell_result invoke_shell(const string_list& argv, std::string_view capture_path = {}) const
     {
         if(argv.empty())
             throw std::logic_error{"invoke_shell: empty argv"};
 
         auto cmd_str = detail::join_argv(argv);
+        auto shell_line = cmd_str;
+        if(not capture_path.empty())
+            shell_line += " > " + detail::shell_quote(std::string{capture_path}) + " 2>&1";
+
         output::notify(&output::observer::command, cmd_str);
         output::notify(&output::observer::command_start, cmd_str, argv);
 
         const auto started = std::chrono::steady_clock::now();
-        auto r = system(cmd_str.c_str());
+        const auto raw = system(shell_line.c_str());
         const auto finished = std::chrono::steady_clock::now();
 
-        output::notify(&output::observer::command_end, cmd_str, argv, r == 0, r, started, finished);
-        return r;
+        auto result = shell_result{.status = detail::decode_wait_status(raw)};
+        if(not result.ok() and not capture_path.empty())
+            result.diag = detail::read_diagnostics(capture_path);
+
+        output::notify(&output::observer::command_end, cmd_str, argv, result.ok(),
+                       result.status, result.diag, started, finished);
+        return result;
     }
 
-    void execute_system_command(const string_list& argv) const
+    void execute_system_command(const string_list& argv, std::string_view capture_path = {}) const
     {
-        if(const auto r = invoke_shell(argv); r)
-            throw std::runtime_error{"Command failed: " + detail::join_argv(argv)};
+        if(const auto result = invoke_shell(argv, capture_path); not result.ok())
+            throw std::runtime_error{command_failure_message(argv, result)};
+    }
+
+    static std::string command_failure_message(const string_list& argv, const shell_result& result)
+    {
+        auto message = "Command failed: " + detail::join_argv(argv);
+        if(result.status.signaled)
+            message += " (killed by signal " + std::to_string(result.status.signal) + ')';
+        else
+            message += " (exit " + std::to_string(result.status.exit_code) + ')';
+        if(not result.diag.head.empty())
+            message += '\n' + result.diag.head;
+        return message;
     }
 
     static std::string_view rebuild_hint(output::rebuild_kind kind)
@@ -1067,6 +1210,8 @@ private:
                 return "Source path not present in object cache for this config.";
             case output::rebuild_kind::source_stale:
                 return "Source mtime newer than cached compile timestamp.";
+            case output::rebuild_kind::header_stale:
+                return "An included header is newer than this object (from the compiler depfile).";
             case output::rebuild_kind::object_missing:
                 return "Object file missing on disk.";
             case output::rebuild_kind::object_stale:
@@ -1111,6 +1256,8 @@ private:
                 if(not info.trigger_path.empty() and info.trigger_path != tu.full_path)
                     return "Rebuilding " + label + " because dependency " + info.trigger_path + " is newer than its cached object";
                 return "Rebuilding " + label + " because source is newer than the cached object";
+            case output::rebuild_kind::header_stale:
+                return "Rebuilding " + label + " because included header " + info.trigger_path + " is newer than its object";
             case output::rebuild_kind::pcm_stale:
                 return "Rebuilding " + label + " because PCM " + info.module + " is newer than the object (import graph)";
             case output::rebuild_kind::dependency_pcm_stale:
@@ -1190,7 +1337,8 @@ private:
                           bool cache_hit,
                           std::chrono::steady_clock::time_point started,
                           std::chrono::steady_clock::time_point finished,
-                          const output::rebuild_info& rebuild = {}) const
+                          const output::rebuild_info& rebuild = {},
+                          const output::diagnostics& diag = {}) const
     {
         output::notify(
             &output::observer::compile_end,
@@ -1202,7 +1350,8 @@ private:
             cache_hit,
             started,
             finished,
-            rebuild);
+            rebuild,
+            diag);
     }
 
     void emit_link_end(std::string_view executable_path,
@@ -1210,9 +1359,10 @@ private:
                        bool cache_hit,
                        std::chrono::steady_clock::time_point started,
                        std::chrono::steady_clock::time_point finished,
-                       const output::rebuild_info& rebuild = {}) const
+                       const output::rebuild_info& rebuild = {},
+                       const output::diagnostics& diag = {}) const
     {
-        output::notify(&output::observer::link_end, executable_path, ok, cache_hit, started, finished, rebuild);
+        output::notify(&output::observer::link_end, executable_path, ok, cache_hit, started, finished, rebuild, diag);
     }
 
     void emit_profile_changed()
@@ -1232,10 +1382,34 @@ private:
         return argv;
     }
 
+    // Header dependencies live next to the object file. Written by the step that
+    // actually reads the source: --precompile for modular units, -c otherwise.
+    std::string depfile_path(const translation_unit& tu) const
+    {
+        return tu.object_path + ".d";
+    }
+
+    string_list depfile_argv(const translation_unit& tu) const
+    {
+        return string_list{"-MMD", "-MF", depfile_path(tu)};
+    }
+
+    // Per-target capture files: parallel workers must not share one.
+    std::string diagnostics_path(const translation_unit& tu) const
+    {
+        return tu.object_path + ".log";
+    }
+
+    std::string diagnostics_path_for_executable(std::string_view executable_path) const
+    {
+        return std::string{executable_path} + ".link.log";
+    }
+
     string_list precompile_argv(const translation_unit& tu) const
     {
         auto argv = base_compile_argv();
         argv.append_range(module_flags);
+        argv.append_range(depfile_argv(tu));
         argv.push_back(tu.full_path);
         argv.push_back("--precompile");
         argv.push_back("-o");
@@ -1260,6 +1434,7 @@ private:
     {
         auto argv = base_compile_argv();
         argv.append_range(module_flags);
+        argv.append_range(depfile_argv(tu));
         if (tu.kind == unit_kind::implementation_unit) {
             auto module_pcm = compute_pcm_path(tu);
             argv.push_back(detail::module_file_flag(tu.module, module_pcm));
@@ -1518,6 +1693,27 @@ private:
         return false;
     }
 
+    // Prerequisites are restricted to the project tree: toolchain headers change as a
+    // unit and are already covered by the object-cache profile (cxx_sig / clang_ver),
+    // so scanning them here would only add thousands of stat calls per build.
+    std::optional<std::string> stale_header(const translation_unit& tu,
+                                            fs::file_time_type object_timestamp) const
+    {
+        for(const auto& prerequisite : detail::parse_depfile(depfile_path(tu)))
+        {
+            if(prerequisite == tu.full_path or not prerequisite.starts_with(source_dir))
+                continue;
+
+            auto error = std::error_code{};
+            const auto timestamp = fs::last_write_time(prerequisite, error);
+            if(error)
+                continue;
+            if(timestamp > object_timestamp)
+                return prerequisite;
+        }
+        return std::nullopt;
+    }
+
     std::optional<output::rebuild_info> needs_recompile(const translation_unit& tu, object_cache_map& c, const unit_to_tu_map& u2tu) const {
         // First-seen path for this config vs edited source after a prior compile.
         if (not c.contains(tu.full_path)) {
@@ -1535,6 +1731,11 @@ private:
         auto object_timestamp = fs::last_write_time(tu.object_path);
         if (object_timestamp < c.at(tu.full_path))
             return make_rebuild(output::rebuild_kind::object_stale, {}, {}, tu.full_path);
+
+        // Textual #include dependencies are invisible to the module graph, so the
+        // compiler's own depfile is the only record of them.
+        if (auto header = stale_header(tu, object_timestamp))
+            return make_rebuild(output::rebuild_kind::header_stale, {}, {}, *header);
 
         // Implementation units consume their interface PCM implicitly through
         // -fmodule-file=<module>=<pcm>, even when they do not import that module.
@@ -1891,7 +2092,7 @@ private:
             std_module_profile_matches())
             return;
 
-        execute_system_command(build_std_pcm_argv());
+        execute_system_command(build_std_pcm_argv(), std_pcm_path() + ".log");
         save_std_module_profile();
     }
 
@@ -1902,7 +2103,7 @@ private:
         if (fs::exists(std_obj) and fs::last_write_time(std_obj) >= fs::last_write_time(std_pcm))
             return;
 
-        execute_system_command(build_std_o_argv());
+        execute_system_command(build_std_o_argv(), std_obj_path() + ".log");
     }
 
     // ============================================================================
@@ -1912,16 +2113,23 @@ private:
     void compile_unit(const translation_unit& tu, const output::rebuild_info& rebuild) {
         emit_compile_start(tu, rebuild);
         const auto started = std::chrono::steady_clock::now();
-        try {
-            if (tu.is_modular) {
-                execute_system_command(precompile_argv(tu));
-                execute_system_command(pcm_object_argv(tu));
-            } else {
-                execute_system_command(source_object_argv(tu));
+        const auto capture = diagnostics_path(tu);
+
+        // Attach the compiler's own output to the failing compile_end, so a consumer
+        // reading stdout sees the diagnostic and not just ok:false.
+        const auto step = [&](const string_list& argv) {
+            const auto result = invoke_shell(argv, capture);
+            if (not result.ok()) {
+                emit_compile_end(tu, false, false, started, std::chrono::steady_clock::now(), rebuild, result.diag);
+                throw std::runtime_error{command_failure_message(argv, result)};
             }
-        } catch (...) {
-            emit_compile_end(tu, false, false, started, std::chrono::steady_clock::now(), rebuild);
-            throw;
+        };
+
+        if (tu.is_modular) {
+            step(precompile_argv(tu));
+            step(pcm_object_argv(tu));
+        } else {
+            step(source_object_argv(tu));
         }
         emit_compile_end(tu, true, false, started, std::chrono::steady_clock::now(), rebuild);
     }
@@ -1971,10 +2179,15 @@ private:
             auto failed = std::atomic_bool{false};
             auto failure = std::exception_ptr{};
             auto failure_mutex = std::mutex{};
+            auto gate = job_gate{job_limit()};
 
             for (const auto& [tu, reason] : decisions) {
                 if(reason) {
-                    threads.emplace_back([this, tu, reason, &cache, &failed, &failure, &failure_mutex]() {
+                    threads.emplace_back([this, tu, reason, &cache, &failed, &failure, &failure_mutex, &gate]() {
+                        if(failed.load(std::memory_order_relaxed))
+                            return;
+                        const auto slot = job_gate::slot{gate};
+                        // Recheck: a failure may have landed while waiting for a slot.
                         if(failed.load(std::memory_order_relaxed))
                             return;
                         try {
@@ -2014,10 +2227,24 @@ private:
             | std::ranges::to<string_list>();
     }
 
-    void link_executable(const translation_unit& tu, const string_list& shared_objects) {
-        if (not tu.has_main) return;
-        execute_system_command(link_executable_argv(tu, shared_objects));
+    // Returns the linker's captured output when the link fails, so the caller can
+    // attach it to link_end before rethrowing.
+    output::diagnostics link_executable(const translation_unit& tu, const string_list& shared_objects) {
+        if (not tu.has_main) return {};
+        const auto argv = link_executable_argv(tu, shared_objects);
+        const auto result = invoke_shell(argv, diagnostics_path_for_executable(tu.executable_path));
+        if (not result.ok())
+            throw link_failure{command_failure_message(argv, result), result.diag};
+        return {};
     }
+
+    struct link_failure : std::runtime_error
+    {
+        link_failure(const std::string& message, output::diagnostics diag)
+            : std::runtime_error{message}, diag{std::move(diag)} {}
+
+        output::diagnostics diag;
+    };
 
     std::string dependency_signature(const std::string& path) const {
         if (path.empty() or not fs::exists(path))
@@ -2080,6 +2307,7 @@ private:
         auto failed = std::atomic_bool{false};
         auto failure = std::exception_ptr{};
         auto failure_mutex = std::mutex{};
+        auto gate = job_gate{job_limit()};
         for(const auto& decision : decisions)
         {
             const auto& tu = *decision.tu;
@@ -2091,7 +2319,10 @@ private:
                 continue;
             }
             // Capture decision by reference — it outlives join(); do not bind a per-iteration local.
-            threads.emplace_back([this, &decision, &shared_objects, &link_cache, &failed, &failure, &failure_mutex]() {
+            threads.emplace_back([this, &decision, &shared_objects, &link_cache, &failed, &failure, &failure_mutex, &gate]() {
+                if(failed.load(std::memory_order_relaxed))
+                    return;
+                const auto slot = job_gate::slot{gate};
                 if(failed.load(std::memory_order_relaxed))
                     return;
                 const auto& tu = *decision.tu;
@@ -2104,6 +2335,13 @@ private:
                     emit_link_end(tu.executable_path, true, false, started, finished, *decision.reason);
                     auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
                     link_cache[tu.executable_path] = decision.signature;
+                } catch (const link_failure& error) {
+                    emit_link_end(tu.executable_path, false, false, started, std::chrono::steady_clock::now(), *decision.reason, error.diag);
+                    failed.store(true, std::memory_order_relaxed);
+                    auto lock = std::lock_guard<std::mutex>{failure_mutex};
+                    if(not failure)
+                        failure = std::current_exception();
+                    return;
                 } catch (...) {
                     if(not linked)
                         emit_link_end(tu.executable_path, false, false, started, std::chrono::steady_clock::now(), *decision.reason);
@@ -2221,11 +2459,12 @@ private:
         }
 
         const auto link_started = std::chrono::steady_clock::now();
-        try {
-            execute_system_command(link_test_runner_argv(test_runner_path, test_runner_obj, link_module_ldflags));
-        } catch (...) {
-            emit_link_end(test_runner_path, false, false, link_started, std::chrono::steady_clock::now(), *link_reason);
-            throw;
+        const auto link_argv = link_test_runner_argv(test_runner_path, test_runner_obj, link_module_ldflags);
+        if(const auto result = invoke_shell(link_argv, diagnostics_path_for_executable(test_runner_path));
+           not result.ok())
+        {
+            emit_link_end(test_runner_path, false, false, link_started, std::chrono::steady_clock::now(), *link_reason, result.diag);
+            throw std::runtime_error{command_failure_message(link_argv, result)};
         }
         if(has_runner_unit)
             output::notify(&output::observer::success, "test_runner linked with test objects");
@@ -2365,6 +2604,18 @@ public:
         include_tests = value;
     }
 
+    // 0 requests the hardware default.
+    void set_max_jobs(int value) {
+        max_jobs = value;
+    }
+
+    std::ptrdiff_t job_limit() const {
+        if(max_jobs > 0)
+            return max_jobs;
+        const auto detected = std::thread::hardware_concurrency();
+        return detected > 0 ? static_cast<std::ptrdiff_t>(detected) : 1;
+    }
+
     void build() {
         const auto build_started = std::chrono::steady_clock::now();
         current_phase = build_phase::build;
@@ -2428,12 +2679,17 @@ public:
         const auto test_started = std::chrono::steady_clock::now();
         output::notify(&output::observer::test_start, runner);
 
-        const auto r = invoke_shell(test_runner_argv(runner, args));
+        // Not captured: the runner's stdout is the JSONL stream being forwarded.
+        const auto result = invoke_shell(test_runner_argv(runner, args));
         const auto test_finished = std::chrono::steady_clock::now();
-        output::notify(&output::observer::test_end, r == 0, r, r, false, 0, test_started, test_finished);
+        output::notify(&output::observer::test_end, result.ok(), result.status, test_started, test_finished);
         current_phase = build_phase::none;
-        if (r) {
-            output::notify(&output::observer::error, "Some tests or assertions failed!");
+        if (not result.ok()) {
+            if(result.status.signaled)
+                output::notify(&output::observer::error,
+                               "Test runner was killed by signal " + std::to_string(result.status.signal) + '!');
+            else
+                output::notify(&output::observer::error, "Some tests or assertions failed!");
             return false;
         }
         output::notify(&output::observer::success, "All tests passed!");
@@ -2489,7 +2745,8 @@ bool is_cb_token(std::string_view arg)
         || arg == "--include-examples" || arg == "--build-tests"
         || arg == "-I" || arg == "--include" || arg == "--link-flags"
         || arg == "--compile-flags" || arg == "--extra-compile-flags"
-        || arg == "--jsonl" || arg.starts_with("--jsonl=");
+        || arg == "--jsonl" || arg.starts_with("--jsonl=")
+        || arg.starts_with("--jobs=");
 }
 
 bool is_test_runner_token(std::string_view arg)
@@ -2531,6 +2788,12 @@ int main(int argc, char* argv[])
             if (fs::exists(candidate)) {
                 stdcppm = candidate.string();
                 ++arg_index;
+            } else if (candidate.extension() == ".cppm") {
+                // Distinguish a mistyped std.cppm path from an unknown flag, which is
+                // what the terminal else below would otherwise report it as.
+                cb::output::notify(&cb::output::observer::error,
+                    "std.cppm not found: "s + candidate.string());
+                return 2;
             }
         }
 
@@ -2545,6 +2808,7 @@ int main(int argc, char* argv[])
         auto include_paths = std::vector<std::string>{};
         auto extra_compile_flags = cb::string_list{};
         auto extra_link_flags = cb::string_list{};
+        auto max_jobs = 0; // 0 = derive from hardware_concurrency
 
         // Returns nullopt if not a --jsonl form; false if the mode is unknown.
         const auto apply_jsonl_arg = [&](std::string_view argument) -> std::optional<bool>
@@ -2626,6 +2890,16 @@ int main(int argc, char* argv[])
                 include_examples = true;
             } else if (argument == "--build-tests") {
                 build_tests = true;
+            } else if (argument.starts_with("--jobs=")) {
+                const auto text = argument.substr(std::string_view{"--jobs="}.size());
+                auto value = 0;
+                const auto [_, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+                if (error != std::errc{} or value < 1) {
+                    cb::output::notify(&cb::output::observer::error,
+                        "--jobs expects a positive integer, got: "s + std::string{text});
+                    return 2;
+                }
+                max_jobs = value;
             } else if (do_run_tests && is_test_runner_token(argument)) {
                 // Forward recognized test_runner flags (e.g. --tags=, --list, --result).
                 // (--jsonl is handled above; CB injects the mode into test_runner later if needed.)
@@ -2671,6 +2945,7 @@ int main(int argc, char* argv[])
                           << "  --include-examples Include examples directory in build (excluded by default)\n"
                           << "  --build-tests    Build tests in release mode (useful for CI to verify compilation)\n"
                           << "  --jsonl[=<summary|failures|trace>]  Machine-readable output (default: failures)\n"
+                          << "  --jobs=N         Limit concurrent compile/link processes (default: CPU count)\n"
                           << "  -I, --include    Add include directory (can be specified multiple times)\n"
                           << "  --link-flags     Add extra linker flags (e.g., --link-flags \"-lcrypto\")\n"
                           << "  --compile-flags  Add extra compiler flags\n"
@@ -2690,6 +2965,17 @@ int main(int argc, char* argv[])
                           << "  " << argv[0] << " test --jsonl=trace --slowest=10\n"
                           << "  " << argv[0] << " clean\n";
                 return 0;
+            } else {
+                // Terminal else: CB used to fall through here silently, so a typo like
+                // --tag= (for --tags=) ran the full suite and reported success. A build
+                // tool must not quietly ignore what it was asked to do.
+                cb::output::notify(&cb::output::observer::error,
+                    "Unknown argument: "s + std::string{argument}
+                    + (argument.starts_with("--tag") and not argument.starts_with("--tags=")
+                        ? " (did you mean --tags=<filter>?)"
+                        : "")
+                    + "\nRun with --help for usage.");
+                return 2;
             }
         }
 
@@ -2709,6 +2995,7 @@ int main(int argc, char* argv[])
             | std::ranges::to<cb::string_list>();
 
         auto build_system = cb::build_system{config, include_flags, {}, ".", stdcppm, static_linking, include_examples, extra_compile_flags, extra_link_flags};
+        build_system.set_max_jobs(max_jobs);
 
         if (do_list) build_system.list_sources();
         if (do_cache_status) {

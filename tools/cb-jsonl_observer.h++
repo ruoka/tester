@@ -88,6 +88,30 @@ inline void write_rebuild_field(std::ostream& os, std::string_view name, std::st
     os << '"' << name << "\":\"" << escape(value) << '"';
 }
 
+inline void write_process_status(std::ostream& os, const process_status& status)
+{
+    os << ",\"exit_code\":" << status.exit_code;
+    os << ",\"wait_status\":" << status.wait_status;
+    os << ",\"signaled\":" << (status.signaled ? "true" : "false");
+    if(status.signaled)
+        os << ",\"signal\":" << status.signal;
+}
+
+// Compiler output travels inline so that a consumer reading stdout only has the
+// error text, with a path to the untruncated capture for anything longer.
+inline void write_diagnostics(std::ostream& os, const diagnostics& diag)
+{
+    if(diag.empty())
+        return;
+    os << ",\"diagnostics\":{";
+    os << "\"text\":\"" << escape(diag.head) << '"';
+    if(not diag.path.empty())
+        os << ",\"path\":\"" << escape(diag.path) << '"';
+    os << ",\"bytes\":" << diag.bytes;
+    os << ",\"truncated\":" << (diag.truncated ? "true" : "false");
+    os << '}';
+}
+
 inline void write_rebuild(std::ostream& os, const rebuild_info& rebuild)
 {
     os << '{';
@@ -256,16 +280,13 @@ struct observer final : cb::output::observer
         };
     }
 
-    void test_end(bool ok, int exit_code, int wait_status, bool signaled, int signal_number, std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished) override
+    void test_end(bool ok, const process_status& status, std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started);
         m.json << m.jsonl("test_end") << [&](std::ostream& os){
             os << ",\"ok\":" << (ok ? "true" : "false");
-            os << ",\"exit_code\":" << exit_code;
-            os << ",\"wait_status\":" << wait_status;
-            os << ",\"signaled\":" << (signaled ? "true" : "false");
-            if(signaled) os << ",\"signal\":" << signal_number;
+            write_process_status(os, status);
             os << ",\"duration_ms\":" << duration.count();
         };
     }
@@ -290,7 +311,7 @@ struct observer final : cb::output::observer
         };
     }
 
-    void command_end(std::string_view cmd, std::span<const std::string> argv, bool ok, int exit_code, std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished) override
+    void command_end(std::string_view cmd, std::span<const std::string> argv, bool ok, const process_status& status, const diagnostics& diag, std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         if(not ok)
@@ -304,7 +325,8 @@ struct observer final : cb::output::observer
                 os << ",\"cmd\":\"" << escape(cmd) << "\"";
             write_argv(os, argv);
             os << ",\"ok\":" << (ok ? "true" : "false");
-            os << ",\"exit_code\":" << exit_code;
+            write_process_status(os, status);
+            write_diagnostics(os, diag);
             os << ",\"duration_ms\":" << duration.count();
         };
     }
@@ -390,7 +412,8 @@ struct observer final : cb::output::observer
                   bool cache_hit,
                   std::chrono::steady_clock::time_point started,
                   std::chrono::steady_clock::time_point finished,
-                  const rebuild_info& rebuild = {}) override
+                  const rebuild_info& rebuild = {},
+                  const diagnostics& diag = {}) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         ++m.links_total;
@@ -412,6 +435,7 @@ struct observer final : cb::output::observer
                 os << ",\"rebuild\":";
                 write_rebuild(os, rebuild);
             }
+            write_diagnostics(os, diag);
             os << ",\"duration_ms\":" << duration.count();
         };
     }
@@ -424,7 +448,8 @@ struct observer final : cb::output::observer
                      bool cache_hit,
                      std::chrono::steady_clock::time_point started,
                      std::chrono::steady_clock::time_point finished,
-                     const rebuild_info& rebuild = {}) override
+                     const rebuild_info& rebuild = {},
+                     const diagnostics& diag = {}) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         ++m.compile_total;
@@ -456,6 +481,7 @@ struct observer final : cb::output::observer
                 os << ",\"rebuild\":";
                 write_rebuild(os, rebuild);
             }
+            write_diagnostics(os, diag);
             os << ",\"duration_ms\":" << duration.count();
         };
     }

@@ -200,7 +200,6 @@ export auto run_test_cases(auto filter, auto set_test_id, auto clear_test_id, au
             //       given("Setup") = [&data] { ... };  // BUG: dangling reference
             //   };
             tc->run();
-            ++statistics().successful_tests;
         }
         catch(const assertions::assertion_failure& ex)
         {
@@ -227,6 +226,15 @@ export auto run_test_cases(auto filter, auto set_test_id, auto clear_test_id, au
         tr.finished_at = finished_sys;
         tr.assertions_total = statistics().total_assertions - assertions_total_before;
         tr.assertions_ok = statistics().successful_assertions - assertions_ok_before;
+
+        // A non-fatal check_* failure does not throw, so returning normally is not
+        // enough to call the test successful. Counting it here — rather than right
+        // after tc->run() — keeps summary.tests_ok consistent with failed_test_ids.
+        if(tr.success and tr.assertions_ok == tr.assertions_total)
+            ++statistics().successful_tests;
+        else
+            tr.success = false;
+
         
         clear_test_id();
         
@@ -236,7 +244,12 @@ export auto run_test_cases(auto filter, auto set_test_id, auto clear_test_id, au
         // because nested test cases store their own copies of the lambda (with captured
         // values), not references to this test_case object.
         test_cases.erase(tc);
-        tr.output = tr.success ? publisher::captured_output() : failure_message;
+        // The captured output holds the per-assertion detail, which is precisely what
+        // a reader needs for a failure. Using the exception message instead meant a
+        // check_*-only failure — which throws nothing — reported no detail at all.
+        tr.output = publisher::captured_output();
+        if(not failure_message.empty())
+            tr.output += failure_message + '\n';
         test_results.push_back(tr);
     }
 }

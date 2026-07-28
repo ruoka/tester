@@ -1,0 +1,353 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ruoka/tester/docs/jsonl-schema.json",
+  "title": "tester-jsonl event",
+  "description": "One event from the tester/CB JSONL stream. Every line on stdout is a single object conforming to this schema; stderr carries human logs and is not covered here. Validate a stream with tests/jsonl/validate.py.",
+  "type": "object",
+  "required": ["type", "schema", "version", "pid", "ts_unix_ms"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "description": "Event kind. Consumers should ignore unknown kinds rather than fail: new kinds are added without a version bump."
+    },
+    "schema": { "const": "tester-jsonl" },
+    "version": { "type": "integer", "minimum": 1 },
+    "pid": {
+      "type": "integer",
+      "description": "OS process id. CB and the test_runner it spawns differ."
+    },
+    "ts_unix_ms": { "type": "integer" },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "Session id of the emitting process."
+    },
+    "parent_run_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "CB's run_id, present on test_runner events when CB spawned the child."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "summary" } }, "required": ["type"] },
+      "then": { "$ref": "#/$defs/summary" }
+    },
+    {
+      "if": { "properties": { "type": { "const": "assertion_failed" } }, "required": ["type"] },
+      "then": { "$ref": "#/$defs/assertion" }
+    },
+    {
+      "if": { "properties": { "type": { "const": "assertion_passed" } }, "required": ["type"] },
+      "then": { "$ref": "#/$defs/assertion" }
+    },
+    {
+      "if": { "properties": { "type": { "const": "test" } }, "required": ["type"] },
+      "then": { "$ref": "#/$defs/test" }
+    },
+    {
+      "if": { "properties": { "type": { "const": "exception" } }, "required": ["type"] },
+      "then": { "$ref": "#/$defs/exception" }
+    },
+    {
+      "if": { "properties": { "type": { "const": "registered_test" } }, "required": ["type"] },
+      "then": { "$ref": "#/$defs/registered_test" }
+    },
+    {
+      "if": { "properties": { "type": { "const": "test_list_summary" } }, "required": ["type"] },
+      "then": { "$ref": "#/$defs/test_list_summary" }
+    },
+    {
+      "if": { "properties": { "type": { "const": "test_end" } }, "required": ["type"] },
+      "then": { "$ref": "#/$defs/test_end" }
+    },
+    {
+      "if": { "properties": { "type": { "const": "build_end" } }, "required": ["type"] },
+      "then": { "$ref": "#/$defs/build_end" }
+    },
+    {
+      "if": { "properties": { "type": { "const": "compile_end" } }, "required": ["type"] },
+      "then": { "$ref": "#/$defs/compile_end" }
+    },
+    {
+      "if": { "properties": { "type": { "const": "link_end" } }, "required": ["type"] },
+      "then": { "$ref": "#/$defs/link_end" }
+    },
+    {
+      "if": { "properties": { "type": { "const": "command_end" } }, "required": ["type"] },
+      "then": { "$ref": "#/$defs/command_end" }
+    },
+    {
+      "if": { "properties": { "type": { "const": "unit" } }, "required": ["type"] },
+      "then": { "$ref": "#/$defs/unit" }
+    },
+    {
+      "if": { "properties": { "type": { "const": "list_summary" } }, "required": ["type"] },
+      "then": { "$ref": "#/$defs/list_summary" }
+    }
+  ],
+  "$defs": {
+    "operand": {
+      "description": "An assertion operand. Strings are reported verbatim, never demangled; exception matchers report demangled type names such as std::runtime_error. Values are always valid UTF-8: invalid bytes in test data are replaced with U+FFFD.",
+      "type": ["string", "number", "boolean", "null"]
+    },
+    "process_status": {
+      "type": "object",
+      "description": "Decoded child process status. exit_code is the child's own code, not the std::system wait status.",
+      "required": ["exit_code", "wait_status", "signaled"],
+      "properties": {
+        "exit_code": {
+          "type": "integer",
+          "description": "-1 when signaled is true."
+        },
+        "wait_status": {
+          "type": "integer",
+          "description": "Raw std::system return value, kept for diagnosis."
+        },
+        "signaled": { "type": "boolean" },
+        "signal": {
+          "type": "integer",
+          "description": "Present only when signaled is true."
+        }
+      }
+    },
+    "diagnostics": {
+      "type": "object",
+      "description": "Captured output of a failed toolchain command.",
+      "required": ["text", "bytes", "truncated"],
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Compiler or linker output, truncated to 8 KiB."
+        },
+        "path": {
+          "type": "string",
+          "description": "File holding the untruncated capture."
+        },
+        "bytes": {
+          "type": "integer",
+          "description": "Captured size before truncation."
+        },
+        "truncated": { "type": "boolean" }
+      }
+    },
+    "rebuild": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "not_in_cache", "source_stale", "header_stale", "object_missing",
+            "object_stale", "own_pcm_missing", "own_pcm_stale", "pcm_stale",
+            "dependency_pcm_stale", "profile_change", "missing_executable",
+            "object_changed", "link_flags_changed", "signature_changed"
+          ]
+        },
+        "module": { "type": "string" },
+        "pcm_path": { "type": "string" },
+        "object_path": { "type": "string" },
+        "trigger_path": {
+          "type": "string",
+          "description": "The file whose change forced the rebuild; the header itself for header_stale."
+        },
+        "hint": { "type": "string" },
+        "message": { "type": "string" },
+        "see_event": { "type": "string" }
+      }
+    },
+    "summary": {
+      "description": "Authoritative verdict for a test run. Read passed; never infer pass/fail from the exit code alone. tests_ok counts only tests whose assertions all passed, so tests_ok == tests_total cannot disagree with a non-empty failed_test_ids.",
+      "required": [
+        "tests_ok", "tests_total", "assertions_ok", "assertions_total",
+        "passed", "failed_test_ids"
+      ],
+      "properties": {
+        "tests_ok": { "type": "integer", "minimum": 0 },
+        "tests_total": { "type": "integer", "minimum": 0 },
+        "assertions_ok": { "type": "integer", "minimum": 0 },
+        "assertions_total": { "type": "integer", "minimum": 0 },
+        "passed": { "type": "boolean" },
+        "duration_ms": { "type": "integer" },
+        "failed_test_ids": { "type": "array", "items": { "type": "string" } },
+        "first_failure": {
+          "type": "object",
+          "description": "The first failure, for triage without scanning the stream.",
+          "properties": {
+            "id": { "type": "string" },
+            "file": { "type": "string" },
+            "line": { "type": "integer" },
+            "column": { "type": "integer" },
+            "matcher": { "type": "string" },
+            "message": { "type": "string" },
+            "actual": { "$ref": "#/$defs/operand" },
+            "expected": { "$ref": "#/$defs/operand" }
+          }
+        }
+      }
+    },
+    "assertion": {
+      "required": ["matcher", "actual", "expected", "file", "line", "column"],
+      "properties": {
+        "matcher": {
+          "type": "string",
+          "description": "The specific matcher, e.g. require_eq or check_contains — not a generic require/check. A generic name on an *_eq line means stale test objects; rebuild the test TUs."
+        },
+        "actual": { "$ref": "#/$defs/operand" },
+        "expected": { "$ref": "#/$defs/operand" },
+        "message": { "type": "string" },
+        "file": { "type": "string" },
+        "line": { "type": "integer" },
+        "column": { "type": "integer" },
+        "test_id": { "type": "string" }
+      }
+    },
+    "test": {
+      "required": ["id", "name", "file", "line", "success", "assertions_ok", "assertions_total"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "file": { "type": "string" },
+        "line": { "type": "integer" },
+        "column": { "type": "integer" },
+        "success": {
+          "type": "boolean",
+          "description": "False when any assertion failed, including non-fatal check_* failures."
+        },
+        "assertions_ok": { "type": "integer" },
+        "assertions_total": { "type": "integer" },
+        "duration_ms": { "type": "number" },
+        "tags": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "exception": {
+      "required": ["exception_type", "message", "file", "line"],
+      "properties": {
+        "exception_type": {
+          "type": "string",
+          "description": "Demangled, e.g. std::runtime_error."
+        },
+        "message": { "type": "string" },
+        "file": { "type": "string" },
+        "line": { "type": "integer" }
+      }
+    },
+    "registered_test": {
+      "required": ["id", "name", "file", "line", "tags", "depends_on", "priority"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "file": { "type": "string" },
+        "line": { "type": "integer" },
+        "column": { "type": "integer" },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "depends_on": { "type": "array", "items": { "type": "string" } },
+        "priority": { "type": "integer" }
+      }
+    },
+    "test_list_summary": {
+      "required": ["registered_total", "matched_total", "tags_filter"],
+      "properties": {
+        "registered_total": { "type": "integer" },
+        "matched_total": { "type": "integer" },
+        "tags_filter": { "type": "string" }
+      }
+    },
+    "test_end": {
+      "description": "CB's view of the spawned runner. Emitted by CB, not by the runner.",
+      "allOf": [{ "$ref": "#/$defs/process_status" }],
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "duration_ms": { "type": "integer" }
+      }
+    },
+    "build_end": {
+      "required": ["ok", "duration_ms"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "duration_ms": { "type": "integer" },
+        "compile_total": { "type": "integer" },
+        "compile_rebuilt": { "type": "integer" },
+        "compile_cache_hits": { "type": "integer" },
+        "compile_failed": { "type": "integer" },
+        "links_total": { "type": "integer" },
+        "link_cache_hits": { "type": "integer" },
+        "link_failed": { "type": "integer" },
+        "commands_failed": { "type": "integer" },
+        "rebuild_summary": {
+          "type": "object",
+          "description": "Compile rebuild counts keyed by rebuild kind, plus top_modules.",
+          "properties": {
+            "top_modules": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": true
+        }
+      }
+    },
+    "compile_end": {
+      "required": ["source_path", "object_path", "ok", "cache_hit"],
+      "properties": {
+        "source_path": { "type": "string" },
+        "object_path": { "type": "string" },
+        "pcm_path": { "type": "string" },
+        "module_name": { "type": "string" },
+        "ok": { "type": "boolean" },
+        "cache_hit": { "type": "boolean" },
+        "rebuild_reason": { "type": "string" },
+        "rebuild": { "$ref": "#/$defs/rebuild" },
+        "diagnostics": { "$ref": "#/$defs/diagnostics" },
+        "duration_ms": { "type": "integer" }
+      }
+    },
+    "link_end": {
+      "required": ["executable_path", "ok", "cache_hit"],
+      "properties": {
+        "executable_path": { "type": "string" },
+        "ok": { "type": "boolean" },
+        "cache_hit": { "type": "boolean" },
+        "rebuild_reason": { "type": "string" },
+        "rebuild": { "$ref": "#/$defs/rebuild" },
+        "diagnostics": { "$ref": "#/$defs/diagnostics" },
+        "duration_ms": { "type": "integer" }
+      }
+    },
+    "command_end": {
+      "description": "Use argv to rerun a failed command without shell requoting.",
+      "allOf": [{ "$ref": "#/$defs/process_status" }],
+      "required": ["ok", "argv"],
+      "properties": {
+        "cmd": {
+          "type": "string",
+          "description": "Joined shell line; trace mode only."
+        },
+        "argv": { "type": "array", "items": { "type": "string" } },
+        "ok": { "type": "boolean" },
+        "diagnostics": { "$ref": "#/$defs/diagnostics" },
+        "duration_ms": { "type": "integer" }
+      }
+    },
+    "unit": {
+      "required": ["path", "kind", "imports", "level", "has_main", "is_test", "is_modular"],
+      "properties": {
+        "unit": { "type": "string" },
+        "path": { "type": "string" },
+        "module": { "type": "string" },
+        "kind": { "type": "string" },
+        "imports": { "type": "array", "items": { "type": "string" } },
+        "level": { "type": "integer" },
+        "has_main": { "type": "boolean" },
+        "is_test": { "type": "boolean" },
+        "is_modular": { "type": "boolean" }
+      }
+    },
+    "list_summary": {
+      "required": ["units_total", "main_count", "test_count", "max_level"],
+      "properties": {
+        "units_total": { "type": "integer" },
+        "main_count": { "type": "integer" },
+        "test_count": { "type": "integer" },
+        "max_level": { "type": "integer" }
+      }
+    }
+  }
+}

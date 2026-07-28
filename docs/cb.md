@@ -179,12 +179,17 @@ Tester is a **dependency**, not the build entry point. The parent's wrapper owns
 ./tools/CB.sh debug test --list --jsonl=failures  # test catalogue
 ./tools/CB.sh debug list --jsonl=failures         # translation-unit inventory
 ./tools/CB.sh debug build --jsonl=trace            # full compile telemetry
+./tools/CB.sh debug build --jobs=4                 # cap concurrent compiles/links
 ./tools/CB.sh ci --jsonl=summary                    # aggregate CI entry point
 ./tools/CB.sh debug clean
 ./tools/CB.sh --help
 ```
 
-Pass `std.cppm` as the **first** argument when auto-detection fails: `./tools/CB.sh /path/to/std.cppm debug build`.
+Pass `std.cppm` as the **first** argument when auto-detection fails: `./tools/CB.sh /path/to/std.cppm debug build`. A `.cppm` path that does not exist is an error, not a silently ignored argument.
+
+**Unknown arguments exit `2`.** CB validates its whole argument list, so a typo such as `--tag=` (for `--tags=`) fails with a message instead of silently building or testing something you did not ask for.
+
+**`--jobs=N`** bounds concurrent compile and link processes. Without it CB uses `hardware_concurrency()`; the cap exists because each `clang++` invocation on a module-heavy TU can peak at hundreds of megabytes, so an unbounded fan-out across a wide dependency level can exhaust memory.
 
 CB forwards common `test_runner` flags without `--`: `--tags=`, `--list`, `--jsonl[=summary|failures|trace]`, `--jsonl-output-max-bytes=…`, and `--slowest=…`.
 
@@ -215,13 +220,19 @@ Cache indexes are written through a checked temporary file and atomically rename
 
 **Value encoding:** profile field values are stored verbatim (no percent-encoding). CB writes only values that cannot contain tab, newline, or `%` (paths, flag lists, and version lines satisfy this).
 
+### Header dependencies
+
+The object cache tracks module imports and source mtimes, neither of which sees a textual `#include`. CB therefore compiles with `-MMD -MF <object>.d` — emitted by the step that actually reads the source (`--precompile` for modular units, `-c` otherwise) — and compares each prerequisite's mtime against the object. A newer header yields `rebuild_reason: "header_stale"` with the header in `rebuild.trigger_path`.
+
+Prerequisites are filtered to the project tree. Toolchain headers change as a unit and are already covered by the `cxx_sig` and `clang_ver` profile fields, so scanning them would add thousands of `stat` calls per build for no additional coverage.
+
 **Human logs** (stderr, non-JSONL): `Object cache profile changed; invalidating compile cache (compile: + -DFOO)`.
 
 **Inspect cache:** `./tools/CB.sh debug cache status` (human) or `… cache status --jsonl` (`cache_status` event).
 
 **Invalidate indexes:** `./tools/CB.sh debug cache invalidate` removes `object-cache.txt`, `executable-cache.txt`, and `compiler-version.txt` only — lighter than `clean`; artifacts in `obj/` / `pcm/` remain. JSONL: `cache_invalidate_end`.
 
-**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job) — `profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `source_stale`, `source_list`, `compile_failure`, `link_failure`, `test_link_failure`, `link_rebuild_reason`, `implementation_pcm`, `rebuild_summary`, `test_lifecycle`, `cache_invalidate`, `profile_change`, `cache_status`, `jsonl_modes`, `jsonl_failure_mode`.
+**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job) — `profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `source_stale`, `header_stale`, `strict_arguments`, `source_list`, `compile_failure`, `link_failure`, `test_link_failure`, `link_rebuild_reason`, `implementation_pcm`, `rebuild_summary`, `test_lifecycle`, `cache_invalidate`, `profile_change`, `cache_status`, `jsonl_modes`, `jsonl_failure_mode`.
 
 **Optional follow-up:** `cache prune` for disk/orphan cleanup — backlog only; see [tester-improvements.md §4.4](tester-improvements.md#44-cache-maintenance-optional--add-if-operational-issues-appear).
 
@@ -244,6 +255,7 @@ Useful compile/link fields for debugging stale builds:
 - `link_end` — per executable after link or skip (`executable_path`, `cache_hit`, `ok`, `duration_ms`). Skipped links emit `cache_hit: true` with `duration_ms: 0`. Relinks add `rebuild_reason` / `rebuild` (`missing_executable`, `not_in_cache`, `object_changed`, `link_flags_changed`, …).
 - `rebuild_reason: "not_in_cache"` — first compile of this source for the current config (distinct from an edit)
 - `rebuild_reason: "source_stale"` — TU source newer than cached object
+- `rebuild_reason: "header_stale"` — an `#include`d project header is newer than the object; the header is in `rebuild.trigger_path` (see [Header dependencies](#header-dependencies))
 - `rebuild_reason: "pcm_stale"` — imported PCM (including an implementation unit's implicit interface PCM) newer than this object; module and trigger source are in `rebuild`
 
 Example rebuild object:
@@ -260,6 +272,24 @@ Example rebuild object:
   "message": "Rebuilding sample.impl.c++ because PCM sample is newer than the object (import graph)"
 }
 ```
+
+### Build failures
+
+A failed compile or link is not just `ok: false`. The command's stdout and stderr are redirected to a per-target capture file and read back, so `compile_end`, `link_end` and `command_end` carry a `diagnostics` object:
+
+```json
+"ok": false,
+"diagnostics": {
+  "text": "hello.c++:1:21: error: use of undeclared identifier 'undefined_symbol_here'\n…",
+  "path": "build-darwin-debug/obj/hello.o.log",
+  "bytes": 220,
+  "truncated": false
+}
+```
+
+`text` is capped at 8 KiB with `truncated` recording whether it was cut; `path` always points at the full capture. A consumer restricted to stdout no longer has to rerun the build to find out what broke. The human (non-JSONL) path is unchanged: the diagnostic is still printed to stderr.
+
+`command_end` and `test_end` also report a decoded process status. `std::system` returns a wait status — 256 for a child that exited 1, 11 for one killed by `SIGSEGV` — so CB decodes it once at the shell boundary into `exit_code`, `signaled` and `signal`, keeping the raw value as `wait_status`. A test runner killed by a signal is reported as a crash rather than as an assertion failure.
 
 Example `profile_diff` fragment (on `profile_changed` only):
 

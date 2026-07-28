@@ -80,6 +80,8 @@ Machine-parseable test and build output for CI and automation. Human output rema
 - ✅ `assertion_failed` / `assertion_passed` with `test_id`, `matcher`, `actual`, `expected`, `file`, `line`, `column`.
 - ✅ Unified `--jsonl=summary|failures|trace`; failed assertions in failures/trace and passing assertions in trace.
 - ✅ `message` on `assertion_failed` / `assertion_passed` for exception assertions (`require_nothrow`, `check_throws*`, …).
+- ✅ Operands are always valid UTF-8: `jsonl::escape` validates sequences and substitutes U+FFFD for invalid bytes, rejecting overlong encodings, surrogates and out-of-range code points. Arbitrary test data can no longer make a line unparseable.
+- ✅ String operands reported verbatim; only exception matchers report type names, demangled at the matcher rather than in the reporting layer.
 - 📋 Add `expression` (source-level) field for non-comparison assertions (needs macro infrastructure).
 - 📋 Document event ordering: assertion events stream during execution; `test` records batch at finalize time.
 
@@ -89,6 +91,7 @@ Machine-parseable test and build output for CI and automation. Human output rema
 - ✅ `run_start` env metadata: `cwd`, structured `argv`, `config` (from `TESTER_CONFIG` when CB spawns `test_runner`).
 - ✅ `run_start.env` object for curated test-relevant environment (`NET_DISABLE_NETWORK_TESTS`, `CURSOR_SANDBOX`) when set — omitted when empty.
 - ✅ `summary` includes `tests_ok`, `tests_total`, `assertions_ok`, `assertions_total`, `passed`.
+- ✅ `tests_ok` derived from per-test assertion outcomes, so a non-fatal `check_*` failure cannot leave `tests_ok == tests_total` alongside a non-empty `failed_test_ids`.
 - ✅ `failed_test_ids: [...]` in `summary` / `run_end`.
 - ✅ `first_failure: { test_id, file, line, message }` for direct navigation.
 - ✅ `slowest` JSON array in `summary` when `--slowest=N` is set.
@@ -150,6 +153,11 @@ Design rationale and comparison with CMake, Make, and other build tools: [`docs/
 - ✅ Human-mode `profile_change` logging on stderr (non-JSONL).
 - ✅ Profile value writer contract (verbatim tab-separated values; fields CB writes must not contain tab, newline, or `%`).
 - ✅ Parallel compilation, topological module sort, preamble `import` scan in `cb.c++`.
+- ✅ Header dependency tracking: compiles emit `-MMD -MF <object>.d` and a newer project header yields `rebuild_reason: "header_stale"` with the header in `rebuild.trigger_path`. Toolchain headers are excluded (already covered by `cxx_sig` / `clang_ver`).
+- ✅ Bounded parallelism: `--jobs=N` caps concurrent compile/link processes via `std::counting_semaphore`, defaulting to `hardware_concurrency()`.
+- ✅ Build diagnostics on stdout: failing commands are captured to a per-target file and a `diagnostics` object (`text` capped at 8 KiB, `path`, `bytes`, `truncated`) rides on `compile_end` / `link_end` / `command_end`.
+- ✅ Decoded child status: `exit_code` / `signaled` / `signal` from the `std::system` wait status, raw value kept as `wait_status`.
+- ✅ Strict argument parsing: unknown arguments exit `2` instead of being ignored (a `--tag=` typo no longer silently runs the full suite); a non-existent `.cppm` first argument is reported as such.
 - ✅ CB / tester implementation policy: standard C++ + `std::system` only; stack traces in `test_runner` via `<execinfo.h>` (POSIX exception).
 - ✅ `debug` / `release` configurations; `clean`, `list`, `ci`, `--build-tests`.
 - 📋 Multiple custom configurations beyond debug/release (e.g. `asan`, `coverage`).
@@ -164,6 +172,7 @@ Design rationale and comparison with CMake, Make, and other build tools: [`docs/
 - ✅ Positional filter after `test` (substring on test id).
 - ✅ Convenience forwarding to `test_runner` without `--` for: `--tags=`, `--list`, `--jsonl[=summary|failures|trace]`, `--jsonl-output-max-bytes=…`, `--slowest=…`, `--result`, and `--help`.
 - ✅ Positional filter after `test` no longer consumes flags that start with `-` or known test_runner tokens.
+- ✅ Assertion matcher contract tests (`tester/tester-assertions.test.c++`): pass and fail paths for relational, float, boolean, exception, container, string and messaging matchers, with failure paths run in a spawned child under hidden tags.
 - 📋 `test --watch` mode (rebuild + rerun on file change).
 
 ### 4.3 Discovery & layout
@@ -207,6 +216,7 @@ Per-project wrappers compile `cb.c++` and invoke it with the right include paths
 ### 5.2 Robustness
 
 - ✅ Cross-OS binary rebuild detection and `std.cppm` existence checks in `CB.sh.core` (all wrappers).
+- ✅ Bootstrap watches `tester/details/*.h++` as well as `tools/*.h++`: `cb-jsonl_observer.h++` includes the shared JSONL header from outside `tools/`, so editing it previously rebuilt nothing.
 - ✅ JSONL-safe wrapper logging (`cb_log` → stderr when `--jsonl[=summary|failures|trace]`).
 - ✅ `NET_DISABLE_NETWORK_TESTS` sandbox hook only enabled in net wrapper (`CB_SANDBOX_DISABLE_NETWORK_TESTS=1`).
 
@@ -229,7 +239,7 @@ Per-project wrappers compile `cb.c++` and invoke it with the right include paths
 ### 6.2 CLI reference
 
 - 📋 Single table: which flags CB forwards without `--` vs which require `--`.
-- 📋 `test_runner` JSONL event schema reference (field glossary per `type`).
+- ✅ JSONL event schema reference — [docs/jsonl-schema.json](jsonl-schema.json) (JSON Schema 2020-12, per-`type` required fields and value constraints), enforced against live streams by [tests/jsonl/validate.py](../tests/jsonl/validate.py) in CI.
 - ✅ macOS `/usr/local/llvm` setup guide — [clang-modules-macos.md](clang-modules-macos.md) ([LLVM Getting Started](https://llvm.org/docs/GettingStarted.html); [#92121](https://github.com/llvm/llvm-project/issues/92121), [#168287](https://github.com/llvm/llvm-project/issues/168287#issuecomment-3712718691)).
 
 ### 6.3 Automation guide
