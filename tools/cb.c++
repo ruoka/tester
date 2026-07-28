@@ -336,6 +336,12 @@ std::string normalize_relative_dir(const fs::path& dir) {
     return str == "." ? "" : str;
 }
 
+// The name reports use for a unit: its directory and filename joined, or the bare filename
+// for a unit at the project root.
+std::string make_display_path(std::string_view dir, std::string_view filename) {
+    return dir.empty() ? std::string{filename} : std::string{dir} + "/" + std::string{filename};
+}
+
 bool is_tester_framework_path(std::string_view path) {
     // Nested or top-level tester library trees (not *.test.c++ sources).
     return path_under_dir(path, tester_dir_name);
@@ -683,6 +689,9 @@ public:
     const std::string suffix;
     const std::string base_name;
     const std::string full_path;
+    // How reports name this unit: the source relative to the project root. Computed once
+    // because the inventory and every rebuild sentence ask for the same string.
+    const std::string display_path;
     const std::string unit;
     
     // Module information
@@ -751,6 +760,7 @@ translation_unit::translation_unit(const fs::path& relative,
       suffix(detail::extract_suffix(relative.filename().string())),
       base_name(detail::make_base_name(this->filename)),
       full_path(detail::make_full_path(full_path)),
+      display_path(detail::make_display_path(this->path, this->filename)),
       unit(detail::make_unit(module_value, kind_value, this->filename)),
       module(std::move(module_value)),
       imports(std::move(imports_value)),
@@ -873,16 +883,17 @@ output::compile_unit compile_unit_of(const translation_unit& tu)
     return {.source = tu.full_path,
             .object = tu.object_path,
             .pcm = tu.is_modular ? std::string_view{tu.pcm_path} : std::string_view{},
-            .module = tu.module};
+            .module = tu.module,
+            .display_path = tu.display_path};
 }
 
 // The inventory projection, the sibling of compile_unit_of: the list command reports what a
-// unit is rather than where it compiles to, so it carries its own strings and joins the
-// display path. Three adjacent bools are why this is named fields and not an aggregate.
+// unit is rather than where it compiles to, so it carries its own strings. Three adjacent
+// bools are why this is named fields and not an aggregate.
 output::source_unit source_unit_of(const translation_unit& tu)
 {
     return {.unit = tu.unit,
-            .path = tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename,
+            .path = tu.display_path,
             .module = tu.module,
             .kind = std::string{detail::unit_kind_name(tu.kind)},
             .imports = tu.imports,
@@ -1376,130 +1387,6 @@ private:
         return message;
     }
 
-    static std::string_view rebuild_hint(output::rebuild_kind kind)
-    {
-        switch(kind)
-        {
-            case output::rebuild_kind::none:
-                return {};
-            case output::rebuild_kind::not_in_cache:
-                return "Source path not present in object cache for this config.";
-            case output::rebuild_kind::source_stale:
-                return "Source mtime newer than cached compile timestamp.";
-            case output::rebuild_kind::header_stale:
-                return "An included header is newer than this object (from the compiler depfile).";
-            case output::rebuild_kind::depfile_unusable:
-                return "Compiler depfile missing, unreadable, or malformed; header freshness cannot be verified.";
-            case output::rebuild_kind::object_missing:
-                return "Object file missing on disk.";
-            case output::rebuild_kind::object_stale:
-                return "Object file older than cached source timestamp.";
-            case output::rebuild_kind::own_pcm_missing:
-                return "Module PCM missing on disk.";
-            case output::rebuild_kind::own_pcm_stale:
-                return "Module PCM older than its source.";
-            case output::rebuild_kind::pcm_stale:
-                return "Imported PCM newer than this object; recompile follows module graph.";
-            case output::rebuild_kind::dependency_pcm_stale:
-                return "Imported module PCM is missing or older than its source.";
-            case output::rebuild_kind::profile_change:
-                return "Object-cache toolchain profile changed; see profile_changed event.";
-            case output::rebuild_kind::missing_executable:
-                return "Linked executable missing on disk.";
-            case output::rebuild_kind::object_changed:
-                return "One or more input objects changed since the last link.";
-            case output::rebuild_kind::link_flags_changed:
-                return "Link/compile/module flags changed since the last link.";
-            case output::rebuild_kind::signature_changed:
-                return "Link signature changed since the last successful link.";
-        }
-        return {};
-    }
-
-    static std::string tu_label(const translation_unit& tu)
-    {
-        return tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename;
-    }
-
-    static std::string format_rebuild_message(const translation_unit& tu, const output::rebuild_info& info)
-    {
-        const auto label = tu_label(tu);
-        switch(info.kind)
-        {
-            case output::rebuild_kind::profile_change:
-                return "Rebuilding " + label + " because compile profile changed";
-            case output::rebuild_kind::not_in_cache:
-                return "Rebuilding " + label + " because it is not in the object cache";
-            case output::rebuild_kind::source_stale:
-                if(not info.trigger_path.empty() and info.trigger_path != tu.full_path)
-                    return "Rebuilding " + label + " because dependency " + info.trigger_path + " is newer than its cached object";
-                return "Rebuilding " + label + " because source is newer than the cached object";
-            case output::rebuild_kind::header_stale:
-                return "Rebuilding " + label + " because included header " + info.trigger_path + " is newer than its object";
-            case output::rebuild_kind::depfile_unusable:
-                return "Rebuilding " + label + " because depfile " + info.trigger_path + " cannot be read; its header dependencies are unknown";
-            case output::rebuild_kind::pcm_stale:
-                return "Rebuilding " + label + " because PCM " + info.module + " is newer than the object (import graph)";
-            case output::rebuild_kind::dependency_pcm_stale:
-                return "Rebuilding " + label + " because imported module " + info.module + " PCM is missing or stale";
-            case output::rebuild_kind::object_missing:
-                return "Rebuilding " + label + " because object file is missing";
-            case output::rebuild_kind::object_stale:
-                return "Rebuilding " + label + " because object file is older than the cached source timestamp";
-            case output::rebuild_kind::own_pcm_missing:
-                return "Rebuilding " + label + " because its PCM is missing";
-            case output::rebuild_kind::own_pcm_stale:
-                return "Rebuilding " + label + " because its PCM is older than the source";
-            default:
-                return "Rebuilding " + label + " (" + std::string{output::rebuild_kind_name(info.kind)} + ")";
-        }
-    }
-
-    static output::rebuild_info make_rebuild(output::rebuild_kind kind,
-                                             std::string module = {},
-                                             std::string pcm_path = {},
-                                             std::string trigger_path = {})
-    {
-        auto info = output::rebuild_info{};
-        info.kind = kind;
-        info.module = std::move(module);
-        info.pcm_path = std::move(pcm_path);
-        info.trigger_path = std::move(trigger_path);
-        info.hint = std::string{rebuild_hint(kind)};
-        return info;
-    }
-
-    static output::rebuild_info finalize_rebuild(output::rebuild_info info, const translation_unit& tu)
-    {
-        info.object_path = tu.object_path;
-        info.message = format_rebuild_message(tu, info);
-        return info;
-    }
-
-    static std::string format_link_message(std::string_view executable_path, const output::rebuild_info& info)
-    {
-        switch(info.kind)
-        {
-            case output::rebuild_kind::missing_executable:
-                return "Linking " + std::string{executable_path} + " because executable is missing";
-            case output::rebuild_kind::not_in_cache:
-                return "Linking " + std::string{executable_path} + " because it is not in the link cache";
-            case output::rebuild_kind::object_changed:
-                return "Linking " + std::string{executable_path} + " because input objects changed";
-            case output::rebuild_kind::link_flags_changed:
-                return "Linking " + std::string{executable_path} + " because link flags changed";
-            default:
-                return "Linking " + std::string{executable_path} + " ("
-                    + std::string{output::rebuild_kind_name(info.kind)} + ")";
-        }
-    }
-
-    static output::rebuild_info finalize_link_rebuild(output::rebuild_info info, std::string_view executable_path)
-    {
-        info.message = format_link_message(executable_path, info);
-        return info;
-    }
-
     string_list base_compile_argv() const
     {
         auto argv = string_list{};
@@ -1805,7 +1692,10 @@ private:
 
             if (dep_tu.is_modular && fs::exists(dep_tu.pcm_path)) {
                 if (fs::last_write_time(dep_tu.pcm_path) > object_timestamp) {
-                    stale = make_rebuild(output::rebuild_kind::pcm_stale, dep_tu.module, dep_tu.pcm_path, dep_tu.full_path);
+                    stale = output::rebuild_info{.kind = output::rebuild_kind::pcm_stale,
+                                                 .module = dep_tu.module,
+                                                 .pcm_path = dep_tu.pcm_path,
+                                                 .trigger_path = dep_tu.full_path};
                     return true;
                 }
             }
@@ -1835,7 +1725,7 @@ private:
         const auto depfile = depfile_path(tu);
         const auto prerequisites = detail::parse_depfile(depfile);
         if(not prerequisites)
-            return make_rebuild(output::rebuild_kind::depfile_unusable, {}, {}, depfile);
+            return output::rebuild_info{.kind = output::rebuild_kind::depfile_unusable, .trigger_path = depfile};
 
         for(const auto& prerequisite : *prerequisites)
         {
@@ -1847,7 +1737,7 @@ private:
             if(error)
                 continue;
             if(timestamp > object_timestamp)
-                return make_rebuild(output::rebuild_kind::header_stale, {}, {}, prerequisite);
+                return output::rebuild_info{.kind = output::rebuild_kind::header_stale, .trigger_path = prerequisite};
         }
         return std::nullopt;
     }
@@ -1856,19 +1746,19 @@ private:
         // First-seen path for this config vs edited source after a prior compile.
         if (not c.contains(tu.full_path)) {
             if (object_cache_miss_reason)
-                return make_rebuild(*object_cache_miss_reason, {}, {}, tu.full_path);
-            return make_rebuild(output::rebuild_kind::not_in_cache, {}, {}, tu.full_path);
+                return output::rebuild_info{.kind = *object_cache_miss_reason, .trigger_path = tu.full_path};
+            return output::rebuild_info{.kind = output::rebuild_kind::not_in_cache, .trigger_path = tu.full_path};
         }
         if (c.at(tu.full_path) < tu.last_modified)
-            return make_rebuild(output::rebuild_kind::source_stale, {}, {}, tu.full_path);
+            return output::rebuild_info{.kind = output::rebuild_kind::source_stale, .trigger_path = tu.full_path};
 
         // Ensure the object file exists and is up-to-date versus the source timestamp we cached.
         if (not fs::exists(tu.object_path))
-            return make_rebuild(output::rebuild_kind::object_missing, {}, {}, tu.full_path);
+            return output::rebuild_info{.kind = output::rebuild_kind::object_missing, .trigger_path = tu.full_path};
 
         auto object_timestamp = fs::last_write_time(tu.object_path);
         if (object_timestamp < c.at(tu.full_path))
-            return make_rebuild(output::rebuild_kind::object_stale, {}, {}, tu.full_path);
+            return output::rebuild_info{.kind = output::rebuild_kind::object_stale, .trigger_path = tu.full_path};
 
         // Textual #include dependencies are invisible to the module graph, so the
         // compiler's own depfile is the only record of them.
@@ -1881,9 +1771,15 @@ private:
         {
             const auto& interface = *u2tu.at(tu.module);
             if(not fs::exists(interface.pcm_path))
-                return make_rebuild(output::rebuild_kind::dependency_pcm_stale, interface.module, interface.pcm_path, interface.full_path);
+                return output::rebuild_info{.kind = output::rebuild_kind::dependency_pcm_stale,
+                                            .module = interface.module,
+                                            .pcm_path = interface.pcm_path,
+                                            .trigger_path = interface.full_path};
             if(fs::last_write_time(interface.pcm_path) > object_timestamp)
-                return make_rebuild(output::rebuild_kind::pcm_stale, interface.module, interface.pcm_path, interface.full_path);
+                return output::rebuild_info{.kind = output::rebuild_kind::pcm_stale,
+                                            .module = interface.module,
+                                            .pcm_path = interface.pcm_path,
+                                            .trigger_path = interface.full_path};
             if(auto interface_reason = needs_recompile(interface, c, u2tu))
             {
                 auto info = *interface_reason;
@@ -1898,10 +1794,16 @@ private:
         // For modular units, also check if .pcm file is stale
         if (tu.is_modular) {
             if (not fs::exists(tu.pcm_path))
-                return make_rebuild(output::rebuild_kind::own_pcm_missing, tu.module, tu.pcm_path, tu.full_path);
+                return output::rebuild_info{.kind = output::rebuild_kind::own_pcm_missing,
+                                            .module = tu.module,
+                                            .pcm_path = tu.pcm_path,
+                                            .trigger_path = tu.full_path};
             auto pcm_timestamp = fs::last_write_time(tu.pcm_path);
             if (pcm_timestamp < tu.last_modified)
-                return make_rebuild(output::rebuild_kind::own_pcm_stale, tu.module, tu.pcm_path, tu.full_path);
+                return output::rebuild_info{.kind = output::rebuild_kind::own_pcm_stale,
+                                            .module = tu.module,
+                                            .pcm_path = tu.pcm_path,
+                                            .trigger_path = tu.full_path};
         }
 
         // Rebuild when any transitive import PCM is newer than this object file.
@@ -1919,7 +1821,10 @@ private:
                 if (dep_tu.is_modular) {
                     if (not fs::exists(dep_tu.pcm_path) or 
                         fs::last_write_time(dep_tu.pcm_path) < dep_tu.last_modified) {
-                        return make_rebuild(output::rebuild_kind::dependency_pcm_stale, dep_tu.module, dep_tu.pcm_path, dep_tu.full_path);
+                        return output::rebuild_info{.kind = output::rebuild_kind::dependency_pcm_stale,
+                                                    .module = dep_tu.module,
+                                                    .pcm_path = dep_tu.pcm_path,
+                                                    .trigger_path = dep_tu.full_path};
                     }
                 }
                 // Also recursively check if the imported module needs recompiling
@@ -1985,10 +1890,10 @@ private:
                                                         const executable_cache_map& link_cache) const
     {
         if(not fs::exists(executable_path))
-            return finalize_link_rebuild(make_rebuild(output::rebuild_kind::missing_executable), executable_path);
+            return output::rebuild_info{.kind = output::rebuild_kind::missing_executable};
 
         if(not link_cache.contains(executable_path))
-            return finalize_link_rebuild(make_rebuild(output::rebuild_kind::not_in_cache), executable_path);
+            return output::rebuild_info{.kind = output::rebuild_kind::not_in_cache};
 
         const auto& previous = link_cache.at(executable_path);
         if(previous == signature)
@@ -2002,12 +1907,12 @@ private:
             const auto previous_objects = previous.substr(0, previous_flags);
             const auto current_objects = signature.substr(0, current_flags);
             if(previous_objects != current_objects)
-                return finalize_link_rebuild(make_rebuild(output::rebuild_kind::object_changed), executable_path);
+                return output::rebuild_info{.kind = output::rebuild_kind::object_changed};
             if(previous.substr(previous_flags) != signature.substr(current_flags))
-                return finalize_link_rebuild(make_rebuild(output::rebuild_kind::link_flags_changed), executable_path);
+                return output::rebuild_info{.kind = output::rebuild_kind::link_flags_changed};
         }
 
-        return finalize_link_rebuild(make_rebuild(output::rebuild_kind::signature_changed), executable_path);
+        return output::rebuild_info{.kind = output::rebuild_kind::signature_changed};
     }
 
     // ============================================================================
@@ -2321,7 +2226,7 @@ private:
             for(const auto* tu : group)
             {
                 if(auto reason = needs_recompile(*tu, cache, u2tu))
-                    decisions.emplace_back(tu, finalize_rebuild(std::move(*reason), *tu));
+                    decisions.emplace_back(tu, std::move(*reason));
                 else
                     decisions.emplace_back(tu, std::nullopt);
             }

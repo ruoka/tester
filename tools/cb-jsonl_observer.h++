@@ -124,17 +124,22 @@ inline void write_compile_unit(std::ostream& os, const compile_unit& unit)
         os << ",\"module_name\":\"" << escape(unit.module) << "\"";
 }
 
-inline void write_rebuild(std::ostream& os, const rebuild_info& rebuild)
+// The object path and the sentence come from the event, not from the reason: a compile names
+// the object it was producing, a link has none to name, and the hint follows from the kind.
+inline void write_rebuild(std::ostream& os,
+                          const rebuild_info& rebuild,
+                          std::string_view object_path,
+                          std::string_view message)
 {
     os << '{';
     auto first = true;
     write_rebuild_field(os, "kind", rebuild_kind_name(rebuild.kind), first);
     write_rebuild_field(os, "module", rebuild.module, first);
     write_rebuild_field(os, "pcm_path", rebuild.pcm_path, first);
-    write_rebuild_field(os, "object_path", rebuild.object_path, first);
+    write_rebuild_field(os, "object_path", object_path, first);
     write_rebuild_field(os, "trigger_path", rebuild.trigger_path, first);
-    write_rebuild_field(os, "hint", rebuild.hint, first);
-    write_rebuild_field(os, "message", rebuild.message, first);
+    write_rebuild_field(os, "hint", rebuild_hint(rebuild.kind), first);
+    write_rebuild_field(os, "message", message, first);
     if(rebuild.kind == rebuild_kind::profile_change)
         write_rebuild_field(os, "see_event", "profile_changed", first);
     os << '}';
@@ -398,11 +403,11 @@ struct observer final : cb::output::observer
             write_compile_unit(os, unit);
             if(not rebuild.empty())
             {
+                const auto message = compile_rebuild_message(unit, rebuild);
                 os << ",\"rebuild_reason\":\"" << escape(rebuild_kind_name(rebuild.kind)) << "\"";
                 os << ",\"rebuild\":";
-                write_rebuild(os, rebuild);
-                if(not rebuild.message.empty())
-                    os << ",\"message\":\"" << escape(rebuild.message) << "\"";
+                write_rebuild(os, rebuild, unit.object, message);
+                os << ",\"message\":\"" << escape(message) << "\"";
             }
         };
     }
@@ -426,7 +431,7 @@ struct observer final : cb::output::observer
             {
                 os << ",\"rebuild_reason\":\"" << escape(rebuild_kind_name(step.rebuild.kind)) << "\"";
                 os << ",\"rebuild\":";
-                write_rebuild(os, step.rebuild);
+                write_rebuild(os, step.rebuild, {}, link_rebuild_message(executable_path, step.rebuild));
             }
             write_diagnostics(os, step.diag);
             os << ",\"duration_ms\":" << step.timing.elapsed_ms();
@@ -457,7 +462,8 @@ struct observer final : cb::output::observer
             {
                 os << ",\"rebuild_reason\":\"" << escape(rebuild_kind_name(step.rebuild.kind)) << "\"";
                 os << ",\"rebuild\":";
-                write_rebuild(os, step.rebuild);
+                write_rebuild(os, step.rebuild, unit.object,
+                              compile_rebuild_message(unit, step.rebuild));
             }
             write_diagnostics(os, step.diag);
             os << ",\"duration_ms\":" << step.timing.elapsed_ms();

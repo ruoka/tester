@@ -164,11 +164,6 @@ struct observer final : cb::output::observer
         info(msg);
     }
 
-    void profile_change_rebuild(std::string_view tu_label) override
-    {
-        info("Rebuilding " + std::string{tu_label} + " because compile profile changed");
-    }
-
     void build_start(std::string_view, bool, bool) override
     {
         auto lock = std::lock_guard<std::mutex>{mutex};
@@ -185,10 +180,10 @@ struct observer final : cb::output::observer
         }
     }
 
-    void compile_start(const compile_unit& /*unit*/, const rebuild_info& rebuild) override
+    void compile_start(const compile_unit& unit, const rebuild_info& rebuild) override
     {
-        if(not rebuild.empty() and not rebuild.message.empty())
-            info(rebuild.message);
+        if(not rebuild.empty())
+            info(compile_rebuild_message(unit, rebuild));
     }
 
     void compile_end(const compile_unit& /*unit*/, const step_result& step) override
@@ -200,10 +195,10 @@ struct observer final : cb::output::observer
         }
     }
 
-    void link_end(std::string_view /*executable_path*/, const step_result& step) override
+    void link_end(std::string_view executable_path, const step_result& step) override
     {
-        if(not step.cache_hit and not step.rebuild.message.empty())
-            info(step.rebuild.message);
+        if(not step.cache_hit and not step.rebuild.empty())
+            info(link_rebuild_message(executable_path, step.rebuild));
     }
 
     void cache_status(std::string_view object_cache_path,
