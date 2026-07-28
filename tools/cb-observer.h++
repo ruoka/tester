@@ -95,6 +95,31 @@ struct source_inventory
     int max_level;
 };
 
+// A span of monotonic work. Every phase event carries one, and passing the pair as a value
+// removes the chance of transposing the endpoints at a call site that has nothing else to
+// distinguish them.
+struct interval
+{
+    std::chrono::steady_clock::time_point started{};
+    std::chrono::steady_clock::time_point finished{};
+
+    std::chrono::milliseconds::rep elapsed_ms() const
+    {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(finished - started).count();
+    }
+};
+
+// What a compile event is about: the four fields observers format, projected out of the
+// build system's translation unit so this contract stays free of build internals — the same
+// reason source_unit exists for the list command.
+struct compile_unit
+{
+    std::string_view source;
+    std::string_view object;
+    std::string_view pcm;    // empty unless the unit is modular
+    std::string_view module; // empty unless the unit belongs to a module
+};
+
 // Rebuild telemetry kinds for compile/link (wire name is also rebuild_reason).
 enum class rebuild_kind
 {
@@ -179,6 +204,19 @@ struct rebuild_info
     bool empty() const { return kind == rebuild_kind::none; }
 };
 
+// How a compile or link step finished. Trailing defaults cannot help here — notify() calls
+// through a pointer to member, and those never apply default arguments — so the optional
+// tail lives in the struct instead: a cache hit names only ok, cache_hit, and timing, and
+// the two bools stop being interchangeable positions.
+struct step_result
+{
+    bool ok = false;
+    bool cache_hit = false;
+    interval timing{};
+    rebuild_info rebuild{}; // why the step ran; empty on a cache hit
+    diagnostics diag{};     // what the toolchain said; empty unless the step failed
+};
+
 class observer
 {
 public:
@@ -195,70 +233,52 @@ public:
     virtual void profile_changed(rebuild_kind, const object_cache_profile_diff&) {}
     virtual void profile_change_rebuild(std::string_view) {}
 
+    // Parameter names are commented rather than declared: the default bodies ignore them, and
+    // a named unused parameter warns under -Wextra. The names are the contract's only
+    // documentation of which string_view is which, so they stay.
     virtual void cache_status(
-        std::string_view,
-        bool,
-        bool,
-        int,
-        int,
-        int,
-        std::string_view) {}
+        std::string_view /*object_cache_path*/,
+        bool /*object_cache_exists*/,
+        bool /*profile_match*/,
+        int /*object_entries*/,
+        int /*object_stale_entries*/,
+        int /*executable_entries*/,
+        std::string_view /*current_profile*/) {}
 
-    virtual void cache_invalidate_end(bool, bool, bool) {}
-    virtual void source_list(const source_inventory&) {}
-    virtual void build_start(std::string_view, bool, bool) {}
+    virtual void cache_invalidate_end(bool /*object_cache_removed*/,
+                                      bool /*executable_cache_removed*/,
+                                      bool /*compiler_stamp_removed*/) {}
 
-    virtual void build_end(
-        bool,
-        std::chrono::steady_clock::time_point,
-        std::chrono::steady_clock::time_point) {}
+    virtual void source_list(const source_inventory& /*inventory*/) {}
 
-    virtual void test_start(std::string_view) {}
+    virtual void build_start(std::string_view /*config*/,
+                             bool /*include_tests*/,
+                             bool /*include_examples*/) {}
 
-    virtual void test_end(
-        bool,
-        const process_status&,
-        std::chrono::steady_clock::time_point,
-        std::chrono::steady_clock::time_point) {}
+    virtual void build_end(bool /*ok*/, const interval& /*timing*/) {}
 
-    virtual void command_start(std::string_view, std::span<const std::string>) {}
+    virtual void test_start(std::string_view /*runner*/) {}
+
+    virtual void test_end(bool /*ok*/,
+                          const process_status& /*status*/,
+                          const interval& /*timing*/) {}
+
+    virtual void command_start(std::string_view /*cmd*/,
+                               std::span<const std::string> /*argv*/) {}
 
     virtual void command_end(
-        std::string_view,
-        std::span<const std::string>,
-        bool,
-        const process_status&,
-        const diagnostics&,
-        std::chrono::steady_clock::time_point,
-        std::chrono::steady_clock::time_point) {}
+        std::string_view /*cmd*/,
+        std::span<const std::string> /*argv*/,
+        bool /*ok*/,
+        const process_status& /*status*/,
+        const diagnostics& /*diag*/,
+        const interval& /*timing*/) {}
 
-    virtual void compile_start(
-        std::string_view,
-        std::string_view,
-        std::string_view,
-        std::string_view,
-        const rebuild_info& = {}) {}
+    virtual void compile_start(const compile_unit& /*unit*/, const rebuild_info& /*rebuild*/) {}
 
-    virtual void compile_end(
-        std::string_view,
-        std::string_view,
-        std::string_view,
-        std::string_view,
-        bool,
-        bool,
-        std::chrono::steady_clock::time_point,
-        std::chrono::steady_clock::time_point,
-        const rebuild_info& = {},
-        const diagnostics& = {}) {}
+    virtual void compile_end(const compile_unit& /*unit*/, const step_result& /*step*/) {}
 
-    virtual void link_end(
-        std::string_view,
-        bool,
-        bool,
-        std::chrono::steady_clock::time_point,
-        std::chrono::steady_clock::time_point,
-        const rebuild_info& = {},
-        const diagnostics& = {}) {}
+    virtual void link_end(std::string_view /*executable_path*/, const step_result& /*step*/) {}
 };
 
 inline auto observers = std::vector<std::reference_wrapper<observer>>{};

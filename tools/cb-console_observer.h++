@@ -176,9 +176,7 @@ struct observer final : cb::output::observer
         rebuild_modules.clear();
     }
 
-    void build_end(bool,
-                   std::chrono::steady_clock::time_point,
-                   std::chrono::steady_clock::time_point) override
+    void build_end(bool /*ok*/, const interval& /*timing*/) override
     {
         auto lock = std::lock_guard<std::mutex>{mutex};
         if(auto summary = format_rebuild_summary(); not summary.empty())
@@ -187,44 +185,25 @@ struct observer final : cb::output::observer
         }
     }
 
-    void compile_start(std::string_view,
-                       std::string_view,
-                       std::string_view,
-                       std::string_view,
-                       const rebuild_info& rebuild = {}) override
+    void compile_start(const compile_unit& /*unit*/, const rebuild_info& rebuild) override
     {
         if(not rebuild.empty() and not rebuild.message.empty())
             info(rebuild.message);
     }
 
-    void compile_end(std::string_view,
-                     std::string_view,
-                     std::string_view,
-                     std::string_view,
-                     bool,
-                     bool cache_hit,
-                     std::chrono::steady_clock::time_point,
-                     std::chrono::steady_clock::time_point,
-                     const rebuild_info& rebuild = {},
-                     const diagnostics& = {}) override
+    void compile_end(const compile_unit& /*unit*/, const step_result& step) override
     {
-        if(not cache_hit)
+        if(not step.cache_hit)
         {
             auto lock = std::lock_guard<std::mutex>{mutex};
-            note_rebuild(rebuild);
+            note_rebuild(step.rebuild);
         }
     }
 
-    void link_end(std::string_view,
-                  bool,
-                  bool cache_hit,
-                  std::chrono::steady_clock::time_point,
-                  std::chrono::steady_clock::time_point,
-                  const rebuild_info& rebuild = {},
-                  const diagnostics& = {}) override
+    void link_end(std::string_view /*executable_path*/, const step_result& step) override
     {
-        if(not cache_hit and not rebuild.message.empty())
-            info(rebuild.message);
+        if(not step.cache_hit and not step.rebuild.message.empty())
+            info(step.rebuild.message);
     }
 
     void cache_status(std::string_view object_cache_path,

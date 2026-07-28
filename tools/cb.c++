@@ -864,6 +864,18 @@ translation_unit parse_translation_unit(const fs::path& project_root, const fs::
     };
 }
 
+// Observers format four of a unit's fields, so they receive those four and not the unit:
+// the rest is build state they must not reach into, and cb-observer.h++ stays independent
+// of the scanner. The pcm path is the one field that has to be derived, and deriving it in
+// one place is why compile_start and compile_end can no longer disagree about it.
+output::compile_unit compile_unit_of(const translation_unit& tu)
+{
+    return {.source = tu.full_path,
+            .object = tu.object_path,
+            .pcm = tu.is_modular ? std::string_view{tu.pcm_path} : std::string_view{},
+            .module = tu.module};
+}
+
 using dependency_graph = std::flat_map<std::string, string_list, std::less<>>;
 using indegree_map = std::flat_map<std::string, int, std::less<>>;
 using unit_to_tu_map = std::flat_map<std::string, translation_unit*, std::less<>>;
@@ -950,7 +962,7 @@ private:
         if(current_phase == build_phase::build && !build_end_emitted)
         {
             const auto finished = std::chrono::steady_clock::now();
-            output::notify(&output::observer::build_end, false, phase_started, finished);
+            output::notify(&output::observer::build_end, false, output::interval{phase_started, finished});
             build_end_emitted = true;
         }
     }
@@ -1309,7 +1321,7 @@ private:
             result.diag = detail::read_diagnostics(capture_path);
 
         output::notify(&output::observer::command_end, cmd_str, argv, result.ok(),
-                       result.status, result.diag, started, finished);
+                       result.status, result.diag, output::interval{started, finished});
         return result;
     }
 
@@ -1453,51 +1465,6 @@ private:
     {
         info.message = format_link_message(executable_path, info);
         return info;
-    }
-
-    void emit_compile_start(const translation_unit& tu,
-                            const output::rebuild_info& rebuild = {}) const
-    {
-        output::notify(
-            &output::observer::compile_start,
-            tu.full_path,
-            tu.object_path,
-            tu.is_modular ? tu.pcm_path : std::string_view{},
-            tu.module,
-            rebuild);
-    }
-
-    void emit_compile_end(const translation_unit& tu,
-                          bool ok,
-                          bool cache_hit,
-                          std::chrono::steady_clock::time_point started,
-                          std::chrono::steady_clock::time_point finished,
-                          const output::rebuild_info& rebuild = {},
-                          const output::diagnostics& diag = {}) const
-    {
-        output::notify(
-            &output::observer::compile_end,
-            tu.full_path,
-            tu.object_path,
-            tu.is_modular ? tu.pcm_path : std::string_view{},
-            tu.module,
-            ok,
-            cache_hit,
-            started,
-            finished,
-            rebuild,
-            diag);
-    }
-
-    void emit_link_end(std::string_view executable_path,
-                       bool ok,
-                       bool cache_hit,
-                       std::chrono::steady_clock::time_point started,
-                       std::chrono::steady_clock::time_point finished,
-                       const output::rebuild_info& rebuild = {},
-                       const output::diagnostics& diag = {}) const
-    {
-        output::notify(&output::observer::link_end, executable_path, ok, cache_hit, started, finished, rebuild, diag);
     }
 
     void emit_profile_changed()
@@ -2257,7 +2224,8 @@ private:
     // ============================================================================
 
     void compile_unit(const translation_unit& tu, const output::rebuild_info& rebuild) {
-        emit_compile_start(tu, rebuild);
+        const auto unit = compile_unit_of(tu);
+        output::notify(&output::observer::compile_start, unit, rebuild);
         const auto started = std::chrono::steady_clock::now();
         const auto capture = diagnostics_path(tu);
 
@@ -2266,7 +2234,13 @@ private:
         const auto step = [&](const string_list& argv) {
             const auto result = invoke_shell(argv, capture);
             if (not result.ok()) {
-                emit_compile_end(tu, false, false, started, std::chrono::steady_clock::now(), rebuild, result.diag);
+                output::notify(&output::observer::compile_end,
+                               unit,
+                               output::step_result{
+                                   .ok = false,
+                                   .timing = {started, std::chrono::steady_clock::now()},
+                                   .rebuild = rebuild,
+                                   .diag = result.diag});
                 throw std::runtime_error{command_failure_message(argv, result)};
             }
         };
@@ -2277,7 +2251,12 @@ private:
         } else {
             step(source_object_argv(tu));
         }
-        emit_compile_end(tu, true, false, started, std::chrono::steady_clock::now(), rebuild);
+        output::notify(&output::observer::compile_end,
+                       unit,
+                       output::step_result{
+                           .ok = true,
+                           .timing = {started, std::chrono::steady_clock::now()},
+                           .rebuild = rebuild});
     }
 
     void update_module_flags()
@@ -2350,8 +2329,11 @@ private:
                     });
                 } else {
                     const auto now = std::chrono::steady_clock::now();
-                    emit_compile_start(*tu);
-                    emit_compile_end(*tu, true, true, now, now);
+                    const auto unit = compile_unit_of(*tu);
+                    output::notify(&output::observer::compile_start, unit, output::rebuild_info{});
+                    output::notify(&output::observer::compile_end,
+                                   unit,
+                                   output::step_result{.ok = true, .cache_hit = true, .timing = {now, now}});
                 }
             }
             for (auto& thread : threads) thread.join();
@@ -2461,7 +2443,9 @@ private:
             {
                 output::notify(&output::observer::info, "Skipping link (up-to-date): "s + tu.executable_path);
                 const auto now = std::chrono::steady_clock::now();
-                emit_link_end(tu.executable_path, true, true, now, now);
+                output::notify(&output::observer::link_end,
+                               tu.executable_path,
+                               output::step_result{.ok = true, .cache_hit = true, .timing = {now, now}});
                 continue;
             }
             // Capture decision by reference — it outlives join(); do not bind a per-iteration local.
@@ -2478,11 +2462,22 @@ private:
                     link_executable(tu, shared_objects);
                     linked = true;
                     const auto finished = std::chrono::steady_clock::now();
-                    emit_link_end(tu.executable_path, true, false, started, finished, *decision.reason);
+                    output::notify(&output::observer::link_end,
+                                   tu.executable_path,
+                                   output::step_result{
+                                       .ok = true,
+                                       .timing = {started, finished},
+                                       .rebuild = *decision.reason});
                     auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
                     link_cache[tu.executable_path] = decision.signature;
                 } catch (const link_failure& error) {
-                    emit_link_end(tu.executable_path, false, false, started, std::chrono::steady_clock::now(), *decision.reason, error.diag);
+                    output::notify(&output::observer::link_end,
+                                   tu.executable_path,
+                                   output::step_result{
+                                       .ok = false,
+                                       .timing = {started, std::chrono::steady_clock::now()},
+                                       .rebuild = *decision.reason,
+                                       .diag = error.diag});
                     failed.store(true, std::memory_order_relaxed);
                     auto lock = std::lock_guard<std::mutex>{failure_mutex};
                     if(not failure)
@@ -2490,7 +2485,12 @@ private:
                     return;
                 } catch (...) {
                     if(not linked)
-                        emit_link_end(tu.executable_path, false, false, started, std::chrono::steady_clock::now(), *decision.reason);
+                        output::notify(&output::observer::link_end,
+                                       tu.executable_path,
+                                       output::step_result{
+                                           .ok = false,
+                                           .timing = {started, std::chrono::steady_clock::now()},
+                                           .rebuild = *decision.reason});
                     failed.store(true, std::memory_order_relaxed);
                     auto lock = std::lock_guard<std::mutex>{failure_mutex};
                     if(not failure)
@@ -2600,7 +2600,9 @@ private:
         {
             output::notify(&output::observer::info, "Skipping link (up-to-date): "s + test_runner_path);
             const auto now = std::chrono::steady_clock::now();
-            emit_link_end(test_runner_path, true, true, now, now);
+            output::notify(&output::observer::link_end,
+                           test_runner_path,
+                           output::step_result{.ok = true, .cache_hit = true, .timing = {now, now}});
             return;
         }
 
@@ -2609,7 +2611,13 @@ private:
         if(const auto result = invoke_shell(link_argv, diagnostics_path_for_executable(test_runner_path));
            not result.ok())
         {
-            emit_link_end(test_runner_path, false, false, link_started, std::chrono::steady_clock::now(), *link_reason, result.diag);
+            output::notify(&output::observer::link_end,
+                           test_runner_path,
+                           output::step_result{
+                               .ok = false,
+                               .timing = {link_started, std::chrono::steady_clock::now()},
+                               .rebuild = *link_reason,
+                               .diag = result.diag});
             throw std::runtime_error{command_failure_message(link_argv, result)};
         }
         if(has_runner_unit)
@@ -2617,7 +2625,12 @@ private:
         else
             output::notify(&output::observer::success, "test_runner linked successfully");
         
-        emit_link_end(test_runner_path, true, false, link_started, std::chrono::steady_clock::now(), *link_reason);
+        output::notify(&output::observer::link_end,
+                       test_runner_path,
+                       output::step_result{
+                           .ok = true,
+                           .timing = {link_started, std::chrono::steady_clock::now()},
+                           .rebuild = *link_reason});
 
         // Save signature to cache
         {
@@ -2777,7 +2790,8 @@ public:
             throw;
         }
 
-        output::notify(&output::observer::build_end, true, build_started, std::chrono::steady_clock::now());
+        output::notify(&output::observer::build_end, true,
+                       output::interval{build_started, std::chrono::steady_clock::now()});
         build_end_emitted = true;
         current_phase = build_phase::none;
 
@@ -2808,7 +2822,7 @@ public:
         }
 
         const auto build_finished = std::chrono::steady_clock::now();
-        output::notify(&output::observer::build_end, true, build_started, build_finished);
+        output::notify(&output::observer::build_end, true, output::interval{build_started, build_finished});
         build_end_emitted = true;
         current_phase = build_phase::none;
         output::notify(&output::observer::success, "Build completed: "s + build_root());
@@ -2828,7 +2842,8 @@ public:
         // Not captured: the runner's stdout is the JSONL stream being forwarded.
         const auto result = invoke_shell(test_runner_argv(runner, args));
         const auto test_finished = std::chrono::steady_clock::now();
-        output::notify(&output::observer::test_end, result.ok(), result.status, test_started, test_finished);
+        output::notify(&output::observer::test_end, result.ok(), result.status,
+                       output::interval{test_started, test_finished});
         current_phase = build_phase::none;
         if (not result.ok()) {
             if(result.status.signaled)

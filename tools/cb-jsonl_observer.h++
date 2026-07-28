@@ -112,6 +112,18 @@ inline void write_diagnostics(std::ostream& os, const diagnostics& diag)
     os << '}';
 }
 
+// compile_start and compile_end describe the same unit, so the field set is written once.
+// The optional paths stay absent rather than empty for units that have no module.
+inline void write_compile_unit(std::ostream& os, const compile_unit& unit)
+{
+    os << ",\"source_path\":\"" << escape(unit.source) << "\"";
+    os << ",\"object_path\":\"" << escape(unit.object) << "\"";
+    if(not unit.pcm.empty())
+        os << ",\"pcm_path\":\"" << escape(unit.pcm) << "\"";
+    if(not unit.module.empty())
+        os << ",\"module_name\":\"" << escape(unit.module) << "\"";
+}
+
 inline void write_rebuild(std::ostream& os, const rebuild_info& rebuild)
 {
     os << '{';
@@ -250,13 +262,12 @@ struct observer final : cb::output::observer
         };
     }
 
-    void build_end(bool ok, std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished) override
+    void build_end(bool ok, const interval& timing) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
-        const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started);
         m.json << m.jsonl("build_end") << [&](std::ostream& os){
             os << ",\"ok\":" << (ok ? "true" : "false");
-            os << ",\"duration_ms\":" << duration.count();
+            os << ",\"duration_ms\":" << timing.elapsed_ms();
             if(m.mode != jsonl_mode::trace)
             {
                 os << ",\"compile_total\":" << m.compile_total;
@@ -280,14 +291,13 @@ struct observer final : cb::output::observer
         };
     }
 
-    void test_end(bool ok, const process_status& status, std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished) override
+    void test_end(bool ok, const process_status& status, const interval& timing) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
-        const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started);
         m.json << m.jsonl("test_end") << [&](std::ostream& os){
             os << ",\"ok\":" << (ok ? "true" : "false");
             write_process_status(os, status);
-            os << ",\"duration_ms\":" << duration.count();
+            os << ",\"duration_ms\":" << timing.elapsed_ms();
         };
     }
 
@@ -311,7 +321,7 @@ struct observer final : cb::output::observer
         };
     }
 
-    void command_end(std::string_view cmd, std::span<const std::string> argv, bool ok, const process_status& status, const diagnostics& diag, std::chrono::steady_clock::time_point started, std::chrono::steady_clock::time_point finished) override
+    void command_end(std::string_view cmd, std::span<const std::string> argv, bool ok, const process_status& status, const diagnostics& diag, const interval& timing) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         if(not ok)
@@ -319,7 +329,6 @@ struct observer final : cb::output::observer
         if(m.mode == jsonl_mode::summary || (m.mode == jsonl_mode::failures && ok))
             return;
 
-        const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started);
         m.json << m.jsonl("command_end") << [&](std::ostream& os){
             if(m.mode == jsonl_mode::trace)
                 os << ",\"cmd\":\"" << escape(cmd) << "\"";
@@ -327,7 +336,7 @@ struct observer final : cb::output::observer
             os << ",\"ok\":" << (ok ? "true" : "false");
             write_process_status(os, status);
             write_diagnostics(os, diag);
-            os << ",\"duration_ms\":" << duration.count();
+            os << ",\"duration_ms\":" << timing.elapsed_ms();
         };
     }
 
@@ -379,23 +388,14 @@ struct observer final : cb::output::observer
         };
     }
 
-    void compile_start(std::string_view source_path,
-                       std::string_view object_path,
-                       std::string_view pcm_path,
-                       std::string_view module_name,
-                       const rebuild_info& rebuild = {}) override
+    void compile_start(const compile_unit& unit, const rebuild_info& rebuild) override
     {
         if(m.mode != jsonl_mode::trace)
             return;
 
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("compile_start") << [&](std::ostream& os){
-            os << ",\"source_path\":\"" << escape(source_path) << "\"";
-            os << ",\"object_path\":\"" << escape(object_path) << "\"";
-            if(!pcm_path.empty())
-                os << ",\"pcm_path\":\"" << escape(pcm_path) << "\"";
-            if(!module_name.empty())
-                os << ",\"module_name\":\"" << escape(module_name) << "\"";
+            write_compile_unit(os, unit);
             if(not rebuild.empty())
             {
                 os << ",\"rebuild_reason\":\"" << escape(rebuild_kind_name(rebuild.kind)) << "\"";
@@ -407,82 +407,60 @@ struct observer final : cb::output::observer
         };
     }
 
-    void link_end(std::string_view executable_path,
-                  bool ok,
-                  bool cache_hit,
-                  std::chrono::steady_clock::time_point started,
-                  std::chrono::steady_clock::time_point finished,
-                  const rebuild_info& rebuild = {},
-                  const diagnostics& diag = {}) override
+    void link_end(std::string_view executable_path, const step_result& step) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         ++m.links_total;
-        if(cache_hit)
+        if(step.cache_hit)
             ++m.link_cache_hits;
-        if(not ok)
+        if(not step.ok)
             ++m.link_failed;
-        if(m.mode == jsonl_mode::summary || (m.mode == jsonl_mode::failures && ok))
+        if(m.mode == jsonl_mode::summary || (m.mode == jsonl_mode::failures && step.ok))
             return;
 
-        const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started);
         m.json << m.jsonl("link_end") << [&](std::ostream& os){
             os << ",\"executable_path\":\"" << escape(executable_path) << "\"";
-            os << ",\"ok\":" << (ok ? "true" : "false");
-            os << ",\"cache_hit\":" << (cache_hit ? "true" : "false");
-            if(not cache_hit and not rebuild.empty())
+            os << ",\"ok\":" << (step.ok ? "true" : "false");
+            os << ",\"cache_hit\":" << (step.cache_hit ? "true" : "false");
+            if(not step.cache_hit and not step.rebuild.empty())
             {
-                os << ",\"rebuild_reason\":\"" << escape(rebuild_kind_name(rebuild.kind)) << "\"";
+                os << ",\"rebuild_reason\":\"" << escape(rebuild_kind_name(step.rebuild.kind)) << "\"";
                 os << ",\"rebuild\":";
-                write_rebuild(os, rebuild);
+                write_rebuild(os, step.rebuild);
             }
-            write_diagnostics(os, diag);
-            os << ",\"duration_ms\":" << duration.count();
+            write_diagnostics(os, step.diag);
+            os << ",\"duration_ms\":" << step.timing.elapsed_ms();
         };
     }
 
-    void compile_end(std::string_view source_path,
-                     std::string_view object_path,
-                     std::string_view pcm_path,
-                     std::string_view module_name,
-                     bool ok,
-                     bool cache_hit,
-                     std::chrono::steady_clock::time_point started,
-                     std::chrono::steady_clock::time_point finished,
-                     const rebuild_info& rebuild = {},
-                     const diagnostics& diag = {}) override
+    void compile_end(const compile_unit& unit, const step_result& step) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         ++m.compile_total;
-        if(cache_hit)
+        if(step.cache_hit)
             ++m.compile_cache_hits;
         else
         {
             ++m.compile_rebuilt;
-            m.note_rebuild(rebuild);
+            m.note_rebuild(step.rebuild);
         }
-        if(not ok)
+        if(not step.ok)
             ++m.compile_failed;
-        if(m.mode == jsonl_mode::summary || (m.mode == jsonl_mode::failures && ok))
+        if(m.mode == jsonl_mode::summary || (m.mode == jsonl_mode::failures && step.ok))
             return;
 
-        const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished - started);
         m.json << m.jsonl("compile_end") << [&](std::ostream& os){
-            os << ",\"source_path\":\"" << escape(source_path) << "\"";
-            os << ",\"object_path\":\"" << escape(object_path) << "\"";
-            if(!pcm_path.empty())
-                os << ",\"pcm_path\":\"" << escape(pcm_path) << "\"";
-            if(!module_name.empty())
-                os << ",\"module_name\":\"" << escape(module_name) << "\"";
-            os << ",\"ok\":" << (ok ? "true" : "false");
-            os << ",\"cache_hit\":" << (cache_hit ? "true" : "false");
-            if(not cache_hit and not rebuild.empty())
+            write_compile_unit(os, unit);
+            os << ",\"ok\":" << (step.ok ? "true" : "false");
+            os << ",\"cache_hit\":" << (step.cache_hit ? "true" : "false");
+            if(not step.cache_hit and not step.rebuild.empty())
             {
-                os << ",\"rebuild_reason\":\"" << escape(rebuild_kind_name(rebuild.kind)) << "\"";
+                os << ",\"rebuild_reason\":\"" << escape(rebuild_kind_name(step.rebuild.kind)) << "\"";
                 os << ",\"rebuild\":";
-                write_rebuild(os, rebuild);
+                write_rebuild(os, step.rebuild);
             }
-            write_diagnostics(os, diag);
-            os << ",\"duration_ms\":" << duration.count();
+            write_diagnostics(os, step.diag);
+            os << ",\"duration_ms\":" << step.timing.elapsed_ms();
         };
     }
 
