@@ -127,9 +127,48 @@ auto register_tests()
         require_gt(2, 1);
         require_gteq(2, 2);
         require_eq(std::string{"same"}, std::string{"same"});
-        // Mixed arithmetic types resolve through std::common_type.
+        // Same-signedness mixed width stays equal / ordered.
         require_eq(2, 2L);
         require_lt(1, 2.5);
+        // Mixed signedness must compare mathematical values (std::cmp_*), not
+        // through unsigned common_type conversion.
+        require_neq(-1, 4294967295u);
+        require_lt(-1, 0u);
+        require_lteq(-1, 0u);
+        require_gt(0u, -1);
+        require_gteq(0u, -1);
+        require_eq(static_cast<unsigned>(-1), 4294967295u);
+    };
+
+    test_case("test_case [.probe-signedness] mixed signedness failures") = []
+    {
+        // Pre-fix these compared equal / unordered via unsigned common_type.
+        check_eq(-1, 4294967295u);
+        check_lt(0u, -1);
+        check_gt(-1, 0u);
+        check_lteq(0u, -1);
+        check_gteq(-1, 0u);
+    };
+
+    test_case("test_case [self] mixed signedness comparisons reject wraparound equality") = []
+    {
+        const auto result = probe("[.probe-signedness]");
+        require_neq(result.exit_code, 0);
+
+        const auto expected_matchers = std::vector<std::string>{
+            "\"check_eq\"", "\"check_lt\"", "\"check_gt\"",
+            "\"check_lteq\"", "\"check_gteq\""};
+
+        for(auto index = std::size_t{0}; index < expected_matchers.size(); ++index)
+        {
+            const auto line = failure(result.stdout_text, index);
+            require_false(line.empty());
+            require_eq(field(line, "matcher"), expected_matchers.at(index));
+        }
+
+        const auto eq = failure(result.stdout_text, 0);
+        require_eq(field(eq, "actual"), std::string{"-1"});
+        require_eq(field(eq, "expected"), std::string{"4294967295"});
     };
 
     // ========================================================================

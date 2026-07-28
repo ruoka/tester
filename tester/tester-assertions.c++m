@@ -31,6 +31,89 @@ namespace tester::assertions
     template<typename A, typename E>
     constexpr bool both_are_floating_point_v = is_floating_point_v<A> and is_floating_point_v<E>;
 
+    // Integral comparisons must not go through std::common_type: common_type_t<int,
+    // unsigned> is unsigned, so equal_to / less convert -1 to UINT_MAX and wrongly
+    // treat check_eq(-1, 4294967295u) as equal and check_lt(-1, 0u) as false.
+    // std::cmp_* compare mathematical values. Non-integrals keep operator== / <.
+    // The unused T parameter matches check/require's M<common_type_t<A,E>> shape.
+    template<typename T>
+    struct value_equal
+    {
+        template<typename A, typename E>
+        constexpr bool operator()(A const& a, E const& e) const
+        {
+            if constexpr (std::is_integral_v<A> and std::is_integral_v<E>)
+                return std::cmp_equal(a, e);
+            else
+                return std::equal_to<>{}(a, e);
+        }
+    };
+
+    template<typename T>
+    struct value_not_equal
+    {
+        template<typename A, typename E>
+        constexpr bool operator()(A const& a, E const& e) const
+        {
+            if constexpr (std::is_integral_v<A> and std::is_integral_v<E>)
+                return std::cmp_not_equal(a, e);
+            else
+                return std::not_equal_to<>{}(a, e);
+        }
+    };
+
+    template<typename T>
+    struct value_less
+    {
+        template<typename A, typename E>
+        constexpr bool operator()(A const& a, E const& e) const
+        {
+            if constexpr (std::is_integral_v<A> and std::is_integral_v<E>)
+                return std::cmp_less(a, e);
+            else
+                return std::less<>{}(a, e);
+        }
+    };
+
+    template<typename T>
+    struct value_less_equal
+    {
+        template<typename A, typename E>
+        constexpr bool operator()(A const& a, E const& e) const
+        {
+            if constexpr (std::is_integral_v<A> and std::is_integral_v<E>)
+                return std::cmp_less_equal(a, e);
+            else
+                return std::less_equal<>{}(a, e);
+        }
+    };
+
+    template<typename T>
+    struct value_greater
+    {
+        template<typename A, typename E>
+        constexpr bool operator()(A const& a, E const& e) const
+        {
+            if constexpr (std::is_integral_v<A> and std::is_integral_v<E>)
+                return std::cmp_greater(a, e);
+            else
+                return std::greater<>{}(a, e);
+        }
+    };
+
+    template<typename T>
+    struct value_greater_equal
+    {
+        template<typename A, typename E>
+        constexpr bool operator()(A const& a, E const& e) const
+        {
+            if constexpr (std::is_integral_v<A> and std::is_integral_v<E>)
+                return std::cmp_greater_equal(a, e);
+            else
+                return std::greater_equal<>{}(a, e);
+        }
+    };
+
     // Floating-point comparator with epsilon tolerance
     template<typename T>
     requires std::is_floating_point_v<T>
@@ -105,7 +188,7 @@ namespace tester::assertions
         }
         else
         {
-            return check(std::equal_to<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+            return check(value_equal<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
         }
     };
 
@@ -121,7 +204,7 @@ namespace tester::assertions
         }
         else
         {
-            require(std::equal_to<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+            require(value_equal<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
         }
     };
 
@@ -147,70 +230,70 @@ namespace tester::assertions
     auto check_neq(A actual, E expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        return check(std::not_equal_to<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        return check(value_not_equal<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
     };
 
     export template<typename A, typename E>
     void require_neq(A actual, E expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        require(std::not_equal_to<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        require(value_not_equal<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
     };
 
     export template<typename A, typename E>
     auto check_lt(A actual, E expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        return check(std::less<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        return check(value_less<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
     };
 
     export template<typename A, typename E>
     void require_lt(A actual, E expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        require(std::less<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        require(value_less<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
     };
 
     export template<typename A, typename E>
     auto check_lteq(A actual, E expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        return check(std::less_equal<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        return check(value_less_equal<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
     };
 
     export template<typename A, typename E>
     void require_lteq(A actual, E expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        require(std::less_equal<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        require(value_less_equal<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
     };
 
     export template<typename A, typename E>
     auto check_gt(A actual, E expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        return check(std::greater<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        return check(value_greater<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
     };
 
     export template<typename A, typename E>
     void require_gt(A actual, E expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        require(std::greater<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        require(value_greater<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
     };
 
     export template<typename A, typename E>
     auto check_gteq(A actual, E expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        return check(std::greater_equal<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        return check(value_greater_equal<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
     };
 
     export template<typename A, typename E>
     void require_gteq(A actual, E expected, const std::source_location location = std::source_location::current())
     {
         const auto matcher_location = std::source_location::current();
-        require(std::greater_equal<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
+        require(value_greater_equal<std::common_type_t<A,E>>{},actual,expected,location,matcher_location);
     };
 
     export auto check_true(bool actual, const std::source_location location = std::source_location::current())

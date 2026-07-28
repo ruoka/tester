@@ -46,8 +46,8 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 
 ### 1.7 Comparison semantics & argument passing
 
-- 📋 **Mixed-signedness comparisons pass silently.** `check_eq` compares through `std::equal_to<std::common_type_t<A,E>>`, and `std::common_type_t<int, unsigned>` is `unsigned`, so `check_eq(-1, 4294967295u)` converts both operands and reports them **equal**. Prefer the `std::cmp_equal` / `std::cmp_less` family, which compares mathematical values: that makes the comparison *correct* rather than rejecting it with a `static_assert`.
-- 📋 Assertions take operands **by value**, copying every argument and rejecting move-only types. Take `const&` and drop the `std::common_type_t` requirement in favour of transparent comparators. Same plumbing as the item above — worth doing together.
+- ✅ **Mixed-signedness comparisons use mathematical values.** `check_eq` / relational matchers compare integrals through `std::cmp_*` rather than `std::equal_to` / `std::less` on `std::common_type_t`, so `check_eq(-1, 4294967295u)` fails (it used to pass because `common_type_t<int, unsigned>` is `unsigned`).
+- 📋 Assertions take operands **by value**, copying every argument and rejecting move-only types. Take `const&` and drop the `std::common_type_t` requirement in favour of transparent comparators.
 
 ### 1.8 Matcher naming
 
