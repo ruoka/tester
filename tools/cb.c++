@@ -569,9 +569,12 @@ inline std::string strip_comments_and_literals(const std::string& text)
 
 // `#if 0` is the commented-out idiom, so its body must be elided wholesale. Nesting is
 // the one part a regex cannot express — balanced delimiters are not a regular language
-// — so the regex recognises directives and the depth is counted. Genuine conditionals
-// are deliberately left alone: over-approximating an `#ifdef` by scanning both branches
-// costs a spurious edge, while guessing which branch is live risks dropping a real one.
+// — so the regex recognises directives and the depth is counted. A leading `0` / `false`
+// still elides when followed by more tokens (`#if 0 && OLD_FEATURE`): the preprocessor
+// value is false either way, and requiring the condition to be the whole rest of the
+// line left those bodies live. Genuine conditionals are deliberately left alone:
+// over-approximating an `#ifdef` by scanning both branches costs a spurious edge, while
+// guessing which branch is live risks dropping a real one.
 class conditional_filter
 {
 public:
@@ -600,6 +603,8 @@ private:
         if(name == "if" or name == "ifdef" or name == "ifndef")
         {
             ++m_if_depth;
+            // First token only: `#if 0 && X` captures `0` and must still elide, because
+            // `0 && X` is false. Conditions that merely contain a later `0` stay live.
             if(not skipping and name == "if" and (condition == "0" or condition == "false"))
                 m_skip_depth = m_if_depth;
         }
@@ -617,7 +622,10 @@ private:
         }
     }
 
-    inline static const std::regex directive_regex{R"(\s*#\s*(\w+)\s*([^\s]*)\s*)"};
+    // Group 2 is the first condition token; `.*` absorbs any trailing tokens so
+    // `#if 0 && FOO` still matches (and elides) instead of failing the full-line match
+    // and leaving the body live.
+    inline static const std::regex directive_regex{R"(\s*#\s*(\w+)\s*([^\s]*).*)"};
 
     int m_if_depth = 0;
     int m_skip_depth = 0;
