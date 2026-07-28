@@ -876,6 +876,22 @@ output::compile_unit compile_unit_of(const translation_unit& tu)
             .module = tu.module};
 }
 
+// The inventory projection, the sibling of compile_unit_of: the list command reports what a
+// unit is rather than where it compiles to, so it carries its own strings and joins the
+// display path. Three adjacent bools are why this is named fields and not an aggregate.
+output::source_unit source_unit_of(const translation_unit& tu)
+{
+    return {.unit = tu.unit,
+            .path = tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename,
+            .module = tu.module,
+            .kind = std::string{detail::unit_kind_name(tu.kind)},
+            .imports = tu.imports,
+            .level = tu.dependency_level,
+            .has_main = tu.has_main,
+            .is_test = tu.is_test,
+            .is_modular = tu.is_modular};
+}
+
 using dependency_graph = std::flat_map<std::string, string_list, std::less<>>;
 using indegree_map = std::flat_map<std::string, int, std::less<>>;
 using unit_to_tu_map = std::flat_map<std::string, translation_unit*, std::less<>>;
@@ -2841,29 +2857,15 @@ public:
     void list_sources() {
         scan_and_order();
         auto inventory = output::source_inventory{
-            std::string{config_name()},
-            include_tests,
-            include_examples,
-            source_dir,
-            {},
-            0,
-            0,
-            0,
+            .config = std::string{config_name()},
+            .include_tests = include_tests,
+            .include_examples = include_examples,
+            .source_dir = source_dir,
         };
         inventory.units.reserve(units_in_topological_order.size());
         for(const auto& tu : units_in_topological_order)
         {
-            inventory.units.push_back(output::source_unit{
-                tu.unit,
-                tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename,
-                tu.module,
-                std::string{detail::unit_kind_name(tu.kind)},
-                tu.imports,
-                tu.dependency_level,
-                tu.has_main,
-                tu.is_test,
-                tu.is_modular,
-            });
+            inventory.units.push_back(source_unit_of(tu));
             if(tu.has_main)
                 ++inventory.main_count;
             if(tu.is_test)

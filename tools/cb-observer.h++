@@ -70,6 +70,8 @@ void for_each_profile_tokens(Diff& diff, Callback&& callback)
     callback("cpp", diff.cpp);
 }
 
+// Built from a translation unit by source_unit_of; see compile_unit for the compile-event
+// projection. Members default so a designated initializer can name only what it means.
 struct source_unit
 {
     std::string unit;
@@ -77,22 +79,22 @@ struct source_unit
     std::string module;
     std::string kind;
     std::vector<std::string> imports;
-    int level;
-    bool has_main;
-    bool is_test;
-    bool is_modular;
+    int level = -1;
+    bool has_main = false;
+    bool is_test = false;
+    bool is_modular = false;
 };
 
 struct source_inventory
 {
     std::string config;
-    bool include_tests;
-    bool include_examples;
+    bool include_tests = false;
+    bool include_examples = false;
     std::string source_dir;
-    std::vector<source_unit> units;
-    int main_count;
-    int test_count;
-    int max_level;
+    std::vector<source_unit> units{}; // filled after construction; the rest warn if omitted
+    int main_count = 0;
+    int test_count = 0;
+    int max_level = 0;
 };
 
 // A span of monotonic work. Every phase event carries one, and passing the pair as a value
