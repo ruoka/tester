@@ -911,12 +911,44 @@ private:
     std::counting_semaphore<> slots;
 };
 
+// One build_start, exactly one build_end, whichever way the steps end. The pairing lives
+// here rather than in the callers, which had to remember a phase flag, an emitted flag and a
+// catch-and-rethrow each, and rather than in the observers, which would each have to
+// reimplement the latch and could then disagree about whether the build ended.
+class build_scope
+{
+public:
+    build_scope(std::string_view config, bool include_tests, bool include_examples)
+    {
+        output::notify(&output::observer::build_start, config, include_tests, include_examples);
+    }
+
+    build_scope(const build_scope&) = delete;
+    build_scope& operator=(const build_scope&) = delete;
+
+    // A build that never reports success failed, including when a step threw.
+    ~build_scope() { report(false); }
+
+    void succeeded() { report(true); }
+
+private:
+    void report(bool ok)
+    {
+        if(std::exchange(reported, true))
+            return;
+        output::notify(&output::observer::build_end, ok,
+                       output::interval{started, std::chrono::steady_clock::now()});
+    }
+
+    std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+    bool reported = false;
+};
+
 class build_system {
 public:
     enum class build_config { debug, release };
 
 private:
-    enum class build_phase { none, build };
 
     std::string source_dir;
     string_list compile_flags, link_flags, cpp_flags;
@@ -941,11 +973,6 @@ private:
     string_list extra_link_flag_tokens;
     std::optional<output::rebuild_kind> object_cache_miss_reason;
     output::object_cache_profile_diff profile_diff;
-    
-    // JSONL phase tracking state
-    build_phase current_phase = build_phase::none;
-    std::chrono::steady_clock::time_point phase_started{};
-    bool build_end_emitted = false;
 
     std::string_view config_name() const
     {
@@ -957,16 +984,6 @@ private:
         std::unreachable();
     }
     
-    void emit_failed_build_end()
-    {
-        if(current_phase == build_phase::build && !build_end_emitted)
-        {
-            const auto finished = std::chrono::steady_clock::now();
-            output::notify(&output::observer::build_end, false, output::interval{phase_started, finished});
-            build_end_emitted = true;
-        }
-    }
-
     // ============================================================================
     // Initialization and Setup
     // ============================================================================
@@ -1465,14 +1482,6 @@ private:
     {
         info.message = format_link_message(executable_path, info);
         return info;
-    }
-
-    void emit_profile_changed()
-    {
-        if(object_cache_miss_reason != output::rebuild_kind::profile_change)
-            return;
-
-        output::notify(&output::observer::profile_changed, *object_cache_miss_reason, profile_diff);
     }
 
     string_list base_compile_argv() const
@@ -2277,7 +2286,8 @@ private:
     void compile_units() {
         if (units_in_topological_order.empty()) return;
         auto cache = load_object_cache();
-        emit_profile_changed();
+        if(object_cache_miss_reason == output::rebuild_kind::profile_change)
+            output::notify(&output::observer::profile_changed, *object_cache_miss_reason, profile_diff);
 
         auto u2tu = unit_to_tu_map{};
         for (auto& tu : units_in_topological_order) {
@@ -2776,24 +2786,9 @@ public:
     }
 
     void build() {
-        const auto build_started = std::chrono::steady_clock::now();
-        current_phase = build_phase::build;
-        phase_started = build_started;
-        build_end_emitted = false;
-        output::notify(&output::observer::build_start, config_name(), include_tests, include_examples);
-
-        try {
-            build_steps();
-        } catch (...) {
-            emit_failed_build_end();
-            current_phase = build_phase::none;
-            throw;
-        }
-
-        output::notify(&output::observer::build_end, true,
-                       output::interval{build_started, std::chrono::steady_clock::now()});
-        build_end_emitted = true;
-        current_phase = build_phase::none;
+        auto build = build_scope{config_name(), include_tests, include_examples};
+        build_steps();
+        build.succeeded();
 
         output::notify(&output::observer::success, "Build completed: "s + build_root());
     }
@@ -2803,28 +2798,15 @@ public:
         output::notify(&output::observer::info, "=== Running tests ===");
 
         include_tests = true;
-        const auto build_started = std::chrono::steady_clock::now();
-        current_phase = build_phase::build;
-        phase_started = build_started;
-        build_end_emitted = false;
-        output::notify(&output::observer::build_start, config_name(), true, include_examples);
-
         auto runner = detail::join_dir(binary_dir(), test_runner_name);
-        try {
+        {
+            auto build = build_scope{config_name(), true, include_examples};
             build_steps();
             link_test_runner();
             if(not fs::exists(runner))
                 throw std::runtime_error{"test_runner not found — make sure .test.c++ files or test_runner.c++ exist"};
-        } catch (...) {
-            emit_failed_build_end();
-            current_phase = build_phase::none;
-            throw;
+            build.succeeded();
         }
-
-        const auto build_finished = std::chrono::steady_clock::now();
-        output::notify(&output::observer::build_end, true, output::interval{build_started, build_finished});
-        build_end_emitted = true;
-        current_phase = build_phase::none;
         output::notify(&output::observer::success, "Build completed: "s + build_root());
 
         const auto set_env = [](std::string_view key, std::string_view value)
@@ -2844,7 +2826,6 @@ public:
         const auto test_finished = std::chrono::steady_clock::now();
         output::notify(&output::observer::test_end, result.ok(), result.status,
                        output::interval{test_started, test_finished});
-        current_phase = build_phase::none;
         if (not result.ok()) {
             if(result.status.signaled)
                 output::notify(&output::observer::error,
