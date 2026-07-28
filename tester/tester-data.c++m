@@ -47,7 +47,7 @@ export struct test_result : public test_metadata
     std::chrono::system_clock::time_point finished_at{};
 };
 
-export auto test_results = std::list<test_result>{};
+auto test_results = std::list<test_result>{};
 
 export struct test_statistics
 {
