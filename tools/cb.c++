@@ -550,6 +550,38 @@ constexpr std::string_view object_cache_format = "cb-object-cache-v3"sv;
 // Comments, string literals and `#if 0` blocks are not declarations, and matching the
 // module regexes against them invents edges in the module graph.
 
+// Translation phase 2 deletes a backslash at the end of a physical line before any of
+// the constructs below are recognised. Directives are matched a logical line at a time,
+// so `#if \` / `0` is `#if 0` to the compiler and must be to the scanner too — otherwise
+// a phantom import in the dead body becomes a real edge and can close a cycle through a
+// module that really exists. Ordinary strings and `//` comments already admit the splice
+// in their own branches; splicing first is what makes the directive filter see the same
+// logical lines. Raw-string bodies revert phase 2 in the language, but their contents are
+// discarded here either way, and a splice inside a closing delimiter is ill-formed.
+inline std::string splice_physical_lines(std::string_view text)
+{
+    auto out = std::string{};
+    out.reserve(text.size());
+    for(std::size_t i = 0; i < text.size(); ++i)
+    {
+        if(text[i] == '\\')
+        {
+            if(i + 1 < text.size() and text[i + 1] == '\n')
+            {
+                ++i;
+                continue;
+            }
+            if(i + 2 < text.size() and text[i + 1] == '\r' and text[i + 2] == '\n')
+            {
+                i += 2;
+                continue;
+            }
+        }
+        out.push_back(text[i]);
+    }
+    return out;
+}
+
 // One alternation over the whole preamble, because a block comment or a literal can
 // span lines and so cannot be recognised a line at a time. Alternation also gets the
 // interleaving right for free: whichever construct opens first wins, so `"/*"` inside
@@ -570,7 +602,9 @@ constexpr std::string_view object_cache_format = "cb-object-cache-v3"sv;
 // `-Wcomment` — so `\` at the end of a line carries the next line inside the construct.
 // A raw string needs its own branch: its body has no escapes at all, so only `)delimiter"`
 // closes it, matched by backreference. That leaves it as the one place a lazy `[\s\S]*?` is
-// unavoidable, and it only runs where `R"` appears.
+// unavoidable, and it only runs where `R"` appears. (Phase-2 splicing above already joined
+// physical lines for directives; these arms still cover splices that remain inside a
+// construct after that pass, and keep the branch self-contained.)
 inline static const std::regex comment_or_literal_regex{
     R"(//[^\n\\]*(?:(?:\\\r?\n|\\[^\n])[^\n\\]*)*)"
     R"(|/\*[^*]*\*+(?:[^/*][^*]*\*+)*/)"
@@ -791,7 +825,9 @@ translation_unit parse_translation_unit(const fs::path& project_root, const fs::
         raw += line;
         raw += '\n';
     }
-    const auto cleaned = detail::strip_comments_and_literals(raw);
+    // Phase 2 before cleaning: directives and the comment/literal pass must see logical
+    // lines, or a spliced `#if 0` leaves its body live (see splice_physical_lines).
+    const auto cleaned = detail::strip_comments_and_literals(detail::splice_physical_lines(raw));
     auto conditionals = detail::conditional_filter{};
 
     for (const auto part : std::views::split(cleaned, '\n')) {

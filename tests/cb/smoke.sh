@@ -592,9 +592,10 @@ test_dead_conditional_arms() {
   # `#if 0` has more spellings than the bare constant, and the scanner recognised only
   # the bare one: parentheses hid the constant, a short-circuited operand made the
   # directive match nothing at all — leaving its body live and the `#endif` depth off by
-  # one — and every `#elif` revived the region, dead condition or not. Each one leaks a
-  # phantom edge, and the whole point is that dead branches are where you park the import
-  # you no longer use.
+  # one — every `#elif` revived the region, dead condition or not, and a phase-2
+  # backslash-newline splice (`#if \` / `0`) hid the constant on the next physical line.
+  # Each one leaks a phantom edge, and the whole point is that dead branches are where you
+  # park the import you no longer use.
   printf '%s\n' \
     'export module scanned;' \
     '#if (0)' \
@@ -627,6 +628,15 @@ test_dead_conditional_arms() {
     '#elif 1' \
     'import extras;' \
     '#endif' \
+    '#if \' \
+    '0' \
+    'import phantom_spliced_if;' \
+    '#endif' \
+    '#if 1' \
+    '#elif \' \
+    '0' \
+    'import phantom_spliced_elif;' \
+    '#endif' \
     'export int scanned_value() { return helper_value() + extra_value(); }' > "${work_dir}/scanned.c++m"
   printf '%s\n' \
     'export module helpers;' \
@@ -651,6 +661,10 @@ test_dead_conditional_arms() {
   assert_jsonl_not_contains 'phantom_elif' "dead_arms_no_dead_elif_edge"
   assert_jsonl_not_contains 'phantom_elif_after_live' "dead_arms_no_dead_elif_after_live_edge"
   assert_jsonl_not_contains 'phantom_before_live_arm' "dead_arms_no_arm_before_live_elif_edge"
+  # Phase 2 joins `#if \` / `0` before the directive filter runs; without that splice the
+  # body stays live and these phantoms become edges.
+  assert_jsonl_not_contains 'phantom_spliced_if' "dead_arms_no_spliced_if_edge"
+  assert_jsonl_not_contains 'phantom_spliced_elif' "dead_arms_no_spliced_elif_edge"
 
   # The build proves the surviving edges are the right ones: `scanned` calls into both
   # modules, so it only compiles if both were ordered ahead of it.
@@ -686,6 +700,38 @@ test_commented_import_no_false_cycle() {
   assert_jsonl_event_value build_end ok true "false_cycle_build_ok"
   assert_jsonl_not_contains 'Cyclic dependency' "false_cycle_no_cycle_error"
   end_case commented_import_no_false_cycle
+}
+
+test_spliced_if_zero_no_false_cycle() {
+  should_run spliced_if_zero_no_false_cycle || return 0
+  begin_case spliced_if_zero_no_false_cycle
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+  rm -f "${work_dir}/hello.c++"
+
+  # Same false-cycle shape as a commented-out import, but the phantom sits in a dead
+  # `#if 0` whose directive is split across physical lines by a phase-2 backslash-newline
+  # splice. The compiler joins them before recognising the directive; the scanner used to
+  # see `#if \` and a live `0` / `import`, invent the edge, and abort a valid project.
+  printf '%s\n' \
+    'export module cycle_a;' \
+    '#if \' \
+    '0' \
+    'import cycle_b;' \
+    '#endif' \
+    'export int a_value() { return 1; }' > "${work_dir}/cycle_a.c++m"
+  printf '%s\n' \
+    'export module cycle_b;' \
+    'import cycle_a;' \
+    'export int b_value() { return a_value() + 1; }' > "${work_dir}/cycle_b.c++m"
+  printf '%s\n' \
+    'import cycle_b;' \
+    'int main() { return b_value() == 2 ? 0 : 1; }' > "${work_dir}/main.c++"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "spliced_if_zero_build_ok"
+  assert_jsonl_not_contains 'Cyclic dependency' "spliced_if_zero_no_cycle_error"
+  end_case spliced_if_zero_no_false_cycle
 }
 
 test_module_safe_name() {
@@ -1165,6 +1211,7 @@ main() {
   test_spliced_and_raw_literals
   test_dead_conditional_arms
   test_commented_import_no_false_cycle
+  test_spliced_if_zero_no_false_cycle
   test_gmf_preamble
   test_module_safe_name
   test_same_basename_collision
