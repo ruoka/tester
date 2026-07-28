@@ -126,9 +126,10 @@ namespace tester::assertions
         template<typename A, typename E>
         constexpr bool operator()(A actual, E expected) const
         {
-            // Negating the equality keeps the pair coherent: without this, two values
-            // within the epsilon satisfied check_eq and check_neq at the same time.
-            if constexpr (both_are_floating_point_v<A,E>) return not numeric_equal_to<T>{}(actual, expected);
+            // The epsilon has to appear here too, negated: while this compared floating
+            // point exactly, two values within the tolerance satisfied check_eq and
+            // check_neq at the same time.
+            if constexpr (both_are_floating_point_v<A,E>) return not floating_point_equal<T>{}(actual, expected);
             else if constexpr (both_are_comparable_integers_v<A,E>) return std::cmp_not_equal(actual, expected);
             else return std::not_equal_to<T>{}(actual, expected);
         }
