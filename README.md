@@ -400,6 +400,7 @@ Namespace `tester::assertions` — matching `check_*` (non-fatal) and `require_*
 - `check_container_eq`, `require_container_eq`
 - `check_contains`, `require_contains` (string or container element)
 - `check_starts_with`, `require_starts_with`, `check_ends_with`, `require_ends_with`
+- Elements are compared by the same rule as `check_eq`, so signedness and the floating-point epsilon behave identically inside a container: `check_contains(std::vector<std::size_t>{std::string::npos}, -1)` fails, while `require_container_eq(std::vector<double>{0.1 + 0.2}, std::vector<double>{0.3})` passes
 
 ### Messaging
 - `succeed`, `failed`, `warning`

@@ -180,6 +180,22 @@ namespace tester::assertions
         }
     };
 
+    // The element rule for the container matchers, so that a container of numbers answers
+    // the way its elements would answer on their own. Comparing elements with `==` left the
+    // container matchers converting where check_eq had stopped: check_contains(
+    // std::vector<std::size_t>{std::string::npos}, -1) passed, and so did
+    // check_container_eq({-1}, {4294967295u}). Elements go through the same comparator, so
+    // the epsilon applies to floating point here too. Element types with no common type
+    // keep their own operator==, which is all std::common_type_t would have to work with.
+    template<typename A, typename E>
+    constexpr bool values_equal(const A& actual, const E& expected)
+    {
+        if constexpr (requires { typename std::common_type<A,E>::type; })
+            return numeric_equal_to<std::common_type_t<A,E>>{}(actual, expected);
+        else
+            return actual == expected;
+    }
+
     // Operands are taken by forwarding reference and only ever read: the comparator and
     // the publisher both take them by const reference, so nothing is forwarded onward and
     // nothing is consumed. By value copied each operand once per layer, which ruled out
@@ -632,7 +648,7 @@ namespace tester::assertions
         std::size_t index = 0;
 
         while (actual_it != actual_end && expected_it != expected_end) {
-            if (!(*actual_it == *expected_it)) {
+            if (!values_equal(*actual_it, *expected_it)) {
                 auto msg = std::ostringstream{};
                 msg << "mismatch at index " << index << ": actual=" << *actual_it << ", expected=" << *expected_it;
                 return {false, msg.str()};
@@ -882,7 +898,8 @@ namespace tester::assertions
     auto check_contains(const C& container, const E& element, const std::source_location location = std::source_location::current())
     {
         ++data::statistics().total_assertions;
-        const auto ok = std::ranges::contains(container, element);
+        const auto ok = std::ranges::any_of(container,
+            [&element](const auto& candidate){ return values_equal(candidate, element); });
         data::statistics().successful_assertions += ok;
         
         auto container_str = format_container(container);
@@ -897,7 +914,8 @@ namespace tester::assertions
     void require_contains(const C& container, const E& element, const std::source_location location = std::source_location::current())
     {
         ++data::statistics().total_assertions;
-        const auto ok = std::ranges::contains(container, element);
+        const auto ok = std::ranges::any_of(container,
+            [&element](const auto& candidate){ return values_equal(candidate, element); });
         data::statistics().successful_assertions += ok;
         
         auto container_str = format_container(container);
