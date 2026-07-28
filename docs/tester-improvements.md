@@ -123,7 +123,7 @@ Machine-parseable test and build output for CI and automation. Human output rema
 - ✅ Per-binary `link_end` (`executable_path`, `cache_hit`, `ok`, `duration_ms`); `link_start` still optional.
 - ✅ Structured `argv: ["clang++", "..."]` on `command_start` / `command_end` alongside human `cmd` string.
 - ✅ `cache_hit: true` on `compile_end` when incremental compile skips a translation unit.
-- ✅ `rebuild_reason` on `compile_end` when `cache_hit:false` (short kind: `not_in_cache`, `source_stale`, `pcm_stale`, `dependency_pcm_stale`, `profile_change`, …).
+- ✅ `rebuild_reason` on `compile_end` when `cache_hit:false` (short kind: `not_in_cache`, `source_stale`, `header_stale`, `depfile_missing`, `pcm_stale`, `dependency_pcm_stale`, `profile_change`, …).
 - ✅ Structured `rebuild` object on compile/link events (`kind`, `module`, paths, `hint`, `message`, optional `see_event`) plus `build_end.rebuild_summary` (`by kind` counts + `top_modules`).
 - ✅ `profile_changed` event with `profile_diff` on profile mismatch (scalar fields + token diff on `compile`/`cpp`; not repeated on each `compile_end`).
 - ✅ Compact CB modes suppress successful command/TU events and enrich `build_end` with compile/link/cache/failure totals.
@@ -153,7 +153,7 @@ Design rationale and comparison with CMake, Make, and other build tools: [`docs/
 - ✅ Human-mode `profile_change` logging on stderr (non-JSONL).
 - ✅ Profile value writer contract (verbatim tab-separated values; fields CB writes must not contain tab, newline, or `%`).
 - ✅ Parallel compilation, topological module sort, preamble `import` scan in `cb.c++`.
-- ✅ Header dependency tracking: compiles emit `-MMD -MF <object>.d` and a newer project header yields `rebuild_reason: "header_stale"` with the header in `rebuild.trigger_path`. Toolchain headers are excluded (already covered by `cxx_sig` / `clang_ver`).
+- ✅ Header dependency tracking: compiles emit `-MMD -MF <object>.d` and a newer project header yields `rebuild_reason: "header_stale"` with the header in `rebuild.trigger_path`. Toolchain headers are excluded (already covered by `cxx_sig` / `clang_ver`). A missing/unreadable/malformed `.d` yields `rebuild_reason: "depfile_missing"` (never a silent cache hit).
 - ✅ Bounded parallelism: `--jobs=N` caps concurrent compile/link processes via `std::counting_semaphore`, defaulting to `hardware_concurrency()`.
 - ✅ Build diagnostics on stdout: failing commands are captured to a per-target file and a `diagnostics` object (`text` capped at 8 KiB, `path`, `bytes`, `truncated`) rides on `compile_end` / `link_end` / `command_end`.
 - ✅ Decoded child status: `exit_code` / `signaled` / `signal` from the `std::system` wait status, raw value kept as `wait_status`.

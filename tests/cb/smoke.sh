@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, parallel_main_link, compile_start, source_stale, header_stale, strict_arguments, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, import_trailing_comment, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, project_test_dir_included, deps_package_tests_skipped, rebuild_summary, test_lifecycle, test_runner_exact_name, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
+      echo "cases: profile_header, cache_hit, link_cache_hit, parallel_main_link, compile_start, source_stale, header_stale, depfile_missing, strict_arguments, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, import_trailing_comment, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, project_test_dir_included, deps_package_tests_skipped, rebuild_summary, test_lifecycle, test_runner_exact_name, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
       exit 0
       ;;
     *)
@@ -179,6 +179,43 @@ test_header_stale() {
   run_cb_build "${work_dir}"
   assert_compile_cache_hits 1 "header_stale_settles_to_cache_hit"
   end_case header_stale
+}
+
+test_depfile_missing() {
+  should_run depfile_missing || return 0
+  begin_case depfile_missing
+  local work_dir depfile
+  work_dir="$(prepare_work_dir)"
+
+  # Warm objects + object-cache without a usable .d (upgrade / deleted depfiles)
+  # must not cache-hit; treating "no prerequisites" as fresh skips header edits.
+  printf '%s\n' '#pragma once' 'inline int header_value() { return 1; }' > "${work_dir}/value.h++"
+  printf '%s\n' '#include "value.h++"' 'int main() { return header_value() - 1; }' > "${work_dir}/hello.c++"
+
+  run_cb_build "${work_dir}"
+  run_cb_build "${work_dir}"
+  assert_compile_cache_hits 1 "depfile_missing_seed_cache_hit"
+
+  depfile="${work_dir}/${BUILD_DIR}/obj/hello.o.d"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ -f "${depfile}" ]]; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"depfile_exists_before_delete"}'
+  else
+    fail "expected depfile at ${depfile} after seed builds"
+  fi
+  rm -f "${depfile}"
+
+  # Optional header touch: rebuild must still be depfile_missing, not a cache hit.
+  printf '%s\n' '// touched after depfile deleted' >> "${work_dir}/value.h++"
+  run_cb_build "${work_dir}"
+  assert_compile_end "hello.c++" false depfile_missing true "deleted_depfile_rebuild"
+  assert_jsonl_contains '"rebuild":{"kind":"depfile_missing"' "deleted_depfile_rebuild_object"
+  assert_jsonl_contains '"trigger_path":' "deleted_depfile_trigger_path"
+  assert_rebuild_summary depfile_missing 1 "" "deleted_depfile_summary"
+
+  run_cb_build "${work_dir}"
+  assert_compile_cache_hits 1 "depfile_missing_settles_to_cache_hit"
+  end_case depfile_missing
 }
 
 test_strict_arguments() {
@@ -901,6 +938,7 @@ main() {
   test_compile_start
   test_source_stale
   test_header_stale
+  test_depfile_missing
   test_strict_arguments
   test_source_list
   test_compile_failure
