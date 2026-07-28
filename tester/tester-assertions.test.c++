@@ -34,6 +34,23 @@ auto failure(std::string_view text, std::size_t index)
     return find_event(text, "assertion_failed", index);
 }
 
+// Records what the matchers do to an operand. An assertion only reads its operands, so
+// comparing two of these must not copy or move either one.
+struct counted
+{
+    inline static int copies = 0;
+    inline static int moves = 0;
+
+    int value;
+
+    explicit counted(int v) : value{v} {}
+    counted(const counted& other) : value{other.value} { ++copies; }
+    counted(counted&& other) noexcept : value{other.value} { ++moves; }
+
+    bool operator==(const counted& other) const { return value == other.value; }
+    auto operator<=>(const counted& other) const { return value <=> other.value; }
+};
+
 } // namespace
 
 auto register_tests()
@@ -130,6 +147,50 @@ auto register_tests()
         // Mixed arithmetic types resolve through std::common_type.
         require_eq(2, 2L);
         require_lt(1, 2.5);
+    };
+
+    test_case("test_case [self] matchers neither copy nor move their operands") = []
+    {
+        const auto a = counted{1};
+        const auto b = counted{2};
+
+        counted::copies = counted::moves = 0;
+        check_eq(a, a);
+        check_neq(a, b);
+        check_lt(a, b);
+        check_lteq(a, b);
+        check_gt(b, a);
+        check_gteq(b, a);
+        require_eq(a, a);
+        const auto copies = counted::copies;
+        const auto moves = counted::moves;
+
+        // Taking operands by value cost one copy per matcher layer, seven assertions
+        // deep: two in the wrapper, two in the hub, two in the comparator, per pair.
+        require_eq(copies, 0);
+        require_eq(moves, 0);
+
+        // Move-only operands are comparable only because nothing is copied. By value
+        // rejected them outright, at compile time.
+        const auto left = std::make_unique<int>(1);
+        const auto right = std::unique_ptr<int>{};
+        require_neq(left, right);
+        require_eq(left, left);
+    };
+
+    test_case("test_case [.probe-opaque] failure on an operand the framework cannot print") = []
+    {
+        check_eq(counted{1}, counted{2});
+    };
+
+    test_case("test_case [self] unprintable operands are named, not mangled") = []
+    {
+        const auto result = probe("[.probe-opaque]");
+        require_neq(result.exit_code, 0);
+
+        const auto reported = field(failure(result.stdout_text, 0), "actual");
+        require_contains(reported, std::string{"counted"});
+        require_false(reported.contains("_GLOBAL__N_"));  // the mangled spelling
     };
 
     test_case("test_case [.probe-signedness] mixed-signedness failures") = []

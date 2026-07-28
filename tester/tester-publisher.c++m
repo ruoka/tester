@@ -214,7 +214,7 @@ void assertion(const bool ok, const A& actual, const E& expected, const std::sou
     notify([&](observer& target){ target.assertion(event); });
 }
 
-export void message(const bool ok, auto msg, const std::source_location location1, const std::source_location location2 = std::source_location::current())
+export void message(const bool ok, auto&& msg, const std::source_location location1, const std::source_location location2 = std::source_location::current())
 {
     auto stream = std::ostringstream{};
     stream << msg;
