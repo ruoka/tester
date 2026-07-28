@@ -529,6 +529,35 @@ auto register_tests()
         require_container_eq(std::vector<int>{1, 2}, std::list<int>{1, 2});
     };
 
+    test_case("test_case [.probe-container-signedness] container failures across signedness") = []
+    {
+        check_contains(std::vector<std::size_t>{std::string::npos}, -1);
+        check_container_eq(std::vector<int>{-1}, std::vector<unsigned>{4294967295u});
+    };
+
+    test_case("test_case [self] container elements follow the scalar comparison rule") = []
+    {
+        // The container matchers compared elements with `==`, so they kept converting
+        // where check_eq had stopped: a size_t of npos matched -1, and {-1} matched
+        // {4294967295u}. Elements now go through the same comparator as the scalar
+        // matchers, which is also why the epsilon reaches floating-point elements.
+        // std::ranges::contains still answers yes here, which is exactly what the matcher
+        // used to call: the -1 converts and meets npos.
+        const auto sizes = std::vector<std::size_t>{std::string::npos};
+        require_true(std::ranges::contains(sizes, -1));
+
+        require_container_eq(std::vector<int>{1, 2}, std::vector<unsigned>{1u, 2u});
+        require_contains(std::vector<std::size_t>{3}, 3);
+        require_container_eq(std::vector<double>{0.1 + 0.2}, std::vector<double>{0.3});
+        require_container_eq(std::vector<std::string>{"a"}, std::vector<std::string>{"a"});
+        require_contains(std::vector<std::string>{"a", "b"}, std::string{"b"});
+
+        const auto result = probe("[.probe-container-signedness]");
+        require_neq(result.exit_code, 0);
+        require_eq(field(failure(result.stdout_text, 0), "matcher"), std::string{"\"check_contains\""});
+        require_eq(field(failure(result.stdout_text, 1), "matcher"), std::string{"\"check_container_eq\""});
+    };
+
     test_case("test_case [self] container diffs locate the mismatch") = []
     {
         const auto result = probe("[.probe-container]");
