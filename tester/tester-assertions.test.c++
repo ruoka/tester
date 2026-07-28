@@ -238,6 +238,28 @@ auto register_tests()
         require_eq(field(line, "matcher"), std::string{"\"check_eq\""});
     };
 
+    test_case("test_case [.probe-float-neq] approximate inequality failures") = []
+    {
+        check_neq(0.5, 0.5 + 5e-10);    // inside the tolerance, so not unequal
+        check_neq(0.1 + 0.2, 0.3);      // equal within tolerance, however it is spelled
+        check_neq(1.0f + 1e-7f, 1.0f);  // one ulp of float
+    };
+
+    test_case("test_case [self] check_neq negates check_eq on floating point") = []
+    {
+        // While the matchers picked their own comparators, check_neq compared floating
+        // point exactly and check_eq compared within an epsilon, so a pair inside the
+        // tolerance satisfied both at once. Inequality now means "not equal within the
+        // tolerance", which is the only reading that cannot contradict check_eq.
+        require_neq(0.5, 0.6);
+        require_neq(0.5, 0.5 + 5e-9);   // outside the tolerance, so genuinely unequal
+
+        const auto result = probe("[.probe-float-neq]");
+        require_neq(result.exit_code, 0);
+        for(auto index = std::size_t{0}; index < 3; ++index)
+            require_eq(field(failure(result.stdout_text, index), "matcher"), std::string{"\"check_neq\""});
+    };
+
     // ========================================================================
     // Boolean
     // ========================================================================
