@@ -138,6 +138,31 @@ constexpr std::string_view rebuild_kind_name(rebuild_kind kind)
     return {};
 }
 
+// std::system returns a wait status, not an exit code: a child exiting 1 yields 256.
+// Decoding once at the shell boundary keeps exit_code meaningful and makes a child
+// killed by a signal distinguishable from one that exited with that number.
+struct process_status
+{
+    int exit_code = -1;
+    int wait_status = -1;
+    bool signaled = false;
+    int signal = 0;
+
+    bool ok() const { return not signaled and exit_code == 0; }
+};
+
+// Captured output of a failed toolchain command. `command_end.ok:false` alone is not
+// actionable — an agent told to parse stdout only has no way to see why clang failed.
+struct diagnostics
+{
+    std::string path;      // file holding the full captured output
+    std::string head;      // bounded excerpt for inline reporting
+    std::size_t bytes = 0; // captured size before truncation
+    bool truncated = false;
+
+    bool empty() const { return head.empty() and path.empty(); }
+};
+
 // Structured rebuild telemetry for compile/link JSONL (kind is also rebuild_reason).
 struct rebuild_info
 {
@@ -190,10 +215,7 @@ public:
 
     virtual void test_end(
         bool,
-        int,
-        int,
-        bool,
-        int,
+        const process_status&,
         std::chrono::steady_clock::time_point,
         std::chrono::steady_clock::time_point) {}
 
@@ -203,7 +225,8 @@ public:
         std::string_view,
         std::span<const std::string>,
         bool,
-        int,
+        const process_status&,
+        const diagnostics&,
         std::chrono::steady_clock::time_point,
         std::chrono::steady_clock::time_point) {}
 
@@ -223,7 +246,8 @@ public:
         bool,
         std::chrono::steady_clock::time_point,
         std::chrono::steady_clock::time_point,
-        const rebuild_info& = {}) {}
+        const rebuild_info& = {},
+        const diagnostics& = {}) {}
 
     virtual void link_end(
         std::string_view,
@@ -231,7 +255,8 @@ public:
         bool,
         std::chrono::steady_clock::time_point,
         std::chrono::steady_clock::time_point,
-        const rebuild_info& = {}) {}
+        const rebuild_info& = {},
+        const diagnostics& = {}) {}
 };
 
 inline auto observers = std::vector<std::reference_wrapper<observer>>{};

@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
     --case) shift; SELECTED_CASE="${1:-}" ;;
     --help|-h)
       echo "usage: smoke.sh [--jsonl] [--case NAME]"
-      echo "cases: profile_header, cache_hit, link_cache_hit, parallel_main_link, compile_start, source_stale, header_stale, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, import_trailing_comment, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, project_test_dir_included, deps_package_tests_skipped, rebuild_summary, test_lifecycle, test_runner_exact_name, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
+      echo "cases: profile_header, cache_hit, link_cache_hit, parallel_main_link, compile_start, source_stale, header_stale, strict_arguments, source_list, compile_failure, link_failure, test_link_failure, link_rebuild_reason, implementation_pcm, dotted_module_name, import_trailing_comment, gmf_preamble, module_safe_name, same_basename_collision, reserved_std_collision, nested_deps_skipped, vendored_tester_tests_skipped, project_test_dir_included, deps_package_tests_skipped, rebuild_summary, test_lifecycle, test_runner_exact_name, cache_invalidate, profile_change, cache_status, jsonl_modes, jsonl_failure_mode"
       exit 0
       ;;
     *)
@@ -181,6 +181,36 @@ test_header_stale() {
   end_case header_stale
 }
 
+test_strict_arguments() {
+  should_run strict_arguments || return 0
+  begin_case strict_arguments
+  local work_dir status output
+  work_dir="$(prepare_work_dir)"
+
+  # CB used to fall off the end of its argument chain, so a mistyped flag was
+  # silently ignored and the run reported success for something never requested.
+  for bad in --totally-bogus --tag=whatever --jobs=0 --jobs=abc; do
+    status=0
+    output="$(cd "${work_dir}" && "${CB_BIN}" "${STD_CPPM}" debug build "${bad}" 2>&1)" || status=$?
+    TESTS_RUN=$((TESTS_RUN + 1))
+    if [[ "${status}" -eq 2 ]]; then
+      jsonl_emit "{\"type\":\"smoke_assert_passed\",\"matcher\":\"rejects_${bad}\"}"
+    else
+      fail "expected exit 2 for ${bad}, got ${status}: ${output}"
+    fi
+  done
+
+  # The --tags typo is common enough to name explicitly.
+  status=0
+  output="$(cd "${work_dir}" && "${CB_BIN}" "${STD_CPPM}" debug test --tag=x 2>&1)" || status=$?
+  assert_text_contains "${output}" "--tags=" "tags_typo_suggestion"
+
+  # A valid job cap still builds.
+  run_cb_build "${work_dir}" --jobs=2
+  assert_jsonl_event_value build_end ok true "jobs_flag_builds"
+  end_case strict_arguments
+}
+
 test_source_list() {
   should_run source_list || return 0
   begin_case source_list
@@ -217,6 +247,13 @@ test_compile_failure() {
   assert_jsonl_event_count build_end 1 "single_failed_build_end"
   assert_jsonl_event_value build_end ok false "failed_build_end_status"
   assert_jsonl_contains '"type":"eof"' "failure_jsonl_eof"
+  # ok:false alone is not actionable: the compiler's own text must reach stdout.
+  assert_jsonl_contains '"diagnostics":{"text":"' "failed_compile_diagnostics"
+  assert_jsonl_diagnostics_contain compile_end "error:" "failed_compile_diagnostics_text"
+  assert_jsonl_diagnostics_contain command_end "error:" "failed_command_diagnostics_text"
+  # std::system yields a wait status; exit_code must be the child's real code.
+  assert_jsonl_event_value command_end exit_code 1 "failed_command_exit_code"
+  assert_jsonl_event_value command_end signaled false "failed_command_not_signaled"
   end_case compile_failure
 }
 
@@ -237,6 +274,7 @@ test_link_failure() {
   fi
   assert_jsonl_event_value link_end ok false "failed_link_end"
   assert_jsonl_event_value build_end ok false "link_failed_build_end"
+  assert_jsonl_diagnostics_contain link_end "missing" "failed_link_diagnostics_text"
   end_case link_failure
 }
 
@@ -863,6 +901,7 @@ main() {
   test_compile_start
   test_source_stale
   test_header_stale
+  test_strict_arguments
   test_source_list
   test_compile_failure
   test_link_failure

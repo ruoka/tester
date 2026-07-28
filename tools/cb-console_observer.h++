@@ -205,7 +205,8 @@ struct observer final : cb::output::observer
                      bool cache_hit,
                      std::chrono::steady_clock::time_point,
                      std::chrono::steady_clock::time_point,
-                     const rebuild_info& rebuild = {}) override
+                     const rebuild_info& rebuild = {},
+                     const diagnostics& = {}) override
     {
         if(not cache_hit)
         {
@@ -219,7 +220,8 @@ struct observer final : cb::output::observer
                   bool cache_hit,
                   std::chrono::steady_clock::time_point,
                   std::chrono::steady_clock::time_point,
-                  const rebuild_info& rebuild = {}) override
+                  const rebuild_info& rebuild = {},
+                  const diagnostics& = {}) override
     {
         if(not cache_hit and not rebuild.message.empty())
             info(rebuild.message);
