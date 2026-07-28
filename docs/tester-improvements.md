@@ -334,9 +334,8 @@ Ordered by consequence, not by effort. Items marked **verified** were reproduced
 
 | Priority | Item | Rationale |
 |----------|------|-----------|
-| **High** | Mixed-signedness comparisons (§1.7) | **Verified:** `check_eq(-1, 4294967295u)` passes. A framework that silently passes a wrong test is the worst available failure mode — same class as the `tests_ok` false positive already fixed |
 | **High** | Import scanner invents dependencies (§4.1) | **Verified:** `import` inside a block comment or `#if 0` becomes a real module-graph edge, affecting build order and rebuild decisions |
-| Medium | `const&` assertion operands (§1.7) | Copies every operand and rejects move-only types; same plumbing as mixed-signedness, so do them together |
+| Medium | `const&` assertion operands (§1.7) | Copies every operand and rejects move-only types |
 | Medium | Warnings from successful compiles are invisible (§3.6) | **Verified:** clang reports them, CB attaches them to no event, so they reach neither JSONL nor stderr — warnings accumulate unnoticed |
 | Medium | Unresolved `depends_on` / duplicate test ids (§2.3) | Silently ignored today, so a typo'd dependency looks like a passing run |
 | Medium | JUnit XML observer (§3.8) | Cheap against the existing observer contract; unlocks CI test UIs |
