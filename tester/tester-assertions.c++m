@@ -683,10 +683,9 @@ namespace tester::assertions
         for (const auto& elem : container) {
             if (!first) result += ", ";
             first = false;
-            // Use stringstream to format individual elements
-            auto ss = std::ostringstream{};
-            ss << elem;
-            result += ss.str();
+            // Same display path as scalar assertions, so a container of pair/tuple
+            // (which has no operator<<) still formats instead of failing to compile.
+            result += output::value_to_display_string(elem);
         }
         result += "]";
         return result;
@@ -705,7 +704,9 @@ namespace tester::assertions
         while (actual_it != actual_end && expected_it != expected_end) {
             if (!values_equal(*actual_it, *expected_it)) {
                 auto msg = std::ostringstream{};
-                msg << "mismatch at index " << index << ": actual=" << *actual_it << ", expected=" << *expected_it;
+                msg << "mismatch at index " << index
+                    << ": actual=" << output::value_to_display_string(*actual_it)
+                    << ", expected=" << output::value_to_display_string(*expected_it);
                 return {false, msg.str()};
             }
             ++actual_it;
@@ -958,9 +959,8 @@ namespace tester::assertions
         data::statistics().successful_assertions += ok;
         
         auto container_str = format_container(container);
-        auto elem_str = std::ostringstream{};
-        elem_str << element;
-        publisher::assertion(ok, container_str, std::string{"contains: "} + elem_str.str(), location);
+        const auto elem_str = output::value_to_display_string(element);
+        publisher::assertion(ok, container_str, std::string{"contains: "} + elem_str, location);
         return ok;
     }
 
@@ -974,13 +974,10 @@ namespace tester::assertions
         data::statistics().successful_assertions += ok;
         
         auto container_str = format_container(container);
-        auto elem_str = std::ostringstream{};
-        elem_str << element;
-        publisher::assertion(ok, container_str, std::string{"contains: "} + elem_str.str(), location);
+        const auto elem_str = output::value_to_display_string(element);
+        publisher::assertion(ok, container_str, std::string{"contains: "} + elem_str, location);
         if (!ok) {
-            auto msg = std::ostringstream{};
-            msg << "Container does not contain expected element: " << element;
-            throw assertion_failure{msg.str()};
+            throw assertion_failure{"Container does not contain expected element: " + elem_str};
         }
     }
 
