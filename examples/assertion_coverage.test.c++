@@ -138,16 +138,16 @@ auto register_tests()
 
     test_case("Check_throws_as_NonFatal [.demo]") = [] {
         // Should pass - exact exception type
-        check_throws_as([] { throw std::runtime_error{"test"}; }, std::runtime_error{"expected"});
-        check_throws_as([] { throw std::out_of_range{"test"}; }, std::out_of_range{"expected"});
+        check_throws_as<std::runtime_error>([] { throw std::runtime_error{"test"}; });
+        check_throws_as<std::out_of_range>([] { throw std::out_of_range{"test"}; });
         
         // Should fail (non-fatal) - wrong exception type
-        check_throws_as([] { throw std::runtime_error{"test"}; }, std::out_of_range{"expected"});
-        check_throws_as([] { throw std::out_of_range{"test"}; }, std::runtime_error{"expected"});
+        check_throws_as<std::out_of_range>([] { throw std::runtime_error{"test"}; });
+        check_throws_as<std::runtime_error>([] { throw std::out_of_range{"test"}; });
         
         // Should fail (non-fatal) - no exception
-        check_throws_as([] {}, std::runtime_error{"expected"});
-        check_throws_as([] { volatile int x = 42; (void)x; }, std::runtime_error{"expected"});
+        check_throws_as<std::runtime_error>([] {});
+        check_throws_as<std::runtime_error>([] { volatile int x = 42; (void)x; });
     };
 
     // ============================================================================

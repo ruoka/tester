@@ -43,8 +43,8 @@ auto test_set()
 
         section("Test throw [.demo]") = []
         {
-            require_throws_as([]{throw std::out_of_range{"test"};}, std::out_of_range{"test"});
-            require_throws_as([]{throw std::runtime_error{"test"};}, std::out_of_range{"test"});
+            require_throws_as<std::out_of_range>([]{throw std::out_of_range{"test"};});
+            require_throws_as<std::out_of_range>([]{throw std::runtime_error{"test"};});
         };
     };
 
