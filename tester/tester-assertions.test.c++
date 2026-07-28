@@ -566,6 +566,38 @@ auto register_tests()
         require_eq(field(failure(result.stdout_text, 1), "matcher"), std::string{"\"check_container_eq\""});
     };
 
+    test_case("test_case [.probe-composite-signedness] pair and tuple failures across signedness") = []
+    {
+        check_eq(std::pair{std::string::npos, 0}, std::pair{-1L, 0});
+        check_contains(std::vector{std::pair{std::string::npos, 0}}, std::pair{-1L, 0});
+        check_container_eq(std::vector{std::tuple{std::string::npos}},
+                           std::vector{std::tuple{-1L}});
+    };
+
+    test_case("test_case [self] pair and tuple members follow the scalar comparison rule") = []
+    {
+        // pair / tuple still share a common_type when their members do, and equal_to on
+        // that type converted each member the way the scalar path used to: npos met -1L
+        // inside the composite even though std::cmp_equal rejects the same values.
+        using left = std::pair<std::size_t, int>;
+        using right = std::pair<long, int>;
+        require_false(std::cmp_equal(std::string::npos, -1L));
+        require_true(std::equal_to<std::common_type_t<left, right>>{}(
+            std::pair{std::string::npos, 0}, std::pair{-1L, 0}));
+
+        // Matching mathematical values still compare equal across member signedness.
+        require_eq(std::pair{1, 2u}, std::pair{1u, 2});
+        require_eq(std::tuple{1, 2u}, std::tuple{1u, 2});
+        require_neq(std::pair{std::string::npos, 0}, std::pair{-1L, 0});
+        require_contains(std::vector{std::pair{1u, 2}}, std::pair{1, 2u});
+
+        const auto result = probe("[.probe-composite-signedness]");
+        require_neq(result.exit_code, 0);
+        require_eq(field(failure(result.stdout_text, 0), "matcher"), std::string{"\"check_eq\""});
+        require_eq(field(failure(result.stdout_text, 1), "matcher"), std::string{"\"check_contains\""});
+        require_eq(field(failure(result.stdout_text, 2), "matcher"), std::string{"\"check_container_eq\""});
+    };
+
     test_case("test_case [self] container diffs locate the mismatch") = []
     {
         const auto result = probe("[.probe-container]");

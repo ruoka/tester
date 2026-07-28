@@ -56,6 +56,55 @@ namespace tester::assertions
     constexpr bool both_are_promotable_integers_v =
         promotes_to_integer_v<A> and promotes_to_integer_v<E> and (std::integral<A> or std::integral<E>);
 
+    // std::pair / std::tuple with mixed-signedness members still have a common_type —
+    // pair<size_t,int> and pair<long,int> share one — and equal_to on that type converts
+    // each member the way the scalar path used to. Detect the two library composites so
+    // the equality comparators can walk members with values_equal instead.
+    template<typename T>
+    struct is_std_pair : std::false_type {};
+    template<typename T1, typename T2>
+    struct is_std_pair<std::pair<T1, T2>> : std::true_type {};
+    template<typename T>
+    constexpr bool is_std_pair_v = is_std_pair<std::remove_cvref_t<T>>::value;
+
+    template<typename T>
+    struct is_std_tuple : std::false_type {};
+    template<typename... Ts>
+    struct is_std_tuple<std::tuple<Ts...>> : std::true_type {};
+    template<typename T>
+    constexpr bool is_std_tuple_v = is_std_tuple<std::remove_cvref_t<T>>::value;
+
+    template<typename A, typename E>
+    constexpr bool both_are_pairs_v = is_std_pair_v<A> and is_std_pair_v<E>;
+
+    template<typename A, typename E>
+    constexpr bool both_are_tuples_v = is_std_tuple_v<A> and is_std_tuple_v<E>;
+
+    template<typename A, typename E>
+    constexpr bool values_equal(const A& actual, const E& expected);
+
+    // Member-wise equality for the composites above. Called only when both operands are
+    // pairs or both are tuples; tuple arity mismatches are unequal without converting.
+    template<typename A, typename E>
+    constexpr bool composites_equal(const A& actual, const E& expected)
+    {
+        if constexpr (both_are_pairs_v<A, E>)
+            return values_equal(actual.first, expected.first)
+               and values_equal(actual.second, expected.second);
+        else
+        {
+            static_assert(both_are_tuples_v<A, E>);
+            using actual_tuple = std::remove_cvref_t<A>;
+            using expected_tuple = std::remove_cvref_t<E>;
+            if constexpr (std::tuple_size_v<actual_tuple> != std::tuple_size_v<expected_tuple>)
+                return false;
+            else
+                return [&]<std::size_t... I>(std::index_sequence<I...>) {
+                    return (values_equal(std::get<I>(actual), std::get<I>(expected)) and ...);
+                }(std::make_index_sequence<std::tuple_size_v<actual_tuple>>{});
+        }
+    }
+
     // Floating-point comparator with epsilon tolerance
     template<typename T>
     requires std::is_floating_point_v<T>
@@ -122,6 +171,8 @@ namespace tester::assertions
         {
             if constexpr (both_are_floating_point_v<A,E>) return floating_point_equal<T>{}(actual, expected);
             else if constexpr (both_are_promotable_integers_v<A,E>) return std::cmp_equal(+actual, +expected);
+            else if constexpr (both_are_pairs_v<A,E> or both_are_tuples_v<A,E>)
+                return composites_equal(actual, expected);
             else return std::equal_to<T>{}(actual, expected);
         }
     };
@@ -136,6 +187,8 @@ namespace tester::assertions
             // check_neq at the same time.
             if constexpr (both_are_floating_point_v<A,E>) return not floating_point_equal<T>{}(actual, expected);
             else if constexpr (both_are_promotable_integers_v<A,E>) return std::cmp_not_equal(+actual, +expected);
+            else if constexpr (both_are_pairs_v<A,E> or both_are_tuples_v<A,E>)
+                return not composites_equal(actual, expected);
             else return std::not_equal_to<T>{}(actual, expected);
         }
     };
@@ -185,8 +238,10 @@ namespace tester::assertions
     // container matchers converting where check_eq had stopped: check_contains(
     // std::vector<std::size_t>{std::string::npos}, -1) passed, and so did
     // check_container_eq({-1}, {4294967295u}). Elements go through the same comparator, so
-    // the epsilon applies to floating point here too. Element types with no common type
-    // keep their own operator==, which is all std::common_type_t would have to work with.
+    // the epsilon applies to floating point here too — and so does the pair/tuple walk, so
+    // a container of pair<size_t,int> no longer matches pair<long,int>{-1L, 0} the way
+    // equal_to on their common_type did. Element types with no common type keep their own
+    // operator==, which is all std::common_type_t would have to work with.
     template<typename A, typename E>
     constexpr bool values_equal(const A& actual, const E& expected)
     {
