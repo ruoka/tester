@@ -567,16 +567,19 @@ inline std::string strip_comments_and_literals(const std::string& text)
     return std::regex_replace(text, comment_or_literal_regex, " $1$1$2$2");
 }
 
-// `#if 0` is the commented-out idiom, so its body must be elided wholesale. Nesting is
-// the one part a regex cannot express — balanced delimiters are not a regular language
-// — so the regex recognises directives and the depth is counted. Genuine conditionals
-// are deliberately left alone: over-approximating an `#ifdef` by scanning both branches
-// costs a spurious edge, while guessing which branch is live risks dropping a real one.
+// `#if 0` is the commented-out idiom, so its body must be elided wholesale, and the idiom
+// has more spellings than the bare constant: parenthesised (`#if (0)`), short-circuited
+// (`#if 0 && OLD_FEATURE`, false whatever the other operand is), and spread over arms
+// (`#elif 0`). Nesting is the one part a regex cannot express — balanced delimiters are
+// not a regular language — so the regex recognises directives and the depth is counted.
+// Genuine conditionals are deliberately left alone: over-approximating an `#ifdef` by
+// scanning both branches costs a spurious edge, while guessing which branch is live risks
+// dropping a real one.
 class conditional_filter
 {
 public:
     // True when a line carries no live code: a preprocessor directive, or any line
-    // inside an `#if 0` region.
+    // inside a dead `#if` region or dead `#elif` arm.
     bool is_inactive(const std::string& line)
     {
         // Directives are a tiny minority of lines; the cheap check keeps the regex off
@@ -594,13 +597,26 @@ public:
     }
 
 private:
+    // A condition known false without evaluating anything: the constant, in any grouping,
+    // optionally short-circuiting the rest away. Whitespace and grouping parentheses carry
+    // no meaning here, so they go first and `(0) && defined(X)` reads as `0&&definedX`.
+    // Everything else stays live, `!0` and `0 || X` included.
+    static bool is_never_taken(std::string_view condition)
+    {
+        const auto normalized = condition
+            | std::views::filter([](char c) { return c != '(' and c != ')' and not std::isspace(static_cast<unsigned char>(c)); })
+            | std::ranges::to<std::string>();
+        return normalized == "0" or normalized == "false"
+            or normalized.starts_with("0&&") or normalized.starts_with("false&&");
+    }
+
     void apply(std::string_view name, std::string_view condition)
     {
         const auto skipping = m_skip_depth > 0;
         if(name == "if" or name == "ifdef" or name == "ifndef")
         {
             ++m_if_depth;
-            if(not skipping and name == "if" and (condition == "0" or condition == "false"))
+            if(not skipping and name == "if" and is_never_taken(condition))
                 m_skip_depth = m_if_depth;
         }
         else if(name == "endif")
@@ -612,12 +628,22 @@ private:
         }
         else if(name == "else" or name == "elif")
         {
-            if(skipping and m_if_depth == m_skip_depth)
+            // Each arm is judged on its own. Leaving the skip region on every `#elif`
+            // would revive the next arm of `#if 0 / #elif 0`, and entering it on a dead
+            // arm is what elides `#elif 0` after a live one. `#else` always revives,
+            // since there is no condition to rule it out.
+            const auto dead_arm = name == "elif" and is_never_taken(condition);
+            if(skipping and m_if_depth == m_skip_depth and not dead_arm)
                 m_skip_depth = 0;
+            else if(not skipping and dead_arm)
+                m_skip_depth = m_if_depth;
         }
     }
 
-    inline static const std::regex directive_regex{R"(\s*#\s*(\w+)\s*([^\s]*)\s*)"};
+    // Group 2 is the whole condition, so a trailing operand cannot fail the full-line
+    // match: `#if 0 && OLD` used to match nothing, leaving the directive unrecognised,
+    // its body live, and the `#endif` depth bookkeeping off by one.
+    inline static const std::regex directive_regex{R"(\s*#\s*(\w+)\s*(.*))"};
 
     int m_if_depth = 0;
     int m_skip_depth = 0;
