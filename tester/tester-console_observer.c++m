@@ -183,14 +183,14 @@ export struct observer final : tester::output::observer
                 stream << "null";
             else
                 std::visit([this](const auto& alt) {
-                    using Alt = std::decay_t<decltype(alt)>;
-                    if constexpr (std::is_same_v<Alt, bool>)
+                    using alt_type = std::decay_t<decltype(alt)>;
+                    if constexpr (std::is_same_v<alt_type, bool>)
                         this->stream << std::boolalpha << alt;
-                    else if constexpr (std::is_same_v<Alt, std::nullptr_t> || std::is_same_v<Alt, std::monostate>)
+                    else if constexpr (std::is_same_v<alt_type, std::nullptr_t> || std::is_same_v<alt_type, std::monostate>)
                         this->stream << "null";
-                    else if constexpr (std::is_same_v<Alt, std::string> || std::is_same_v<Alt, std::string_view>)
+                    else if constexpr (std::is_same_v<alt_type, std::string> || std::is_same_v<alt_type, std::string_view>)
                         this->stream << '"' << alt << '"';
-                    else if constexpr (std::is_arithmetic_v<Alt>)
+                    else if constexpr (std::is_arithmetic_v<alt_type>)
                         this->stream << alt;
                     else if constexpr (requires { this->stream << alt; })
                         this->stream << alt;
