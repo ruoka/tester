@@ -581,7 +581,7 @@ public:
     {
         // Directives are a tiny minority of lines; the cheap check keeps the regex off
         // the hot path of a scan that runs on every build, cached or not.
-        if(line.find('#') != std::string::npos)
+        if(line.contains('#'))
         {
             auto m = std::smatch{};
             if(std::regex_match(line, m, directive_regex))
