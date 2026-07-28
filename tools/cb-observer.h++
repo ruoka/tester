@@ -102,6 +102,7 @@ enum class rebuild_kind
     not_in_cache,
     source_stale,
     header_stale,
+    depfile_unusable,
     object_missing,
     object_stale,
     own_pcm_missing,
@@ -123,6 +124,7 @@ constexpr std::string_view rebuild_kind_name(rebuild_kind kind)
         case rebuild_kind::not_in_cache: return "not_in_cache";
         case rebuild_kind::source_stale: return "source_stale";
         case rebuild_kind::header_stale: return "header_stale";
+        case rebuild_kind::depfile_unusable: return "depfile_unusable";
         case rebuild_kind::object_missing: return "object_missing";
         case rebuild_kind::object_stale: return "object_stale";
         case rebuild_kind::own_pcm_missing: return "own_pcm_missing";

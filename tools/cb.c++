@@ -447,17 +447,20 @@ std::string binary_signature(const std::string& path)
 // Make-style depfile (clang -MMD -MF): `target: prereq prereq \<newline> prereq`.
 // Spaces inside a path are backslash-escaped; a trailing backslash continues the line.
 // Returns prerequisites only — the target and the source itself are handled elsewhere.
-string_list parse_depfile(const std::string& path)
+// `nullopt` when the file cannot be trusted: unreadable, or lacking the `target:` that
+// every depfile has. That is not the same answer as "this unit includes no headers", which
+// is a valid empty list — conflating the two turns an unreadable depfile into a cache hit.
+std::optional<string_list> parse_depfile(const std::string& path)
 {
     auto file = std::ifstream{path};
     if(not file)
-        return {};
+        return std::nullopt;
 
     auto text = std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
     if(const auto colon = text.find(':'); colon != std::string::npos)
         text.erase(0, colon + 1);
     else
-        return {};
+        return std::nullopt;
 
     auto prerequisites = string_list{};
     auto current = std::string{};
@@ -1324,6 +1327,8 @@ private:
                 return "Source mtime newer than cached compile timestamp.";
             case output::rebuild_kind::header_stale:
                 return "An included header is newer than this object (from the compiler depfile).";
+            case output::rebuild_kind::depfile_unusable:
+                return "Compiler depfile missing, unreadable, or malformed; header freshness cannot be verified.";
             case output::rebuild_kind::object_missing:
                 return "Object file missing on disk.";
             case output::rebuild_kind::object_stale:
@@ -1370,6 +1375,8 @@ private:
                 return "Rebuilding " + label + " because source is newer than the cached object";
             case output::rebuild_kind::header_stale:
                 return "Rebuilding " + label + " because included header " + info.trigger_path + " is newer than its object";
+            case output::rebuild_kind::depfile_unusable:
+                return "Rebuilding " + label + " because depfile " + info.trigger_path + " cannot be read; its header dependencies are unknown";
             case output::rebuild_kind::pcm_stale:
                 return "Rebuilding " + label + " because PCM " + info.module + " is newer than the object (import graph)";
             case output::rebuild_kind::dependency_pcm_stale:
@@ -1808,10 +1815,21 @@ private:
     // Prerequisites are restricted to the project tree: toolchain headers change as a
     // unit and are already covered by the object-cache profile (cxx_sig / clang_ver),
     // so scanning them here would only add thousands of stat calls per build.
-    std::optional<std::string> stale_header(const translation_unit& tu,
-                                            fs::file_time_type object_timestamp) const
+    //
+    // An unreadable depfile is a rebuild of its own: it is the only record of the unit's
+    // textual includes, so without it header freshness is unknown, and a cache hit would
+    // silently ignore every header edit until the source itself changed. Every compile
+    // writes one (`-MMD` writes the file even for a unit that includes nothing), so this
+    // fires once after an upgrade or a wiped `obj/`, then settles.
+    std::optional<output::rebuild_info> stale_header(const translation_unit& tu,
+                                                     fs::file_time_type object_timestamp) const
     {
-        for(const auto& prerequisite : detail::parse_depfile(depfile_path(tu)))
+        const auto depfile = depfile_path(tu);
+        const auto prerequisites = detail::parse_depfile(depfile);
+        if(not prerequisites)
+            return make_rebuild(output::rebuild_kind::depfile_unusable, {}, {}, depfile);
+
+        for(const auto& prerequisite : *prerequisites)
         {
             if(prerequisite == tu.full_path or not prerequisite.starts_with(source_dir))
                 continue;
@@ -1821,7 +1839,7 @@ private:
             if(error)
                 continue;
             if(timestamp > object_timestamp)
-                return prerequisite;
+                return make_rebuild(output::rebuild_kind::header_stale, {}, {}, prerequisite);
         }
         return std::nullopt;
     }
@@ -1846,8 +1864,8 @@ private:
 
         // Textual #include dependencies are invisible to the module graph, so the
         // compiler's own depfile is the only record of them.
-        if (auto header = stale_header(tu, object_timestamp))
-            return make_rebuild(output::rebuild_kind::header_stale, {}, {}, *header);
+        if (auto header_reason = stale_header(tu, object_timestamp))
+            return header_reason;
 
         // Implementation units consume their interface PCM implicitly through
         // -fmodule-file=<module>=<pcm>, even when they do not import that module.

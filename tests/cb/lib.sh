@@ -183,6 +183,18 @@ assert_text_not_contains() {
   return 0
 }
 
+assert_file_exists() {
+  local path=$1
+  local label=${2:-file_exists}
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ -f "${path}" ]]; then
+    jsonl_emit "{\"type\":\"smoke_assert_passed\",\"matcher\":\"${label}\"}"
+    return 0
+  fi
+  fail "expected file to exist: ${path}"
+  return 0
+}
+
 assert_jsonl_contains() {
   assert_text_contains "${LAST_JSONL}" "$1" "${2:-jsonl_contains}"
 }

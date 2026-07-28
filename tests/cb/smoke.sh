@@ -182,6 +182,55 @@ test_header_stale() {
   end_case header_stale
 }
 
+test_depfile_unusable() {
+  should_run depfile_unusable || return 0
+  begin_case depfile_unusable
+  local work_dir depfile
+  work_dir="$(prepare_work_dir)"
+
+  # The depfile is the only record of a unit's textual includes, so an unreadable one
+  # cannot be read as "this unit includes no headers". It was, and the header edit below
+  # was then answered with a cache hit and a stale object — the state an upgrade or a
+  # wiped obj/ leaves behind, with warm objects and no `.d` beside them.
+  printf '%s\n' '#pragma once' 'inline int header_value() { return 1; }' > "${work_dir}/value.h++"
+  printf '%s\n' \
+    'module;' \
+    '#include "value.h++"' \
+    'export module counter;' \
+    'export int counted() { return header_value(); }' > "${work_dir}/counter.c++m"
+  printf '%s\n' 'import counter;' 'int main() { return counted() - 1; }' > "${work_dir}/hello.c++"
+
+  run_cb_build "${work_dir}"
+  run_cb_build "${work_dir}"
+  # A modular unit's depfile comes from its --precompile step rather than -c, so this
+  # also pins that both steps leave one behind: if either did not, the new reason would
+  # rebuild that unit on every single build.
+  assert_compile_cache_hits 2 "depfile_unusable_seed_cache_hits"
+
+  depfile="${work_dir}/${BUILD_DIR}/obj/counter.o.d"
+  assert_file_exists "${depfile}" "depfile_written_by_precompile"
+
+  rm -f "${depfile}"
+  printf '%s\n' '// touched while the depfile was gone' >> "${work_dir}/value.h++"
+  run_cb_build "${work_dir}"
+  assert_compile_end "counter.c++m" false depfile_unusable true "deleted_depfile_rebuild"
+  assert_jsonl_contains '"rebuild":{"kind":"depfile_unusable"' "deleted_depfile_rebuild_object"
+  assert_jsonl_contains "\"trigger_path\":\"${BUILD_DIR}/obj/counter.o.d\"" "deleted_depfile_trigger_path"
+  assert_rebuild_summary depfile_unusable 1 "" "deleted_depfile_summary"
+
+  run_cb_build "${work_dir}"
+  assert_compile_cache_hits 2 "depfile_unusable_settles_to_cache_hit"
+
+  # Truncated mid-write: present, but without the `target:` every depfile opens with.
+  printf '%s' 'garbage without a colon' > "${depfile}"
+  run_cb_build "${work_dir}"
+  assert_compile_end "counter.c++m" false depfile_unusable true "malformed_depfile_rebuild"
+
+  run_cb_build "${work_dir}"
+  assert_compile_cache_hits 2 "malformed_depfile_settles_to_cache_hit"
+  end_case depfile_unusable
+}
+
 test_strict_arguments() {
   should_run strict_arguments || return 0
   begin_case strict_arguments
@@ -1055,6 +1104,7 @@ main() {
   test_compile_start
   test_source_stale
   test_header_stale
+  test_depfile_unusable
   test_strict_arguments
   test_source_list
   test_compile_failure
