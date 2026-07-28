@@ -158,28 +158,33 @@ def main() -> int:
         return 1
 
     for label, tail in COMMANDS:
-        proc = subprocess.run(
-            [args.cb, *tail],
-            cwd=str(REPO_ROOT),
-            capture_output=True,
-            env={**os.environ},
-            check=False,
-        )
         try:
+            proc = subprocess.run(
+                [args.cb, *tail],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                env={**os.environ},
+                check=False,
+            )
             total_lines += validate_stream(label, proc.stdout, validator)
             print(f"ok   {label}", file=sys.stderr)
+        except OSError as exc:
+            failures.append(f"{label}: cannot run {args.cb}: {exc}")
+            print(f"FAIL {failures[-1]}", file=sys.stderr)
         except Failure as exc:
             failures.append(str(exc))
             print(f"FAIL {exc}", file=sys.stderr)
 
     if args.jsonl:
+        # Compact separators to match the rest of the project's JSONL, which callers
+        # grep for as '"type":"…"' without spaces.
         print(json.dumps({
             "type": "jsonl_validate_summary",
             "commands": len(COMMANDS),
             "lines": total_lines,
             "failures": len(failures),
             "passed": not failures,
-        }))
+        }, separators=(",", ":")))
 
     if failures:
         print(f"FAILED: {len(failures)} of {len(COMMANDS)} commands", file=sys.stderr)
