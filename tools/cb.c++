@@ -907,6 +907,18 @@ using dependency_graph = std::flat_map<std::string, string_list, std::less<>>;
 using indegree_map = std::flat_map<std::string, int, std::less<>>;
 using unit_to_tu_map = std::flat_map<std::string, translation_unit*, std::less<>>;
 using object_cache_map = std::flat_map<std::string, fs::file_time_type, std::less<>>;
+
+// What reading the object cache found. A profile mismatch answers two questions at once —
+// every unit is about to miss, and here is the field that changed — so the load returns them
+// with the entries instead of leaving them behind in the build system for the caller to
+// collect.
+struct object_cache_load
+{
+    object_cache_map entries{};
+    std::optional<output::rebuild_kind> miss_reason{};
+    output::object_cache_profile_diff profile_diff{}; // filled for profile_change
+};
+
 using translation_unit_list = std::vector<translation_unit>;
 using topo_sort_queue = std::queue<std::string>;
 using level_groups_map = std::flat_map<int, std::vector<const translation_unit*>>;
@@ -998,9 +1010,6 @@ private:
     int max_jobs = 0;
     string_list extra_compile_flag_tokens;
     string_list extra_link_flag_tokens;
-    std::optional<output::rebuild_kind> object_cache_miss_reason;
-    output::object_cache_profile_diff profile_diff;
-
     std::string_view config_name() const
     {
         switch(config)
@@ -1594,29 +1603,27 @@ private:
         return not path.empty();
     }
 
-    object_cache_map load_object_cache() {
-        object_cache_miss_reason.reset();
-        profile_diff = {};
-        auto cache = object_cache_map{};
+    object_cache_load load_object_cache() {
+        auto loaded = object_cache_load{};
         auto file = std::ifstream{object_cache_path()};
         if (not file)
-            return cache;
+            return loaded;
 
         auto header = ""s;
         if (not std::getline(file, header))
-            return cache;
+            return loaded;
 
         const auto current_profile = object_cache_profile();
         if (header.starts_with("profile\t")) {
             const auto stored_profile = header.substr(std::string_view{"profile\t"}.size());
             if (stored_profile != current_profile) {
-                object_cache_miss_reason = output::rebuild_kind::profile_change;
-                profile_diff = detail::diff_object_cache_profiles(stored_profile, current_profile);
-                return cache;
+                loaded.miss_reason = output::rebuild_kind::profile_change;
+                loaded.profile_diff = detail::diff_object_cache_profiles(stored_profile, current_profile);
+                return loaded;
             }
         } else {
             output::notify(&output::observer::info, "Object cache missing profile header; ignoring"s);
-            return cache;
+            return loaded;
         }
 
         auto line = ""s;
@@ -1624,9 +1631,9 @@ private:
             auto path = ""s;
             auto ticks = 0ll;
             if (parse_object_cache_entry(line, path, ticks) and fs::exists(path))
-                cache[path] = fs::file_time_type{std::chrono::nanoseconds{ticks}};
+                loaded.entries[path] = fs::file_time_type{std::chrono::nanoseconds{ticks}};
         }
-        return cache;
+        return loaded;
     }
 
     void save_object_cache(const object_cache_map& c) {
@@ -1742,14 +1749,14 @@ private:
         return std::nullopt;
     }
 
-    std::optional<output::rebuild_info> needs_recompile(const translation_unit& tu, object_cache_map& c, const unit_to_tu_map& u2tu) const {
+    std::optional<output::rebuild_info> needs_recompile(const translation_unit& tu, const object_cache_load& cache, const unit_to_tu_map& u2tu) const {
         // First-seen path for this config vs edited source after a prior compile.
-        if (not c.contains(tu.full_path)) {
-            if (object_cache_miss_reason)
-                return output::rebuild_info{.kind = *object_cache_miss_reason, .trigger_path = tu.full_path};
+        if (not cache.entries.contains(tu.full_path)) {
+            if (cache.miss_reason)
+                return output::rebuild_info{.kind = *cache.miss_reason, .trigger_path = tu.full_path};
             return output::rebuild_info{.kind = output::rebuild_kind::not_in_cache, .trigger_path = tu.full_path};
         }
-        if (c.at(tu.full_path) < tu.last_modified)
+        if (cache.entries.at(tu.full_path) < tu.last_modified)
             return output::rebuild_info{.kind = output::rebuild_kind::source_stale, .trigger_path = tu.full_path};
 
         // Ensure the object file exists and is up-to-date versus the source timestamp we cached.
@@ -1757,7 +1764,7 @@ private:
             return output::rebuild_info{.kind = output::rebuild_kind::object_missing, .trigger_path = tu.full_path};
 
         auto object_timestamp = fs::last_write_time(tu.object_path);
-        if (object_timestamp < c.at(tu.full_path))
+        if (object_timestamp < cache.entries.at(tu.full_path))
             return output::rebuild_info{.kind = output::rebuild_kind::object_stale, .trigger_path = tu.full_path};
 
         // Textual #include dependencies are invisible to the module graph, so the
@@ -1780,7 +1787,7 @@ private:
                                             .module = interface.module,
                                             .pcm_path = interface.pcm_path,
                                             .trigger_path = interface.full_path};
-            if(auto interface_reason = needs_recompile(interface, c, u2tu))
+            if(auto interface_reason = needs_recompile(interface, cache, u2tu))
             {
                 auto info = *interface_reason;
                 if(info.trigger_path.empty())
@@ -1828,7 +1835,7 @@ private:
                     }
                 }
                 // Also recursively check if the imported module needs recompiling
-                if (auto dep_reason = needs_recompile(dep_tu, c, u2tu))
+                if (auto dep_reason = needs_recompile(dep_tu, cache, u2tu))
                 {
                     auto info = *dep_reason;
                     if(info.trigger_path.empty())
@@ -2207,8 +2214,8 @@ private:
     void compile_units() {
         if (units_in_topological_order.empty()) return;
         auto cache = load_object_cache();
-        if(object_cache_miss_reason == output::rebuild_kind::profile_change)
-            output::notify(&output::observer::profile_changed, *object_cache_miss_reason, profile_diff);
+        if(cache.miss_reason == output::rebuild_kind::profile_change)
+            output::notify(&output::observer::profile_changed, *cache.miss_reason, cache.profile_diff);
 
         auto u2tu = unit_to_tu_map{};
         for (auto& tu : units_in_topological_order) {
@@ -2249,7 +2256,7 @@ private:
                         try {
                             compile_unit(*tu, *reason);
                             auto lock = std::lock_guard<std::mutex>{cache_mutex};
-                            cache[tu->full_path] = tu->last_modified;
+                            cache.entries[tu->full_path] = tu->last_modified;
                         } catch (...) {
                             failed.store(true, std::memory_order_relaxed);
                             auto lock = std::lock_guard<std::mutex>{failure_mutex};
@@ -2271,7 +2278,7 @@ private:
             if(failure)
                 std::rethrow_exception(failure);
         }
-        save_object_cache(cache);
+        save_object_cache(cache.entries);
     }
 
     // ============================================================================
