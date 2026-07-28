@@ -34,15 +34,16 @@ namespace tester::assertions
     // Integral comparisons must not go through std::common_type: common_type_t<int,
     // unsigned> is unsigned, so equal_to / less convert -1 to UINT_MAX and wrongly
     // treat check_eq(-1, 4294967295u) as equal and check_lt(-1, 0u) as false.
-    // std::cmp_* compare mathematical values. Non-integrals keep operator== / <.
-    // The unused T parameter matches check/require's M<common_type_t<A,E>> shape.
+    // std::cmp_* compare mathematical values (bool and character types are excluded
+    // by the standard and fall back to operator== / <). The unused T parameter matches
+    // check/require's M<common_type_t<A,E>> shape.
     template<typename T>
     struct value_equal
     {
         template<typename A, typename E>
         constexpr bool operator()(A const& a, E const& e) const
         {
-            if constexpr (std::is_integral_v<A> and std::is_integral_v<E>)
+            if constexpr (requires { std::cmp_equal(a, e); })
                 return std::cmp_equal(a, e);
             else
                 return std::equal_to<>{}(a, e);
@@ -55,7 +56,7 @@ namespace tester::assertions
         template<typename A, typename E>
         constexpr bool operator()(A const& a, E const& e) const
         {
-            if constexpr (std::is_integral_v<A> and std::is_integral_v<E>)
+            if constexpr (requires { std::cmp_not_equal(a, e); })
                 return std::cmp_not_equal(a, e);
             else
                 return std::not_equal_to<>{}(a, e);
@@ -68,7 +69,7 @@ namespace tester::assertions
         template<typename A, typename E>
         constexpr bool operator()(A const& a, E const& e) const
         {
-            if constexpr (std::is_integral_v<A> and std::is_integral_v<E>)
+            if constexpr (requires { std::cmp_less(a, e); })
                 return std::cmp_less(a, e);
             else
                 return std::less<>{}(a, e);
@@ -81,7 +82,7 @@ namespace tester::assertions
         template<typename A, typename E>
         constexpr bool operator()(A const& a, E const& e) const
         {
-            if constexpr (std::is_integral_v<A> and std::is_integral_v<E>)
+            if constexpr (requires { std::cmp_less_equal(a, e); })
                 return std::cmp_less_equal(a, e);
             else
                 return std::less_equal<>{}(a, e);
@@ -94,7 +95,7 @@ namespace tester::assertions
         template<typename A, typename E>
         constexpr bool operator()(A const& a, E const& e) const
         {
-            if constexpr (std::is_integral_v<A> and std::is_integral_v<E>)
+            if constexpr (requires { std::cmp_greater(a, e); })
                 return std::cmp_greater(a, e);
             else
                 return std::greater<>{}(a, e);
@@ -107,7 +108,7 @@ namespace tester::assertions
         template<typename A, typename E>
         constexpr bool operator()(A const& a, E const& e) const
         {
-            if constexpr (std::is_integral_v<A> and std::is_integral_v<E>)
+            if constexpr (requires { std::cmp_greater_equal(a, e); })
                 return std::cmp_greater_equal(a, e);
             else
                 return std::greater_equal<>{}(a, e);
