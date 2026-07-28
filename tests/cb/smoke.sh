@@ -535,6 +535,53 @@ test_commented_out_imports() {
   end_case commented_out_imports
 }
 
+test_spliced_and_raw_literals() {
+  should_run spliced_and_raw_literals || return 0
+  begin_case spliced_and_raw_literals
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+  rm -f "${work_dir}/hello.c++"
+
+  # Three constructs reach past the end of their line, and the cleaner stopped at the
+  # newline: a backslash-newline splice continues a string literal and a `//` comment
+  # alike (phase 2 runs before either is recognised — clang warns `-Wcomment` on the
+  # second), and a raw string has no escapes at all, so only `)delimiter"` ends it. Each
+  # one carried an `import` that is not code into the module graph, where a phantom edge
+  # can close a loop through a real one and abort a valid build.
+  printf '%s\n' \
+    'export module scanned;' \
+    'import helpers;' \
+    '// a line comment continued with a backslash \' \
+    'import phantom_comment;' \
+    'export const char* spliced = "text \' \
+    'import phantom_spliced; more";' \
+    'export const char* raw = R"(' \
+    'import phantom_raw;' \
+    ')";' \
+    'export const char* tagged = R"tag(' \
+    'import phantom_tagged;' \
+    ')tag";' \
+    'export const char* url = "http://example.com";' \
+    'export int scanned_value() { return helper_value(); }' > "${work_dir}/scanned.c++m"
+  printf '%s\n' \
+    'export module helpers;' \
+    'export int helper_value() { return 2; }' > "${work_dir}/helpers.c++m"
+  printf '%s\n' \
+    'import scanned;' \
+    'int main() { return scanned_value() - 2; }' > "${work_dir}/main.c++"
+
+  run_cb_list "${work_dir}"
+  assert_jsonl_contains '"imports":["helpers"]' "spliced_literals_only_real_edge"
+  assert_jsonl_not_contains 'phantom_comment' "spliced_literals_no_spliced_comment_edge"
+  assert_jsonl_not_contains 'phantom_spliced' "spliced_literals_no_spliced_string_edge"
+  assert_jsonl_not_contains 'phantom_raw' "spliced_literals_no_raw_string_edge"
+  assert_jsonl_not_contains 'phantom_tagged' "spliced_literals_no_delimited_raw_string_edge"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "spliced_literals_build_ok"
+  end_case spliced_and_raw_literals
+}
+
 test_dead_conditional_arms() {
   should_run dead_conditional_arms || return 0
   begin_case dead_conditional_arms
@@ -1115,6 +1162,7 @@ main() {
   test_dotted_module_name
   test_import_trailing_comment
   test_commented_out_imports
+  test_spliced_and_raw_literals
   test_dead_conditional_arms
   test_commented_import_no_false_cycle
   test_gmf_preamble

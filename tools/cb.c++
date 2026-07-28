@@ -557,17 +557,33 @@ constexpr std::string_view object_cache_format = "cb-object-cache-v3"sv;
 // Comments collapse to a space, since a comment separates tokens (`import/*x*/foo`).
 // Literals keep their delimiters but lose their contents, which may spell `import foo;`
 // — the matchers run unanchored and would otherwise find it.
-// The block-comment branch is the unrolled form (`[^*]*\*+(?:[^/*][^*]*\*+)*/`) rather
-// than a lazy `[\s\S]*?`, and the two quote branches are spelled out rather than sharing
-// a backreference: both avoid the backtracking that made this pass dominate scan time.
+// Every branch is unrolled — a fast character-class run, then a group for each escape,
+// then the run again (`[^"\\\n]*(?:escape[^"\\\n]*)*`) — rather than a per-character
+// alternation or a lazy `[\s\S]*?`. The run and the escape group cannot both match a
+// backslash, which is what makes the form safe. It matters because this pass has dominated
+// scan time before: writing the same branches as `(?:[^"\\\n]|\\.)*` cost 0.19 s of `list`
+// on this repo against 0.17 s unrolled, from a 0.15 s baseline (min of ten, 35 units).
+//
+// Three constructs reach past the end of their line, and each one leaked an edge while the
+// branches stopped at `\n`. A backslash-newline splice continues both a string literal and
+// a `//` comment — phase 2 runs before either is recognised, and clang confirms it with
+// `-Wcomment` — so `\` at the end of a line carries the next line inside the construct.
+// A raw string needs its own branch: its body has no escapes at all, so only `)delimiter"`
+// closes it, matched by backreference. That leaves it as the one place a lazy `[\s\S]*?` is
+// unavoidable, and it only runs where `R"` appears.
 inline static const std::regex comment_or_literal_regex{
-    R"(//[^\n]*|/\*[^*]*\*+(?:[^/*][^*]*\*+)*/|(")(?:[^"\\\n]|\\.)*"|(')(?:[^'\\\n]|\\.)*')"};
+    R"(//[^\n\\]*(?:(?:\\\r?\n|\\[^\n])[^\n\\]*)*)"
+    R"(|/\*[^*]*\*+(?:[^/*][^*]*\*+)*/)"
+    R"(|R(")([^()\\ \t\r\n"]{0,16})\([\s\S]*?\)\2")"
+    R"(|(")[^"\\\n]*(?:(?:\\\r?\n|\\.)[^"\\\n]*)*")"
+    R"(|(')[^'\\\n]*(?:(?:\\\r?\n|\\.)[^'\\\n]*)*')"};
 
 inline std::string strip_comments_and_literals(const std::string& text)
 {
     // Comments collapse to a single space; a literal keeps its delimiters via whichever
-    // quote group matched, so `"import foo;"` cannot register as an edge.
-    return std::regex_replace(text, comment_or_literal_regex, " $1$1$2$2");
+    // quote group matched, so `"import foo;"` cannot register as an edge. Exactly one of
+    // the three quote groups participates per match, so the others expand to nothing.
+    return std::regex_replace(text, comment_or_literal_regex, " $1$1$3$3$4$4");
 }
 
 // `#if 0` is the commented-out idiom, so its body must be elided wholesale, and the idiom
