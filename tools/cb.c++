@@ -864,6 +864,34 @@ translation_unit parse_translation_unit(const fs::path& project_root, const fs::
     };
 }
 
+// Observers format four of a unit's fields, so they receive those four and not the unit:
+// the rest is build state they must not reach into, and cb-observer.h++ stays independent
+// of the scanner. The pcm path is the one field that has to be derived, and deriving it in
+// one place is why compile_start and compile_end can no longer disagree about it.
+output::compile_unit compile_unit_of(const translation_unit& tu)
+{
+    return {.source = tu.full_path,
+            .object = tu.object_path,
+            .pcm = tu.is_modular ? std::string_view{tu.pcm_path} : std::string_view{},
+            .module = tu.module};
+}
+
+// The inventory projection, the sibling of compile_unit_of: the list command reports what a
+// unit is rather than where it compiles to, so it carries its own strings and joins the
+// display path. Three adjacent bools are why this is named fields and not an aggregate.
+output::source_unit source_unit_of(const translation_unit& tu)
+{
+    return {.unit = tu.unit,
+            .path = tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename,
+            .module = tu.module,
+            .kind = std::string{detail::unit_kind_name(tu.kind)},
+            .imports = tu.imports,
+            .level = tu.dependency_level,
+            .has_main = tu.has_main,
+            .is_test = tu.is_test,
+            .is_modular = tu.is_modular};
+}
+
 using dependency_graph = std::flat_map<std::string, string_list, std::less<>>;
 using indegree_map = std::flat_map<std::string, int, std::less<>>;
 using unit_to_tu_map = std::flat_map<std::string, translation_unit*, std::less<>>;
@@ -899,12 +927,44 @@ private:
     std::counting_semaphore<> slots;
 };
 
+// One build_start, exactly one build_end, whichever way the steps end. The pairing lives
+// here rather than in the callers, which had to remember a phase flag, an emitted flag and a
+// catch-and-rethrow each, and rather than in the observers, which would each have to
+// reimplement the latch and could then disagree about whether the build ended.
+class build_scope
+{
+public:
+    build_scope(std::string_view config, bool include_tests, bool include_examples)
+    {
+        output::notify(&output::observer::build_start, config, include_tests, include_examples);
+    }
+
+    build_scope(const build_scope&) = delete;
+    build_scope& operator=(const build_scope&) = delete;
+
+    // A build that never reports success failed, including when a step threw.
+    ~build_scope() { report(false); }
+
+    void succeeded() { report(true); }
+
+private:
+    void report(bool ok)
+    {
+        if(std::exchange(reported, true))
+            return;
+        output::notify(&output::observer::build_end, ok,
+                       output::interval{started, std::chrono::steady_clock::now()});
+    }
+
+    std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+    bool reported = false;
+};
+
 class build_system {
 public:
     enum class build_config { debug, release };
 
 private:
-    enum class build_phase { none, build };
 
     std::string source_dir;
     string_list compile_flags, link_flags, cpp_flags;
@@ -929,11 +989,6 @@ private:
     string_list extra_link_flag_tokens;
     std::optional<output::rebuild_kind> object_cache_miss_reason;
     output::object_cache_profile_diff profile_diff;
-    
-    // JSONL phase tracking state
-    build_phase current_phase = build_phase::none;
-    std::chrono::steady_clock::time_point phase_started{};
-    bool build_end_emitted = false;
 
     std::string_view config_name() const
     {
@@ -945,16 +1000,6 @@ private:
         std::unreachable();
     }
     
-    void emit_failed_build_end()
-    {
-        if(current_phase == build_phase::build && !build_end_emitted)
-        {
-            const auto finished = std::chrono::steady_clock::now();
-            output::notify(&output::observer::build_end, false, phase_started, finished);
-            build_end_emitted = true;
-        }
-    }
-
     // ============================================================================
     // Initialization and Setup
     // ============================================================================
@@ -1309,7 +1354,7 @@ private:
             result.diag = detail::read_diagnostics(capture_path);
 
         output::notify(&output::observer::command_end, cmd_str, argv, result.ok(),
-                       result.status, result.diag, started, finished);
+                       result.status, result.diag, output::interval{started, finished});
         return result;
     }
 
@@ -1453,59 +1498,6 @@ private:
     {
         info.message = format_link_message(executable_path, info);
         return info;
-    }
-
-    void emit_compile_start(const translation_unit& tu,
-                            const output::rebuild_info& rebuild = {}) const
-    {
-        output::notify(
-            &output::observer::compile_start,
-            tu.full_path,
-            tu.object_path,
-            tu.is_modular ? tu.pcm_path : std::string_view{},
-            tu.module,
-            rebuild);
-    }
-
-    void emit_compile_end(const translation_unit& tu,
-                          bool ok,
-                          bool cache_hit,
-                          std::chrono::steady_clock::time_point started,
-                          std::chrono::steady_clock::time_point finished,
-                          const output::rebuild_info& rebuild = {},
-                          const output::diagnostics& diag = {}) const
-    {
-        output::notify(
-            &output::observer::compile_end,
-            tu.full_path,
-            tu.object_path,
-            tu.is_modular ? tu.pcm_path : std::string_view{},
-            tu.module,
-            ok,
-            cache_hit,
-            started,
-            finished,
-            rebuild,
-            diag);
-    }
-
-    void emit_link_end(std::string_view executable_path,
-                       bool ok,
-                       bool cache_hit,
-                       std::chrono::steady_clock::time_point started,
-                       std::chrono::steady_clock::time_point finished,
-                       const output::rebuild_info& rebuild = {},
-                       const output::diagnostics& diag = {}) const
-    {
-        output::notify(&output::observer::link_end, executable_path, ok, cache_hit, started, finished, rebuild, diag);
-    }
-
-    void emit_profile_changed()
-    {
-        if(object_cache_miss_reason != output::rebuild_kind::profile_change)
-            return;
-
-        output::notify(&output::observer::profile_changed, *object_cache_miss_reason, profile_diff);
     }
 
     string_list base_compile_argv() const
@@ -2257,7 +2249,8 @@ private:
     // ============================================================================
 
     void compile_unit(const translation_unit& tu, const output::rebuild_info& rebuild) {
-        emit_compile_start(tu, rebuild);
+        const auto unit = compile_unit_of(tu);
+        output::notify(&output::observer::compile_start, unit, rebuild);
         const auto started = std::chrono::steady_clock::now();
         const auto capture = diagnostics_path(tu);
 
@@ -2266,7 +2259,13 @@ private:
         const auto step = [&](const string_list& argv) {
             const auto result = invoke_shell(argv, capture);
             if (not result.ok()) {
-                emit_compile_end(tu, false, false, started, std::chrono::steady_clock::now(), rebuild, result.diag);
+                output::notify(&output::observer::compile_end,
+                               unit,
+                               output::step_result{
+                                   .ok = false,
+                                   .timing = {started, std::chrono::steady_clock::now()},
+                                   .rebuild = rebuild,
+                                   .diag = result.diag});
                 throw std::runtime_error{command_failure_message(argv, result)};
             }
         };
@@ -2277,7 +2276,12 @@ private:
         } else {
             step(source_object_argv(tu));
         }
-        emit_compile_end(tu, true, false, started, std::chrono::steady_clock::now(), rebuild);
+        output::notify(&output::observer::compile_end,
+                       unit,
+                       output::step_result{
+                           .ok = true,
+                           .timing = {started, std::chrono::steady_clock::now()},
+                           .rebuild = rebuild});
     }
 
     void update_module_flags()
@@ -2298,7 +2302,8 @@ private:
     void compile_units() {
         if (units_in_topological_order.empty()) return;
         auto cache = load_object_cache();
-        emit_profile_changed();
+        if(object_cache_miss_reason == output::rebuild_kind::profile_change)
+            output::notify(&output::observer::profile_changed, *object_cache_miss_reason, profile_diff);
 
         auto u2tu = unit_to_tu_map{};
         for (auto& tu : units_in_topological_order) {
@@ -2350,8 +2355,11 @@ private:
                     });
                 } else {
                     const auto now = std::chrono::steady_clock::now();
-                    emit_compile_start(*tu);
-                    emit_compile_end(*tu, true, true, now, now);
+                    const auto unit = compile_unit_of(*tu);
+                    output::notify(&output::observer::compile_start, unit, output::rebuild_info{});
+                    output::notify(&output::observer::compile_end,
+                                   unit,
+                                   output::step_result{.ok = true, .cache_hit = true, .timing = {now, now}});
                 }
             }
             for (auto& thread : threads) thread.join();
@@ -2461,7 +2469,9 @@ private:
             {
                 output::notify(&output::observer::info, "Skipping link (up-to-date): "s + tu.executable_path);
                 const auto now = std::chrono::steady_clock::now();
-                emit_link_end(tu.executable_path, true, true, now, now);
+                output::notify(&output::observer::link_end,
+                               tu.executable_path,
+                               output::step_result{.ok = true, .cache_hit = true, .timing = {now, now}});
                 continue;
             }
             // Capture decision by reference — it outlives join(); do not bind a per-iteration local.
@@ -2478,11 +2488,22 @@ private:
                     link_executable(tu, shared_objects);
                     linked = true;
                     const auto finished = std::chrono::steady_clock::now();
-                    emit_link_end(tu.executable_path, true, false, started, finished, *decision.reason);
+                    output::notify(&output::observer::link_end,
+                                   tu.executable_path,
+                                   output::step_result{
+                                       .ok = true,
+                                       .timing = {started, finished},
+                                       .rebuild = *decision.reason});
                     auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
                     link_cache[tu.executable_path] = decision.signature;
                 } catch (const link_failure& error) {
-                    emit_link_end(tu.executable_path, false, false, started, std::chrono::steady_clock::now(), *decision.reason, error.diag);
+                    output::notify(&output::observer::link_end,
+                                   tu.executable_path,
+                                   output::step_result{
+                                       .ok = false,
+                                       .timing = {started, std::chrono::steady_clock::now()},
+                                       .rebuild = *decision.reason,
+                                       .diag = error.diag});
                     failed.store(true, std::memory_order_relaxed);
                     auto lock = std::lock_guard<std::mutex>{failure_mutex};
                     if(not failure)
@@ -2490,7 +2511,12 @@ private:
                     return;
                 } catch (...) {
                     if(not linked)
-                        emit_link_end(tu.executable_path, false, false, started, std::chrono::steady_clock::now(), *decision.reason);
+                        output::notify(&output::observer::link_end,
+                                       tu.executable_path,
+                                       output::step_result{
+                                           .ok = false,
+                                           .timing = {started, std::chrono::steady_clock::now()},
+                                           .rebuild = *decision.reason});
                     failed.store(true, std::memory_order_relaxed);
                     auto lock = std::lock_guard<std::mutex>{failure_mutex};
                     if(not failure)
@@ -2600,7 +2626,9 @@ private:
         {
             output::notify(&output::observer::info, "Skipping link (up-to-date): "s + test_runner_path);
             const auto now = std::chrono::steady_clock::now();
-            emit_link_end(test_runner_path, true, true, now, now);
+            output::notify(&output::observer::link_end,
+                           test_runner_path,
+                           output::step_result{.ok = true, .cache_hit = true, .timing = {now, now}});
             return;
         }
 
@@ -2609,7 +2637,13 @@ private:
         if(const auto result = invoke_shell(link_argv, diagnostics_path_for_executable(test_runner_path));
            not result.ok())
         {
-            emit_link_end(test_runner_path, false, false, link_started, std::chrono::steady_clock::now(), *link_reason, result.diag);
+            output::notify(&output::observer::link_end,
+                           test_runner_path,
+                           output::step_result{
+                               .ok = false,
+                               .timing = {link_started, std::chrono::steady_clock::now()},
+                               .rebuild = *link_reason,
+                               .diag = result.diag});
             throw std::runtime_error{command_failure_message(link_argv, result)};
         }
         if(has_runner_unit)
@@ -2617,7 +2651,12 @@ private:
         else
             output::notify(&output::observer::success, "test_runner linked successfully");
         
-        emit_link_end(test_runner_path, true, false, link_started, std::chrono::steady_clock::now(), *link_reason);
+        output::notify(&output::observer::link_end,
+                       test_runner_path,
+                       output::step_result{
+                           .ok = true,
+                           .timing = {link_started, std::chrono::steady_clock::now()},
+                           .rebuild = *link_reason});
 
         // Save signature to cache
         {
@@ -2763,23 +2802,9 @@ public:
     }
 
     void build() {
-        const auto build_started = std::chrono::steady_clock::now();
-        current_phase = build_phase::build;
-        phase_started = build_started;
-        build_end_emitted = false;
-        output::notify(&output::observer::build_start, config_name(), include_tests, include_examples);
-
-        try {
-            build_steps();
-        } catch (...) {
-            emit_failed_build_end();
-            current_phase = build_phase::none;
-            throw;
-        }
-
-        output::notify(&output::observer::build_end, true, build_started, std::chrono::steady_clock::now());
-        build_end_emitted = true;
-        current_phase = build_phase::none;
+        auto build = build_scope{config_name(), include_tests, include_examples};
+        build_steps();
+        build.succeeded();
 
         output::notify(&output::observer::success, "Build completed: "s + build_root());
     }
@@ -2789,28 +2814,15 @@ public:
         output::notify(&output::observer::info, "=== Running tests ===");
 
         include_tests = true;
-        const auto build_started = std::chrono::steady_clock::now();
-        current_phase = build_phase::build;
-        phase_started = build_started;
-        build_end_emitted = false;
-        output::notify(&output::observer::build_start, config_name(), true, include_examples);
-
         auto runner = detail::join_dir(binary_dir(), test_runner_name);
-        try {
+        {
+            auto build = build_scope{config_name(), true, include_examples};
             build_steps();
             link_test_runner();
             if(not fs::exists(runner))
                 throw std::runtime_error{"test_runner not found — make sure .test.c++ files or test_runner.c++ exist"};
-        } catch (...) {
-            emit_failed_build_end();
-            current_phase = build_phase::none;
-            throw;
+            build.succeeded();
         }
-
-        const auto build_finished = std::chrono::steady_clock::now();
-        output::notify(&output::observer::build_end, true, build_started, build_finished);
-        build_end_emitted = true;
-        current_phase = build_phase::none;
         output::notify(&output::observer::success, "Build completed: "s + build_root());
 
         const auto set_env = [](std::string_view key, std::string_view value)
@@ -2828,8 +2840,8 @@ public:
         // Not captured: the runner's stdout is the JSONL stream being forwarded.
         const auto result = invoke_shell(test_runner_argv(runner, args));
         const auto test_finished = std::chrono::steady_clock::now();
-        output::notify(&output::observer::test_end, result.ok(), result.status, test_started, test_finished);
-        current_phase = build_phase::none;
+        output::notify(&output::observer::test_end, result.ok(), result.status,
+                       output::interval{test_started, test_finished});
         if (not result.ok()) {
             if(result.status.signaled)
                 output::notify(&output::observer::error,
@@ -2845,29 +2857,15 @@ public:
     void list_sources() {
         scan_and_order();
         auto inventory = output::source_inventory{
-            std::string{config_name()},
-            include_tests,
-            include_examples,
-            source_dir,
-            {},
-            0,
-            0,
-            0,
+            .config = std::string{config_name()},
+            .include_tests = include_tests,
+            .include_examples = include_examples,
+            .source_dir = source_dir,
         };
         inventory.units.reserve(units_in_topological_order.size());
         for(const auto& tu : units_in_topological_order)
         {
-            inventory.units.push_back(output::source_unit{
-                tu.unit,
-                tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename,
-                tu.module,
-                std::string{detail::unit_kind_name(tu.kind)},
-                tu.imports,
-                tu.dependency_level,
-                tu.has_main,
-                tu.is_test,
-                tu.is_modular,
-            });
+            inventory.units.push_back(source_unit_of(tu));
             if(tu.has_main)
                 ++inventory.main_count;
             if(tu.is_test)
