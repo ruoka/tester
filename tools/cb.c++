@@ -2059,6 +2059,15 @@ private:
         return path + ":" + std::to_string(timestamp);
     }
 
+    // Whether there was a file to remove, which is what cache_invalidate reports per cache.
+    static bool remove_if_exists(const std::string& path)
+    {
+        if(not fs::exists(path))
+            return false;
+        fs::remove(path);
+        return true;
+    }
+
     std::string dependency_signatures_joined(const string_list& paths) const
     {
         return paths
@@ -2727,14 +2736,6 @@ public:
             object_stale,
             executable_entries,
             current_profile);
-    }
-
-    static bool remove_if_exists(const std::string& path)
-    {
-        if(not fs::exists(path))
-            return false;
-        fs::remove(path);
-        return true;
     }
 
     void cache_invalidate() const
