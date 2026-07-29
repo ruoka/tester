@@ -2620,6 +2620,13 @@ private:
         save_executable_cache(link_cache);
     }
 
+    // ============================================================================
+    // Build Orchestration
+    // ============================================================================
+    // The phases above in the order a build runs them, and the only place that order is written
+    // down. Both public entry points go through it: build() runs it alone, run_tests() follows it
+    // with the test-runner link.
+
     void build_steps()
     {
         // Ensure build directories exist (they may have been removed by clean())
