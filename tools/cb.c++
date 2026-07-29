@@ -2844,7 +2844,6 @@ public:
                 output::notify(&output::observer::error, "Some tests or assertions failed!");
             return false;
         }
-        output::notify(&output::observer::success, "All tests passed!");
         return true;
     }
 

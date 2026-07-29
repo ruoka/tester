@@ -206,6 +206,15 @@ struct observer final : cb::output::observer
             info(link_rebuild_message(executable_path, step.rebuild));
     }
 
+    // A passing run says so here rather than in the command, for the same reason the skipped-link
+    // line does: the console prose belongs to the console. The failure sentences stay in the
+    // command — they go out as `error`, which is a JSONL event and not ours alone to render.
+    void test_end(const process_result& result, const interval&) override
+    {
+        if(result.ok())
+            success("All tests passed!");
+    }
+
     void cache_status(std::string_view object_cache_path,
                       bool object_cache_exists,
                       bool profile_match,
