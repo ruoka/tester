@@ -2484,6 +2484,9 @@ private:
     // ============================================================================
     // Test Support
     // ============================================================================
+    // The link phase once more, for a single executable whose inputs are gathered from the units
+    // rather than named by one of them: find what goes in, decide, report a hit or link, save the
+    // signature. link_test_runner_executable is the counterpart of link_executable.
 
     bool has_test_runner_link_inputs(bool has_runner_unit) const
     {
@@ -2503,6 +2506,47 @@ private:
                 flags.append_range(collect_module_ldflags(tu.imports));
                 return flags;
             });
+    }
+
+    // Require an exact base name. Substring selection (e.g. aaa_test_runner / contest_runner)
+    // can link a different bin/<name> while run_tests always executes bin/test_runner — leaving a
+    // stale runner and silent CI passes.
+    const translation_unit* find_test_runner_unit() const
+    {
+        const auto is_runner = [](const translation_unit& tu) {
+            return tu.has_main and tu.base_name == test_runner_name;
+        };
+        if(std::ranges::count_if(units_in_topological_order, is_runner) > 1)
+            throw std::runtime_error{
+                "multiple test_runner mains found — keep a single source named test_runner"};
+
+        const auto found = std::ranges::find_if(units_in_topological_order, is_runner);
+        return found != units_in_topological_order.end() ? &*found : nullptr;
+    }
+
+    // What goes into the runner: the object of the project's test_runner unit when it has one,
+    // and the module link flags the objects need. Two flag lists because the link takes the
+    // runner's own imports when it exists, while the signature has to cover every test unit's
+    // imports either way — a change to any of them is a relink.
+    struct test_runner_inputs
+    {
+        bool has_runner_unit = false;
+        std::string object{};
+        string_list module_ldflags{};
+        string_list signature_flags{};
+    };
+
+    test_runner_inputs test_runner_inputs_of(const translation_unit* runner) const
+    {
+        const auto runner_ldflags = runner ? collect_module_ldflags(runner->imports) : string_list{};
+        const auto test_ldflags = collect_test_module_ldflags();
+
+        auto inputs = test_runner_inputs{.has_runner_unit = runner != nullptr,
+                                        .object = runner ? runner->object_path : std::string{},
+                                        .module_ldflags = runner ? runner_ldflags : test_ldflags,
+                                        .signature_flags = test_ldflags};
+        inputs.signature_flags.append_range(runner_ldflags);
+        return inputs;
     }
 
     std::string compute_test_runner_signature(const std::string& test_runner_obj,
@@ -2531,70 +2575,47 @@ private:
         return signature;
     }
 
+    void link_test_runner_executable(const std::string& executable_path,
+                                     const test_runner_inputs& inputs,
+                                     const output::rebuild_info& rebuild)
+    {
+        auto link = link_scope{executable_path, rebuild};
+        const auto argv = link_test_runner_argv(executable_path, inputs.object, inputs.module_ldflags);
+        const auto result = invoke_shell(argv, diagnostics_path_for_executable(executable_path));
+        if(not result.ok()) {
+            link.failed(result.diag);
+            throw std::runtime_error{command_failure_message(argv, result)};
+        }
+        link.succeeded();
+    }
+
     void link_test_runner() {
-        // Require an exact base name. Substring selection (e.g. aaa_test_runner /
-        // contest_runner) can link a different bin/<name> while run_tests always
-        // executes bin/test_runner — leaving a stale runner and silent CI passes.
-        const auto runner_count = std::ranges::count_if(
-            units_in_topological_order,
-            [](const translation_unit& tu) {
-                return tu.has_main and tu.base_name == test_runner_name;
-            });
-        if(runner_count > 1)
-            throw std::runtime_error{
-                "multiple test_runner mains found — keep a single source named test_runner"};
-
-        const auto runner_it = std::ranges::find_if(units_in_topological_order, [](const translation_unit& tu) {
-            return tu.has_main and tu.base_name == test_runner_name;
-        });
-        const auto has_runner_unit = runner_it != units_in_topological_order.end();
-
-        if(not has_test_runner_link_inputs(has_runner_unit)) {
+        const auto* runner = find_test_runner_unit();
+        if(not has_test_runner_link_inputs(runner != nullptr)) {
             output::notify(&output::observer::info, "No objects to link for test_runner");
             return;
         }
 
-        // Always emit the canonical path that run_tests executes.
-        const auto test_runner_path = detail::join_dir(binary_dir(), test_runner_name);
-        auto test_runner_obj = std::string{};
-        if(has_runner_unit)
-            test_runner_obj = runner_it->object_path;
+        // Always the canonical path that run_tests executes.
+        const auto executable_path = detail::join_dir(binary_dir(), test_runner_name);
+        const auto inputs = test_runner_inputs_of(runner);
 
-        const auto link_module_ldflags = has_runner_unit
-            ? collect_module_ldflags(runner_it->imports)
-            : collect_test_module_ldflags();
-
-        auto signature_import_flags = collect_test_module_ldflags();
-        if(has_runner_unit)
-            signature_import_flags.append_range(collect_module_ldflags(runner_it->imports));
-
-        // Check if test_runner is up-to-date
         auto link_cache = load_executable_cache();
-        auto signature = compute_test_runner_signature(test_runner_obj, signature_import_flags);
-        auto link_reason = needs_relinking(test_runner_path, signature, link_cache);
-        if(not link_reason)
+        const auto signature = compute_test_runner_signature(inputs.object, inputs.signature_flags);
+        const auto reason = needs_relinking(executable_path, signature, link_cache);
+        if(not reason)
         {
-            const auto hit = link_scope{test_runner_path};
+            const auto hit = link_scope{executable_path};
             return;
         }
 
-        auto link = link_scope{test_runner_path, *link_reason};
-        const auto link_argv = link_test_runner_argv(test_runner_path, test_runner_obj, link_module_ldflags);
-        if(const auto result = invoke_shell(link_argv, diagnostics_path_for_executable(test_runner_path));
-           not result.ok())
-        {
-            link.failed(result.diag);
-            throw std::runtime_error{command_failure_message(link_argv, result)};
-        }
-        link.succeeded();
+        link_test_runner_executable(executable_path, inputs, *reason);
         output::notify(&output::observer::success,
-                       has_runner_unit ? "test_runner linked with test objects"
-                                       : "test_runner linked successfully");
-
-        // Save signature to cache
+                       inputs.has_runner_unit ? "test_runner linked with test objects"
+                                              : "test_runner linked successfully");
         {
             auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
-            link_cache[test_runner_path] = signature;
+            link_cache[executable_path] = signature;
         }
         save_executable_cache(link_cache);
     }
