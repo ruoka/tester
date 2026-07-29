@@ -216,7 +216,7 @@ Environment variables for **bootstrap** (not test output): `LLVM_PATH`, `CXX`, `
 
 Legacy caches without a `profile\t` header still load; the header is rewritten on the next save. Bumping `format` or adding fields intentionally invalidates old caches once.
 
-Cache indexes are written through a checked temporary file and atomically renamed only after a complete flush. A write or rename failure fails the build rather than promoting a partial index.
+Cache indexes are written through a checked temporary file and atomically renamed only after a complete flush — one writer for all three, so they fail identically. A write or rename failure fails the build rather than promoting a partial index.
 
 **Value encoding:** profile field values are stored verbatim (no percent-encoding). CB writes only values that cannot contain tab, newline, or `%` (paths, flag lists, and version lines satisfy this).
 
@@ -230,11 +230,13 @@ Prerequisites are filtered to the project tree. Toolchain headers change as a un
 
 **Human logs** (stderr, non-JSONL): `Object cache profile changed; invalidating compile cache (compile: + -DFOO)`.
 
-**Inspect cache:** `./tools/CB.sh debug cache status` (human) or `… cache status --jsonl` (`cache_status` event).
+**Inspect cache:** `./tools/CB.sh debug cache status` (human) or `… cache status --jsonl` (`cache_status` event). Both describe all four files under `cache/` — object cache, executable cache, `std-module-profile.txt`, `compiler-version.txt` — with entry counts and profile matches where those exist. `cache status` reports the compiler stamp as present even straight after an invalidate: it has to probe `clang++ --version` to know the current profile, and that probe is what writes the stamp.
 
-**Invalidate indexes:** `./tools/CB.sh debug cache invalidate` removes `object-cache.txt`, `executable-cache.txt`, and `compiler-version.txt` only — lighter than `clean`; artifacts in `obj/` / `pcm/` remain. JSONL: `cache_invalidate_end`.
+**Invalidate indexes:** `./tools/CB.sh debug cache invalidate` removes all four files `cache status` reports — lighter than `clean`; artifacts in `obj/` / `pcm/` remain. JSONL: `cache_invalidate_end`, one flag per file. Removing `std-module-profile.txt` is what makes the next build rebuild `std.pcm`.
 
-**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job) — `profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `source_stale`, `header_stale`, `depfile_unusable`, `strict_arguments`, `source_list`, `compile_failure`, `link_failure`, `test_link_failure`, `link_rebuild_reason`, `implementation_pcm`, `rebuild_summary`, `test_lifecycle`, `cache_invalidate`, `profile_change`, `cache_status`, `jsonl_modes`, `jsonl_failure_mode`.
+**Std module:** `std.pcm` and `std.o` compile through the same reporting path as project units — one `compile_start` / `compile_end` pair for module `std`, with a `rebuild_reason` and a `cache_hit`, counted in `compile_total` and `rebuild_summary`. Their reasons are the ones a modular unit uses: `own_pcm_missing`, `profile_change`, `own_pcm_stale` rebuild the pcm and then the object; `object_missing` and `object_stale` reuse the pcm that is already there. A failure attaches the compiler's own output as `diagnostics`, as any other compile does.
+
+**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job) — `profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `source_stale`, `header_stale`, `depfile_unusable`, `strict_arguments`, `source_list`, `compile_failure`, `link_failure`, `test_link_failure`, `link_rebuild_reason`, `implementation_pcm`, `rebuild_summary`, `test_lifecycle`, `cache_invalidate`, `profile_change`, `cache_status`, `std_module_reported`, `jsonl_modes`, `jsonl_failure_mode`.
 
 **Optional follow-up:** `cache prune` for disk/orphan cleanup — backlog only; see [tester-improvements.md §4.4](tester-improvements.md#44-cache-maintenance-optional--add-if-operational-issues-appear).
 

@@ -365,35 +365,35 @@ struct observer final : cb::output::observer
         };
     }
 
-    void cache_status(std::string_view object_cache_path,
-                      bool object_cache_exists,
-                      bool profile_match,
-                      int object_entries,
-                      int object_stale_entries,
-                      int executable_entries,
-                      std::string_view current_profile) override
+    void cache_status(const cache_inventory& caches) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("cache_status") << [&](std::ostream& os){
-            os << ",\"object_cache_path\":\"" << escape(object_cache_path) << "\"";
-            os << ",\"object_cache_exists\":" << (object_cache_exists ? "true" : "false");
-            os << ",\"profile_match\":" << (profile_match ? "true" : "false");
-            os << ",\"object_entries\":" << object_entries;
-            os << ",\"object_stale_entries\":" << object_stale_entries;
-            os << ",\"executable_entries\":" << executable_entries;
-            os << ",\"current_profile\":\"" << escape(current_profile) << "\"";
+            os << ",\"object_cache_path\":\"" << escape(caches.object_cache_path) << "\"";
+            os << ",\"object_cache_exists\":" << (caches.object_cache_exists ? "true" : "false");
+            os << ",\"profile_match\":" << (caches.profile_match ? "true" : "false");
+            os << ",\"object_entries\":" << caches.object_entries;
+            os << ",\"object_stale_entries\":" << caches.object_stale_entries;
+            os << ",\"executable_cache_path\":\"" << escape(caches.executable_cache_path) << "\"";
+            os << ",\"executable_cache_exists\":" << (caches.executable_cache_exists ? "true" : "false");
+            os << ",\"executable_entries\":" << caches.executable_entries;
+            os << ",\"std_module_profile_path\":\"" << escape(caches.std_module_profile_path) << "\"";
+            os << ",\"std_module_profile_exists\":" << (caches.std_module_profile_exists ? "true" : "false");
+            os << ",\"std_module_profile_match\":" << (caches.std_module_profile_match ? "true" : "false");
+            os << ",\"compiler_stamp_path\":\"" << escape(caches.compiler_stamp_path) << "\"";
+            os << ",\"compiler_stamp_exists\":" << (caches.compiler_stamp_exists ? "true" : "false");
+            os << ",\"current_profile\":\"" << escape(caches.current_profile) << "\"";
         };
     }
 
-    void cache_invalidate_end(bool object_cache_removed,
-                              bool executable_cache_removed,
-                              bool compiler_stamp_removed) override
+    void cache_invalidate_end(const cache_removals& removed) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("cache_invalidate_end") << [&](std::ostream& os){
-            os << ",\"object_cache_removed\":" << (object_cache_removed ? "true" : "false");
-            os << ",\"executable_cache_removed\":" << (executable_cache_removed ? "true" : "false");
-            os << ",\"compiler_stamp_removed\":" << (compiler_stamp_removed ? "true" : "false");
+            os << ",\"object_cache_removed\":" << (removed.object_cache ? "true" : "false");
+            os << ",\"executable_cache_removed\":" << (removed.executable_cache ? "true" : "false");
+            os << ",\"compiler_stamp_removed\":" << (removed.compiler_stamp ? "true" : "false");
+            os << ",\"std_module_profile_removed\":" << (removed.std_module_profile ? "true" : "false");
         };
     }
 

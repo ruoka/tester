@@ -32,6 +32,7 @@
 #include <system_error>
 #include <cctype>
 #include <charconv>
+#include <concepts>
 #include <cstddef>
 #include <semaphore>
 #include "cb-jsonl_observer.h++"
@@ -94,6 +95,7 @@ constexpr auto std_module_profile_filename = "std-module-profile.txt"sv;
 constexpr auto compiler_version_filename = "compiler-version.txt"sv;
 constexpr auto std_pcm_filename = "std.pcm"sv;
 constexpr auto std_obj_filename = "std.o"sv;
+constexpr auto std_module_name = "std"sv;
 constexpr auto pcm_extension = ".pcm"sv;
 constexpr auto object_extension = ".o"sv;
 constexpr auto test_runner_name = "test_runner"sv;
@@ -967,7 +969,7 @@ translation_unit parse_translation_unit(const fs::path& project_root, const fs::
                 auto base = colon != std::string::npos ? module_name.substr(0, colon) : module_name;
                 imp = base + imp;
             }
-            if (not imp.empty() and imp != "std") imports.push_back(std::move(imp));
+            if (not imp.empty() and imp != std_module_name) imports.push_back(std::move(imp));
         }
 
         // End the preamble only after recording any module/import on this line.
@@ -1056,15 +1058,16 @@ using indegree_map = std::flat_map<std::string, int, std::less<>>;
 using unit_to_tu_map = std::flat_map<std::string, translation_unit*, std::less<>>;
 using object_cache_map = std::flat_map<std::string, fs::file_time_type, std::less<>>;
 
-// What reading the object cache found. A profile mismatch answers two questions at once —
-// every unit is about to miss, and here is the field that changed — so the load returns them
-// with the entries instead of leaving them behind in the build system for the caller to
-// collect.
+// What reading the object cache found: the entries, and the one thing that invalidates all of
+// them at once. A profile mismatch answers two questions together — every unit is about to miss,
+// and here is the field that changed — so the load returns them with the entries instead of
+// leaving them behind in the build system for the caller to collect. The diff is the miss rather
+// than a reason beside a diff that only some reasons fill: engaged means profile_change, which is
+// the only blanket miss there is.
 struct object_cache_load
 {
     object_cache_map entries{};
-    std::optional<output::rebuild_kind> miss_reason{};
-    output::object_cache_profile_diff profile_diff{}; // filled for profile_change
+    std::optional<output::object_cache_profile_diff> profile_change{};
 };
 
 using translation_unit_list = std::vector<translation_unit>;
@@ -1431,7 +1434,7 @@ private:
 
         fs::create_directories(cache_dir());
 
-        const auto stamp = detail::join_dir(cache_dir(), compiler_version_filename);
+        const auto stamp = compiler_stamp_path();
         const auto cmd = detail::shell_quote(llvm_cxx) + " --version > " + detail::shell_quote(stamp) + " 2>/dev/null";
         if(std::system(cmd.c_str()) == 0)
             clang_version = detail::read_first_line(stamp);
@@ -1559,7 +1562,7 @@ private:
         module_flags = {
             "-fno-implicit-modules",
             "-fno-implicit-module-maps",
-            detail::module_file_flag("std", std_pcm_path()),
+            detail::module_file_flag(std_module_name, std_pcm_path()),
             std::string{prebuilt_module_path_flag_prefix} + module_cache_dir(),
         };
     }
@@ -1625,6 +1628,7 @@ private:
     std::string object_cache_path() const     { return detail::join_dir(cache_dir(), object_cache_filename); }
     std::string executable_cache_path() const { return detail::join_dir(cache_dir(), executable_cache_filename); }
     std::string std_module_profile_path() const { return detail::join_dir(cache_dir(), std_module_profile_filename); }
+    std::string compiler_stamp_path() const   { return detail::join_dir(cache_dir(), compiler_version_filename); }
     std::string std_pcm_path() const          { return detail::join_dir(module_cache_dir(), std_pcm_filename); }
     std::string std_obj_path() const          { return detail::join_dir(object_dir(), std_obj_filename); }
 
@@ -2009,8 +2013,7 @@ private:
         if (header.starts_with("profile\t")) {
             const auto stored_profile = header.substr(std::string_view{"profile\t"}.size());
             if (stored_profile != current_profile) {
-                loaded.miss_reason = output::rebuild_kind::profile_change;
-                loaded.profile_diff = detail::diff_object_cache_profiles(stored_profile, current_profile);
+                loaded.profile_change = detail::diff_object_cache_profiles(stored_profile, current_profile);
                 return loaded;
             }
         } else {
@@ -2028,36 +2031,50 @@ private:
         return loaded;
     }
 
-    void save_object_cache(const object_cache_map& c) {
-        auto tmp = object_cache_path() + ".tmp";
+    // A cache is replaced, never edited in place: write a sibling temporary file, then rename it
+    // over the target, so a build interrupted mid-write leaves the previous cache rather than
+    // half of the next one. The three caches differ only in what they write and what they are
+    // called in the message when a step of this fails.
+    static void write_cache_file(const std::string& path,
+                                 std::string_view what,
+                                 const std::invocable<std::ostream&> auto& write_contents)
+    {
+        const auto tmp = path + ".tmp";
         auto file = std::ofstream{tmp};
         if(not file)
-            throw std::runtime_error{"Cannot open object cache temporary file: " + tmp};
+            throw std::runtime_error{"Cannot open "s + std::string{what} + " temporary file: " + tmp};
 
-        file << "profile\t" << object_cache_profile() << "\n";
-        for (const auto& [path, timestamp] : c) {
-            if (not fs::exists(path))
-                continue;
-            auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                timestamp.time_since_epoch()).count();
-            file << path << "\t" << ticks << "\n";
-        }
+        write_contents(file);
+
         file.close();
         if(not file)
         {
             auto ignored = std::error_code{};
             fs::remove(tmp, ignored);
-            throw std::runtime_error{"Failed to write object cache temporary file: " + tmp};
+            throw std::runtime_error{"Failed to write "s + std::string{what} + " temporary file: " + tmp};
         }
 
         auto error = std::error_code{};
-        fs::rename(tmp, object_cache_path(), error);
+        fs::rename(tmp, path, error);
         if(error)
         {
             auto ignored = std::error_code{};
             fs::remove(tmp, ignored);
-            throw std::runtime_error{"Failed to replace object cache: " + error.message()};
+            throw std::runtime_error{"Failed to replace "s + std::string{what} + ": " + error.message()};
         }
+    }
+
+    void save_object_cache(const object_cache_map& c) {
+        write_cache_file(object_cache_path(), "object cache", [&](std::ostream& file) {
+            file << "profile\t" << object_cache_profile() << "\n";
+            for (const auto& [path, timestamp] : c) {
+                if (not fs::exists(path))
+                    continue;
+                auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    timestamp.time_since_epoch()).count();
+                file << path << "\t" << ticks << "\n";
+            }
+        });
     }
 
     static void count_cache_entries(std::istream& file,
@@ -2140,8 +2157,8 @@ private:
     std::optional<output::rebuild_info> needs_recompile(const translation_unit& tu, const object_cache_load& cache, const unit_to_tu_map& u2tu) const {
         // First-seen path for this config vs edited source after a prior compile.
         if (not cache.entries.contains(tu.full_path)) {
-            if (cache.miss_reason)
-                return output::rebuild_info{.kind = *cache.miss_reason, .trigger_path = tu.full_path};
+            if (cache.profile_change)
+                return output::rebuild_info{.kind = output::rebuild_kind::profile_change, .trigger_path = tu.full_path};
             return output::rebuild_info{.kind = output::rebuild_kind::not_in_cache, .trigger_path = tu.full_path};
         }
         if (cache.entries.at(tu.full_path) < tu.last_modified)
@@ -2222,32 +2239,13 @@ private:
 
     void save_executable_cache(const executable_cache_map& cache) const {
         if (cache.empty()) {
-            if (fs::exists(executable_cache_path()))
-                fs::remove(executable_cache_path());
+            remove_if_exists(executable_cache_path());
             return;
         }
-        auto tmp = executable_cache_path() + ".tmp";
-        auto file = std::ofstream{tmp};
-        if(not file)
-            throw std::runtime_error{"Cannot open executable cache temporary file: " + tmp};
-        for (const auto& [path, signature] : cache)
-            file << path << "\t" << signature << "\n";
-        file.close();
-        if(not file)
-        {
-            auto ignored = std::error_code{};
-            fs::remove(tmp, ignored);
-            throw std::runtime_error{"Failed to write executable cache temporary file: " + tmp};
-        }
-
-        auto error = std::error_code{};
-        fs::rename(tmp, executable_cache_path(), error);
-        if(error)
-        {
-            auto ignored = std::error_code{};
-            fs::remove(tmp, ignored);
-            throw std::runtime_error{"Failed to replace executable cache: " + error.message()};
-        }
+        write_cache_file(executable_cache_path(), "executable cache", [&](std::ostream& file) {
+            for (const auto& [path, signature] : cache)
+                file << path << "\t" << signature << "\n";
+        });
     }
 
     std::string dependency_signature(const std::string& path) const {
@@ -2495,12 +2493,17 @@ private:
     // ============================================================================
     // Standard Library Module Building
     // ============================================================================
+    // The same two halves as Compilation, for the one modular unit that is not in the scan:
+    // needs_std_module_rebuild is its needs_recompile and build_std_module is its compile_unit,
+    // reporting through compile_scope like every other unit. It used to build through
+    // execute_system_command, so the two most expensive steps of a cold build were the only ones
+    // that explained nothing — no compile_end, no reason, no cache hit, and a failure that
+    // reached stdout as a bare command_end.
 
+    // Whether std.pcm was precompiled by the profile a project unit is compiled with. The pcm's
+    // own presence is a separate question, asked by needs_std_module_rebuild before this one.
     bool std_module_profile_matches() const
     {
-        if(not fs::exists(std_pcm_path()))
-            return false;
-
         const auto stored = detail::read_first_line(std_module_profile_path());
         return not stored.empty() and stored == object_cache_profile();
     }
@@ -2508,52 +2511,77 @@ private:
     void save_std_module_profile() const
     {
         fs::create_directories(cache_dir());
-        const auto path = std_module_profile_path();
-        const auto tmp = path + ".tmp";
-        auto file = std::ofstream{tmp};
-        if(not file)
-            throw std::runtime_error{"Cannot open std module profile temporary file: " + tmp};
-
-        file << object_cache_profile() << '\n';
-        file.close();
-        if(not file)
-        {
-            auto ignored = std::error_code{};
-            fs::remove(tmp, ignored);
-            throw std::runtime_error{"Failed to write std module profile temporary file: " + tmp};
-        }
-
-        auto error = std::error_code{};
-        fs::rename(tmp, path, error);
-        if(error)
-        {
-            auto ignored = std::error_code{};
-            fs::remove(tmp, ignored);
-            throw std::runtime_error{"Failed to replace std module profile: " + error.message()};
-        }
+        write_cache_file(std_module_profile_path(), "std module profile", [&](std::ostream& file) {
+            file << object_cache_profile() << '\n';
+        });
     }
 
-    void build_std_pcm() {
-        auto std_pcm = std_pcm_path();
-        // std.pcm is built with compile/cpp flags and the active clang++; mtime vs
-        // std.cppm alone misses toolchain/profile changes that invalidate project TUs.
-        if (fs::exists(std_pcm) and fs::exists(std_module_source) and
-            fs::last_write_time(std_pcm) >= fs::last_write_time(std_module_source) and
-            std_module_profile_matches())
-            return;
+    // In the order the artifacts depend on each other, so the reason names the first thing that
+    // has to be rebuilt and the caller can tell from it whether the pcm step is included. The
+    // profile is what mtimes cannot see: std.pcm is built with the compile and cpp flags and the
+    // active clang++, so a toolchain change leaves a pcm that is newer than std.cppm and wrong.
+    // std.cppm itself is known to exist — detect_llvm_environment throws in the constructor
+    // otherwise — so its mtime is read without asking.
+    std::optional<output::rebuild_info> needs_std_module_rebuild() const
+    {
+        const auto pcm = std_pcm_path();
+        const auto object = std_obj_path();
+        const auto module_of = [&](output::rebuild_kind kind) {
+            return output::rebuild_info{
+                .kind = kind, .module = std::string{std_module_name}, .pcm_path = pcm};
+        };
 
-        execute_system_command(build_std_pcm_argv(), std_pcm_path() + ".log");
-        save_std_module_profile();
+        if(not fs::exists(pcm))
+            return module_of(output::rebuild_kind::own_pcm_missing);
+        if(not std_module_profile_matches())
+            return module_of(output::rebuild_kind::profile_change);
+        if(fs::last_write_time(pcm) < fs::last_write_time(std_module_source))
+            return module_of(output::rebuild_kind::own_pcm_stale);
+        if(not fs::exists(object))
+            return module_of(output::rebuild_kind::object_missing);
+        if(fs::last_write_time(object) < fs::last_write_time(pcm))
+            return module_of(output::rebuild_kind::object_stale);
+        return std::nullopt;
     }
 
-    void build_std_o() {
-        auto std_pcm = std_pcm_path();
-        auto std_obj = std_obj_path();
-        if (not fs::exists(std_pcm)) build_std_pcm();
-        if (fs::exists(std_obj) and fs::last_write_time(std_obj) >= fs::last_write_time(std_pcm))
-            return;
+    // Observers see what they see for a project modular unit: one source, one pcm, one object.
+    // The strings are the caller's, because compile_unit holds views.
+    output::compile_unit std_compile_unit(const std::string& pcm,
+                                          const std::string& object,
+                                          const std::string& display) const
+    {
+        return {.source = std_module_source,
+                .object = object,
+                .pcm = pcm,
+                .module = std_module_name,
+                .display_path = display};
+    }
 
-        execute_system_command(build_std_o_argv(), std_obj_path() + ".log");
+    void build_std_module()
+    {
+        const auto pcm = std_pcm_path();
+        const auto object = std_obj_path();
+        const auto display = fs::path{std_module_source}.filename().string();
+        const auto reason = needs_std_module_rebuild();
+
+        if(not reason)
+        {
+            const auto hit = compile_scope{std_compile_unit(pcm, object, display)};
+            return;
+        }
+
+        auto compile = compile_scope{std_compile_unit(pcm, object, display), *reason};
+        // The pcm is the object's input, so every reason that reaches it rebuilds both; the two
+        // object-only reasons reuse the pcm that is already there.
+        const auto object_only = reason->kind == output::rebuild_kind::object_missing
+                              or reason->kind == output::rebuild_kind::object_stale;
+        if(not object_only)
+        {
+            run_step(compile, build_std_pcm_argv(), pcm + ".log");
+            save_std_module_profile();
+        }
+        run_step(compile, build_std_o_argv(), object + ".log");
+        compile.succeeded();
     }
 
     // ============================================================================
@@ -2578,8 +2606,10 @@ private:
     void compile_units() {
         if (units_in_topological_order.empty()) return;
         auto cache = load_object_cache();
-        if(cache.miss_reason == output::rebuild_kind::profile_change)
-            output::notify(&output::observer::profile_changed, *cache.miss_reason, cache.profile_diff);
+        if(cache.profile_change)
+            output::notify(&output::observer::profile_changed,
+                           output::rebuild_kind::profile_change,
+                           *cache.profile_change);
 
         auto u2tu = unit_to_tu_map{};
         for (auto& tu : units_in_topological_order) {
@@ -2783,8 +2813,7 @@ private:
         fs::create_directories(binary_dir());
         fs::create_directories(cache_dir());
 
-        build_std_pcm();
-        build_std_o();
+        build_std_module();
         scan_and_order();
         if(units_in_topological_order.empty())
             throw std::runtime_error{"No sources found"};
@@ -2851,10 +2880,16 @@ public:
             }
         }
 
+        // Paths outlive the notify: cache_inventory holds views, so the strings they point at
+        // are named here rather than built inside the aggregate.
+        const auto link_cache_path = executable_cache_path();
+        const auto std_profile_path = std_module_profile_path();
+        const auto stamp_path = compiler_stamp_path();
+
         auto executable_entries = 0;
-        if(fs::exists(executable_cache_path()))
+        if(fs::exists(link_cache_path))
         {
-            auto file = std::ifstream{executable_cache_path()};
+            auto file = std::ifstream{link_cache_path};
             auto line = ""s;
             while(std::getline(file, line))
             {
@@ -2866,25 +2901,36 @@ public:
 
         output::notify(
             &output::observer::cache_status,
-            cache_path,
-            cache_exists,
-            profile_match,
-            object_entries,
-            object_stale,
-            executable_entries,
-            current_profile);
+            output::cache_inventory{
+                .object_cache_path = cache_path,
+                .object_cache_exists = cache_exists,
+                .profile_match = profile_match,
+                .object_entries = object_entries,
+                .object_stale_entries = object_stale,
+                .executable_cache_path = link_cache_path,
+                .executable_cache_exists = fs::exists(link_cache_path),
+                .executable_entries = executable_entries,
+                .std_module_profile_path = std_profile_path,
+                .std_module_profile_exists = fs::exists(std_profile_path),
+                .std_module_profile_match = std_module_profile_matches(),
+                .compiler_stamp_path = stamp_path,
+                .compiler_stamp_exists = fs::exists(stamp_path),
+                .current_profile = current_profile});
     }
 
     void cache_invalidate() const
     {
         fs::create_directories(cache_dir());
 
-        const auto object_removed = remove_if_exists(object_cache_path());
-        const auto executable_removed = remove_if_exists(executable_cache_path());
-        const auto stamp_removed = remove_if_exists(detail::join_dir(cache_dir(), compiler_version_filename));
-        remove_if_exists(std_module_profile_path());
+        // Every file cache_status reports, so the two commands cannot disagree about what the
+        // cache is. The std module profile is the one that makes CB rebuild std.pcm.
+        const auto removed = output::cache_removals{
+            .object_cache = remove_if_exists(object_cache_path()),
+            .executable_cache = remove_if_exists(executable_cache_path()),
+            .compiler_stamp = remove_if_exists(compiler_stamp_path()),
+            .std_module_profile = remove_if_exists(std_module_profile_path())};
 
-        output::notify(&output::observer::cache_invalidate_end, object_removed, executable_removed, stamp_removed);
+        output::notify(&output::observer::cache_invalidate_end, removed);
     }
 
     void set_include_tests(bool value) {
