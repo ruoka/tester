@@ -1678,10 +1678,12 @@ private:
         return string_list{"-MMD", "-MF", depfile_path(tu)};
     }
 
-    // Per-target capture files: parallel workers must not share one.
-    std::string diagnostics_path(const translation_unit& tu) const
+    // Per-target capture files: parallel workers must not share one. The two steps of a modular
+    // unit do share one — they are one target reporting one compile_end, so whichever step failed,
+    // the diagnostics a consumer is pointed at sit beside that unit's object.
+    std::string diagnostics_path(std::string_view object_path) const
     {
-        return tu.object_path + ".log";
+        return std::string{object_path} + ".log";
     }
 
     std::string diagnostics_path_for_executable(std::string_view executable_path) const
@@ -2470,10 +2472,10 @@ private:
                               or reason->kind == output::rebuild_kind::object_stale;
         if(not object_only)
         {
-            run_step(compile, build_std_pcm_argv(), pcm + ".log");
+            run_step(compile, build_std_pcm_argv(), diagnostics_path(object));
             save_std_module_profile();
         }
-        run_step(compile, build_std_o_argv(), object + ".log");
+        run_step(compile, build_std_o_argv(), diagnostics_path(object));
         compile.succeeded();
     }
 
@@ -2488,10 +2490,10 @@ private:
     void compile_unit(const translation_unit& tu, const output::rebuild_info& rebuild) {
         auto compile = compile_scope{compile_unit_of(tu), rebuild};
         if (tu.is_modular) {
-            run_step(compile, compile_pcm_argv(tu), diagnostics_path(tu));
-            run_step(compile, compile_pcm_object_argv(tu), diagnostics_path(tu));
+            run_step(compile, compile_pcm_argv(tu), diagnostics_path(tu.object_path));
+            run_step(compile, compile_pcm_object_argv(tu), diagnostics_path(tu.object_path));
         } else {
-            run_step(compile, compile_source_object_argv(tu), diagnostics_path(tu));
+            run_step(compile, compile_source_object_argv(tu), diagnostics_path(tu.object_path));
         }
         compile.succeeded();
     }
