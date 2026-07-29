@@ -582,6 +582,66 @@ test_spliced_and_raw_literals() {
   end_case spliced_and_raw_literals
 }
 
+test_spliced_directives() {
+  should_run spliced_directives || return 0
+  begin_case spliced_directives
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+  rm -f "${work_dir}/hello.c++"
+
+  # Phase 2 joins a continued line before the compiler recognises anything on it, and the
+  # scanner read physical lines: `#if \` / `0` was an unrecognised directive rather than a
+  # dead region, so its body stayed live and could point a phantom edge at a module that
+  # exists — closing a loop through the real edge and aborting a valid project with
+  # `Cyclic dependency detected`. The same split hides a real `import \` / `helpers;` from
+  # the graph, which is worse: a missing edge silently builds in the wrong order.
+  printf '%s\n' \
+    'export module cycle_a;' \
+    '#if \' \
+    '0' \
+    'import cycle_b;' \
+    '#endif' \
+    '#if 0 \' \
+    '&& OLD_FEATURE' \
+    'import phantom_spliced_condition;' \
+    '#endif' \
+    '#if \   ' \
+    '0' \
+    'import phantom_trailing_space;' \
+    '#en\' \
+    'dif' \
+    'import \' \
+    'helpers;' \
+    'export int a_value() { return helper_value() + 1; }' > "${work_dir}/cycle_a.c++m"
+  printf '%s\n' \
+    'export module cycle_b;' \
+    'import cycle_a;' \
+    'export int b_value() { return a_value() + 1; }' > "${work_dir}/cycle_b.c++m"
+  printf '%s\n' \
+    'export module helpers;' \
+    'export int helper_value() { return 2; }' > "${work_dir}/helpers.c++m"
+  printf '%s\n' \
+    'import cycle_b;' \
+    'int main() { return b_value() - 4; }' > "${work_dir}/main.c++"
+
+  # Checked rather than assumed: without splicing, list aborts on the false cycle, and a bare
+  # run_cb_list would take the whole harness down with it and report nothing.
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if run_cb_list "${work_dir}"; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"spliced_directives_list_ok"}'
+  else
+    fail "list failed on a project clang accepts: a spliced directive invented an edge"
+  fi
+  assert_jsonl_contains '"module":"cycle_a","kind":"interface","imports":["helpers"]' "spliced_directives_only_real_edge"
+  assert_jsonl_not_contains 'Cyclic dependency' "spliced_directives_no_false_cycle"
+  assert_jsonl_not_contains 'phantom_spliced_condition' "spliced_directives_no_spliced_condition_edge"
+  assert_jsonl_not_contains 'phantom_trailing_space' "spliced_directives_no_trailing_space_edge"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "spliced_directives_build_ok"
+  end_case spliced_directives
+}
+
 test_dead_conditional_arms() {
   should_run dead_conditional_arms || return 0
   begin_case dead_conditional_arms
@@ -1163,6 +1223,7 @@ main() {
   test_import_trailing_comment
   test_commented_out_imports
   test_spliced_and_raw_literals
+  test_spliced_directives
   test_dead_conditional_arms
   test_commented_import_no_false_cycle
   test_gmf_preamble

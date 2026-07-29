@@ -556,33 +556,68 @@ constexpr std::string_view object_cache_format = "cb-object-cache-v3"sv;
 // Comments, string literals and `#if 0` blocks are not declarations, and matching the
 // module regexes against them invents edges in the module graph.
 
-// One alternation over the whole preamble, because a block comment or a literal can
-// span lines and so cannot be recognised a line at a time. Alternation also gets the
-// interleaving right for free: whichever construct opens first wins, so `"/*"` inside
-// a string does not start a comment, and a quote inside a comment stays inert.
+// Phase 2 of translation, and the first thing done to the text, because everything below
+// assumes it has happened: a backslash, any horizontal whitespace after it (C++23 trims it,
+// with a diagnostic), and the newline are deleted, joining two physical lines into one
+// logical line. The compiler splices before it recognises a directive, a comment or a
+// literal, so a scanner that reads physical lines disagrees with it about what the source
+// says — `#if \` on its own line is `#if 0` to the compiler and an unrecognised directive
+// here, leaving a dead body live, and `import \` hides a real edge in plain sight.
+//
+// Splices inside a raw string are not reverted, as [lex.pptoken] requires. It cannot matter
+// here: a raw string's contents are erased either way, and its delimiter cannot hold a
+// backslash, so the closing `)delimiter"` is where it was.
+inline std::string splice_physical_lines(std::string_view text)
+{
+    auto spliced = std::string{};
+    spliced.reserve(text.size());
+
+    while(not text.empty())
+    {
+        const auto backslash = text.find('\\');
+        if(backslash == std::string_view::npos)
+            break;
+
+        spliced.append(text.substr(0, backslash));
+        text.remove_prefix(backslash + 1);
+
+        const auto next = text.find_first_not_of(" \t\v\f");
+        const auto rest = next == std::string_view::npos ? std::string_view{} : text.substr(next);
+        if(rest.starts_with('\n'))
+            text = rest.substr(1);
+        else if(rest.starts_with("\r\n"))
+            text = rest.substr(2);
+        else
+            spliced += '\\'; // an ordinary backslash: an escape, or a line continuation's twin
+    }
+
+    spliced.append(text);
+    return spliced;
+}
+
+// One alternation over the whole preamble, because a block comment and a raw string still
+// span lines after splicing and so cannot be recognised a line at a time. Alternation also
+// gets the interleaving right for free: whichever construct opens first wins, so `"/*"`
+// inside a string does not start a comment, and a quote inside a comment stays inert.
 // Comments collapse to a space, since a comment separates tokens (`import/*x*/foo`).
 // Literals keep their delimiters but lose their contents, which may spell `import foo;`
 // — the matchers run unanchored and would otherwise find it.
-// Every branch is unrolled — a fast character-class run, then a group for each escape,
-// then the run again (`[^"\\\n]*(?:escape[^"\\\n]*)*`) — rather than a per-character
-// alternation or a lazy `[\s\S]*?`. The run and the escape group cannot both match a
-// backslash, which is what makes the form safe. It matters because this pass has dominated
-// scan time before: writing the same branches as `(?:[^"\\\n]|\\.)*` cost 0.19 s of `list`
-// on this repo against 0.17 s unrolled, from a 0.15 s baseline (min of ten, 35 units).
 //
-// Three constructs reach past the end of their line, and each one leaked an edge while the
-// branches stopped at `\n`. A backslash-newline splice continues both a string literal and
-// a `//` comment — phase 2 runs before either is recognised, and clang confirms it with
-// `-Wcomment` — so `\` at the end of a line carries the next line inside the construct.
-// A raw string needs its own branch: its body has no escapes at all, so only `)delimiter"`
-// closes it, matched by backreference. That leaves it as the one place a lazy `[\s\S]*?` is
-// unavoidable, and it only runs where `R"` appears.
+// A raw string's body has no escapes at all, so only `)delimiter"` closes it, matched by
+// backreference; it is the one place a lazy `[\s\S]*?` is unavoidable, and it only runs
+// where `R"` appears. A `//` comment and a quoted literal end at the newline, because a
+// continued one has already been brought onto the line it belongs to. The quoted branches
+// keep `\\.` for the escapes that are still there — `"\""` closes nothing — and are
+// unrolled as a character-class run followed by a group per escape
+// (`[^"\\\n]*(?:\\.[^"\\\n]*)*`) rather than a per-character alternation: the run and the
+// escape group cannot both match a backslash, which is what makes the form linear. This
+// pass has dominated scan time before, so the shape matters.
 inline static const std::regex comment_or_literal_regex{
-    R"(//[^\n\\]*(?:(?:\\\r?\n|\\[^\n])[^\n\\]*)*)"
+    R"(//[^\n]*)"
     R"(|/\*[^*]*\*+(?:[^/*][^*]*\*+)*/)"
     R"(|R(")([^()\\ \t\r\n"]{0,16})\([\s\S]*?\)\2")"
-    R"(|(")[^"\\\n]*(?:(?:\\\r?\n|\\.)[^"\\\n]*)*")"
-    R"(|(')[^'\\\n]*(?:(?:\\\r?\n|\\.)[^'\\\n]*)*')"};
+    R"(|(")[^"\\\n]*(?:\\.[^"\\\n]*)*")"
+    R"(|(')[^'\\\n]*(?:\\.[^'\\\n]*)*')"};
 
 inline std::string strip_comments_and_literals(const std::string& text)
 {
@@ -794,14 +829,15 @@ translation_unit parse_translation_unit(const fs::path& project_root, const fs::
 
     bool seen_real_code = false;
 
-    // Read the bounded preamble first, then clean it in one pass: block comments and
-    // literals span lines, so a per-line view cannot see them.
+    // Read the bounded preamble first, then splice and clean it: phase 2 joins continued
+    // lines the way the compiler does, and block comments and raw strings span lines even
+    // after that, so a per-line view cannot see them.
     auto raw = std::string{};
     while (lines_scanned++ < max_lines and std::getline(file, line)) {
         raw += line;
         raw += '\n';
     }
-    const auto cleaned = detail::strip_comments_and_literals(raw);
+    const auto cleaned = detail::strip_comments_and_literals(detail::splice_physical_lines(raw));
     auto conditionals = detail::conditional_filter{};
 
     for (const auto part : std::views::split(cleaned, '\n')) {
