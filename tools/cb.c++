@@ -1147,6 +1147,36 @@ private:
     bool hit = false;
 };
 
+// One test_start, exactly one test_end, and the run's duration belongs to the scope rather than
+// to two locals beside it. Nothing between the events throws today — a runner that fails comes
+// back as a status, not an exception — so this states the pairing rather than repairing it, and
+// keeps it true if a step that can throw is ever added between them.
+class test_scope
+{
+public:
+    explicit test_scope(std::string_view runner)
+    {
+        output::notify(&output::observer::test_start, runner);
+    }
+
+    test_scope(const test_scope&) = delete;
+    test_scope& operator=(const test_scope&) = delete;
+
+    // A run whose outcome was never reported did not finish. The default process_result says
+    // exit -1, which is what decode_wait_status reports when the shell cannot be started.
+    ~test_scope()
+    {
+        output::notify(&output::observer::test_end, result,
+                       output::interval{started, std::chrono::steady_clock::now()});
+    }
+
+    void finished(output::process_result outcome) { result = std::move(outcome); }
+
+private:
+    output::process_result result{};
+    std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+};
+
 class build_system {
 public:
     enum class build_config { debug, release };
@@ -2799,13 +2829,13 @@ public:
         if(const auto parent = output::run_id(); not parent.empty())
             set_env(tester_parent_run_id_env, parent);
 
-        const auto test_started = std::chrono::steady_clock::now();
-        output::notify(&output::observer::test_start, runner);
-
-        // Not captured: the runner's stdout is the JSONL stream being forwarded.
-        const auto result = invoke_shell(test_runner_argv(runner, args));
-        const auto test_finished = std::chrono::steady_clock::now();
-        output::notify(&output::observer::test_end, result, output::interval{test_started, test_finished});
+        auto result = output::process_result{};
+        {
+            auto test = test_scope{runner};
+            // Not captured: the runner's stdout is the JSONL stream being forwarded.
+            result = invoke_shell(test_runner_argv(runner, args));
+            test.finished(result);
+        }
         if (not result.ok()) {
             if(result.status.signaled)
                 output::notify(&output::observer::error,
