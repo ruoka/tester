@@ -344,6 +344,38 @@ struct step_result
     diagnostics diag{};     // what the toolchain said; empty unless the step failed
 };
 
+// Every file CB keeps under cache/, in one value. The four are not interchangeable — only two
+// hold a profile, only two hold entries — but a report that describes three of them and leaves
+// the fourth out is how the std module profile stayed invisible to `cache status` while
+// `cache invalidate` was quietly deleting it.
+struct cache_inventory
+{
+    std::string_view object_cache_path;
+    bool object_cache_exists = false;
+    bool profile_match = false; // the object cache's stored profile against the current one
+    int object_entries = 0;
+    int object_stale_entries = 0;
+    std::string_view executable_cache_path;
+    bool executable_cache_exists = false;
+    int executable_entries = 0;
+    std::string_view std_module_profile_path;
+    bool std_module_profile_exists = false;
+    bool std_module_profile_match = false; // std.pcm was built by this profile
+    std::string_view compiler_stamp_path;
+    bool compiler_stamp_exists = false;
+    std::string_view current_profile;
+};
+
+// What `cache invalidate` removed, one flag per file in cache_inventory. Absent is not failure:
+// a cache that was never written has nothing to remove.
+struct cache_removals
+{
+    bool object_cache = false;
+    bool executable_cache = false;
+    bool compiler_stamp = false;
+    bool std_module_profile = false;
+};
+
 class observer
 {
 public:
@@ -361,18 +393,9 @@ public:
     // Parameter names are commented rather than declared: the default bodies ignore them, and
     // a named unused parameter warns under -Wextra. The names are the contract's only
     // documentation of which string_view is which, so they stay.
-    virtual void cache_status(
-        std::string_view /*object_cache_path*/,
-        bool /*object_cache_exists*/,
-        bool /*profile_match*/,
-        int /*object_entries*/,
-        int /*object_stale_entries*/,
-        int /*executable_entries*/,
-        std::string_view /*current_profile*/) {}
+    virtual void cache_status(const cache_inventory& /*caches*/) {}
 
-    virtual void cache_invalidate_end(bool /*object_cache_removed*/,
-                                      bool /*executable_cache_removed*/,
-                                      bool /*compiler_stamp_removed*/) {}
+    virtual void cache_invalidate_end(const cache_removals& /*removed*/) {}
 
     virtual void source_list(const source_inventory& /*inventory*/) {}
 

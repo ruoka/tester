@@ -113,10 +113,10 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 | `build_start` / `build_end` | Whole build; compact modes add aggregate compile/link/cache/failure counts; `rebuild_summary` lists compile rebuilds by `kind` plus `top_modules` |
 | `command_start` / `command_end` | Every command in trace; failed commands only in failures. `command_end` carries decoded `exit_code` / `wait_status` / `signaled` and, on failure, `diagnostics` |
 | `profile_changed` | Once per build when object-cache profile mismatches (`reason`, `profile_diff`) |
-| `cache_status` | `cache status` subcommand (`object_cache_path`, `profile_match`, entry counts, `current_profile`) |
-| `cache_invalidate_end` | `cache invalidate` subcommand (`object_cache_removed`, `executable_cache_removed`, `compiler_stamp_removed`) |
+| `cache_status` | `cache status` subcommand — all four files under `cache/`: object cache (`object_cache_path`, `profile_match`, entry counts), executable cache, `std_module_profile_*` (`_match` says `std.pcm` matches the current profile), `compiler_stamp_*`, plus `current_profile` |
+| `cache_invalidate_end` | `cache invalidate` subcommand — one flag per file `cache_status` reports (`object_cache_removed`, `executable_cache_removed`, `compiler_stamp_removed`, `std_module_profile_removed`) |
 | `compile_start` | Per TU in trace mode; on rebuild includes `rebuild_reason`, structured `rebuild`, and `message` |
-| `compile_end` | Per TU in trace; failed compilations only in failures; on `cache_hit:false` includes short `rebuild_reason` + `rebuild` (`kind`, optional `module` / `trigger_path` / `hint` / …); on `ok:false` includes `diagnostics` (compiler output) |
+| `compile_end` | Per TU in trace; failed compilations only in failures; on `cache_hit:false` includes short `rebuild_reason` + `rebuild` (`kind`, optional `module` / `trigger_path` / `hint` / …); on `ok:false` includes `diagnostics` (compiler output). Module `std` reports here too — `std.pcm` / `std.o` are one unit CB compiles, not in the scan |
 | `link_end` | Per executable in trace; failed links only in failures; relinks include `rebuild_reason` / `rebuild`; on `ok:false` includes `diagnostics` (linker output) |
 | `cb_error` | CB fatal/diagnostic |
 

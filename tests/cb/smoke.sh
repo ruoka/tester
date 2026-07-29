@@ -71,7 +71,7 @@ test_cache_hit() {
   assert_text_contains "${first_jsonl}" '"cache_hit":false' "first_build_compiles"
 
   run_cb_build "${work_dir}"
-  assert_compile_cache_hits 1 "second_build_cache_hit"
+  assert_compile_cache_hits 2 "second_build_cache_hit"
   assert_jsonl_not_contains '"rebuild_reason":"profile_change"' "no_profile_change"
   end_case cache_hit
 }
@@ -144,7 +144,7 @@ test_source_stale() {
 
   run_cb_build "${work_dir}"
   run_cb_build "${work_dir}"
-  assert_compile_cache_hits 1 "source_stale_seed_cache_hit"
+  assert_compile_cache_hits 2 "source_stale_seed_cache_hit"
 
   printf '%s\n' '// edited after cache seed' >> "${work_dir}/hello.c++"
   run_cb_build "${work_dir}"
@@ -168,7 +168,7 @@ test_header_stale() {
 
   run_cb_build "${work_dir}"
   run_cb_build "${work_dir}"
-  assert_compile_cache_hits 1 "header_stale_seed_cache_hit"
+  assert_compile_cache_hits 2 "header_stale_seed_cache_hit"
 
   printf '%s\n' '// touched header' >> "${work_dir}/value.h++"
   run_cb_build "${work_dir}"
@@ -178,7 +178,7 @@ test_header_stale() {
   assert_rebuild_summary header_stale 1 "" "edited_header_summary"
 
   run_cb_build "${work_dir}"
-  assert_compile_cache_hits 1 "header_stale_settles_to_cache_hit"
+  assert_compile_cache_hits 2 "header_stale_settles_to_cache_hit"
   end_case header_stale
 }
 
@@ -205,7 +205,7 @@ test_depfile_unusable() {
   # A modular unit's depfile comes from its --precompile step rather than -c, so this
   # also pins that both steps leave one behind: if either did not, the new reason would
   # rebuild that unit on every single build.
-  assert_compile_cache_hits 2 "depfile_unusable_seed_cache_hits"
+  assert_compile_cache_hits 3 "depfile_unusable_seed_cache_hits"
 
   depfile="${work_dir}/${BUILD_DIR}/obj/counter.o.d"
   assert_file_exists "${depfile}" "depfile_written_by_precompile"
@@ -219,7 +219,7 @@ test_depfile_unusable() {
   assert_rebuild_summary depfile_unusable 1 "" "deleted_depfile_summary"
 
   run_cb_build "${work_dir}"
-  assert_compile_cache_hits 2 "depfile_unusable_settles_to_cache_hit"
+  assert_compile_cache_hits 3 "depfile_unusable_settles_to_cache_hit"
 
   # Truncated mid-write: present, but without the `target:` every depfile opens with.
   printf '%s' 'garbage without a colon' > "${depfile}"
@@ -227,7 +227,7 @@ test_depfile_unusable() {
   assert_compile_end "counter.c++m" false depfile_unusable true "malformed_depfile_rebuild"
 
   run_cb_build "${work_dir}"
-  assert_compile_cache_hits 2 "malformed_depfile_settles_to_cache_hit"
+  assert_compile_cache_hits 3 "malformed_depfile_settles_to_cache_hit"
   end_case depfile_unusable
 }
 
@@ -383,7 +383,7 @@ test_implementation_pcm() {
 
   run_cb_build "${work_dir}"
   run_cb_build "${work_dir}"
-  assert_compile_cache_hits 3 "implementation_seed_cache_hits"
+  assert_compile_cache_hits 4 "implementation_seed_cache_hits"
 
   printf '%s\n' '// interface changed' >> "${work_dir}/sample.c++m"
   run_cb_build "${work_dir}"
@@ -479,7 +479,7 @@ test_import_trailing_comment() {
   run_cb_build "${work_dir}"
   assert_jsonl_event_value build_end ok true "import_comment_build_ok"
   run_cb_build "${work_dir}"
-  assert_compile_cache_hits 4 "import_comment_seed_cache_hits"
+  assert_compile_cache_hits 5 "import_comment_seed_cache_hits"
 
   printf '%s\n' '// interface changed' >> "${work_dir}/sample.c++m"
   run_cb_build "${work_dir}"
@@ -1026,7 +1026,7 @@ test_rebuild_summary() {
 
   run_cb_build "${work_dir}"
   run_cb_build "${work_dir}"
-  assert_compile_cache_hits 3 "rebuild_summary_seed_cache_hits"
+  assert_compile_cache_hits 4 "rebuild_summary_seed_cache_hits"
 
   printf '%s\n' '// interface changed for summary' >> "${work_dir}/sample.c++m"
   run_cb_build "${work_dir}"
@@ -1108,7 +1108,7 @@ test_cache_invalidate() {
 
   run_cb_build "${work_dir}"
   run_cb_build "${work_dir}"
-  assert_compile_cache_hits 1 "seed_cache_hit"
+  assert_compile_cache_hits 2 "seed_cache_hit"
 
   run_cb_cache_invalidate "${work_dir}"
   assert_jsonl_contains '"type":"cache_invalidate_end"' "cache_invalidate_event"
@@ -1207,7 +1207,43 @@ test_cache_status() {
   assert_jsonl_contains '"type":"cache_status"' "cache_status_event"
   assert_jsonl_contains '"profile_match":true' "cache_status_profile_match"
   assert_jsonl_contains 'format=cb-object-cache-v3' "cache_status_current_profile"
+
+  # All four files under cache/, not the two the report used to describe. The std module
+  # profile was the gap that mattered: `cache invalidate` deletes it — that is what makes CB
+  # rebuild std.pcm — while `cache status` never said whether it was there or still valid.
+  assert_jsonl_contains '"executable_cache_exists":true' "cache_status_executable_cache_exists"
+  assert_jsonl_contains '"std_module_profile_exists":true' "cache_status_std_module_profile_exists"
+  assert_jsonl_contains '"std_module_profile_match":true' "cache_status_std_module_profile_match"
+  assert_jsonl_contains '"compiler_stamp_exists":true' "cache_status_compiler_stamp_exists"
+
+  run_cb_cache_invalidate "${work_dir}"
+  assert_jsonl_contains '"std_module_profile_removed":true' "cache_invalidate_reports_std_module_profile"
   end_case cache_status
+}
+
+test_std_module_reported() {
+  should_run std_module_reported || return 0
+  begin_case std_module_reported
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  # The std module is a modular unit CB compiles like any other; it is only absent from the
+  # scan. It used to build through execute_system_command, so the two most expensive steps of
+  # a cold build were the only ones reporting no compile_end, no reason and no cache hit.
+  run_cb_build "${work_dir}"
+  assert_compile_end "std.cppm" false own_pcm_missing true "std_module_cold_build_reason"
+
+  run_cb_build "${work_dir}"
+  assert_compile_end "std.cppm" true "" true "std_module_cache_hit"
+
+  # The pcm is the object's input, so an object-only reason reuses the pcm that is there:
+  # one step, not two. Every other unit is a cache hit on this build, so a --precompile
+  # anywhere in the commands would be the std module rebuilding a pcm it did not need to.
+  rm -f "${work_dir}/${BUILD_DIR}/obj/std.o"
+  run_cb_build "${work_dir}"
+  assert_compile_end "std.cppm" false object_missing true "std_module_object_only_rebuild"
+  assert_jsonl_not_contains '"--precompile"' "std_module_object_only_skips_precompile"
+  end_case std_module_reported
 }
 
 test_jsonl_modes() {
@@ -1221,14 +1257,14 @@ test_jsonl_modes() {
   assert_jsonl_event_count build_end 1 "failures_build_end"
   assert_jsonl_not_contains '"type":"command_start"' "failures_no_command_start"
   assert_jsonl_not_contains '"type":"compile_end"' "failures_no_successful_compile"
-  assert_jsonl_contains '"compile_rebuilt":1' "failures_rollup_rebuilt"
+  assert_jsonl_contains '"compile_rebuilt":2' "failures_rollup_rebuilt"
 
   run_cb_build "${work_dir}" --jsonl=summary
   assert_jsonl_event_count build_start 1 "summary_build_start"
   assert_jsonl_event_count build_end 1 "summary_build_end"
   assert_jsonl_not_contains '"type":"command_' "summary_no_commands"
   assert_jsonl_not_contains '"type":"compile_' "summary_no_compiles"
-  assert_jsonl_contains '"compile_cache_hits":1' "summary_rollup_cache_hit"
+  assert_jsonl_contains '"compile_cache_hits":2' "summary_rollup_cache_hit"
   end_case jsonl_modes
 }
 
@@ -1297,6 +1333,7 @@ main() {
   test_cache_invalidate
   test_profile_change
   test_cache_status
+  test_std_module_reported
   test_jsonl_modes
   test_jsonl_failure_mode
 

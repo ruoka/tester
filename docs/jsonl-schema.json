@@ -84,6 +84,14 @@
     {
       "if": { "properties": { "type": { "const": "list_summary" } }, "required": ["type"] },
       "then": { "$ref": "#/$defs/list_summary" }
+    },
+    {
+      "if": { "properties": { "type": { "const": "cache_status" } }, "required": ["type"] },
+      "then": { "$ref": "#/$defs/cache_status" }
+    },
+    {
+      "if": { "properties": { "type": { "const": "cache_invalidate_end" } }, "required": ["type"] },
+      "then": { "$ref": "#/$defs/cache_invalidate_end" }
     }
   ],
   "$defs": {
@@ -309,6 +317,36 @@
         "rebuild": { "$ref": "#/$defs/rebuild" },
         "diagnostics": { "$ref": "#/$defs/diagnostics" },
         "duration_ms": { "type": "integer" }
+      }
+    },
+    "cache_status": {
+      "description": "Every file under build-<os>-<config>/cache/, with entry counts and profile matches where those exist. profile_match is the object cache's; std_module_profile_match says std.pcm was precompiled by the current profile. compiler_stamp_exists is true even straight after `cache invalidate`: reporting current_profile requires probing clang++ --version, and that probe writes the stamp.",
+      "required": ["object_cache_path", "profile_match", "current_profile"],
+      "properties": {
+        "object_cache_path": { "type": "string" },
+        "object_cache_exists": { "type": "boolean" },
+        "profile_match": { "type": "boolean" },
+        "object_entries": { "type": "integer" },
+        "object_stale_entries": { "type": "integer" },
+        "executable_cache_path": { "type": "string" },
+        "executable_cache_exists": { "type": "boolean" },
+        "executable_entries": { "type": "integer" },
+        "std_module_profile_path": { "type": "string" },
+        "std_module_profile_exists": { "type": "boolean" },
+        "std_module_profile_match": { "type": "boolean" },
+        "compiler_stamp_path": { "type": "string" },
+        "compiler_stamp_exists": { "type": "boolean" },
+        "current_profile": { "type": "string" }
+      }
+    },
+    "cache_invalidate_end": {
+      "description": "One flag per file cache_status reports; false means it was not there to remove. Removing std-module-profile.txt is what makes the next build rebuild std.pcm.",
+      "required": ["object_cache_removed", "executable_cache_removed", "compiler_stamp_removed", "std_module_profile_removed"],
+      "properties": {
+        "object_cache_removed": { "type": "boolean" },
+        "executable_cache_removed": { "type": "boolean" },
+        "compiler_stamp_removed": { "type": "boolean" },
+        "std_module_profile_removed": { "type": "boolean" }
       }
     },
     "command_end": {

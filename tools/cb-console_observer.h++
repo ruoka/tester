@@ -215,33 +215,44 @@ struct observer final : cb::output::observer
             success("All tests passed!");
     }
 
-    void cache_status(std::string_view object_cache_path,
-                      bool object_cache_exists,
-                      bool profile_match,
-                      int object_entries,
-                      int object_stale_entries,
-                      int executable_entries,
-                      std::string_view) override
+    // One paragraph per cache file, in the order a build consults them, so a reader can tell
+    // which of the four is the one that will not be reused. Entry counts and profile matches
+    // are printed only where they exist: a stamp has neither.
+    void cache_status(const cache_inventory& caches) override
     {
-        info("Object cache: " + std::string{object_cache_path});
-        info("  exists: " + std::string{object_cache_exists ? "yes" : "no"});
-        if(object_cache_exists)
+        const auto yes_no = [](bool value) { return std::string{value ? "yes" : "no"}; };
+
+        info("Object cache: " + std::string{caches.object_cache_path});
+        info("  exists: " + yes_no(caches.object_cache_exists));
+        if(caches.object_cache_exists)
         {
-            info("  profile_match: " + std::string{profile_match ? "yes" : "no"});
-            info("  object_entries: " + std::to_string(object_entries));
-            info("  object_stale_entries: " + std::to_string(object_stale_entries));
+            info("  profile_match: " + yes_no(caches.profile_match));
+            info("  object_entries: " + std::to_string(caches.object_entries));
+            info("  object_stale_entries: " + std::to_string(caches.object_stale_entries));
         }
-        info("  executable_entries: " + std::to_string(executable_entries));
+
+        info("Executable cache: " + std::string{caches.executable_cache_path});
+        info("  exists: " + yes_no(caches.executable_cache_exists));
+        info("  executable_entries: " + std::to_string(caches.executable_entries));
+
+        info("Std module profile: " + std::string{caches.std_module_profile_path});
+        info("  exists: " + yes_no(caches.std_module_profile_exists));
+        if(caches.std_module_profile_exists)
+            info("  profile_match: " + yes_no(caches.std_module_profile_match));
+
+        info("Compiler stamp: " + std::string{caches.compiler_stamp_path});
+        info("  exists: " + yes_no(caches.compiler_stamp_exists));
     }
 
-    void cache_invalidate_end(bool object_cache_removed,
-                              bool executable_cache_removed,
-                              bool compiler_stamp_removed) override
+    void cache_invalidate_end(const cache_removals& removed) override
     {
+        const auto state = [](bool value) { return std::string{value ? "removed" : "absent"}; };
+
         info("Invalidated compile/link cache indexes:");
-        info("  object_cache: " + std::string{object_cache_removed ? "removed" : "absent"});
-        info("  executable_cache: " + std::string{executable_cache_removed ? "removed" : "absent"});
-        info("  compiler_stamp: " + std::string{compiler_stamp_removed ? "removed" : "absent"});
+        info("  object_cache: " + state(removed.object_cache));
+        info("  executable_cache: " + state(removed.executable_cache));
+        info("  compiler_stamp: " + state(removed.compiler_stamp));
+        info("  std_module_profile: " + state(removed.std_module_profile));
     }
 
     void source_list(const source_inventory& inventory) override
