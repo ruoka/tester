@@ -2406,22 +2406,18 @@ private:
     // is the pass. Only what nothing else uses lives here — the test-runner link in Test Support
     // reads the same signature inputs and executable cache from the shared sections.
 
-    // How a failing link reports itself: the linker's captured output travels with the message,
-    // so link_executables can attach it to that executable's link_end.
-    struct link_failure : std::runtime_error
-    {
-        link_failure(const std::string& message, output::diagnostics diag)
-            : std::runtime_error{message}, diag{std::move(diag)} {}
-
-        output::diagnostics diag;
-    };
-
-    void link_executable(const translation_unit& tu, const string_list& shared_objects) {
+    void link_executable(const translation_unit& tu,
+                         const string_list& shared_objects,
+                         const output::rebuild_info& rebuild) {
         if (not tu.has_main) return;
+        auto link = link_scope{tu.executable_path, rebuild};
         const auto argv = link_executable_argv(tu, shared_objects);
         const auto result = invoke_shell(argv, diagnostics_path_for_executable(tu.executable_path));
-        if (not result.ok())
-            throw link_failure{command_failure_message(argv, result), result.diag};
+        if (not result.ok()) {
+            link.failed(result.diag);
+            throw std::runtime_error{command_failure_message(argv, result)};
+        }
+        link.succeeded();
     }
 
     // What identifies this link in the executable cache: every input's timestamp, plus the flag
@@ -2478,16 +2474,7 @@ private:
                         job_limit(),
                         [&](const link_decision& decision) {
                             const auto& tu = *decision.tu;
-                            auto link = link_scope{tu.executable_path, *decision.reason};
-                            try {
-                                link_executable(tu, shared_objects);
-                            } catch (const link_failure& error) {
-                                // The linker's own output belongs on this link_end; the runner
-                                // records the failure and stops the remaining links.
-                                link.failed(error.diag);
-                                throw;
-                            }
-                            link.succeeded();
+                            link_executable(tu, shared_objects, *decision.reason);
                             auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
                             link_cache[tu.executable_path] = decision.signature;
                         });
