@@ -336,6 +336,12 @@ std::string normalize_relative_dir(const fs::path& dir) {
     return str == "." ? "" : str;
 }
 
+// The name reports use for a unit: its directory and filename joined, or the bare filename
+// for a unit at the project root.
+std::string make_display_path(std::string_view dir, std::string_view filename) {
+    return dir.empty() ? std::string{filename} : std::string{dir} + "/" + std::string{filename};
+}
+
 bool is_tester_framework_path(std::string_view path) {
     // Nested or top-level tester library trees (not *.test.c++ sources).
     return path_under_dir(path, tester_dir_name);
@@ -683,6 +689,9 @@ public:
     const std::string suffix;
     const std::string base_name;
     const std::string full_path;
+    // How reports name this unit: the source relative to the project root. Computed once
+    // because the inventory and every rebuild sentence ask for the same string.
+    const std::string display_path;
     const std::string unit;
     
     // Module information
@@ -751,6 +760,7 @@ translation_unit::translation_unit(const fs::path& relative,
       suffix(detail::extract_suffix(relative.filename().string())),
       base_name(detail::make_base_name(this->filename)),
       full_path(detail::make_full_path(full_path)),
+      display_path(detail::make_display_path(this->path, this->filename)),
       unit(detail::make_unit(module_value, kind_value, this->filename)),
       module(std::move(module_value)),
       imports(std::move(imports_value)),
@@ -873,16 +883,17 @@ output::compile_unit compile_unit_of(const translation_unit& tu)
     return {.source = tu.full_path,
             .object = tu.object_path,
             .pcm = tu.is_modular ? std::string_view{tu.pcm_path} : std::string_view{},
-            .module = tu.module};
+            .module = tu.module,
+            .display_path = tu.display_path};
 }
 
 // The inventory projection, the sibling of compile_unit_of: the list command reports what a
-// unit is rather than where it compiles to, so it carries its own strings and joins the
-// display path. Three adjacent bools are why this is named fields and not an aggregate.
+// unit is rather than where it compiles to, so it carries its own strings. Three adjacent
+// bools are why this is named fields and not an aggregate.
 output::source_unit source_unit_of(const translation_unit& tu)
 {
     return {.unit = tu.unit,
-            .path = tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename,
+            .path = tu.display_path,
             .module = tu.module,
             .kind = std::string{detail::unit_kind_name(tu.kind)},
             .imports = tu.imports,
@@ -892,10 +903,43 @@ output::source_unit source_unit_of(const translation_unit& tu)
             .is_modular = tu.is_modular};
 }
 
+// The third projection: every module-artefact reason (own_pcm_missing, own_pcm_stale,
+// pcm_stale, dependency_pcm_stale) names the same three things about the unit whose module
+// triggered it — which is this unit for the own_ reasons and an imported one for the others.
+// Callers have already established that the unit is modular, since that is what made the
+// reason apply.
+output::rebuild_info pcm_rebuild(output::rebuild_kind kind, const translation_unit& tu)
+{
+    return {.kind = kind, .module = tu.module, .pcm_path = tu.pcm_path, .trigger_path = tu.full_path};
+}
+
+// A reason travelling up from a dependency keeps its own trigger — the header or source that
+// actually changed — and names the dependency only for the fields it left blank.
+output::rebuild_info attributed_to(output::rebuild_info reason, const translation_unit& tu)
+{
+    if(reason.trigger_path.empty())
+        reason.trigger_path = tu.full_path;
+    if(reason.module.empty())
+        reason.module = tu.module;
+    return reason;
+}
+
 using dependency_graph = std::flat_map<std::string, string_list, std::less<>>;
 using indegree_map = std::flat_map<std::string, int, std::less<>>;
 using unit_to_tu_map = std::flat_map<std::string, translation_unit*, std::less<>>;
 using object_cache_map = std::flat_map<std::string, fs::file_time_type, std::less<>>;
+
+// What reading the object cache found. A profile mismatch answers two questions at once —
+// every unit is about to miss, and here is the field that changed — so the load returns them
+// with the entries instead of leaving them behind in the build system for the caller to
+// collect.
+struct object_cache_load
+{
+    object_cache_map entries{};
+    std::optional<output::rebuild_kind> miss_reason{};
+    output::object_cache_profile_diff profile_diff{}; // filled for profile_change
+};
+
 using translation_unit_list = std::vector<translation_unit>;
 using topo_sort_queue = std::queue<std::string>;
 using level_groups_map = std::flat_map<int, std::vector<const translation_unit*>>;
@@ -926,6 +970,52 @@ public:
 private:
     std::counting_semaphore<> slots;
 };
+
+// Compiling and linking differ only in the work: both run one worker per job, at most limit at
+// a time, start nothing new once a job has failed, and rethrow the first failure after every
+// worker has joined, so a failing build never leaves a toolchain process running. Written twice,
+// the two copies had to agree about the relaxed loads, the recheck after the slot, and which
+// exception survives.
+template <std::ranges::input_range Jobs, typename Work>
+void run_in_parallel(Jobs&& jobs, std::ptrdiff_t limit, Work work)
+{
+    auto threads = thread_list{};
+    auto failed = std::atomic_bool{false};
+    auto failure = std::exception_ptr{};
+    auto failure_mutex = std::mutex{};
+    auto gate = job_gate{limit};
+
+    for(const auto& job : jobs)
+    {
+        // The job is addressed, not copied: it outlives join(), and a build decision carries a
+        // rebuild reason of four strings.
+        threads.emplace_back([&work, item = std::addressof(job), &failed, &failure, &failure_mutex, &gate]()
+        {
+            if(failed.load(std::memory_order_relaxed))
+                return;
+            const auto slot = job_gate::slot{gate};
+            // Recheck: a failure may have landed while waiting for a slot.
+            if(failed.load(std::memory_order_relaxed))
+                return;
+            try
+            {
+                work(*item);
+            }
+            catch(...)
+            {
+                failed.store(true, std::memory_order_relaxed);
+                auto lock = std::lock_guard<std::mutex>{failure_mutex};
+                if(not failure)
+                    failure = std::current_exception();
+            }
+        });
+    }
+
+    for(auto& thread : threads)
+        thread.join();
+    if(failure)
+        std::rethrow_exception(failure);
+}
 
 // One build_start, exactly one build_end, whichever way the steps end. The pairing lives
 // here rather than in the callers, which had to remember a phase flag, an emitted flag and a
@@ -960,6 +1050,147 @@ private:
     bool reported = false;
 };
 
+// One compile_start, exactly one compile_end: build_scope's pairing one level down. A modular
+// unit compiles in two steps and either can fail, so without the scope each exit path carried
+// its own copy of the event and had to agree with the others about the unit, the reason and the
+// clock. failed() attaches the compiler's own output, so a consumer reading stdout sees the
+// diagnostic and not just ok:false.
+class compile_scope
+{
+public:
+    compile_scope(const output::compile_unit& compiled, const output::rebuild_info& reason)
+        : unit{compiled}, rebuild{reason}
+    {
+        output::notify(&output::observer::compile_start, unit, rebuild);
+    }
+
+    // A cache hit is the same pair with nothing in between: no reason, no duration, and ok from
+    // the start, since there is no step that could fail. Constructing one reports the hit.
+    explicit compile_scope(const output::compile_unit& compiled)
+        : compile_scope{compiled, output::rebuild_info{}}
+    {
+        hit = true;
+        ok = true;
+    }
+
+    compile_scope(const compile_scope&) = delete;
+    compile_scope& operator=(const compile_scope&) = delete;
+
+    // A compile that never reports success failed, including when a step threw.
+    ~compile_scope()
+    {
+        const auto finished = hit ? started : std::chrono::steady_clock::now();
+        output::notify(&output::observer::compile_end,
+                       unit,
+                       output::step_result{.ok = ok,
+                                           .cache_hit = hit,
+                                           .timing = {started, finished},
+                                           .rebuild = rebuild,
+                                           .diag = diag});
+    }
+
+    void succeeded() { ok = true; }
+    void failed(output::diagnostics said) { diag = std::move(said); }
+
+private:
+    output::compile_unit unit;
+    output::rebuild_info rebuild;
+    output::diagnostics diag{};
+    std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+    bool ok = false;
+    bool hit = false;
+};
+
+// Linking has no start event, so this is the exit half only: exactly one link_end however the
+// link ends. The three copies it replaces needed a linked flag to keep the catch-all from
+// emitting a second one — a latch in a bool, which is what a scope is for.
+class link_scope
+{
+public:
+    link_scope(std::string_view executable, const output::rebuild_info& reason)
+        : executable_path{executable}, rebuild{reason}
+    {}
+
+    // An up-to-date executable: nothing ran, so no reason and no duration, and there is no step
+    // that could fail. Constructing one reports the hit.
+    explicit link_scope(std::string_view executable)
+        : link_scope{executable, output::rebuild_info{}}
+    {
+        hit = true;
+        ok = true;
+    }
+
+    link_scope(const link_scope&) = delete;
+    link_scope& operator=(const link_scope&) = delete;
+
+    ~link_scope()
+    {
+        const auto finished = hit ? started : std::chrono::steady_clock::now();
+        output::notify(&output::observer::link_end,
+                       executable_path,
+                       output::step_result{.ok = ok,
+                                           .cache_hit = hit,
+                                           .timing = {started, finished},
+                                           .rebuild = rebuild,
+                                           .diag = diag});
+    }
+
+    void succeeded() { ok = true; }
+    void failed(output::diagnostics said) { diag = std::move(said); }
+
+private:
+    std::string executable_path;
+    output::rebuild_info rebuild;
+    output::diagnostics diag{};
+    std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+    bool ok = false;
+    bool hit = false;
+};
+
+// One test_start, exactly one test_end, and the run's duration belongs to the scope rather than
+// to two locals beside it. Nothing between the events throws today — a runner that fails comes
+// back as a status, not an exception — so this states the pairing rather than repairing it, and
+// keeps it true if a step that can throw is ever added between them.
+class test_scope
+{
+public:
+    explicit test_scope(std::string_view runner)
+    {
+        output::notify(&output::observer::test_start, runner);
+    }
+
+    test_scope(const test_scope&) = delete;
+    test_scope& operator=(const test_scope&) = delete;
+
+    // A run whose outcome was never reported did not finish. The default process_result says
+    // exit -1, which is what decode_wait_status reports when the shell cannot be started.
+    //
+    // A run that ran and failed also says so as an error, which is where the JSONL stream's
+    // cb_error after a failed run comes from. Only when an outcome was reported: on the way out
+    // of a throw the failure is somebody else's, and the handler in main reports it.
+    ~test_scope()
+    {
+        output::notify(&output::observer::test_end, result,
+                       output::interval{started, std::chrono::steady_clock::now()});
+        if(reported and not result.ok())
+            output::notify(&output::observer::error, output::test_failure_message(result));
+    }
+
+    // finished(), not the succeeded() / failed() of the other scopes: a test run's outcome is not
+    // a flag. test_end reports the exit code, the wait status and the signal, and a runner that
+    // fails is a normal outcome the command turns into a return value rather than an exception.
+    void finished(output::process_result outcome)
+    {
+        result = std::move(outcome);
+        reported = true;
+    }
+
+private:
+    output::process_result result{};
+    std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+    bool reported = false;
+};
+
 class build_system {
 public:
     enum class build_config { debug, release };
@@ -987,9 +1218,6 @@ private:
     int max_jobs = 0;
     string_list extra_compile_flag_tokens;
     string_list extra_link_flag_tokens;
-    std::optional<output::rebuild_kind> object_cache_miss_reason;
-    output::object_cache_profile_diff profile_diff;
-
     std::string_view config_name() const
     {
         switch(config)
@@ -1203,6 +1431,24 @@ private:
         };
     }
 
+    // The rest of module_flags: one -fmodule-file= per modular unit, which is why it cannot be
+    // set above — the units are only known once scan_and_order has run. build_steps calls this
+    // between the two.
+    void update_module_flags()
+    {
+        module_flags.append_range(
+            units_in_topological_order
+            | std::views::filter([](const translation_unit& tu) { return tu.is_modular; })
+            | std::views::transform([](const translation_unit& tu)
+            {
+                return detail::module_file_flag(tu.module, tu.pcm_path);
+            })
+            | std::views::filter([&](const auto& flag)
+            {
+                return not std::ranges::contains(module_flags, flag);
+            }));
+    }
+
     // ============================================================================
     // Platform and Path Utilities
     // ============================================================================
@@ -1320,19 +1566,11 @@ private:
     // General Utilities
     // ============================================================================
 
-    struct shell_result
-    {
-        output::process_status status;
-        output::diagnostics diag;
-
-        bool ok() const { return status.ok(); }
-    };
-
     // Sole shell boundary: argv is non-empty (contract); join_argv quotes each element with join_with.
     // When capture_path is given, the child's stdout and stderr are redirected there
     // and read back on failure. The test runner must not be captured — its stdout is
     // the JSONL stream the caller is forwarding.
-    shell_result invoke_shell(const string_list& argv, std::string_view capture_path = {}) const
+    output::process_result invoke_shell(const string_list& argv, std::string_view capture_path = {}) const
     {
         if(argv.empty())
             throw std::logic_error{"invoke_shell: empty argv"};
@@ -1349,12 +1587,12 @@ private:
         const auto raw = system(shell_line.c_str());
         const auto finished = std::chrono::steady_clock::now();
 
-        auto result = shell_result{.status = detail::decode_wait_status(raw)};
+        auto result = output::process_result{.status = detail::decode_wait_status(raw)};
         if(not result.ok() and not capture_path.empty())
             result.diag = detail::read_diagnostics(capture_path);
 
-        output::notify(&output::observer::command_end, cmd_str, argv, result.ok(),
-                       result.status, result.diag, output::interval{started, finished});
+        output::notify(&output::observer::command_end, cmd_str, argv, result,
+                       output::interval{started, finished});
         return result;
     }
 
@@ -1364,7 +1602,7 @@ private:
             throw std::runtime_error{command_failure_message(argv, result)};
     }
 
-    static std::string command_failure_message(const string_list& argv, const shell_result& result)
+    static std::string command_failure_message(const string_list& argv, const output::process_result& result)
     {
         auto message = "Command failed: " + detail::join_argv(argv);
         if(result.status.signaled)
@@ -1374,130 +1612,6 @@ private:
         if(not result.diag.head.empty())
             message += '\n' + result.diag.head;
         return message;
-    }
-
-    static std::string_view rebuild_hint(output::rebuild_kind kind)
-    {
-        switch(kind)
-        {
-            case output::rebuild_kind::none:
-                return {};
-            case output::rebuild_kind::not_in_cache:
-                return "Source path not present in object cache for this config.";
-            case output::rebuild_kind::source_stale:
-                return "Source mtime newer than cached compile timestamp.";
-            case output::rebuild_kind::header_stale:
-                return "An included header is newer than this object (from the compiler depfile).";
-            case output::rebuild_kind::depfile_unusable:
-                return "Compiler depfile missing, unreadable, or malformed; header freshness cannot be verified.";
-            case output::rebuild_kind::object_missing:
-                return "Object file missing on disk.";
-            case output::rebuild_kind::object_stale:
-                return "Object file older than cached source timestamp.";
-            case output::rebuild_kind::own_pcm_missing:
-                return "Module PCM missing on disk.";
-            case output::rebuild_kind::own_pcm_stale:
-                return "Module PCM older than its source.";
-            case output::rebuild_kind::pcm_stale:
-                return "Imported PCM newer than this object; recompile follows module graph.";
-            case output::rebuild_kind::dependency_pcm_stale:
-                return "Imported module PCM is missing or older than its source.";
-            case output::rebuild_kind::profile_change:
-                return "Object-cache toolchain profile changed; see profile_changed event.";
-            case output::rebuild_kind::missing_executable:
-                return "Linked executable missing on disk.";
-            case output::rebuild_kind::object_changed:
-                return "One or more input objects changed since the last link.";
-            case output::rebuild_kind::link_flags_changed:
-                return "Link/compile/module flags changed since the last link.";
-            case output::rebuild_kind::signature_changed:
-                return "Link signature changed since the last successful link.";
-        }
-        return {};
-    }
-
-    static std::string tu_label(const translation_unit& tu)
-    {
-        return tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename;
-    }
-
-    static std::string format_rebuild_message(const translation_unit& tu, const output::rebuild_info& info)
-    {
-        const auto label = tu_label(tu);
-        switch(info.kind)
-        {
-            case output::rebuild_kind::profile_change:
-                return "Rebuilding " + label + " because compile profile changed";
-            case output::rebuild_kind::not_in_cache:
-                return "Rebuilding " + label + " because it is not in the object cache";
-            case output::rebuild_kind::source_stale:
-                if(not info.trigger_path.empty() and info.trigger_path != tu.full_path)
-                    return "Rebuilding " + label + " because dependency " + info.trigger_path + " is newer than its cached object";
-                return "Rebuilding " + label + " because source is newer than the cached object";
-            case output::rebuild_kind::header_stale:
-                return "Rebuilding " + label + " because included header " + info.trigger_path + " is newer than its object";
-            case output::rebuild_kind::depfile_unusable:
-                return "Rebuilding " + label + " because depfile " + info.trigger_path + " cannot be read; its header dependencies are unknown";
-            case output::rebuild_kind::pcm_stale:
-                return "Rebuilding " + label + " because PCM " + info.module + " is newer than the object (import graph)";
-            case output::rebuild_kind::dependency_pcm_stale:
-                return "Rebuilding " + label + " because imported module " + info.module + " PCM is missing or stale";
-            case output::rebuild_kind::object_missing:
-                return "Rebuilding " + label + " because object file is missing";
-            case output::rebuild_kind::object_stale:
-                return "Rebuilding " + label + " because object file is older than the cached source timestamp";
-            case output::rebuild_kind::own_pcm_missing:
-                return "Rebuilding " + label + " because its PCM is missing";
-            case output::rebuild_kind::own_pcm_stale:
-                return "Rebuilding " + label + " because its PCM is older than the source";
-            default:
-                return "Rebuilding " + label + " (" + std::string{output::rebuild_kind_name(info.kind)} + ")";
-        }
-    }
-
-    static output::rebuild_info make_rebuild(output::rebuild_kind kind,
-                                             std::string module = {},
-                                             std::string pcm_path = {},
-                                             std::string trigger_path = {})
-    {
-        auto info = output::rebuild_info{};
-        info.kind = kind;
-        info.module = std::move(module);
-        info.pcm_path = std::move(pcm_path);
-        info.trigger_path = std::move(trigger_path);
-        info.hint = std::string{rebuild_hint(kind)};
-        return info;
-    }
-
-    static output::rebuild_info finalize_rebuild(output::rebuild_info info, const translation_unit& tu)
-    {
-        info.object_path = tu.object_path;
-        info.message = format_rebuild_message(tu, info);
-        return info;
-    }
-
-    static std::string format_link_message(std::string_view executable_path, const output::rebuild_info& info)
-    {
-        switch(info.kind)
-        {
-            case output::rebuild_kind::missing_executable:
-                return "Linking " + std::string{executable_path} + " because executable is missing";
-            case output::rebuild_kind::not_in_cache:
-                return "Linking " + std::string{executable_path} + " because it is not in the link cache";
-            case output::rebuild_kind::object_changed:
-                return "Linking " + std::string{executable_path} + " because input objects changed";
-            case output::rebuild_kind::link_flags_changed:
-                return "Linking " + std::string{executable_path} + " because link flags changed";
-            default:
-                return "Linking " + std::string{executable_path} + " ("
-                    + std::string{output::rebuild_kind_name(info.kind)} + ")";
-        }
-    }
-
-    static output::rebuild_info finalize_link_rebuild(output::rebuild_info info, std::string_view executable_path)
-    {
-        info.message = format_link_message(executable_path, info);
-        return info;
     }
 
     string_list base_compile_argv() const
@@ -1638,11 +1752,7 @@ private:
         if(not test_runner_obj.empty())
             argv.push_back(test_runner_obj);
         argv.append_range(linkable_object_paths());
-        argv.append_range(
-            units_in_topological_order
-            | std::views::filter([](const translation_unit& tu) { return tu.is_test and not tu.has_main; })
-            | std::views::transform([](const translation_unit& tu) { return tu.object_path; })
-            | std::ranges::to<string_list>());
+        argv.append_range(test_object_paths());
         argv.push_back(std_obj_path());
         argv.append_range(link_flags);
         argv.push_back("-o");
@@ -1656,6 +1766,29 @@ private:
         argv.push_back(runner);
         argv.append_range(args);
         return argv;
+    }
+
+    // The units the test runner links on top of the ordinary objects: test translation units
+    // without a main of their own. A view, because two callers want the objects and one the imports.
+    auto test_units() const
+    {
+        return units_in_topological_order
+            | std::views::filter([](const translation_unit& tu) { return tu.is_test and not tu.has_main; });
+    }
+
+    string_list test_object_paths() const
+    {
+        return test_units()
+            | std::views::transform([](const translation_unit& tu) { return tu.object_path; })
+            | std::ranges::to<string_list>();
+    }
+
+    string_list linkable_object_paths() const
+    {
+        return units_in_topological_order
+            | std::views::filter([](const translation_unit& tu) { return not tu.has_main and not tu.is_test; })
+            | std::views::transform([](const translation_unit& tu) { return tu.object_path; })
+            | std::ranges::to<string_list>();
     }
 
     string_list collect_module_ldflags(const string_list& imp) const
@@ -1707,29 +1840,27 @@ private:
         return not path.empty();
     }
 
-    object_cache_map load_object_cache() {
-        object_cache_miss_reason.reset();
-        profile_diff = {};
-        auto cache = object_cache_map{};
+    object_cache_load load_object_cache() {
+        auto loaded = object_cache_load{};
         auto file = std::ifstream{object_cache_path()};
         if (not file)
-            return cache;
+            return loaded;
 
         auto header = ""s;
         if (not std::getline(file, header))
-            return cache;
+            return loaded;
 
         const auto current_profile = object_cache_profile();
         if (header.starts_with("profile\t")) {
             const auto stored_profile = header.substr(std::string_view{"profile\t"}.size());
             if (stored_profile != current_profile) {
-                object_cache_miss_reason = output::rebuild_kind::profile_change;
-                profile_diff = detail::diff_object_cache_profiles(stored_profile, current_profile);
-                return cache;
+                loaded.miss_reason = output::rebuild_kind::profile_change;
+                loaded.profile_diff = detail::diff_object_cache_profiles(stored_profile, current_profile);
+                return loaded;
             }
         } else {
             output::notify(&output::observer::info, "Object cache missing profile header; ignoring"s);
-            return cache;
+            return loaded;
         }
 
         auto line = ""s;
@@ -1737,9 +1868,9 @@ private:
             auto path = ""s;
             auto ticks = 0ll;
             if (parse_object_cache_entry(line, path, ticks) and fs::exists(path))
-                cache[path] = fs::file_time_type{std::chrono::nanoseconds{ticks}};
+                loaded.entries[path] = fs::file_time_type{std::chrono::nanoseconds{ticks}};
         }
-        return cache;
+        return loaded;
     }
 
     void save_object_cache(const object_cache_map& c) {
@@ -1791,11 +1922,13 @@ private:
         }
     }
 
-    bool any_transitive_pcm_newer_than_object(const translation_unit& tu,
-                                              fs::file_time_type object_timestamp,
-                                              const unit_to_tu_map& u2tu,
-                                              std::flat_set<std::string>& visited,
-                                              output::rebuild_info& stale) const
+    // The reason is the return value: a bool plus an out-parameter that only means something
+    // when it is true is what optional says. visited stays a parameter — it is the walk's own
+    // state, shared across the recursion rather than an answer travelling back.
+    std::optional<output::rebuild_info> transitive_pcm_newer_than_object(const translation_unit& tu,
+                                                                        fs::file_time_type object_timestamp,
+                                                                        const unit_to_tu_map& u2tu,
+                                                                        std::flat_set<std::string>& visited) const
     {
         for (const auto& dependency_key : tu.imports) {
             if (not u2tu.contains(dependency_key))
@@ -1803,21 +1936,18 @@ private:
 
             const auto& dep_tu = *u2tu.at(dependency_key);
 
-            if (dep_tu.is_modular && fs::exists(dep_tu.pcm_path)) {
-                if (fs::last_write_time(dep_tu.pcm_path) > object_timestamp) {
-                    stale = make_rebuild(output::rebuild_kind::pcm_stale, dep_tu.module, dep_tu.pcm_path, dep_tu.full_path);
-                    return true;
-                }
-            }
+            if (dep_tu.is_modular && fs::exists(dep_tu.pcm_path)
+                && fs::last_write_time(dep_tu.pcm_path) > object_timestamp)
+                return pcm_rebuild(output::rebuild_kind::pcm_stale, dep_tu);
 
             if (visited.contains(dep_tu.unit))
                 continue;
             visited.insert(dep_tu.unit);
 
-            if (any_transitive_pcm_newer_than_object(dep_tu, object_timestamp, u2tu, visited, stale))
-                return true;
+            if (auto stale = transitive_pcm_newer_than_object(dep_tu, object_timestamp, u2tu, visited))
+                return stale;
         }
-        return false;
+        return std::nullopt;
     }
 
     // Prerequisites are restricted to the project tree: toolchain headers change as a
@@ -1835,7 +1965,7 @@ private:
         const auto depfile = depfile_path(tu);
         const auto prerequisites = detail::parse_depfile(depfile);
         if(not prerequisites)
-            return make_rebuild(output::rebuild_kind::depfile_unusable, {}, {}, depfile);
+            return output::rebuild_info{.kind = output::rebuild_kind::depfile_unusable, .trigger_path = depfile};
 
         for(const auto& prerequisite : *prerequisites)
         {
@@ -1847,28 +1977,28 @@ private:
             if(error)
                 continue;
             if(timestamp > object_timestamp)
-                return make_rebuild(output::rebuild_kind::header_stale, {}, {}, prerequisite);
+                return output::rebuild_info{.kind = output::rebuild_kind::header_stale, .trigger_path = prerequisite};
         }
         return std::nullopt;
     }
 
-    std::optional<output::rebuild_info> needs_recompile(const translation_unit& tu, object_cache_map& c, const unit_to_tu_map& u2tu) const {
+    std::optional<output::rebuild_info> needs_recompile(const translation_unit& tu, const object_cache_load& cache, const unit_to_tu_map& u2tu) const {
         // First-seen path for this config vs edited source after a prior compile.
-        if (not c.contains(tu.full_path)) {
-            if (object_cache_miss_reason)
-                return make_rebuild(*object_cache_miss_reason, {}, {}, tu.full_path);
-            return make_rebuild(output::rebuild_kind::not_in_cache, {}, {}, tu.full_path);
+        if (not cache.entries.contains(tu.full_path)) {
+            if (cache.miss_reason)
+                return output::rebuild_info{.kind = *cache.miss_reason, .trigger_path = tu.full_path};
+            return output::rebuild_info{.kind = output::rebuild_kind::not_in_cache, .trigger_path = tu.full_path};
         }
-        if (c.at(tu.full_path) < tu.last_modified)
-            return make_rebuild(output::rebuild_kind::source_stale, {}, {}, tu.full_path);
+        if (cache.entries.at(tu.full_path) < tu.last_modified)
+            return output::rebuild_info{.kind = output::rebuild_kind::source_stale, .trigger_path = tu.full_path};
 
         // Ensure the object file exists and is up-to-date versus the source timestamp we cached.
         if (not fs::exists(tu.object_path))
-            return make_rebuild(output::rebuild_kind::object_missing, {}, {}, tu.full_path);
+            return output::rebuild_info{.kind = output::rebuild_kind::object_missing, .trigger_path = tu.full_path};
 
         auto object_timestamp = fs::last_write_time(tu.object_path);
-        if (object_timestamp < c.at(tu.full_path))
-            return make_rebuild(output::rebuild_kind::object_stale, {}, {}, tu.full_path);
+        if (object_timestamp < cache.entries.at(tu.full_path))
+            return output::rebuild_info{.kind = output::rebuild_kind::object_stale, .trigger_path = tu.full_path};
 
         // Textual #include dependencies are invisible to the module graph, so the
         // compiler's own depfile is the only record of them.
@@ -1881,34 +2011,26 @@ private:
         {
             const auto& interface = *u2tu.at(tu.module);
             if(not fs::exists(interface.pcm_path))
-                return make_rebuild(output::rebuild_kind::dependency_pcm_stale, interface.module, interface.pcm_path, interface.full_path);
+                return pcm_rebuild(output::rebuild_kind::dependency_pcm_stale, interface);
             if(fs::last_write_time(interface.pcm_path) > object_timestamp)
-                return make_rebuild(output::rebuild_kind::pcm_stale, interface.module, interface.pcm_path, interface.full_path);
-            if(auto interface_reason = needs_recompile(interface, c, u2tu))
-            {
-                auto info = *interface_reason;
-                if(info.trigger_path.empty())
-                    info.trigger_path = interface.full_path;
-                if(info.module.empty())
-                    info.module = interface.module;
-                return info;
-            }
+                return pcm_rebuild(output::rebuild_kind::pcm_stale, interface);
+            if(auto interface_reason = needs_recompile(interface, cache, u2tu))
+                return attributed_to(*interface_reason, interface);
         }
 
         // For modular units, also check if .pcm file is stale
         if (tu.is_modular) {
             if (not fs::exists(tu.pcm_path))
-                return make_rebuild(output::rebuild_kind::own_pcm_missing, tu.module, tu.pcm_path, tu.full_path);
+                return pcm_rebuild(output::rebuild_kind::own_pcm_missing, tu);
             auto pcm_timestamp = fs::last_write_time(tu.pcm_path);
             if (pcm_timestamp < tu.last_modified)
-                return make_rebuild(output::rebuild_kind::own_pcm_stale, tu.module, tu.pcm_path, tu.full_path);
+                return pcm_rebuild(output::rebuild_kind::own_pcm_stale, tu);
         }
 
         // Rebuild when any transitive import PCM is newer than this object file.
         // Catches partition updates (e.g. tester:assertions) for test TUs that import an umbrella module.
         auto visited = std::flat_set<std::string>{};
-        auto stale = output::rebuild_info{};
-        if (any_transitive_pcm_newer_than_object(tu, object_timestamp, u2tu, visited, stale))
+        if (auto stale = transitive_pcm_newer_than_object(tu, object_timestamp, u2tu, visited))
             return stale;
 
         // Rebuild if any imported modules have changed (their .pcm files are stale or they need recompiling)
@@ -1919,19 +2041,12 @@ private:
                 if (dep_tu.is_modular) {
                     if (not fs::exists(dep_tu.pcm_path) or 
                         fs::last_write_time(dep_tu.pcm_path) < dep_tu.last_modified) {
-                        return make_rebuild(output::rebuild_kind::dependency_pcm_stale, dep_tu.module, dep_tu.pcm_path, dep_tu.full_path);
+                        return pcm_rebuild(output::rebuild_kind::dependency_pcm_stale, dep_tu);
                     }
                 }
                 // Also recursively check if the imported module needs recompiling
-                if (auto dep_reason = needs_recompile(dep_tu, c, u2tu))
-                {
-                    auto info = *dep_reason;
-                    if(info.trigger_path.empty())
-                        info.trigger_path = dep_tu.full_path;
-                    if(info.module.empty() and not dep_tu.module.empty())
-                        info.module = dep_tu.module;
-                    return info;
-                }
+                if (auto dep_reason = needs_recompile(dep_tu, cache, u2tu))
+                    return attributed_to(*dep_reason, dep_tu);
             }
         }
 
@@ -1980,15 +2095,57 @@ private:
         }
     }
 
+    std::string dependency_signature(const std::string& path) const {
+        if (path.empty() or not fs::exists(path))
+            return path + ":missing";
+        const auto timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            fs::last_write_time(path).time_since_epoch()).count();
+        return path + ":" + std::to_string(timestamp);
+    }
+
+    // Whether there was a file to remove, which is what cache_invalidate reports per cache.
+    static bool remove_if_exists(const std::string& path)
+    {
+        if(not fs::exists(path))
+            return false;
+        fs::remove(path);
+        return true;
+    }
+
+    std::string dependency_signatures_joined(const string_list& paths) const
+    {
+        return paths
+            | std::views::transform([&](const std::string& path) { return dependency_signature(path); })
+            | std::views::join_with("|"sv)
+            | std::ranges::to<std::string>();
+    }
+
+    // What identifies a link in the executable cache: every input's timestamp, plus the flag sets
+    // that would change the result even when no input moved. Both links are cached the same way —
+    // they differ only in what they take in, which is the caller's half of the answer.
+    std::string link_signature(const string_list& input_paths, const string_list& import_flags) const
+    {
+        auto signature = dependency_signatures_joined(input_paths);
+        signature += "|flags=";
+        signature += detail::flags_profile_string(compile_flags);
+        signature += "|link=";
+        signature += detail::flags_profile_string(link_flags);
+        signature += "|modules=";
+        signature += detail::flags_profile_string(module_flags);
+        signature += "|imports=";
+        signature += detail::flags_profile_string(import_flags);
+        return signature;
+    }
+
     std::optional<output::rebuild_info> needs_relinking(std::string_view executable_path,
                                                         const std::string& signature,
                                                         const executable_cache_map& link_cache) const
     {
         if(not fs::exists(executable_path))
-            return finalize_link_rebuild(make_rebuild(output::rebuild_kind::missing_executable), executable_path);
+            return output::rebuild_info{.kind = output::rebuild_kind::missing_executable};
 
         if(not link_cache.contains(executable_path))
-            return finalize_link_rebuild(make_rebuild(output::rebuild_kind::not_in_cache), executable_path);
+            return output::rebuild_info{.kind = output::rebuild_kind::not_in_cache};
 
         const auto& previous = link_cache.at(executable_path);
         if(previous == signature)
@@ -2002,12 +2159,12 @@ private:
             const auto previous_objects = previous.substr(0, previous_flags);
             const auto current_objects = signature.substr(0, current_flags);
             if(previous_objects != current_objects)
-                return finalize_link_rebuild(make_rebuild(output::rebuild_kind::object_changed), executable_path);
+                return output::rebuild_info{.kind = output::rebuild_kind::object_changed};
             if(previous.substr(previous_flags) != signature.substr(current_flags))
-                return finalize_link_rebuild(make_rebuild(output::rebuild_kind::link_flags_changed), executable_path);
+                return output::rebuild_info{.kind = output::rebuild_kind::link_flags_changed};
         }
 
-        return finalize_link_rebuild(make_rebuild(output::rebuild_kind::signature_changed), executable_path);
+        return output::rebuild_info{.kind = output::rebuild_kind::signature_changed};
     }
 
     // ============================================================================
@@ -2247,25 +2404,19 @@ private:
     // ============================================================================
     // Compilation
     // ============================================================================
+    // Two halves, mirrored by Linking below: compile_unit does one translation unit, and
+    // compile_units is the pass that decides what to build, reports the hits and runs the rest
+    // through run_in_parallel. What both phases share sits above — the caches and staleness
+    // decisions in Cache Management, the argv builders and unit projections in General Utilities.
 
     void compile_unit(const translation_unit& tu, const output::rebuild_info& rebuild) {
-        const auto unit = compile_unit_of(tu);
-        output::notify(&output::observer::compile_start, unit, rebuild);
-        const auto started = std::chrono::steady_clock::now();
+        auto compile = compile_scope{compile_unit_of(tu), rebuild};
         const auto capture = diagnostics_path(tu);
 
-        // Attach the compiler's own output to the failing compile_end, so a consumer
-        // reading stdout sees the diagnostic and not just ok:false.
         const auto step = [&](const string_list& argv) {
             const auto result = invoke_shell(argv, capture);
             if (not result.ok()) {
-                output::notify(&output::observer::compile_end,
-                               unit,
-                               output::step_result{
-                                   .ok = false,
-                                   .timing = {started, std::chrono::steady_clock::now()},
-                                   .rebuild = rebuild,
-                                   .diag = result.diag});
+                compile.failed(result.diag);
                 throw std::runtime_error{command_failure_message(argv, result)};
             }
         };
@@ -2276,34 +2427,14 @@ private:
         } else {
             step(source_object_argv(tu));
         }
-        output::notify(&output::observer::compile_end,
-                       unit,
-                       output::step_result{
-                           .ok = true,
-                           .timing = {started, std::chrono::steady_clock::now()},
-                           .rebuild = rebuild});
-    }
-
-    void update_module_flags()
-    {
-        module_flags.append_range(
-            units_in_topological_order
-            | std::views::filter([](const translation_unit& tu) { return tu.is_modular; })
-            | std::views::transform([](const translation_unit& tu)
-            {
-                return detail::module_file_flag(tu.module, tu.pcm_path);
-            })
-            | std::views::filter([&](const auto& flag)
-            {
-                return not std::ranges::contains(module_flags, flag);
-            }));
+        compile.succeeded();
     }
 
     void compile_units() {
         if (units_in_topological_order.empty()) return;
         auto cache = load_object_cache();
-        if(object_cache_miss_reason == output::rebuild_kind::profile_change)
-            output::notify(&output::observer::profile_changed, *object_cache_miss_reason, profile_diff);
+        if(cache.miss_reason == output::rebuild_kind::profile_change)
+            output::notify(&output::observer::profile_changed, *cache.miss_reason, cache.profile_diff);
 
         auto u2tu = unit_to_tu_map{};
         for (auto& tu : units_in_topological_order) {
@@ -2315,123 +2446,67 @@ private:
         for (const auto& tu : units_in_topological_order)
             levels[tu.dependency_level >= 0 ? tu.dependency_level : INT_MAX].push_back(&tu);
 
+        // A reason is a fact about this moment: after the compile runs, or after a unit at this
+        // level rewrites its pcm, needs_recompile answers differently — for the unit just built
+        // it answers nothing. So the decision and the reason it rests on are one answer, taken
+        // together before any worker starts, the same snapshot link_decision takes.
+        struct compile_decision {
+            const translation_unit* tu = nullptr;
+            std::optional<output::rebuild_info> reason{};
+        };
+
         for (const auto& [lvl, group] : levels) {
-            auto decisions = std::vector<std::pair<const translation_unit*, std::optional<output::rebuild_info>>>{};
-            decisions.reserve(group.size());
-            for(const auto* tu : group)
-            {
-                if(auto reason = needs_recompile(*tu, cache, u2tu))
-                    decisions.emplace_back(tu, finalize_rebuild(std::move(*reason), *tu));
-                else
-                    decisions.emplace_back(tu, std::nullopt);
+            auto decisions = group
+                | std::views::transform([&](const translation_unit* tu) {
+                      return compile_decision{tu, needs_recompile(*tu, cache, u2tu)}; })
+                | std::ranges::to<std::vector>();
+
+            for (const auto& decision : decisions) {
+                if(decision.reason)
+                    continue;
+                const auto hit = compile_scope{compile_unit_of(*decision.tu)};
             }
 
-            auto threads = thread_list{};
-            auto failed = std::atomic_bool{false};
-            auto failure = std::exception_ptr{};
-            auto failure_mutex = std::mutex{};
-            auto gate = job_gate{job_limit()};
-
-            for (const auto& [tu, reason] : decisions) {
-                if(reason) {
-                    threads.emplace_back([this, tu, reason, &cache, &failed, &failure, &failure_mutex, &gate]() {
-                        if(failed.load(std::memory_order_relaxed))
-                            return;
-                        const auto slot = job_gate::slot{gate};
-                        // Recheck: a failure may have landed while waiting for a slot.
-                        if(failed.load(std::memory_order_relaxed))
-                            return;
-                        try {
-                            compile_unit(*tu, *reason);
-                            auto lock = std::lock_guard<std::mutex>{cache_mutex};
-                            cache[tu->full_path] = tu->last_modified;
-                        } catch (...) {
-                            failed.store(true, std::memory_order_relaxed);
-                            auto lock = std::lock_guard<std::mutex>{failure_mutex};
-                            if(not failure)
-                                failure = std::current_exception();
-                            return;
-                        }
-                    });
-                } else {
-                    const auto now = std::chrono::steady_clock::now();
-                    const auto unit = compile_unit_of(*tu);
-                    output::notify(&output::observer::compile_start, unit, output::rebuild_info{});
-                    output::notify(&output::observer::compile_end,
-                                   unit,
-                                   output::step_result{.ok = true, .cache_hit = true, .timing = {now, now}});
-                }
-            }
-            for (auto& thread : threads) thread.join();
-            if(failure)
-                std::rethrow_exception(failure);
+            run_in_parallel(decisions | std::views::filter([](const compile_decision& decision) {
+                                            return decision.reason.has_value(); }),
+                            job_limit(),
+                            [&](const compile_decision& decision) {
+                                const auto& tu = *decision.tu;
+                                compile_unit(tu, *decision.reason);
+                                auto lock = std::lock_guard<std::mutex>{cache_mutex};
+                                cache.entries[tu.full_path] = tu.last_modified;
+                            });
         }
-        save_object_cache(cache);
+        save_object_cache(cache.entries);
     }
 
     // ============================================================================
     // Linking
     // ============================================================================
+    // The same two halves as Compilation: link_executable does one executable, link_executables
+    // is the pass. Only what nothing else uses lives here — the test-runner link in Test Support
+    // reads the same signature inputs and executable cache from the shared sections.
 
-    string_list linkable_object_paths() const
-    {
-        return units_in_topological_order
-            | std::views::filter([](const translation_unit& tu) { return not tu.has_main and not tu.is_test; })
-            | std::views::transform([](const translation_unit& tu) { return tu.object_path; })
-            | std::ranges::to<string_list>();
-    }
-
-    // Returns the linker's captured output when the link fails, so the caller can
-    // attach it to link_end before rethrowing.
-    output::diagnostics link_executable(const translation_unit& tu, const string_list& shared_objects) {
-        if (not tu.has_main) return {};
+    void link_executable(const translation_unit& tu,
+                         const string_list& shared_objects,
+                         const output::rebuild_info& rebuild) {
+        if (not tu.has_main) return;
+        auto link = link_scope{tu.executable_path, rebuild};
         const auto argv = link_executable_argv(tu, shared_objects);
         const auto result = invoke_shell(argv, diagnostics_path_for_executable(tu.executable_path));
-        if (not result.ok())
-            throw link_failure{command_failure_message(argv, result), result.diag};
-        return {};
+        if (not result.ok()) {
+            link.failed(result.diag);
+            throw std::runtime_error{command_failure_message(argv, result)};
+        }
+        link.succeeded();
     }
 
-    struct link_failure : std::runtime_error
-    {
-        link_failure(const std::string& message, output::diagnostics diag)
-            : std::runtime_error{message}, diag{std::move(diag)} {}
-
-        output::diagnostics diag;
-    };
-
-    std::string dependency_signature(const std::string& path) const {
-        if (path.empty() or not fs::exists(path))
-            return path + ":missing";
-        const auto timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            fs::last_write_time(path).time_since_epoch()).count();
-        return path + ":" + std::to_string(timestamp);
-    }
-
-    std::string dependency_signatures_joined(const string_list& paths) const
-    {
-        return paths
-            | std::views::transform([&](const std::string& path) { return dependency_signature(path); })
-            | std::views::join_with("|"sv)
-            | std::ranges::to<std::string>();
-    }
-
+    // What this executable takes in: its own object, the shared objects, the std object.
     std::string compute_link_signature(const translation_unit& tu, const string_list& shared_objects) const {
-        auto paths = string_list{};
-        paths.push_back(tu.object_path);
+        auto paths = string_list{tu.object_path};
         paths.append_range(shared_objects);
         paths.push_back(std_obj_path());
-
-        auto signature = dependency_signatures_joined(paths);
-        signature += "|flags=";
-        signature += detail::flags_profile_string(compile_flags);
-        signature += "|link=";
-        signature += detail::flags_profile_string(link_flags);
-        signature += "|modules=";
-        signature += detail::flags_profile_string(module_flags);
-        signature += "|imports=";
-        signature += detail::flags_profile_string(collect_module_ldflags(tu.imports));
-        return signature;
+        return link_signature(paths, collect_module_ldflags(tu.imports));
     }
 
     void link_executables() {
@@ -2445,95 +2520,42 @@ private:
             std::string signature{};
             std::optional<output::rebuild_info> reason{};
         };
-        auto decisions = std::vector<link_decision>{};
-        for(const auto& tu : units_in_topological_order)
-        {
+        auto decisions = units_in_topological_order
             // Exact base name only — substring matches like contest_runner / aaa_test_runner
             // are ordinary mains and must not be excluded from normal linking.
-            if(not tu.has_main or tu.base_name == test_runner_name)
-                continue;
-            auto signature = compute_link_signature(tu, shared_objects);
-            auto reason = needs_relinking(tu.executable_path, signature, link_cache);
-            decisions.push_back(link_decision{&tu, std::move(signature), std::move(reason)});
-        }
+            | std::views::filter([&](const translation_unit& tu) {
+                  return tu.has_main and tu.base_name != test_runner_name; })
+            | std::views::transform([&](const translation_unit& tu) {
+                  auto signature = compute_link_signature(tu, shared_objects);
+                  auto reason = needs_relinking(tu.executable_path, signature, link_cache);
+                  return link_decision{&tu, std::move(signature), std::move(reason)}; })
+            | std::ranges::to<std::vector>();
 
-        auto threads = thread_list{};
-        auto failed = std::atomic_bool{false};
-        auto failure = std::exception_ptr{};
-        auto failure_mutex = std::mutex{};
-        auto gate = job_gate{job_limit()};
         for(const auto& decision : decisions)
         {
-            const auto& tu = *decision.tu;
-            if(not decision.reason)
-            {
-                output::notify(&output::observer::info, "Skipping link (up-to-date): "s + tu.executable_path);
-                const auto now = std::chrono::steady_clock::now();
-                output::notify(&output::observer::link_end,
-                               tu.executable_path,
-                               output::step_result{.ok = true, .cache_hit = true, .timing = {now, now}});
+            if(decision.reason)
                 continue;
-            }
-            // Capture decision by reference — it outlives join(); do not bind a per-iteration local.
-            threads.emplace_back([this, &decision, &shared_objects, &link_cache, &failed, &failure, &failure_mutex, &gate]() {
-                if(failed.load(std::memory_order_relaxed))
-                    return;
-                const auto slot = job_gate::slot{gate};
-                if(failed.load(std::memory_order_relaxed))
-                    return;
-                const auto& tu = *decision.tu;
-                const auto started = std::chrono::steady_clock::now();
-                auto linked = false;
-                try {
-                    link_executable(tu, shared_objects);
-                    linked = true;
-                    const auto finished = std::chrono::steady_clock::now();
-                    output::notify(&output::observer::link_end,
-                                   tu.executable_path,
-                                   output::step_result{
-                                       .ok = true,
-                                       .timing = {started, finished},
-                                       .rebuild = *decision.reason});
-                    auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
-                    link_cache[tu.executable_path] = decision.signature;
-                } catch (const link_failure& error) {
-                    output::notify(&output::observer::link_end,
-                                   tu.executable_path,
-                                   output::step_result{
-                                       .ok = false,
-                                       .timing = {started, std::chrono::steady_clock::now()},
-                                       .rebuild = *decision.reason,
-                                       .diag = error.diag});
-                    failed.store(true, std::memory_order_relaxed);
-                    auto lock = std::lock_guard<std::mutex>{failure_mutex};
-                    if(not failure)
-                        failure = std::current_exception();
-                    return;
-                } catch (...) {
-                    if(not linked)
-                        output::notify(&output::observer::link_end,
-                                       tu.executable_path,
-                                       output::step_result{
-                                           .ok = false,
-                                           .timing = {started, std::chrono::steady_clock::now()},
-                                           .rebuild = *decision.reason});
-                    failed.store(true, std::memory_order_relaxed);
-                    auto lock = std::lock_guard<std::mutex>{failure_mutex};
-                    if(not failure)
-                        failure = std::current_exception();
-                    return;
-                }
-            });
+            const auto hit = link_scope{decision.tu->executable_path};
         }
-        for(auto& thread : threads) thread.join();
-        if(failure)
-            std::rethrow_exception(failure);
+
+        run_in_parallel(decisions | std::views::filter([](const link_decision& decision) {
+                                        return decision.reason.has_value(); }),
+                        job_limit(),
+                        [&](const link_decision& decision) {
+                            const auto& tu = *decision.tu;
+                            link_executable(tu, shared_objects, *decision.reason);
+                            auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
+                            link_cache[tu.executable_path] = decision.signature;
+                        });
         save_executable_cache(link_cache);
     }
 
     // ============================================================================
     // Test Support
     // ============================================================================
+    // The link phase once more, for a single executable whose inputs are gathered from the units
+    // rather than named by one of them: find what goes in, decide, report a hit or link, save the
+    // signature. link_test_runner_executable is the counterpart of link_executable.
 
     bool has_test_runner_link_inputs(bool has_runner_unit) const
     {
@@ -2547,7 +2569,7 @@ private:
     string_list collect_test_module_ldflags() const
     {
         return std::ranges::fold_left(
-            units_in_topological_order | std::views::filter([](const translation_unit& tu) { return tu.is_test and not tu.has_main; }),
+            test_units(),
             string_list{},
             [&](string_list flags, const translation_unit& tu) {
                 flags.append_range(collect_module_ldflags(tu.imports));
@@ -2555,116 +2577,110 @@ private:
             });
     }
 
-    std::string compute_test_runner_signature(const std::string& test_runner_obj,
-                                              const string_list& signature_import_flags) const {
-        auto paths = string_list{};
-        if(not test_runner_obj.empty())
-            paths.push_back(test_runner_obj);
-        paths.append_range(
-            units_in_topological_order
-            | std::views::filter([](const translation_unit& tu) { return tu.is_test and not tu.has_main; })
-            | std::views::transform([](const translation_unit& tu) { return tu.object_path; })
-            | std::ranges::to<string_list>());
-        paths.append_range(linkable_object_paths());
-        paths.push_back(std_obj_path());
-
-        auto signature = dependency_signatures_joined(paths);
-        signature += "|flags=";
-        signature += detail::flags_profile_string(compile_flags);
-        signature += "|link=";
-        signature += detail::flags_profile_string(link_flags);
-        signature += "|modules=";
-        signature += detail::flags_profile_string(module_flags);
-        signature += "|imports=";
-        signature += detail::flags_profile_string(signature_import_flags);
-
-        return signature;
-    }
-
-    void link_test_runner() {
-        // Require an exact base name. Substring selection (e.g. aaa_test_runner /
-        // contest_runner) can link a different bin/<name> while run_tests always
-        // executes bin/test_runner — leaving a stale runner and silent CI passes.
-        const auto runner_count = std::ranges::count_if(
-            units_in_topological_order,
-            [](const translation_unit& tu) {
-                return tu.has_main and tu.base_name == test_runner_name;
-            });
-        if(runner_count > 1)
+    // Require an exact base name. Substring selection (e.g. aaa_test_runner / contest_runner)
+    // can link a different bin/<name> while run_tests always executes bin/test_runner — leaving a
+    // stale runner and silent CI passes.
+    const translation_unit* find_test_runner_unit() const
+    {
+        const auto is_runner = [](const translation_unit& tu) {
+            return tu.has_main and tu.base_name == test_runner_name;
+        };
+        if(std::ranges::count_if(units_in_topological_order, is_runner) > 1)
             throw std::runtime_error{
                 "multiple test_runner mains found — keep a single source named test_runner"};
 
-        const auto runner_it = std::ranges::find_if(units_in_topological_order, [](const translation_unit& tu) {
-            return tu.has_main and tu.base_name == test_runner_name;
-        });
-        const auto has_runner_unit = runner_it != units_in_topological_order.end();
+        const auto found = std::ranges::find_if(units_in_topological_order, is_runner);
+        return found != units_in_topological_order.end() ? &*found : nullptr;
+    }
 
-        if(not has_test_runner_link_inputs(has_runner_unit)) {
+    // What goes into the runner: the object of the project's test_runner unit when it has one,
+    // and the module link flags the objects need. Two flag lists because the link takes the
+    // runner's own imports when it exists, while the signature has to cover every test unit's
+    // imports either way — a change to any of them is a relink.
+    struct test_runner_inputs
+    {
+        bool has_runner_unit = false;
+        std::string object{};
+        string_list module_ldflags{};
+        string_list signature_flags{};
+    };
+
+    test_runner_inputs test_runner_inputs_of(const translation_unit* runner) const
+    {
+        const auto runner_ldflags = runner ? collect_module_ldflags(runner->imports) : string_list{};
+        const auto test_ldflags = collect_test_module_ldflags();
+
+        auto inputs = test_runner_inputs{.has_runner_unit = runner != nullptr,
+                                        .object = runner ? runner->object_path : std::string{},
+                                        .module_ldflags = runner ? runner_ldflags : test_ldflags,
+                                        .signature_flags = test_ldflags};
+        inputs.signature_flags.append_range(runner_ldflags);
+        return inputs;
+    }
+
+    // What the runner takes in: the runner unit's object when there is one, the test objects, the
+    // shared objects, the std object.
+    std::string compute_test_runner_signature(const test_runner_inputs& inputs) const {
+        auto paths = string_list{};
+        if(not inputs.object.empty())
+            paths.push_back(inputs.object);
+        paths.append_range(test_object_paths());
+        paths.append_range(linkable_object_paths());
+        paths.push_back(std_obj_path());
+        return link_signature(paths, inputs.signature_flags);
+    }
+
+    void link_test_runner_executable(const std::string& executable_path,
+                                     const test_runner_inputs& inputs,
+                                     const output::rebuild_info& rebuild)
+    {
+        auto link = link_scope{executable_path, rebuild};
+        const auto argv = link_test_runner_argv(executable_path, inputs.object, inputs.module_ldflags);
+        const auto result = invoke_shell(argv, diagnostics_path_for_executable(executable_path));
+        if(not result.ok()) {
+            link.failed(result.diag);
+            throw std::runtime_error{command_failure_message(argv, result)};
+        }
+        link.succeeded();
+    }
+
+    void link_test_runner() {
+        const auto* runner = find_test_runner_unit();
+        if(not has_test_runner_link_inputs(runner != nullptr)) {
             output::notify(&output::observer::info, "No objects to link for test_runner");
             return;
         }
 
-        // Always emit the canonical path that run_tests executes.
-        const auto test_runner_path = detail::join_dir(binary_dir(), test_runner_name);
-        auto test_runner_obj = std::string{};
-        if(has_runner_unit)
-            test_runner_obj = runner_it->object_path;
+        // Always the canonical path that run_tests executes.
+        const auto executable_path = detail::join_dir(binary_dir(), test_runner_name);
+        const auto inputs = test_runner_inputs_of(runner);
 
-        const auto link_module_ldflags = has_runner_unit
-            ? collect_module_ldflags(runner_it->imports)
-            : collect_test_module_ldflags();
-
-        auto signature_import_flags = collect_test_module_ldflags();
-        if(has_runner_unit)
-            signature_import_flags.append_range(collect_module_ldflags(runner_it->imports));
-
-        // Check if test_runner is up-to-date
         auto link_cache = load_executable_cache();
-        auto signature = compute_test_runner_signature(test_runner_obj, signature_import_flags);
-        auto link_reason = needs_relinking(test_runner_path, signature, link_cache);
-        if(not link_reason)
+        const auto signature = compute_test_runner_signature(inputs);
+        const auto reason = needs_relinking(executable_path, signature, link_cache);
+        if(not reason)
         {
-            output::notify(&output::observer::info, "Skipping link (up-to-date): "s + test_runner_path);
-            const auto now = std::chrono::steady_clock::now();
-            output::notify(&output::observer::link_end,
-                           test_runner_path,
-                           output::step_result{.ok = true, .cache_hit = true, .timing = {now, now}});
+            const auto hit = link_scope{executable_path};
             return;
         }
 
-        const auto link_started = std::chrono::steady_clock::now();
-        const auto link_argv = link_test_runner_argv(test_runner_path, test_runner_obj, link_module_ldflags);
-        if(const auto result = invoke_shell(link_argv, diagnostics_path_for_executable(test_runner_path));
-           not result.ok())
-        {
-            output::notify(&output::observer::link_end,
-                           test_runner_path,
-                           output::step_result{
-                               .ok = false,
-                               .timing = {link_started, std::chrono::steady_clock::now()},
-                               .rebuild = *link_reason,
-                               .diag = result.diag});
-            throw std::runtime_error{command_failure_message(link_argv, result)};
-        }
-        if(has_runner_unit)
-            output::notify(&output::observer::success, "test_runner linked with test objects");
-        else
-            output::notify(&output::observer::success, "test_runner linked successfully");
-        
-        output::notify(&output::observer::link_end,
-                       test_runner_path,
-                       output::step_result{
-                           .ok = true,
-                           .timing = {link_started, std::chrono::steady_clock::now()},
-                           .rebuild = *link_reason});
-
-        // Save signature to cache
+        link_test_runner_executable(executable_path, inputs, *reason);
+        output::notify(&output::observer::success,
+                       inputs.has_runner_unit ? "test_runner linked with test objects"
+                                              : "test_runner linked successfully");
         {
             auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
-            link_cache[test_runner_path] = signature;
+            link_cache[executable_path] = signature;
         }
         save_executable_cache(link_cache);
     }
+
+    // ============================================================================
+    // Build Orchestration
+    // ============================================================================
+    // The phases above in the order a build runs them, and the only place that order is written
+    // down. Both public entry points go through it: build() runs it alone, run_tests() follows it
+    // with the test-runner link.
 
     void build_steps()
     {
@@ -2686,6 +2702,7 @@ private:
     }
 
 public:
+
     build_system(
         build_config cfg,
         const string_list& cpf = {},
@@ -2765,14 +2782,6 @@ public:
             current_profile);
     }
 
-    static bool remove_if_exists(const std::string& path)
-    {
-        if(not fs::exists(path))
-            return false;
-        fs::remove(path);
-        return true;
-    }
-
     void cache_invalidate() const
     {
         fs::create_directories(cache_dir());
@@ -2834,24 +2843,14 @@ public:
         if(const auto parent = output::run_id(); not parent.empty())
             set_env(tester_parent_run_id_env, parent);
 
-        const auto test_started = std::chrono::steady_clock::now();
-        output::notify(&output::observer::test_start, runner);
-
-        // Not captured: the runner's stdout is the JSONL stream being forwarded.
-        const auto result = invoke_shell(test_runner_argv(runner, args));
-        const auto test_finished = std::chrono::steady_clock::now();
-        output::notify(&output::observer::test_end, result.ok(), result.status,
-                       output::interval{test_started, test_finished});
-        if (not result.ok()) {
-            if(result.status.signaled)
-                output::notify(&output::observer::error,
-                               "Test runner was killed by signal " + std::to_string(result.status.signal) + '!');
-            else
-                output::notify(&output::observer::error, "Some tests or assertions failed!");
-            return false;
+        auto result = output::process_result{};
+        {
+            auto test = test_scope{runner};
+            // Not captured: the runner's stdout is the JSONL stream being forwarded.
+            result = invoke_shell(test_runner_argv(runner, args));
+            test.finished(result);
         }
-        output::notify(&output::observer::success, "All tests passed!");
-        return true;
+        return result.ok();
     }
 
     void list_sources() {

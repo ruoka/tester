@@ -164,11 +164,6 @@ struct observer final : cb::output::observer
         info(msg);
     }
 
-    void profile_change_rebuild(std::string_view tu_label) override
-    {
-        info("Rebuilding " + std::string{tu_label} + " because compile profile changed");
-    }
-
     void build_start(std::string_view, bool, bool) override
     {
         auto lock = std::lock_guard<std::mutex>{mutex};
@@ -185,10 +180,10 @@ struct observer final : cb::output::observer
         }
     }
 
-    void compile_start(const compile_unit& /*unit*/, const rebuild_info& rebuild) override
+    void compile_start(const compile_unit& unit, const rebuild_info& rebuild) override
     {
-        if(not rebuild.empty() and not rebuild.message.empty())
-            info(rebuild.message);
+        if(not rebuild.empty())
+            info(compile_rebuild_message(unit, rebuild));
     }
 
     void compile_end(const compile_unit& /*unit*/, const step_result& step) override
@@ -200,10 +195,24 @@ struct observer final : cb::output::observer
         }
     }
 
-    void link_end(std::string_view /*executable_path*/, const step_result& step) override
+    // A skipped link is worth a line — there are one or two executables, and their absence from
+    // the output would be indistinguishable from nothing having been asked. Cached compiles stay
+    // silent on purpose: one line per up-to-date unit would be dozens of lines saying so.
+    void link_end(std::string_view executable_path, const step_result& step) override
     {
-        if(not step.cache_hit and not step.rebuild.message.empty())
-            info(step.rebuild.message);
+        if(step.cache_hit)
+            info("Skipping link (up-to-date): " + std::string{executable_path});
+        else if(not step.rebuild.empty())
+            info(link_rebuild_message(executable_path, step.rebuild));
+    }
+
+    // A passing run says so here rather than in the command, for the same reason the skipped-link
+    // line does. A failing one is not ours alone to say: it goes out as `error`, which the JSONL
+    // stream writes as cb_error, so test_scope raises it and this observer prints it like any other.
+    void test_end(const process_result& result, const interval&) override
+    {
+        if(result.ok())
+            success("All tests passed!");
     }
 
     void cache_status(std::string_view object_cache_path,

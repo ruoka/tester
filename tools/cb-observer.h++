@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <optional>
@@ -120,6 +121,10 @@ struct compile_unit
     std::string_view object;
     std::string_view pcm;    // empty unless the unit is modular
     std::string_view module; // empty unless the unit belongs to a module
+
+    // How reports name this unit: the source relative to the project root. Not written to
+    // the wire — the rebuild sentence below is composed from it.
+    std::string_view display_path;
 };
 
 // Rebuild telemetry kinds for compile/link (wire name is also rebuild_reason).
@@ -167,6 +172,48 @@ constexpr std::string_view rebuild_kind_name(rebuild_kind kind)
     return {};
 }
 
+// The standing explanation of a rebuild kind. A pure function of the kind, so it is answered
+// here on demand rather than carried in every rebuild_info — the same way see_event is.
+constexpr std::string_view rebuild_hint(rebuild_kind kind)
+{
+    switch(kind)
+    {
+        case rebuild_kind::none:
+            return {};
+        case rebuild_kind::not_in_cache:
+            return "Source path not present in object cache for this config.";
+        case rebuild_kind::source_stale:
+            return "Source mtime newer than cached compile timestamp.";
+        case rebuild_kind::header_stale:
+            return "An included header is newer than this object (from the compiler depfile).";
+        case rebuild_kind::depfile_unusable:
+            return "Compiler depfile missing, unreadable, or malformed; header freshness cannot be verified.";
+        case rebuild_kind::object_missing:
+            return "Object file missing on disk.";
+        case rebuild_kind::object_stale:
+            return "Object file older than cached source timestamp.";
+        case rebuild_kind::own_pcm_missing:
+            return "Module PCM missing on disk.";
+        case rebuild_kind::own_pcm_stale:
+            return "Module PCM older than its source.";
+        case rebuild_kind::pcm_stale:
+            return "Imported PCM newer than this object; recompile follows module graph.";
+        case rebuild_kind::dependency_pcm_stale:
+            return "Imported module PCM is missing or older than its source.";
+        case rebuild_kind::profile_change:
+            return "Object-cache toolchain profile changed; see profile_changed event.";
+        case rebuild_kind::missing_executable:
+            return "Linked executable missing on disk.";
+        case rebuild_kind::object_changed:
+            return "One or more input objects changed since the last link.";
+        case rebuild_kind::link_flags_changed:
+            return "Link/compile/module flags changed since the last link.";
+        case rebuild_kind::signature_changed:
+            return "Link signature changed since the last successful link.";
+    }
+    return {};
+}
+
 // std::system returns a wait status, not an exit code: a child exiting 1 yields 256.
 // Decoding once at the shell boundary keeps exit_code meaningful and makes a child
 // killed by a signal distinguishable from one that exited with that number.
@@ -192,19 +239,97 @@ struct diagnostics
     bool empty() const { return head.empty() and path.empty(); }
 };
 
-// Structured rebuild telemetry for compile/link JSONL (kind is also rebuild_reason).
+// How a spawned toolchain process ended: the wait status, plus whatever it printed if it
+// failed. One value because ok is not independent of the status — it is status.ok() — and
+// reporting them as separate arguments let an event claim success beside a status saying
+// otherwise.
+struct process_result
+{
+    process_status status{};
+    diagnostics diag{};
+
+    bool ok() const { return status.ok(); }
+};
+
+// Why a compile or link ran (kind is also rebuild_reason on the wire). Facts only: the hint
+// and the sentence are derived from these by the functions below, so a producer cannot ship
+// telemetry whose prose disagrees with its fields. Members default so a designated
+// initializer can name only the ones a given reason has.
 struct rebuild_info
 {
     rebuild_kind kind = rebuild_kind::none;
-    std::string module;
-    std::string pcm_path;
-    std::string object_path;
-    std::string trigger_path;
-    std::string hint;
-    std::string message;
+    std::string module{};
+    std::string pcm_path{};
+    std::string trigger_path{};
 
     bool empty() const { return kind == rebuild_kind::none; }
 };
+
+// The sentences the reports show, in one place because both observers say them: the console
+// prints them and the JSONL writes them as `message`, and composing them twice would let the
+// two drift. The build system used to compose them and ship the result, which put report
+// prose in the producer and made it untestable without running a build.
+inline std::string compile_rebuild_message(const compile_unit& unit, const rebuild_info& info)
+{
+    const auto label = std::string{unit.display_path};
+    switch(info.kind)
+    {
+        case rebuild_kind::profile_change:
+            return "Rebuilding " + label + " because compile profile changed";
+        case rebuild_kind::not_in_cache:
+            return "Rebuilding " + label + " because it is not in the object cache";
+        case rebuild_kind::source_stale:
+            if(not info.trigger_path.empty() and info.trigger_path != unit.source)
+                return "Rebuilding " + label + " because dependency " + info.trigger_path + " is newer than its cached object";
+            return "Rebuilding " + label + " because source is newer than the cached object";
+        case rebuild_kind::header_stale:
+            return "Rebuilding " + label + " because included header " + info.trigger_path + " is newer than its object";
+        case rebuild_kind::depfile_unusable:
+            return "Rebuilding " + label + " because depfile " + info.trigger_path + " cannot be read; its header dependencies are unknown";
+        case rebuild_kind::pcm_stale:
+            return "Rebuilding " + label + " because PCM " + info.module + " is newer than the object (import graph)";
+        case rebuild_kind::dependency_pcm_stale:
+            return "Rebuilding " + label + " because imported module " + info.module + " PCM is missing or stale";
+        case rebuild_kind::object_missing:
+            return "Rebuilding " + label + " because object file is missing";
+        case rebuild_kind::object_stale:
+            return "Rebuilding " + label + " because object file is older than the cached source timestamp";
+        case rebuild_kind::own_pcm_missing:
+            return "Rebuilding " + label + " because its PCM is missing";
+        case rebuild_kind::own_pcm_stale:
+            return "Rebuilding " + label + " because its PCM is older than the source";
+        default:
+            return "Rebuilding " + label + " (" + std::string{rebuild_kind_name(info.kind)} + ")";
+    }
+}
+
+inline std::string link_rebuild_message(std::string_view executable_path, const rebuild_info& info)
+{
+    switch(info.kind)
+    {
+        case rebuild_kind::missing_executable:
+            return "Linking " + std::string{executable_path} + " because executable is missing";
+        case rebuild_kind::not_in_cache:
+            return "Linking " + std::string{executable_path} + " because it is not in the link cache";
+        case rebuild_kind::object_changed:
+            return "Linking " + std::string{executable_path} + " because input objects changed";
+        case rebuild_kind::link_flags_changed:
+            return "Linking " + std::string{executable_path} + " because link flags changed";
+        default:
+            return "Linking " + std::string{executable_path} + " ("
+                + std::string{rebuild_kind_name(info.kind)} + ")";
+    }
+}
+
+// Why a finished test run failed. Beside the rebuild sentences for the same reason: the console
+// prints it and the JSONL writes it as a cb_error message, and composing it at the call site put
+// report prose in the producer.
+inline std::string test_failure_message(const process_result& result)
+{
+    if(result.status.signaled)
+        return "Test runner was killed by signal " + std::to_string(result.status.signal) + '!';
+    return "Some tests or assertions failed!";
+}
 
 // How a compile or link step finished. Trailing defaults cannot help here — notify() calls
 // through a pointer to member, and those never apply default arguments — so the optional
@@ -233,8 +358,6 @@ public:
     virtual void success(std::string_view) {}
     virtual void command(std::string_view) {}
     virtual void profile_changed(rebuild_kind, const object_cache_profile_diff&) {}
-    virtual void profile_change_rebuild(std::string_view) {}
-
     // Parameter names are commented rather than declared: the default bodies ignore them, and
     // a named unused parameter warns under -Wextra. The names are the contract's only
     // documentation of which string_view is which, so they stay.
@@ -261,9 +384,7 @@ public:
 
     virtual void test_start(std::string_view /*runner*/) {}
 
-    virtual void test_end(bool /*ok*/,
-                          const process_status& /*status*/,
-                          const interval& /*timing*/) {}
+    virtual void test_end(const process_result& /*result*/, const interval& /*timing*/) {}
 
     virtual void command_start(std::string_view /*cmd*/,
                                std::span<const std::string> /*argv*/) {}
@@ -271,9 +392,7 @@ public:
     virtual void command_end(
         std::string_view /*cmd*/,
         std::span<const std::string> /*argv*/,
-        bool /*ok*/,
-        const process_status& /*status*/,
-        const diagnostics& /*diag*/,
+        const process_result& /*result*/,
         const interval& /*timing*/) {}
 
     virtual void compile_start(const compile_unit& /*unit*/, const rebuild_info& /*rebuild*/) {}
