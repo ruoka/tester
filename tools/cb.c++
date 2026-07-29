@@ -1170,6 +1170,9 @@ public:
                        output::interval{started, std::chrono::steady_clock::now()});
     }
 
+    // finished(), not the succeeded() / failed() of the other scopes: a test run's outcome is not
+    // a flag. test_end reports the exit code, the wait status and the signal, and a runner that
+    // fails is a normal outcome the command turns into a return value rather than an exception.
     void finished(output::process_result outcome) { result = std::move(outcome); }
 
 private:
