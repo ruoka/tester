@@ -1708,11 +1708,7 @@ private:
         if(not test_runner_obj.empty())
             argv.push_back(test_runner_obj);
         argv.append_range(linkable_object_paths());
-        argv.append_range(
-            units_in_topological_order
-            | std::views::filter([](const translation_unit& tu) { return tu.is_test and not tu.has_main; })
-            | std::views::transform([](const translation_unit& tu) { return tu.object_path; })
-            | std::ranges::to<string_list>());
+        argv.append_range(test_object_paths());
         argv.push_back(std_obj_path());
         argv.append_range(link_flags);
         argv.push_back("-o");
@@ -1726,6 +1722,21 @@ private:
         argv.push_back(runner);
         argv.append_range(args);
         return argv;
+    }
+
+    // The units the test runner links on top of the ordinary objects: test translation units
+    // without a main of their own. A view, because two callers want the objects and one the imports.
+    auto test_units() const
+    {
+        return units_in_topological_order
+            | std::views::filter([](const translation_unit& tu) { return tu.is_test and not tu.has_main; });
+    }
+
+    string_list test_object_paths() const
+    {
+        return test_units()
+            | std::views::transform([](const translation_unit& tu) { return tu.object_path; })
+            | std::ranges::to<string_list>();
     }
 
     string_list linkable_object_paths() const
@@ -2054,6 +2065,23 @@ private:
             | std::views::transform([&](const std::string& path) { return dependency_signature(path); })
             | std::views::join_with("|"sv)
             | std::ranges::to<std::string>();
+    }
+
+    // What identifies a link in the executable cache: every input's timestamp, plus the flag sets
+    // that would change the result even when no input moved. Both links are cached the same way —
+    // they differ only in what they take in, which is the caller's half of the answer.
+    std::string link_signature(const string_list& input_paths, const string_list& import_flags) const
+    {
+        auto signature = dependency_signatures_joined(input_paths);
+        signature += "|flags=";
+        signature += detail::flags_profile_string(compile_flags);
+        signature += "|link=";
+        signature += detail::flags_profile_string(link_flags);
+        signature += "|modules=";
+        signature += detail::flags_profile_string(module_flags);
+        signature += "|imports=";
+        signature += detail::flags_profile_string(import_flags);
+        return signature;
     }
 
     std::optional<output::rebuild_info> needs_relinking(std::string_view executable_path,
@@ -2420,24 +2448,12 @@ private:
         link.succeeded();
     }
 
-    // What identifies this link in the executable cache: every input's timestamp, plus the flag
-    // sets that would change the result even when no input moved.
+    // What this executable takes in: its own object, the shared objects, the std object.
     std::string compute_link_signature(const translation_unit& tu, const string_list& shared_objects) const {
-        auto paths = string_list{};
-        paths.push_back(tu.object_path);
+        auto paths = string_list{tu.object_path};
         paths.append_range(shared_objects);
         paths.push_back(std_obj_path());
-
-        auto signature = dependency_signatures_joined(paths);
-        signature += "|flags=";
-        signature += detail::flags_profile_string(compile_flags);
-        signature += "|link=";
-        signature += detail::flags_profile_string(link_flags);
-        signature += "|modules=";
-        signature += detail::flags_profile_string(module_flags);
-        signature += "|imports=";
-        signature += detail::flags_profile_string(collect_module_ldflags(tu.imports));
-        return signature;
+        return link_signature(paths, collect_module_ldflags(tu.imports));
     }
 
     void link_executables() {
@@ -2500,7 +2516,7 @@ private:
     string_list collect_test_module_ldflags() const
     {
         return std::ranges::fold_left(
-            units_in_topological_order | std::views::filter([](const translation_unit& tu) { return tu.is_test and not tu.has_main; }),
+            test_units(),
             string_list{},
             [&](string_list flags, const translation_unit& tu) {
                 flags.append_range(collect_module_ldflags(tu.imports));
@@ -2549,30 +2565,16 @@ private:
         return inputs;
     }
 
-    std::string compute_test_runner_signature(const std::string& test_runner_obj,
-                                              const string_list& signature_import_flags) const {
+    // What the runner takes in: the runner unit's object when there is one, the test objects, the
+    // shared objects, the std object.
+    std::string compute_test_runner_signature(const test_runner_inputs& inputs) const {
         auto paths = string_list{};
-        if(not test_runner_obj.empty())
-            paths.push_back(test_runner_obj);
-        paths.append_range(
-            units_in_topological_order
-            | std::views::filter([](const translation_unit& tu) { return tu.is_test and not tu.has_main; })
-            | std::views::transform([](const translation_unit& tu) { return tu.object_path; })
-            | std::ranges::to<string_list>());
+        if(not inputs.object.empty())
+            paths.push_back(inputs.object);
+        paths.append_range(test_object_paths());
         paths.append_range(linkable_object_paths());
         paths.push_back(std_obj_path());
-
-        auto signature = dependency_signatures_joined(paths);
-        signature += "|flags=";
-        signature += detail::flags_profile_string(compile_flags);
-        signature += "|link=";
-        signature += detail::flags_profile_string(link_flags);
-        signature += "|modules=";
-        signature += detail::flags_profile_string(module_flags);
-        signature += "|imports=";
-        signature += detail::flags_profile_string(signature_import_flags);
-
-        return signature;
+        return link_signature(paths, inputs.signature_flags);
     }
 
     void link_test_runner_executable(const std::string& executable_path,
@@ -2601,7 +2603,7 @@ private:
         const auto inputs = test_runner_inputs_of(runner);
 
         auto link_cache = load_executable_cache();
-        const auto signature = compute_test_runner_signature(inputs.object, inputs.signature_flags);
+        const auto signature = compute_test_runner_signature(inputs);
         const auto reason = needs_relinking(executable_path, signature, link_cache);
         if(not reason)
         {
