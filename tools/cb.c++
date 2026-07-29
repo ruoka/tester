@@ -571,6 +571,11 @@ constexpr std::string_view object_cache_format = "cb-object-cache-v3"sv;
 // shape as a spliced `#if`. So a raw string's body is copied verbatim once its opener has
 // been recognised (the opener itself is still assembled with splicing, because `R\` / `"( `
 // is a raw string to the compiler).
+//
+// Recognising that opener is a phase-3 job, so this pass also has to see comments and ordinary
+// quotes: an `R"( ` inside `//` or `/*` is not a raw string to the compiler, but treating it
+// as an unclosed one here stops splicing for the rest of the file. A later `#if \` stays
+// unspliced (phantom edge / false cycle) and a later `import \` stays split (missing edge).
 inline std::size_t line_splice_length(std::string_view after_backslash)
 {
     const auto next = after_backslash.find_first_not_of(" \t\v\f");
@@ -580,6 +585,24 @@ inline std::size_t line_splice_length(std::string_view after_backslash)
     if(rest.starts_with("\r\n"))
         return (next == std::string_view::npos ? std::size_t{0} : next) + 2;
     return 0;
+}
+
+// Consume a backslash: splice when it continues the line, otherwise keep it (and, when
+// `escape_next` is set, the following character — ordinary-string `\"` / `\\`).
+inline void take_backslash(std::string_view& text, std::string& out, bool escape_next)
+{
+    text.remove_prefix(1);
+    if(const auto skip = line_splice_length(text); skip > 0)
+    {
+        text.remove_prefix(skip);
+        return;
+    }
+    out += '\\';
+    if(escape_next and not text.empty())
+    {
+        out += text.front();
+        text.remove_prefix(1);
+    }
 }
 
 // One logical character after phase-2 splices. Returns false at end of input.
@@ -652,14 +675,87 @@ inline std::string splice_physical_lines(std::string_view text)
 
     while(not text.empty())
     {
+        // Comments and ordinary quotes are not raw-string openers. Walk them with splicing
+        // still applied (phase 2 runs before comments), so an `R"( ` in a note cannot freeze
+        // the rest of the file into an "unclosed raw string" that skips later `#if \` joins.
+        if(text.starts_with("//"))
+        {
+            spliced += "//";
+            text.remove_prefix(2);
+            while(not text.empty())
+            {
+                if(text.front() == '\\')
+                {
+                    take_backslash(text, spliced, false);
+                    continue;
+                }
+                const auto c = text.front();
+                spliced += c;
+                text.remove_prefix(1);
+                if(c == '\n')
+                    break;
+            }
+            continue;
+        }
+
+        if(text.starts_with("/*"))
+        {
+            spliced += "/*";
+            text.remove_prefix(2);
+            while(not text.empty())
+            {
+                if(text.starts_with("*/"))
+                {
+                    spliced += "*/";
+                    text.remove_prefix(2);
+                    break;
+                }
+                if(text.front() == '\\')
+                {
+                    take_backslash(text, spliced, false);
+                    continue;
+                }
+                spliced += text.front();
+                text.remove_prefix(1);
+            }
+            continue;
+        }
+
+        if(text.starts_with('"') or text.starts_with('\''))
+        {
+            const auto quote = text.front();
+            spliced += quote;
+            text.remove_prefix(1);
+            while(not text.empty())
+            {
+                if(text.front() == '\\')
+                {
+                    take_backslash(text, spliced, true);
+                    continue;
+                }
+                const auto c = text.front();
+                spliced += c;
+                text.remove_prefix(1);
+                if(c == quote)
+                    break;
+            }
+            continue;
+        }
+
         if(try_append_raw_string(text, spliced))
             continue;
 
         const auto backslash = text.find('\\');
         const auto raw = text.find('R');
-        const auto chunk_end = std::min(
-            backslash == std::string_view::npos ? text.size() : backslash,
-            raw == std::string_view::npos ? text.size() : raw);
+        const auto line_comment = text.find("//");
+        const auto block_comment = text.find("/*");
+        const auto quote = text.find_first_of("\"'");
+        auto chunk_end = text.size();
+        for(const auto pos : {backslash, raw, line_comment, block_comment, quote})
+        {
+            if(pos != std::string_view::npos)
+                chunk_end = std::min(chunk_end, pos);
+        }
 
         if(chunk_end > 0)
         {
@@ -670,11 +766,7 @@ inline std::string splice_physical_lines(std::string_view text)
 
         if(text.starts_with('\\'))
         {
-            text.remove_prefix(1);
-            if(const auto skip = line_splice_length(text); skip > 0)
-                text.remove_prefix(skip);
-            else
-                spliced += '\\';
+            take_backslash(text, spliced, false);
             continue;
         }
 
