@@ -1164,20 +1164,31 @@ public:
 
     // A run whose outcome was never reported did not finish. The default process_result says
     // exit -1, which is what decode_wait_status reports when the shell cannot be started.
+    //
+    // A run that ran and failed also says so as an error, which is where the JSONL stream's
+    // cb_error after a failed run comes from. Only when an outcome was reported: on the way out
+    // of a throw the failure is somebody else's, and the handler in main reports it.
     ~test_scope()
     {
         output::notify(&output::observer::test_end, result,
                        output::interval{started, std::chrono::steady_clock::now()});
+        if(reported and not result.ok())
+            output::notify(&output::observer::error, output::test_failure_message(result));
     }
 
     // finished(), not the succeeded() / failed() of the other scopes: a test run's outcome is not
     // a flag. test_end reports the exit code, the wait status and the signal, and a runner that
     // fails is a normal outcome the command turns into a return value rather than an exception.
-    void finished(output::process_result outcome) { result = std::move(outcome); }
+    void finished(output::process_result outcome)
+    {
+        result = std::move(outcome);
+        reported = true;
+    }
 
 private:
     output::process_result result{};
     std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+    bool reported = false;
 };
 
 class build_system {
@@ -2839,15 +2850,7 @@ public:
             result = invoke_shell(test_runner_argv(runner, args));
             test.finished(result);
         }
-        if (not result.ok()) {
-            if(result.status.signaled)
-                output::notify(&output::observer::error,
-                               "Test runner was killed by signal " + std::to_string(result.status.signal) + '!');
-            else
-                output::notify(&output::observer::error, "Some tests or assertions failed!");
-            return false;
-        }
-        return true;
+        return result.ok();
     }
 
     void list_sources() {

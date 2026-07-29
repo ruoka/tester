@@ -207,8 +207,8 @@ struct observer final : cb::output::observer
     }
 
     // A passing run says so here rather than in the command, for the same reason the skipped-link
-    // line does: the console prose belongs to the console. The failure sentences stay in the
-    // command — they go out as `error`, which is a JSONL event and not ours alone to render.
+    // line does. A failing one is not ours alone to say: it goes out as `error`, which the JSONL
+    // stream writes as cb_error, so test_scope raises it and this observer prints it like any other.
     void test_end(const process_result& result, const interval&) override
     {
         if(result.ok())

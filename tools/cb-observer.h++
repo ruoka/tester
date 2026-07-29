@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <optional>
@@ -318,6 +319,16 @@ inline std::string link_rebuild_message(std::string_view executable_path, const 
             return "Linking " + std::string{executable_path} + " ("
                 + std::string{rebuild_kind_name(info.kind)} + ")";
     }
+}
+
+// Why a finished test run failed. Beside the rebuild sentences for the same reason: the console
+// prints it and the JSONL writes it as a cb_error message, and composing it at the call site put
+// report prose in the producer.
+inline std::string test_failure_message(const process_result& result)
+{
+    if(result.status.signaled)
+        return "Test runner was killed by signal " + std::to_string(result.status.signal) + '!';
+    return "Some tests or assertions failed!";
 }
 
 // How a compile or link step finished. Trailing defaults cannot help here — notify() calls
