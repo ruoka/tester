@@ -1682,23 +1682,20 @@ private:
     // unit do share one — they are one target reporting one compile_end, so whichever step failed,
     // the diagnostics a consumer is pointed at sit beside that unit's object.
     //
-    // Takes the unit rather than a path so that where a log goes stays one decision with the
-    // whole unit in hand — module, source, pcm and display name are all here, so moving captures
-    // into a logs/ tree is an edit to this function and nothing else. It cannot take a
-    // translation_unit: that constructor is private to parse_translation_unit, so being one means
-    // coming from the project scan, and the std module deliberately does not. compile_unit is
-    // what the two compiles already have in common, and it is the value they report with, so the
-    // log named here and the unit named in the event cannot disagree.
-    std::string diagnostics_path(const output::compile_unit& unit) const
+    // Both name the target rather than a path, so that where a capture goes stays one decision
+    // with everything about that target in hand — moving them into a logs/ tree is an edit to
+    // these two functions and nothing else. The argument types differ because the targets do:
+    // every link target is a scanned translation_unit, while a compile is named by compile_unit,
+    // the value both compile steps already report with and all the std module can offer — being
+    // a compile that never came from the project scan, it has no translation_unit at all.
+    std::string diagnostics_path_for_object(const output::compile_unit& unit) const
     {
         return std::string{unit.object} + ".log";
     }
 
-    // The link's counterpart keeps taking a path: an executable is its whole identity here, as
-    // link_end, link_rebuild_message and link_scope each name nothing else about it.
-    std::string diagnostics_path_for_executable(std::string_view executable_path) const
+    std::string diagnostics_path_for_executable(const translation_unit& tu) const
     {
-        return std::string{executable_path} + ".link.log";
+        return std::string{tu.executable_path} + ".link.log";
     }
 
     string_list compile_pcm_argv(const translation_unit& tu) const
@@ -1795,8 +1792,7 @@ private:
         return argv;
     }
 
-    string_list link_test_runner_argv(const translation_unit& runner,
-                                      const std::string& output_path) const
+    string_list link_test_runner_argv(const translation_unit& runner) const
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
@@ -1809,7 +1805,7 @@ private:
         argv.push_back(std_obj_path());
         argv.append_range(link_flags);
         argv.push_back("-o");
-        argv.push_back(output_path);
+        argv.push_back(runner.executable_path);
         return argv;
     }
 
@@ -2483,10 +2479,10 @@ private:
                               or reason->kind == output::rebuild_kind::object_stale;
         if(not object_only)
         {
-            run_step(compile, build_std_pcm_argv(), diagnostics_path(unit));
+            run_step(compile, build_std_pcm_argv(), diagnostics_path_for_object(unit));
             save_std_module_profile();
         }
-        run_step(compile, build_std_o_argv(), diagnostics_path(unit));
+        run_step(compile, build_std_o_argv(), diagnostics_path_for_object(unit));
         compile.succeeded();
     }
 
@@ -2502,10 +2498,10 @@ private:
         const auto unit = compile_unit_of(tu);
         auto compile = compile_scope{unit, rebuild};
         if (tu.is_modular) {
-            run_step(compile, compile_pcm_argv(tu), diagnostics_path(unit));
-            run_step(compile, compile_pcm_object_argv(tu), diagnostics_path(unit));
+            run_step(compile, compile_pcm_argv(tu), diagnostics_path_for_object(unit));
+            run_step(compile, compile_pcm_object_argv(tu), diagnostics_path_for_object(unit));
         } else {
-            run_step(compile, compile_source_object_argv(tu), diagnostics_path(unit));
+            run_step(compile, compile_source_object_argv(tu), diagnostics_path_for_object(unit));
         }
         compile.succeeded();
     }
@@ -2576,7 +2572,7 @@ private:
         auto link = link_scope{tu.executable_path, rebuild};
         run_step(link,
                  link_executable_argv(tu, shared_objects),
-                 diagnostics_path_for_executable(tu.executable_path));
+                 diagnostics_path_for_executable(tu));
         link.succeeded();
     }
 
@@ -2658,13 +2654,12 @@ private:
     }
 
     void link_test_runner_executable(const translation_unit& runner,
-                                     const std::string& executable_path,
                                      const output::rebuild_info& rebuild)
     {
-        auto link = link_scope{executable_path, rebuild};
+        auto link = link_scope{runner.executable_path, rebuild};
         run_step(link,
-                 link_test_runner_argv(runner, executable_path),
-                 diagnostics_path_for_executable(executable_path));
+                 link_test_runner_argv(runner),
+                 diagnostics_path_for_executable(runner));
         link.succeeded();
     }
 
@@ -2683,24 +2678,26 @@ private:
     }
 
     void link_test_runner() {
-        // Always the canonical path that run_tests executes.
+        // The unit carries the path, so linking, the cache key and the log all name what
+        // run_tests executes: test_runner_unit pins the base name and compute_executable_path
+        // is the only place a main's executable is sited, so bin/test_runner cannot be spelled
+        // two ways here.
         const auto& runner = test_runner_unit();
-        const auto executable_path = detail::join_dir(binary_dir(), test_runner_name);
 
         auto link_cache = load_executable_cache();
         const auto signature = compute_test_runner_signature(runner);
-        const auto reason = needs_relinking(executable_path, signature, link_cache);
+        const auto reason = needs_relinking(runner.executable_path, signature, link_cache);
         if(not reason)
         {
-            const auto hit = link_scope{executable_path};
+            const auto hit = link_scope{runner.executable_path};
             return;
         }
 
-        link_test_runner_executable(runner, executable_path, *reason);
+        link_test_runner_executable(runner, *reason);
         output::notify(&output::observer::success, "test_runner linked with test objects");
         {
             auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
-            link_cache[executable_path] = signature;
+            link_cache[runner.executable_path] = signature;
         }
         save_executable_cache(link_cache);
     }
@@ -2869,7 +2866,6 @@ public:
         output::notify(&output::observer::info, "=== Running tests ===");
 
         include_tests = true;
-        auto runner = detail::join_dir(binary_dir(), test_runner_name);
         {
             // No check that the runner is there afterwards: link_test_runner either produced
             // it or threw, and the missing-source case is the sentence it throws.
@@ -2879,6 +2875,10 @@ public:
             build.succeeded();
         }
         output::notify(&output::observer::success, "Build completed: "s + build_root());
+
+        // Named after the build, from the unit that link_test_runner just linked, so the binary
+        // that runs is the one that was linked rather than a second guess at where it went.
+        const auto& runner = test_runner_unit().executable_path;
 
         const auto set_env = [](std::string_view key, std::string_view value)
         {
