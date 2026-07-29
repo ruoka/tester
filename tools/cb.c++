@@ -1064,16 +1064,27 @@ public:
         output::notify(&output::observer::compile_start, unit, rebuild);
     }
 
+    // A cache hit is the same pair with nothing in between: no reason, no duration, and ok from
+    // the start, since there is no step that could fail. Constructing one reports the hit.
+    explicit compile_scope(const output::compile_unit& compiled)
+        : compile_scope{compiled, output::rebuild_info{}}
+    {
+        hit = true;
+        ok = true;
+    }
+
     compile_scope(const compile_scope&) = delete;
     compile_scope& operator=(const compile_scope&) = delete;
 
     // A compile that never reports success failed, including when a step threw.
     ~compile_scope()
     {
+        const auto finished = hit ? started : std::chrono::steady_clock::now();
         output::notify(&output::observer::compile_end,
                        unit,
                        output::step_result{.ok = ok,
-                                           .timing = {started, std::chrono::steady_clock::now()},
+                                           .cache_hit = hit,
+                                           .timing = {started, finished},
                                            .rebuild = rebuild,
                                            .diag = diag});
     }
@@ -1087,6 +1098,7 @@ private:
     output::diagnostics diag{};
     std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
     bool ok = false;
+    bool hit = false;
 };
 
 // Linking has no start event, so this is the exit half only: exactly one link_end however the
@@ -1099,15 +1111,26 @@ public:
         : executable_path{executable}, rebuild{reason}
     {}
 
+    // An up-to-date executable: nothing ran, so no reason and no duration, and there is no step
+    // that could fail. Constructing one reports the hit.
+    explicit link_scope(std::string_view executable)
+        : link_scope{executable, output::rebuild_info{}}
+    {
+        hit = true;
+        ok = true;
+    }
+
     link_scope(const link_scope&) = delete;
     link_scope& operator=(const link_scope&) = delete;
 
     ~link_scope()
     {
+        const auto finished = hit ? started : std::chrono::steady_clock::now();
         output::notify(&output::observer::link_end,
                        executable_path,
                        output::step_result{.ok = ok,
-                                           .timing = {started, std::chrono::steady_clock::now()},
+                                           .cache_hit = hit,
+                                           .timing = {started, finished},
                                            .rebuild = rebuild,
                                            .diag = diag});
     }
@@ -1121,6 +1144,7 @@ private:
     output::diagnostics diag{};
     std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
     bool ok = false;
+    bool hit = false;
 };
 
 class build_system {
@@ -2331,12 +2355,7 @@ private:
             for (const auto& decision : decisions) {
                 if(decision.reason)
                     continue;
-                const auto now = std::chrono::steady_clock::now();
-                const auto unit = compile_unit_of(*decision.tu);
-                output::notify(&output::observer::compile_start, unit, output::rebuild_info{});
-                output::notify(&output::observer::compile_end,
-                               unit,
-                               output::step_result{.ok = true, .cache_hit = true, .timing = {now, now}});
+                const auto hit = compile_scope{compile_unit_of(*decision.tu)};
             }
 
             run_in_parallel(decisions | std::views::filter([](const compile_decision& decision) {
@@ -2445,10 +2464,7 @@ private:
                 continue;
             const auto& tu = *decision.tu;
             output::notify(&output::observer::info, "Skipping link (up-to-date): "s + tu.executable_path);
-            const auto now = std::chrono::steady_clock::now();
-            output::notify(&output::observer::link_end,
-                           tu.executable_path,
-                           output::step_result{.ok = true, .cache_hit = true, .timing = {now, now}});
+            const auto hit = link_scope{tu.executable_path};
         }
 
         run_in_parallel(decisions | std::views::filter([](const link_decision& decision) {
