@@ -543,6 +543,74 @@ auto register_tests()
         check_container_eq(std::vector<int>{-1}, std::vector<unsigned>{4294967295u});
     };
 
+    test_case("test_case [.probe-composite-signedness] composite failures across signedness") = []
+    {
+        check_eq(std::pair{std::string::npos, 0}, std::pair{-1L, 0});
+        check_eq(std::tuple{std::string::npos, 'a'}, std::tuple{-1L, 'a'});
+        check_container_eq(std::vector{std::pair{-1, 0}}, std::vector{std::pair{4294967295u, 0}});
+        check_contains(std::vector{std::pair{1, 2}}, std::pair{3, 4});
+    };
+
+    test_case("test_case [self] pair and tuple members follow the scalar comparison rule") = []
+    {
+        // Two heterogeneous pairs have a common type of their own, so comparing through it
+        // converted every member the way scalars were converted before std::cmp_* arrived:
+        // pair{npos, 0} met pair{-1L, 0}, and the ordering matchers had the mirror of it,
+        // reporting -1 as not less than 4294967295u. Members are walked one at a time now,
+        // by the rule each member's own types ask for.
+        require_neq(std::pair{std::string::npos, 0}, std::pair{-1L, 0});
+        require_neq(std::tuple{std::string::npos, 'a'}, std::tuple{-1L, 'a'});
+        require_lt(std::pair{-1, 0}, std::pair{4294967295u, 0});
+
+        // Ordering is lexicographic on those same rules: a member that orders neither way
+        // is a tie and the next one decides.
+        require_gt(std::pair{1, 4294967295u}, std::pair{1, -1});
+        require_lteq(std::pair{1, 2}, std::pair{1L, 2L});
+        require_gteq(std::pair{2, 0}, std::pair{1u, 0});
+
+        // What the walk inherits by going through the scalar rule: a composite member is
+        // walked again, and the floating-point epsilon reaches a member.
+        require_eq(std::pair{std::pair{1, 2}, 3}, std::pair{std::pair{1L, 2L}, 3});
+        require_eq(std::pair{0.1 + 0.2, 1}, std::pair{0.3, 1});
+
+        // Same types, plain values: what the comparison did correctly all along.
+        require_eq(std::pair{1, 2}, std::pair{1, 2});
+        require_neq(std::tuple{1, 'a'}, std::tuple{2, 'a'});
+
+        // Containers of composites could not be compared at all before: the matchers
+        // formatted elements with `<<`, which a pair does not have, so the call did not
+        // compile. They go through the shared operand formatter now, which is also what
+        // puts the members in the report.
+        require_container_eq(std::vector{std::pair{1, 2}}, std::vector{std::pair{1L, 2L}});
+        require_contains(std::vector{std::pair{1, 2}, std::pair{3, 4}}, std::pair{3L, 4L});
+
+        const auto result = probe("[.probe-composite-signedness]");
+        require_neq(result.exit_code, 0);
+
+        // A composite operand reads as its members, in both channels. Reported as a type
+        // name — `std::pair<unsigned long, int>` — a failure said nothing about which
+        // member differed, or what either side held.
+        const auto pair_failure = failure(result.stdout_text, 0);
+        require_eq(field(pair_failure, "matcher"), std::string{"\"check_eq\""});
+        require_eq(field(pair_failure, "actual"), std::string{"\"(18446744073709551615, 0)\""});
+        require_eq(field(pair_failure, "expected"), std::string{"\"(-1, 0)\""});
+
+        // Members are formatted by their own rules, so the character rule reaches into a
+        // tuple: both the glyph and the value, as it is for a character on its own.
+        require_contains(field(failure(result.stdout_text, 1), "actual"), std::string{"'a' (97)"});
+
+        const auto container_failure = failure(result.stdout_text, 2);
+        require_eq(field(container_failure, "matcher"), std::string{"\"check_container_eq\""});
+        require_contains(field(container_failure, "expected"), std::string{"mismatch at index 0"});
+        require_contains(field(container_failure, "expected"), std::string{"actual=(-1, 0)"});
+        require_contains(field(container_failure, "expected"), std::string{"expected=(4294967295, 0)"});
+
+        const auto contains_failure = failure(result.stdout_text, 3);
+        require_eq(field(contains_failure, "matcher"), std::string{"\"check_contains\""});
+        require_eq(field(contains_failure, "actual"), std::string{"\"[(1, 2)]\""});
+        require_eq(field(contains_failure, "expected"), std::string{"\"contains: (3, 4)\""});
+    };
+
     test_case("test_case [self] container elements follow the scalar comparison rule") = []
     {
         // The container matchers compared elements with `==`, so they kept converting

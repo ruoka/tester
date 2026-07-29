@@ -187,6 +187,13 @@ constexpr bool is_ascii_printable(auto code)
     return code >= 0x20 and code < 0x7f;
 }
 
+// A pair, a tuple, an array — the standard's tuple protocol, spelled as the protocol rather
+// than as a list of types, so a user's own tuple-like type is covered. Exported because the
+// comparison rule in tester:assertions asks the same question of the same types, and two
+// answers could disagree about what a composite is.
+export template<typename T>
+constexpr bool is_tuple_like_v = requires { std::tuple_size<std::remove_cvref_t<T>>::value; };
+
 export template<typename V>
 std::string value_to_display_string(const V& val)
 {
@@ -248,6 +255,19 @@ std::string value_to_display_string(const V& val)
                 else
                     stream << "...";
             }, val);
+    }
+    else if constexpr (is_tuple_like_v<T>)
+    {
+        // Members, by these same rules, since that is how they are compared. Naming the
+        // type instead — `std::pair<unsigned long, int>` — left a failed pair comparison
+        // with nothing about which member differed, or what either side held.
+        stream << '(';
+        [&]<std::size_t... member>(std::index_sequence<member...>)
+        {
+            using std::get;
+            ((stream << (member == 0 ? "" : ", ") << value_to_display_string(get<member>(val))), ...);
+        }(std::make_index_sequence<std::tuple_size_v<T>>{});
+        stream << ')';
     }
     else if constexpr (requires { stream << val; })
         stream << std::boolalpha << val;
@@ -322,6 +342,12 @@ observed_value observe_value(const V& val)
             value = stream.str();
             kind = value_kind::number;
         }
+    }
+    else if constexpr (is_tuple_like_v<T>)
+    {
+        // Text rather than a type name: the members are what the comparison walked, so they
+        // are what the stream has to carry for the failure to be actionable.
+        value = value_to_display_string(val);
     }
     else
     {

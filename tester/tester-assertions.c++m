@@ -56,6 +56,64 @@ namespace tester::assertions
     constexpr bool both_are_promotable_integers_v =
         promotes_to_integer_v<A> and promotes_to_integer_v<E> and (std::integral<A> or std::integral<E>);
 
+    // Declared here and defined below with the container matchers that share them: the
+    // composite walks call them, and they call the comparators the walks belong to.
+    template<typename A, typename E> constexpr bool values_equal(const A& actual, const E& expected);
+    template<typename A, typename E> constexpr bool values_less(const A& actual, const E& expected);
+
+    // What a composite is, asked once for the whole framework: tester:utils needs the same
+    // answer to know a pair reads as its members.
+    using output::is_tuple_like_v;
+
+    // Arity is asked only once both sides are tuple-like: tuple_size_v on anything else is
+    // an error rather than a false. Two composites of different length fall through to the
+    // ordinary comparator, which is where they were before.
+    template<typename A, typename E>
+    constexpr bool composites_of_equal_arity()
+    {
+        if constexpr (is_tuple_like_v<A> and is_tuple_like_v<E>)
+            return std::tuple_size_v<std::remove_cvref_t<A>> == std::tuple_size_v<std::remove_cvref_t<E>>;
+        else
+            return false;
+    }
+
+    template<typename A, typename E>
+    constexpr bool both_are_tuple_like_v = composites_of_equal_arity<A,E>();
+
+    // The scalar rule reaches into composites, because a heterogeneous pair or tuple has a
+    // common type of its own: comparing through it converted every member the way scalars
+    // used to be converted, and check_eq(pair{npos, 0}, pair{-1L, 0}) reported equal.
+    // Members go through values_equal, so a member that is itself a composite is walked
+    // again and the epsilon reaches a floating-point member.
+    template<typename A, typename E>
+    constexpr bool tuple_values_equal(const A& actual, const E& expected)
+    {
+        using std::get;
+        return [&]<std::size_t... member>(std::index_sequence<member...>) {
+            return (values_equal(get<member>(actual), get<member>(expected)) and ...);
+        }(std::make_index_sequence<std::tuple_size_v<std::remove_cvref_t<A>>>{});
+    }
+
+    // Lexicographic, by the same per-member rule: the first member that orders decides, and
+    // one that orders neither way is a tie. Deliberately no equality in the tie-break — a
+    // member that is neither less nor greater ties whatever equality would say, which keeps
+    // the epsilon out of ordering here exactly as it is for scalars.
+    template<std::size_t member = 0, typename A, typename E>
+    constexpr bool tuple_values_less(const A& actual, const E& expected)
+    {
+        if constexpr (member == std::tuple_size_v<std::remove_cvref_t<A>>)
+            return false;
+        else
+        {
+            using std::get;
+            if(values_less(get<member>(actual), get<member>(expected)))
+                return true;
+            if(values_less(get<member>(expected), get<member>(actual)))
+                return false;
+            return tuple_values_less<member + 1>(actual, expected);
+        }
+    }
+
     // Floating-point comparator with epsilon tolerance
     template<typename T>
     requires std::is_floating_point_v<T>
@@ -122,6 +180,7 @@ namespace tester::assertions
         {
             if constexpr (both_are_floating_point_v<A,E>) return floating_point_equal<T>{}(actual, expected);
             else if constexpr (both_are_promotable_integers_v<A,E>) return std::cmp_equal(+actual, +expected);
+            else if constexpr (both_are_tuple_like_v<A,E>) return tuple_values_equal(actual, expected);
             else return std::equal_to<T>{}(actual, expected);
         }
     };
@@ -136,6 +195,7 @@ namespace tester::assertions
             // check_neq at the same time.
             if constexpr (both_are_floating_point_v<A,E>) return not floating_point_equal<T>{}(actual, expected);
             else if constexpr (both_are_promotable_integers_v<A,E>) return std::cmp_not_equal(+actual, +expected);
+            else if constexpr (both_are_tuple_like_v<A,E>) return not tuple_values_equal(actual, expected);
             else return std::not_equal_to<T>{}(actual, expected);
         }
     };
@@ -146,6 +206,7 @@ namespace tester::assertions
         constexpr bool operator()(const A& actual, const E& expected) const
         {
             if constexpr (both_are_promotable_integers_v<A,E>) return std::cmp_less(+actual, +expected);
+            else if constexpr (both_are_tuple_like_v<A,E>) return tuple_values_less(actual, expected);
             else return std::less<T>{}(actual, expected);
         }
     };
@@ -156,6 +217,7 @@ namespace tester::assertions
         constexpr bool operator()(const A& actual, const E& expected) const
         {
             if constexpr (both_are_promotable_integers_v<A,E>) return std::cmp_less_equal(+actual, +expected);
+            else if constexpr (both_are_tuple_like_v<A,E>) return not tuple_values_less(expected, actual);
             else return std::less_equal<T>{}(actual, expected);
         }
     };
@@ -166,6 +228,7 @@ namespace tester::assertions
         constexpr bool operator()(const A& actual, const E& expected) const
         {
             if constexpr (both_are_promotable_integers_v<A,E>) return std::cmp_greater(+actual, +expected);
+            else if constexpr (both_are_tuple_like_v<A,E>) return tuple_values_less(expected, actual);
             else return std::greater<T>{}(actual, expected);
         }
     };
@@ -176,6 +239,7 @@ namespace tester::assertions
         constexpr bool operator()(const A& actual, const E& expected) const
         {
             if constexpr (both_are_promotable_integers_v<A,E>) return std::cmp_greater_equal(+actual, +expected);
+            else if constexpr (both_are_tuple_like_v<A,E>) return not tuple_values_less(actual, expected);
             else return std::greater_equal<T>{}(actual, expected);
         }
     };
@@ -194,6 +258,16 @@ namespace tester::assertions
             return numeric_equal_to<std::common_type_t<A,E>>{}(actual, expected);
         else
             return actual == expected;
+    }
+
+    // The ordering counterpart, for the composite walk: same rule, same fallback.
+    template<typename A, typename E>
+    constexpr bool values_less(const A& actual, const E& expected)
+    {
+        if constexpr (requires { typename std::common_type<A,E>::type; })
+            return numeric_less<std::common_type_t<A,E>>{}(actual, expected);
+        else
+            return actual < expected;
     }
 
     // Operands are taken by forwarding reference and only ever read: the comparator and
@@ -628,10 +702,10 @@ namespace tester::assertions
         for (const auto& elem : container) {
             if (!first) result += ", ";
             first = false;
-            // Use stringstream to format individual elements
-            auto ss = std::ostringstream{};
-            ss << elem;
-            result += ss.str();
+            // The shared operand formatter, not `<<`: an element that has no stream
+            // inserter — a pair, say — did not compile, so a container of them could not
+            // be compared at all, and one that has one reads here as it does everywhere.
+            result += output::value_to_display_string(elem);
         }
         result += "]";
         return result;
@@ -650,7 +724,9 @@ namespace tester::assertions
         while (actual_it != actual_end && expected_it != expected_end) {
             if (!values_equal(*actual_it, *expected_it)) {
                 auto msg = std::ostringstream{};
-                msg << "mismatch at index " << index << ": actual=" << *actual_it << ", expected=" << *expected_it;
+                msg << "mismatch at index " << index
+                    << ": actual=" << output::value_to_display_string(*actual_it)
+                    << ", expected=" << output::value_to_display_string(*expected_it);
                 return {false, msg.str()};
             }
             ++actual_it;
@@ -903,9 +979,8 @@ namespace tester::assertions
         data::statistics().successful_assertions += ok;
         
         auto container_str = format_container(container);
-        auto elem_str = std::ostringstream{};
-        elem_str << element;
-        publisher::assertion(ok, container_str, std::string{"contains: "} + elem_str.str(), location);
+        publisher::assertion(ok, container_str,
+                             std::string{"contains: "} + output::value_to_display_string(element), location);
         return ok;
     }
 
@@ -919,12 +994,12 @@ namespace tester::assertions
         data::statistics().successful_assertions += ok;
         
         auto container_str = format_container(container);
-        auto elem_str = std::ostringstream{};
-        elem_str << element;
-        publisher::assertion(ok, container_str, std::string{"contains: "} + elem_str.str(), location);
+        publisher::assertion(ok, container_str,
+                             std::string{"contains: "} + output::value_to_display_string(element), location);
         if (!ok) {
             auto msg = std::ostringstream{};
-            msg << "Container does not contain expected element: " << element;
+            msg << "Container does not contain expected element: "
+                << output::value_to_display_string(element);
             throw assertion_failure{msg.str()};
         }
     }

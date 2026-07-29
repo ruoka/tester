@@ -170,71 +170,14 @@ export struct observer final : tester::output::observer
         return std::chrono::duration_cast<std::chrono::milliseconds>(ns).count();
     }
 
+    // The one operand formatter: this used to be a line-by-line copy of
+    // value_to_display_string, carrying a comment that any change to how an operand reads
+    // belonged in all three places. Two of them are now one, and a composite operand reads
+    // the same here as it does in the stream without anybody having to remember.
     template <typename V>
     void format_value(const V& val)
     {
-        using T = std::remove_cvref_t<V>;
-
-        // Verbatim: see value_to_display_string and observe_value in tester:utils, which
-        // carry the same branch list — a change to how an operand reads belongs in all
-        // three. Type names are demangled by the matcher that produces them, not by the
-        // reporting layer.
-        if constexpr (std::is_same_v<T, std::string>)
-            stream << val;
-        else if constexpr (std::is_same_v<T, std::string_view>)
-            stream << val;
-        else if constexpr (std::is_same_v<T, const char*> || std::is_same_v<T, char*>)
-            stream << (val != nullptr ? std::string_view{val} : std::string_view{"nullptr"});
-        else if constexpr (std::is_pointer_v<T>)
-            stream << (val != nullptr ? val : "nullptr");
-        else if constexpr (std::is_enum_v<T>)
-            stream << std::to_underlying(val);
-        else if constexpr (chrono_clock<T>)
-            stream << std::format("{0:%F}T{0:%T}", val);
-        else if constexpr (is_character_v<T>)
-        {
-            // Both forms: streaming the character put a raw byte on the console, so a
-            // failing check_eq(char{-1}, 4294967295u) showed a replacement glyph with the
-            // -1 it compared nowhere in sight, while the value alone turns an ordinary
-            // character comparison into 97 against 98.
-            const auto code = +val;
-            if(is_ascii_printable(code))
-                stream << '\'' << static_cast<char>(code) << "' (" << code << ')';
-            else
-                stream << code;
-        }
-        else if constexpr (std::is_arithmetic_v<T>)
-        {
-            if constexpr (std::is_same_v<T, bool>)
-                stream << std::boolalpha << val;
-            else
-                stream << val;
-        }
-        else if constexpr (requires { val.index(); })
-        {
-            if (std::holds_alternative<std::monostate>(val) || val.valueless_by_exception())
-                stream << "null";
-            else
-                std::visit([this](const auto& alt) {
-                    using alt_type = std::decay_t<decltype(alt)>;
-                    if constexpr (std::is_same_v<alt_type, bool>)
-                        this->stream << std::boolalpha << alt;
-                    else if constexpr (std::is_same_v<alt_type, std::nullptr_t> || std::is_same_v<alt_type, std::monostate>)
-                        this->stream << "null";
-                    else if constexpr (std::is_same_v<alt_type, std::string> || std::is_same_v<alt_type, std::string_view>)
-                        this->stream << '"' << alt << '"';
-                    else if constexpr (std::is_arithmetic_v<alt_type>)
-                        this->stream << alt;
-                    else if constexpr (requires { this->stream << alt; })
-                        this->stream << alt;
-                    else
-                        this->stream << "...";
-                }, val);
-        }
-        else if constexpr (requires { stream << val; })
-            stream << std::boolalpha << val;
-        else
-            stream << "...";
+        stream << value_to_display_string(val);
     }
 
     void on_test_case(const data::test_case& tc)
