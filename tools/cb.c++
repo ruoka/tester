@@ -2587,39 +2587,22 @@ private:
         auto link_reason = needs_relinking(test_runner_path, signature, link_cache);
         if(not link_reason)
         {
-            output::notify(&output::observer::info, "Skipping link (up-to-date): "s + test_runner_path);
-            const auto now = std::chrono::steady_clock::now();
-            output::notify(&output::observer::link_end,
-                           test_runner_path,
-                           output::step_result{.ok = true, .cache_hit = true, .timing = {now, now}});
+            const auto hit = link_scope{test_runner_path};
             return;
         }
 
-        const auto link_started = std::chrono::steady_clock::now();
+        auto link = link_scope{test_runner_path, *link_reason};
         const auto link_argv = link_test_runner_argv(test_runner_path, test_runner_obj, link_module_ldflags);
         if(const auto result = invoke_shell(link_argv, diagnostics_path_for_executable(test_runner_path));
            not result.ok())
         {
-            output::notify(&output::observer::link_end,
-                           test_runner_path,
-                           output::step_result{
-                               .ok = false,
-                               .timing = {link_started, std::chrono::steady_clock::now()},
-                               .rebuild = *link_reason,
-                               .diag = result.diag});
+            link.failed(result.diag);
             throw std::runtime_error{command_failure_message(link_argv, result)};
         }
-        if(has_runner_unit)
-            output::notify(&output::observer::success, "test_runner linked with test objects");
-        else
-            output::notify(&output::observer::success, "test_runner linked successfully");
-        
-        output::notify(&output::observer::link_end,
-                       test_runner_path,
-                       output::step_result{
-                           .ok = true,
-                           .timing = {link_started, std::chrono::steady_clock::now()},
-                           .rebuild = *link_reason});
+        link.succeeded();
+        output::notify(&output::observer::success,
+                       has_runner_unit ? "test_runner linked with test objects"
+                                       : "test_runner linked successfully");
 
         // Save signature to cache
         {
@@ -2649,6 +2632,7 @@ private:
     }
 
 public:
+
     build_system(
         build_config cfg,
         const string_list& cpf = {},
