@@ -1681,11 +1681,21 @@ private:
     // Per-target capture files: parallel workers must not share one. The two steps of a modular
     // unit do share one — they are one target reporting one compile_end, so whichever step failed,
     // the diagnostics a consumer is pointed at sit beside that unit's object.
-    std::string diagnostics_path(std::string_view object_path) const
+    //
+    // Takes the unit rather than a path so that where a log goes stays one decision with the
+    // whole unit in hand — module, source, pcm and display name are all here, so moving captures
+    // into a logs/ tree is an edit to this function and nothing else. It cannot take a
+    // translation_unit: that constructor is private to parse_translation_unit, so being one means
+    // coming from the project scan, and the std module deliberately does not. compile_unit is
+    // what the two compiles already have in common, and it is the value they report with, so the
+    // log named here and the unit named in the event cannot disagree.
+    std::string diagnostics_path(const output::compile_unit& unit) const
     {
-        return std::string{object_path} + ".log";
+        return std::string{unit.object} + ".log";
     }
 
+    // The link's counterpart keeps taking a path: an executable is its whole identity here, as
+    // link_end, link_rebuild_message and link_scope each name nothing else about it.
     std::string diagnostics_path_for_executable(std::string_view executable_path) const
     {
         return std::string{executable_path} + ".link.log";
@@ -2457,25 +2467,26 @@ private:
         const auto pcm = std_pcm_path();
         const auto object = std_obj_path();
         const auto display = fs::path{std_module_source}.filename().string();
+        const auto unit = std_compile_unit(pcm, object, display);
         const auto reason = needs_std_module_rebuild();
 
         if(not reason)
         {
-            const auto hit = compile_scope{std_compile_unit(pcm, object, display)};
+            const auto hit = compile_scope{unit};
             return;
         }
 
-        auto compile = compile_scope{std_compile_unit(pcm, object, display), *reason};
+        auto compile = compile_scope{unit, *reason};
         // The pcm is the object's input, so every reason that reaches it rebuilds both; the two
         // object-only reasons reuse the pcm that is already there.
         const auto object_only = reason->kind == output::rebuild_kind::object_missing
                               or reason->kind == output::rebuild_kind::object_stale;
         if(not object_only)
         {
-            run_step(compile, build_std_pcm_argv(), diagnostics_path(object));
+            run_step(compile, build_std_pcm_argv(), diagnostics_path(unit));
             save_std_module_profile();
         }
-        run_step(compile, build_std_o_argv(), diagnostics_path(object));
+        run_step(compile, build_std_o_argv(), diagnostics_path(unit));
         compile.succeeded();
     }
 
@@ -2488,12 +2499,13 @@ private:
     // decisions in Cache Management, the argv builders and unit projections in General Utilities.
 
     void compile_unit(const translation_unit& tu, const output::rebuild_info& rebuild) {
-        auto compile = compile_scope{compile_unit_of(tu), rebuild};
+        const auto unit = compile_unit_of(tu);
+        auto compile = compile_scope{unit, rebuild};
         if (tu.is_modular) {
-            run_step(compile, compile_pcm_argv(tu), diagnostics_path(tu.object_path));
-            run_step(compile, compile_pcm_object_argv(tu), diagnostics_path(tu.object_path));
+            run_step(compile, compile_pcm_argv(tu), diagnostics_path(unit));
+            run_step(compile, compile_pcm_object_argv(tu), diagnostics_path(unit));
         } else {
-            run_step(compile, compile_source_object_argv(tu), diagnostics_path(tu.object_path));
+            run_step(compile, compile_source_object_argv(tu), diagnostics_path(unit));
         }
         compile.succeeded();
     }
