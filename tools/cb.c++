@@ -381,19 +381,17 @@ bool path_has_test_segment(std::string_view path) {
     return false;
 }
 
-// First-level deps/tester/tests/... (and tester/tests/...) smoke fixtures must not
-// join the consumer scan. determine_is_test treats every tester/ path as a library
-// source (is_test=false), so without this skip fixture mains such as hello.c++ are
-// compiled into parent builds and collide after duplicate-key fail-fast.
+// First-level deps/tester/tests/... (and tester/tests/...) smoke fixtures must not join the
+// consumer scan: determine_is_test calls every tester/ path a library source, so fixture mains
+// such as hello.c++ would compile into parent builds and collide on the duplicate-key check.
 bool is_tester_package_tests_path(std::string_view rel_path)
 {
     return is_tester_framework_path(rel_path) and path_has_test_segment(rel_path);
 }
 
-// After project test/ trees were allowed into the scan (#14), first-level
-// deps/<pkg>/test and deps/<pkg>/tests must stay out of the parent build.
-// Those belong to the vendored package (benchmarks, package-local suites) and
-// are not the consumer's tests. Co-located deps/<pkg>/*.test.c++ still joins.
+// deps/<pkg>/test and deps/<pkg>/tests are the vendored package's own suites (benchmarks,
+// package-local tests), not the consumer's, so they stay out of the parent build even now that
+// project test/ trees are in the scan (#14). Co-located deps/<pkg>/*.test.c++ still joins.
 bool is_dependency_package_tests_path(std::string_view rel_path)
 {
     if(not rel_path.starts_with(deps_dir_prefix))
@@ -452,12 +450,10 @@ std::string binary_signature(const std::string& path)
     return std::to_string(size) + ':' + std::to_string(ticks);
 }
 
-// Make-style depfile (clang -MMD -MF): `target: prereq prereq \<newline> prereq`.
-// Spaces inside a path are backslash-escaped; a trailing backslash continues the line.
-// Returns prerequisites only — the target and the source itself are handled elsewhere.
-// `nullopt` when the file cannot be trusted: unreadable, or lacking the `target:` that
-// every depfile has. That is not the same answer as "this unit includes no headers", which
-// is a valid empty list — conflating the two turns an unreadable depfile into a cache hit.
+// Make-style depfile (clang -MMD -MF): `target: prereq prereq \<newline> prereq`, spaces in a
+// path backslash-escaped. Returns the prerequisites only. `nullopt` when the file cannot be
+// trusted — unreadable, or lacking the `target:` every depfile has — which is not the same
+// answer as an empty list: conflating them turns an unreadable depfile into a cache hit.
 std::optional<string_list> parse_depfile(const std::string& path)
 {
     auto file = std::ifstream{path};
@@ -558,22 +554,17 @@ constexpr std::string_view object_cache_format = "cb-object-cache-v3"sv;
 // Comments, string literals and `#if 0` blocks are not declarations, and matching the
 // module regexes against them invents edges in the module graph.
 
-// Phase 2 of translation, and the first thing done to the text, because everything below
-// assumes it has happened: a backslash, any horizontal whitespace after it (C++23 trims it,
-// with a diagnostic), and the newline are deleted, joining two physical lines into one
-// logical line. The compiler splices before it recognises a directive, a comment or a
-// literal, so a scanner that reads physical lines disagrees with it about what the source
-// says — `#if \` on its own line is `#if 0` to the compiler and an unrecognised directive
-// here, leaving a dead body live, and `import \` hides a real edge in plain sight.
+// Phase 2 of translation, done first because everything below assumes it: a backslash, any
+// horizontal whitespace after it (C++23 trims it, with a diagnostic) and the newline go. The
+// compiler splices before it recognises a directive, a comment or a literal, so a scanner
+// reading physical lines disagrees with it about what the source says — `#if \` on its own
+// line is `#if 0` there and an unrecognised directive here, and `import \` hides a real edge.
 //
-// Every splice goes, including one inside a raw-string body, which [lex.pptoken] reverts before
-// it looks for the closer. Honouring that reversion means deciding whether an `R"(` opens a raw
-// string or is text inside a comment or another literal, and that decision is lexical state
-// rather than a pattern: scanning here is regex-based on purpose, so a source that needs a
-// tokenizer to scan is out of scope. The cost is a raw string whose body ends a line with `)\`,
-// read as closing one line early — against a comment or a literal that merely mentions `R"(`,
-// which is the far likelier text and stays harmless. Deciding it the other way round cost both:
-// a fake opener with no closer froze every later splice to the end of the file.
+// Splices inside a raw-string body go too, which [lex.pptoken] would revert before looking for
+// the closer. Honouring that means telling an `R"(` opener from the same text in a comment or
+// another literal, which is lexical state rather than a pattern, and scanning here is
+// regex-based on purpose. The cost is a body ending a line with `)\`, read as closing early;
+// deciding it the other way cost more, freezing every later splice after a fake opener.
 inline static const std::regex line_splice_regex{R"(\\[ \t\v\f]*\r?\n)"};
 
 inline std::string splice_physical_lines(const std::string& text)
@@ -582,22 +573,19 @@ inline std::string splice_physical_lines(const std::string& text)
 }
 
 // One alternation over the whole preamble, because a block comment and a raw string still
-// span lines after splicing and so cannot be recognised a line at a time. Alternation also
-// gets the interleaving right for free: whichever construct opens first wins, so `"/*"`
-// inside a string does not start a comment, and a quote inside a comment stays inert.
-// Comments collapse to a space, since a comment separates tokens (`import/*x*/foo`).
-// Literals keep their delimiters but lose their contents, which may spell `import foo;`
-// — the matchers run unanchored and would otherwise find it.
+// span lines after splicing and cannot be recognised a line at a time. Alternation also gets
+// the interleaving right for free: whichever construct opens first wins, so `"/*"` inside a
+// string starts no comment, and a quote inside a comment stays inert. Comments collapse to a
+// space, since a comment separates tokens (`import/*x*/foo`); literals keep their delimiters
+// but lose contents that may spell `import foo;`, which the unanchored matchers would find.
 //
-// A raw string's body has no escapes at all, so only `)delimiter"` closes it, matched by
-// backreference; it is the one place a lazy `[\s\S]*?` is unavoidable, and it only runs
-// where `R"` appears. A `//` comment and a quoted literal end at the newline, because a
-// continued one has already been brought onto the line it belongs to. The quoted branches
-// keep `\\.` for the escapes that are still there — `"\""` closes nothing — and are
-// unrolled as a character-class run followed by a group per escape
-// (`[^"\\\n]*(?:\\.[^"\\\n]*)*`) rather than a per-character alternation: the run and the
-// escape group cannot both match a backslash, which is what makes the form linear. This
-// pass has dominated scan time before, so the shape matters.
+// A raw string's body has no escapes, so only `)delimiter"` closes it, matched by backreference
+// — the one unavoidable lazy `[\s\S]*?`, and it only runs where `R"` appears. `//` comments and
+// quoted literals end at the newline, a continued one having already been joined. The quoted
+// branches keep `\\.` for the escapes that remain (`"\""` closes nothing) and are unrolled as a
+// character-class run plus a group per escape (`[^"\\\n]*(?:\\.[^"\\\n]*)*`) rather than a
+// per-character alternation: run and escape group cannot both match a backslash, which is what
+// keeps the form linear in a pass that has dominated scan time before.
 inline static const std::regex comment_or_literal_regex{
     R"(//[^\n]*)"
     R"(|/\*[^*]*\*+(?:[^/*][^*]*\*+)*/)"
@@ -613,14 +601,12 @@ inline std::string strip_comments_and_literals(const std::string& text)
     return std::regex_replace(text, comment_or_literal_regex, " $1$1$3$3$4$4");
 }
 
-// `#if 0` is the commented-out idiom, so its body must be elided wholesale, and the idiom
-// has more spellings than the bare constant: parenthesised (`#if (0)`), short-circuited
-// (`#if 0 && OLD_FEATURE`, false whatever the other operand is), and spread over arms
-// (`#elif 0`). Nesting is the one part a regex cannot express — balanced delimiters are
-// not a regular language — so the regex recognises directives and the depth is counted.
-// Genuine conditionals are deliberately left alone: over-approximating an `#ifdef` by
-// scanning both branches costs a spurious edge, while guessing which branch is live risks
-// dropping a real one.
+// `#if 0` is the commented-out idiom, so its body is elided wholesale — and the idiom has more
+// spellings than the bare constant: parenthesised (`#if (0)`), short-circuited (`#if 0 &&
+// OLD_FEATURE`), and spread over arms (`#elif 0`). Only nesting is beyond a regex, balanced
+// delimiters not being regular, so directives are recognised and the depth counted. Genuine
+// conditionals are left alone: scanning both branches of an `#ifdef` costs a spurious edge,
+// while guessing which one is live risks dropping a real one.
 class conditional_filter
 {
 public:
@@ -643,10 +629,9 @@ public:
     }
 
 private:
-    // A condition known false without evaluating anything: the constant, in any grouping,
-    // optionally short-circuiting the rest away. Whitespace and grouping parentheses carry
-    // no meaning here, so they go first and `(0) && defined(X)` reads as `0&&definedX`.
-    // Everything else stays live, `!0` and `0 || X` included.
+    // False without evaluating anything: the constant, in any grouping, optionally
+    // short-circuiting the rest away. Grouping and whitespace carry no meaning here, so they go
+    // first and `(0) && defined(X)` reads as `0&&definedX`. `!0` and `0 || X` stay live.
     static bool is_never_taken(std::string_view condition)
     {
         const auto normalized = condition
@@ -674,10 +659,9 @@ private:
         }
         else if(name == "else" or name == "elif")
         {
-            // Each arm is judged on its own. Leaving the skip region on every `#elif`
-            // would revive the next arm of `#if 0 / #elif 0`, and entering it on a dead
-            // arm is what elides `#elif 0` after a live one. `#else` always revives,
-            // since there is no condition to rule it out.
+            // Each arm is judged on its own: leaving the skip region on every `#elif` would
+            // revive the next arm of `#if 0 / #elif 0`, and entering it on a dead arm is what
+            // elides `#elif 0` after a live one. `#else` has no condition to rule it out.
             const auto dead_arm = name == "elif" and is_never_taken(condition);
             if(skipping and m_if_depth == m_skip_depth and not dead_arm)
                 m_skip_depth = 0;
@@ -865,10 +849,9 @@ translation_unit parse_translation_unit(const fs::path& project_root, const fs::
             if (not imp.empty() and imp != std_module_name) imports.push_back(std::move(imp));
         }
 
-        // End the preamble only after recording any module/import on this line.
-        // Do not end the preamble inside a global module fragment: it may contain braces,
-        // keywords, and declarations before the named `export module` / `module` line.
-        // Use regex word boundaries to avoid false matches (e.g., "struct" in "structured_log_stream").
+        // End the preamble only after recording any module/import on this line, and never
+        // inside a global module fragment: it may hold braces, keywords and declarations before
+        // the `export module` line. Word boundaries keep "struct" out of "structured_log_stream".
         if (kind != unit_kind::global_fragment) {
             const auto code = trimmed;
             auto code_str = std::string{code};
@@ -896,10 +879,9 @@ translation_unit parse_translation_unit(const fs::path& project_root, const fs::
     };
 }
 
-// Observers format four of a unit's fields, so they receive those four and not the unit:
-// the rest is build state they must not reach into, and cb-observer.h++ stays independent
-// of the scanner. The pcm path is the one field that has to be derived, and deriving it in
-// one place is why compile_start and compile_end can no longer disagree about it.
+// Observers format four of a unit's fields, so they receive those four and not the unit: the
+// rest is build state, and cb-observer.h++ stays independent of the scanner. The pcm path is the
+// one derived field, and deriving it here is why compile_start and compile_end cannot disagree.
 output::compile_unit compile_unit_of(const translation_unit& tu)
 {
     return {.source = tu.full_path,
@@ -925,11 +907,10 @@ output::source_unit source_unit_of(const translation_unit& tu)
             .is_modular = tu.is_modular};
 }
 
-// The third projection: every module-artefact reason (own_pcm_missing, own_pcm_stale,
-// pcm_stale, dependency_pcm_stale) names the same three things about the unit whose module
-// triggered it — which is this unit for the own_ reasons and an imported one for the others.
-// Callers have already established that the unit is modular, since that is what made the
-// reason apply.
+// Every module-artefact reason (own_pcm_missing, own_pcm_stale, pcm_stale,
+// dependency_pcm_stale) names the same three things about the unit whose module triggered it:
+// this unit for the own_ reasons, an imported one otherwise. Callers have established it is
+// modular, that being what made the reason apply.
 output::rebuild_info pcm_rebuild(output::rebuild_kind kind, const translation_unit& tu)
 {
     return {.kind = kind, .module = tu.module, .pcm_path = tu.pcm_path, .trigger_path = tu.full_path};
@@ -953,10 +934,9 @@ using object_cache_map = std::flat_map<std::string, fs::file_time_type, std::les
 
 // What reading the object cache found: the entries, and the one thing that invalidates all of
 // them at once. A profile mismatch answers two questions together — every unit is about to miss,
-// and here is the field that changed — so the load returns them with the entries instead of
-// leaving them behind in the build system for the caller to collect. The diff is the miss rather
-// than a reason beside a diff that only some reasons fill: engaged means profile_change, which is
-// the only blanket miss there is.
+// and here is the field that changed — so it travels with the entries rather than being left in
+// the build system for the caller to collect. The diff is the miss, not a reason beside a diff
+// only some reasons fill: engaged means profile_change, the only blanket miss there is.
 struct object_cache_load
 {
     object_cache_map entries{};
@@ -994,11 +974,11 @@ private:
     std::counting_semaphore<> slots;
 };
 
-// Compiling and linking differ only in the work: both run one worker per job, at most limit at
-// a time, start nothing new once a job has failed, and rethrow the first failure after every
-// worker has joined, so a failing build never leaves a toolchain process running. Written twice,
-// the two copies had to agree about the relaxed loads, the recheck after the slot, and which
-// exception survives.
+// Compiling and linking differ only in the work: one worker per job, at most limit at a time,
+// nothing new started once a job has failed, and the first failure rethrown after every worker
+// has joined, so a failing build never leaves a toolchain process running. Written twice, the
+// copies had to agree about the relaxed loads, the recheck after the slot and which exception
+// survives.
 template <std::ranges::input_range Jobs, typename Work>
 void run_in_parallel(Jobs&& jobs, std::ptrdiff_t limit, Work work)
 {
@@ -1040,10 +1020,9 @@ void run_in_parallel(Jobs&& jobs, std::ptrdiff_t limit, Work work)
         std::rethrow_exception(failure);
 }
 
-// One build_start, exactly one build_end, whichever way the steps end. The pairing lives
-// here rather than in the callers, which had to remember a phase flag, an emitted flag and a
-// catch-and-rethrow each, and rather than in the observers, which would each have to
-// reimplement the latch and could then disagree about whether the build ended.
+// One build_start, exactly one build_end, whichever way the steps end. Here rather than in the
+// callers, which each had to remember a phase flag, an emitted flag and a catch-and-rethrow, and
+// rather than in the observers, which would each reimplement the latch and could then disagree.
 class build_scope
 {
 public:
@@ -1074,10 +1053,9 @@ private:
 };
 
 // One compile_start, exactly one compile_end: build_scope's pairing one level down. A modular
-// unit compiles in two steps and either can fail, so without the scope each exit path carried
-// its own copy of the event and had to agree with the others about the unit, the reason and the
-// clock. failed() attaches the compiler's own output, so a consumer reading stdout sees the
-// diagnostic and not just ok:false.
+// unit compiles in two steps and either can fail, so without the scope each exit path carried its
+// own copy of the event and had to agree about the unit, the reason and the clock. failed()
+// attaches the compiler's own output, so a consumer sees the diagnostic and not just ok:false.
 class compile_scope
 {
 public:
@@ -1176,10 +1154,10 @@ private:
 template <typename Scope>
 concept step_scope = requires(Scope& scope, output::diagnostics said) { scope.failed(std::move(said)); };
 
-// One test_start, exactly one test_end, and the run's duration belongs to the scope rather than
-// to two locals beside it. Nothing between the events throws today — a runner that fails comes
-// back as a status, not an exception — so this states the pairing rather than repairing it, and
-// keeps it true if a step that can throw is ever added between them.
+// One test_start, exactly one test_end, with the run's duration in the scope rather than in two
+// locals beside it. Nothing between the events throws today — a failing runner comes back as a
+// status — so this states the pairing rather than repairing it, and keeps it true if a step that
+// can throw is ever added between them.
 class test_scope
 {
 public:
@@ -1191,12 +1169,10 @@ public:
     test_scope(const test_scope&) = delete;
     test_scope& operator=(const test_scope&) = delete;
 
-    // A run whose outcome was never reported did not finish. The default process_result says
-    // exit -1, which is what decode_wait_status reports when the shell cannot be started.
-    //
-    // A run that ran and failed also says so as an error, which is where the JSONL stream's
-    // cb_error after a failed run comes from. Only when an outcome was reported: on the way out
-    // of a throw the failure is somebody else's, and the handler in main reports it.
+    // A run whose outcome was never reported did not finish: the default process_result says
+    // exit -1, what decode_wait_status reports when the shell cannot be started. A run that ran
+    // and failed also says so as an error — the stream's cb_error after a failed run — but only
+    // when an outcome was reported: on the way out of a throw, main's handler reports it.
     ~test_scope()
     {
         output::notify(&output::observer::test_end, result,
@@ -1262,11 +1238,8 @@ private:
     // ============================================================================
 
     void detect_llvm_environment() {
-        // Detect and setup LLVM environment:
-        // 1. Find std.cppm (libc++ standard library module source) either from argument or LLVM_PATH
-        // 2. Determine LLVM prefix from std.cppm path
-        // 3. Find clang++ compiler binary
-        // This ensures we have all paths needed for compilation and linking
+        // std.cppm names the LLVM prefix, which names clang++. Every compile and link needs all
+        // three, so a missing one is an error here rather than a failure mid-build.
         
         if (std_module_source.empty()) {
             if (auto env = std::getenv("LLVM_PATH"); env and *env) {
@@ -1596,10 +1569,9 @@ private:
     // General Utilities
     // ============================================================================
 
-    // Sole shell boundary: argv is non-empty (contract); join_argv quotes each element with join_with.
-    // When capture_path is given, the child's stdout and stderr are redirected there
-    // and read back on failure. The test runner must not be captured — its stdout is
-    // the JSONL stream the caller is forwarding.
+    // Sole shell boundary: argv is non-empty (contract) and join_argv quotes each element. With
+    // capture_path the child's stdout and stderr are redirected there and read back on failure.
+    // The test runner must not be captured — its stdout is the JSONL stream the caller forwards.
     output::process_result invoke_shell(const string_list& argv, std::string_view capture_path = {}) const
     {
         if(argv.empty())
@@ -1626,17 +1598,10 @@ private:
         return result;
     }
 
-    void execute_system_command(const string_list& argv, std::string_view capture_path = {}) const
-    {
-        if(const auto result = invoke_shell(argv, capture_path); not result.ok())
-            throw std::runtime_error{command_failure_message(argv, result)};
-    }
-
-    // The same command, run as a step of a reported build phase: a failure is the scope's before
-    // it is the caller's, so the compiler's or linker's output travels on compile_end / link_end
-    // and the exception only has to name the command. A modular unit runs two of these, each
-    // link one. execute_system_command above is this without a scope — the std module builds
-    // report no events of their own.
+    // Every toolchain command is a step of a reported build phase: a failure is the scope's
+    // before it is the caller's, so the compiler's or linker's output travels on compile_end /
+    // link_end and the exception only has to name the command. A modular unit runs two of these,
+    // each link one, and the std module's two go through the same path.
     void run_step(step_scope auto& scope, const string_list& argv, std::string_view capture) const
     {
         if(const auto result = invoke_shell(argv, capture); not result.ok()) {
@@ -1679,15 +1644,11 @@ private:
     }
 
     // Per-target capture files: parallel workers must not share one. The two steps of a modular
-    // unit do share one — they are one target reporting one compile_end, so whichever step failed,
-    // the diagnostics a consumer is pointed at sit beside that unit's object.
-    //
-    // Both name the target rather than a path, so that where a capture goes stays one decision
-    // with everything about that target in hand — moving them into a logs/ tree is an edit to
-    // these two functions and nothing else. The argument types differ because the targets do:
-    // every link target is a scanned translation_unit, while a compile is named by compile_unit,
-    // the value both compile steps already report with and all the std module can offer — being
-    // a compile that never came from the project scan, it has no translation_unit at all.
+    // unit do share theirs — one target, one compile_end — so the diagnostics a consumer is
+    // pointed at sit beside that unit's object. Both name the target rather than a path, so
+    // moving captures into a logs/ tree is an edit here and nowhere else. The argument types
+    // differ because the targets do: the std module compiles without being a scanned unit, so
+    // compile_unit is all it can offer, and it is what both compile steps report with anyway.
     std::string diagnostics_path_for_object(const output::compile_unit& unit) const
     {
         return std::string{unit.object} + ".log";
@@ -1759,10 +1720,9 @@ private:
         return argv;
     }
 
-    // Compile std.pcm → std.o with the same compile_flags as project TUs and
-    // build_std_pcm_argv. A hardcoded subset previously dropped --compile-flags
-    // (e.g. -fsanitize=address), so std.o disagreed with an ASAN-built std.pcm
-    // and instrumented project objects.
+    // The same compile_flags as project TUs and build_std_pcm_argv: a hardcoded subset once
+    // dropped --compile-flags (e.g. -fsanitize=address), leaving std.o disagreeing with an
+    // ASAN-built std.pcm and with instrumented project objects.
     string_list build_std_o_argv() const
     {
         auto argv = string_list{};
@@ -1932,10 +1892,9 @@ private:
         return loaded;
     }
 
-    // A cache is replaced, never edited in place: write a sibling temporary file, then rename it
-    // over the target, so a build interrupted mid-write leaves the previous cache rather than
-    // half of the next one. The three caches differ only in what they write and what they are
-    // called in the message when a step of this fails.
+    // A cache is replaced, never edited in place: write a sibling temporary, then rename it over
+    // the target, so a build interrupted mid-write leaves the previous cache rather than half of
+    // the next. The caches differ only in what they write and what the failure message calls them.
     static void write_cache_file(const std::string& path,
                                  std::string_view what,
                                  const std::invocable<std::ostream&> auto& write_contents)
@@ -2023,15 +1982,12 @@ private:
         return std::nullopt;
     }
 
-    // Prerequisites are restricted to the project tree: toolchain headers change as a
-    // unit and are already covered by the object-cache profile (cxx_sig / clang_ver),
-    // so scanning them here would only add thousands of stat calls per build.
-    //
-    // An unreadable depfile is a rebuild of its own: it is the only record of the unit's
-    // textual includes, so without it header freshness is unknown, and a cache hit would
-    // silently ignore every header edit until the source itself changed. Every compile
-    // writes one (`-MMD` writes the file even for a unit that includes nothing), so this
-    // fires once after an upgrade or a wiped `obj/`, then settles.
+    // Prerequisites are restricted to the project tree: toolchain headers change as a unit and
+    // are already covered by the object-cache profile (cxx_sig / clang_ver), so scanning them
+    // would only add thousands of stat calls per build. An unreadable depfile is a rebuild of its
+    // own — it is the only record of the unit's textual includes, so a cache hit would silently
+    // ignore every header edit until the source changed. Every compile writes one (`-MMD` writes
+    // it even for a unit that includes nothing), so this fires once and then settles.
     std::optional<output::rebuild_info> stale_header(const translation_unit& tu,
                                                      fs::file_time_type object_timestamp) const
     {
@@ -2395,11 +2351,9 @@ private:
     // Standard Library Module Building
     // ============================================================================
     // The same two halves as Compilation, for the one modular unit that is not in the scan:
-    // needs_std_module_rebuild is its needs_recompile and build_std_module is its compile_unit,
-    // reporting through compile_scope like every other unit. It used to build through
-    // execute_system_command, so the two most expensive steps of a cold build were the only ones
-    // that explained nothing — no compile_end, no reason, no cache hit, and a failure that
-    // reached stdout as a bare command_end.
+    // needs_std_module_rebuild is its needs_recompile and build_std_module its compile_unit,
+    // reporting through compile_scope like every other unit — the two most expensive steps of a
+    // cold build used to explain nothing.
 
     // Whether std.pcm was precompiled by the profile a project unit is compiled with. The pcm's
     // own presence is a separate question, asked by needs_std_module_rebuild before this one.
@@ -2418,11 +2372,9 @@ private:
     }
 
     // In the order the artifacts depend on each other, so the reason names the first thing that
-    // has to be rebuilt and the caller can tell from it whether the pcm step is included. The
-    // profile is what mtimes cannot see: std.pcm is built with the compile and cpp flags and the
-    // active clang++, so a toolchain change leaves a pcm that is newer than std.cppm and wrong.
-    // std.cppm itself is known to exist — detect_llvm_environment throws in the constructor
-    // otherwise — so its mtime is read without asking.
+    // has to be rebuilt and the caller can tell whether the pcm step is included. The profile is
+    // what mtimes cannot see: a toolchain change leaves a pcm newer than std.cppm and wrong.
+    // std.cppm is known to exist — detect_llvm_environment throws otherwise.
     std::optional<output::rebuild_info> needs_std_module_rebuild() const
     {
         const auto pcm = std_pcm_path();
@@ -2491,8 +2443,8 @@ private:
     // ============================================================================
     // Two halves, mirrored by Linking below: compile_unit does one translation unit, and
     // compile_units is the pass that decides what to build, reports the hits and runs the rest
-    // through run_in_parallel. What both phases share sits above — the caches and staleness
-    // decisions in Cache Management, the argv builders and unit projections in General Utilities.
+    // through run_in_parallel. What both phases share sits above, in Cache Management (caches and
+    // staleness) and General Utilities (argv builders, unit projections).
 
     void compile_unit(const translation_unit& tu, const output::rebuild_info& rebuild) {
         const auto unit = compile_unit_of(tu);
@@ -2524,10 +2476,9 @@ private:
         for (const auto& tu : units_in_topological_order)
             levels[tu.dependency_level >= 0 ? tu.dependency_level : INT_MAX].push_back(&tu);
 
-        // A reason is a fact about this moment: after the compile runs, or after a unit at this
-        // level rewrites its pcm, needs_recompile answers differently — for the unit just built
-        // it answers nothing. So the decision and the reason it rests on are one answer, taken
-        // together before any worker starts, the same snapshot link_decision takes.
+        // A reason is a fact about this moment: once a unit at this level rewrites its pcm,
+        // needs_recompile answers differently, and for the unit just built it answers nothing. So
+        // decision and reason are one answer taken before any worker starts, as link_decision is.
         struct compile_decision {
             const translation_unit* tu = nullptr;
             std::optional<output::rebuild_info> reason{};
@@ -2562,8 +2513,8 @@ private:
     // Linking
     // ============================================================================
     // The same two halves as Compilation: link_executable does one executable, link_executables
-    // is the pass. Only what nothing else uses lives here — the test-runner link in Test Support
-    // reads the same signature inputs and executable cache from the shared sections.
+    // is the pass. Only what nothing else uses lives here — the test-runner link reads the same
+    // signature inputs and executable cache from the shared sections above.
 
     void link_executable(const translation_unit& tu,
                          const string_list& shared_objects,
@@ -2629,14 +2580,13 @@ private:
     // Test Support
     // ============================================================================
     // The same order as Linking: one executable, its signature, then the pass. test_runner_unit
-    // is the one extra — Linking filters mains inline; here a missing or duplicate runner is an
-    // error rather than a skip, so the unit is named first.
+    // is the one extra — Linking filters mains inline, while here a missing or duplicate runner
+    // is an error rather than a skip.
 
-    // Require an exact base name. Substring selection (e.g. aaa_test_runner / contest_runner)
-    // can link a different bin/<name> while run_tests always executes bin/test_runner — leaving a
-    // stale runner and silent CI passes. Never absent: linking the test objects without a main
-    // reaches the linker and dies with `undefined symbol: main`, so a project with no runner
-    // source is told so here instead of through a clang command dump.
+    // Require an exact base name: substring selection (aaa_test_runner, contest_runner) can link
+    // a different bin/<name> while run_tests always executes bin/test_runner, leaving a stale
+    // runner and silent CI passes. Never absent either — linking the test objects without a main
+    // dies at the linker, so a project with no runner source is told so here.
     const translation_unit& test_runner_unit() const
     {
         const auto is_runner = [](const translation_unit& tu) {
@@ -2664,9 +2614,8 @@ private:
     }
 
     // What the runner takes in: its object, the test objects, the shared objects, the std object.
-    // The flag tail covers every test unit's imports as well as the runner's — a change to any
-    // of them is a relink — while the argv itself only needs the runner's own imports, the same
-    // split link_executable has between its signature and its command line.
+    // The flag tail covers every test unit's imports as well as the runner's — a change to any is
+    // a relink — while the argv needs only the runner's own, the split link_executable also has.
     std::string compute_test_runner_signature(const translation_unit& runner) const {
         auto paths = string_list{runner.object_path};
         paths.append_range(test_object_paths());
@@ -2678,10 +2627,9 @@ private:
     }
 
     void link_test_runner() {
-        // The unit carries the path, so linking, the cache key and the log all name what
-        // run_tests executes: test_runner_unit pins the base name and compute_executable_path
-        // is the only place a main's executable is sited, so bin/test_runner cannot be spelled
-        // two ways here.
+        // The unit carries the path, so the link, the cache key, the log and what run_tests
+        // executes cannot be spelled two ways: test_runner_unit pins the base name, and
+        // compute_executable_path is the only place a main's executable is sited.
         const auto& runner = test_runner_unit();
 
         auto link_cache = load_executable_cache();
@@ -2705,9 +2653,8 @@ private:
     // ============================================================================
     // Build Orchestration
     // ============================================================================
-    // The phases above in the order a build runs them, and the only place that order is written
-    // down. Both public entry points go through it: build() runs it alone, run_tests() follows it
-    // with the test-runner link.
+    // The phases above in the order a build runs them, the only place that order is written
+    // down. build() runs it alone; run_tests() follows it with the test-runner link.
 
     void build_steps()
     {
@@ -2876,8 +2823,7 @@ public:
         }
         output::notify(&output::observer::success, "Build completed: "s + build_root());
 
-        // Named after the build, from the unit that link_test_runner just linked, so the binary
-        // that runs is the one that was linked rather than a second guess at where it went.
+        // From the unit link_test_runner just linked, so what runs is what was linked.
         const auto& runner = test_runner_unit().executable_path;
 
         const auto set_env = [](std::string_view key, std::string_view value)
