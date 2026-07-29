@@ -1728,6 +1728,14 @@ private:
         return argv;
     }
 
+    string_list linkable_object_paths() const
+    {
+        return units_in_topological_order
+            | std::views::filter([](const translation_unit& tu) { return not tu.has_main and not tu.is_test; })
+            | std::views::transform([](const translation_unit& tu) { return tu.object_path; })
+            | std::ranges::to<string_list>();
+    }
+
     string_list collect_module_ldflags(const string_list& imp) const
     {
         return std::ranges::fold_left(
@@ -2032,6 +2040,22 @@ private:
         }
     }
 
+    std::string dependency_signature(const std::string& path) const {
+        if (path.empty() or not fs::exists(path))
+            return path + ":missing";
+        const auto timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            fs::last_write_time(path).time_since_epoch()).count();
+        return path + ":" + std::to_string(timestamp);
+    }
+
+    std::string dependency_signatures_joined(const string_list& paths) const
+    {
+        return paths
+            | std::views::transform([&](const std::string& path) { return dependency_signature(path); })
+            | std::views::join_with("|"sv)
+            | std::ranges::to<std::string>();
+    }
+
     std::optional<output::rebuild_info> needs_relinking(std::string_view executable_path,
                                                         const std::string& signature,
                                                         const executable_cache_map& link_cache) const
@@ -2299,6 +2323,10 @@ private:
     // ============================================================================
     // Compilation
     // ============================================================================
+    // Two halves, mirrored by Linking below: compile_unit does one translation unit, and
+    // compile_units is the pass that decides what to build, reports the hits and runs the rest
+    // through run_in_parallel. What both phases share sits above — the caches and staleness
+    // decisions in Cache Management, the argv builders and unit projections in General Utilities.
 
     void compile_unit(const translation_unit& tu, const output::rebuild_info& rebuild) {
         auto compile = compile_scope{compile_unit_of(tu), rebuild};
@@ -2374,25 +2402,12 @@ private:
     // ============================================================================
     // Linking
     // ============================================================================
+    // The same two halves as Compilation: link_executable does one executable, link_executables
+    // is the pass. Only what nothing else uses lives here — the test-runner link in Test Support
+    // reads the same signature inputs and executable cache from the shared sections.
 
-    string_list linkable_object_paths() const
-    {
-        return units_in_topological_order
-            | std::views::filter([](const translation_unit& tu) { return not tu.has_main and not tu.is_test; })
-            | std::views::transform([](const translation_unit& tu) { return tu.object_path; })
-            | std::ranges::to<string_list>();
-    }
-
-    // A failing link throws link_failure carrying the linker's captured output, which is how
-    // the caller attaches it to link_end.
-    void link_executable(const translation_unit& tu, const string_list& shared_objects) {
-        if (not tu.has_main) return;
-        const auto argv = link_executable_argv(tu, shared_objects);
-        const auto result = invoke_shell(argv, diagnostics_path_for_executable(tu.executable_path));
-        if (not result.ok())
-            throw link_failure{command_failure_message(argv, result), result.diag};
-    }
-
+    // How a failing link reports itself: the linker's captured output travels with the message,
+    // so link_executables can attach it to that executable's link_end.
     struct link_failure : std::runtime_error
     {
         link_failure(const std::string& message, output::diagnostics diag)
@@ -2401,22 +2416,16 @@ private:
         output::diagnostics diag;
     };
 
-    std::string dependency_signature(const std::string& path) const {
-        if (path.empty() or not fs::exists(path))
-            return path + ":missing";
-        const auto timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            fs::last_write_time(path).time_since_epoch()).count();
-        return path + ":" + std::to_string(timestamp);
+    void link_executable(const translation_unit& tu, const string_list& shared_objects) {
+        if (not tu.has_main) return;
+        const auto argv = link_executable_argv(tu, shared_objects);
+        const auto result = invoke_shell(argv, diagnostics_path_for_executable(tu.executable_path));
+        if (not result.ok())
+            throw link_failure{command_failure_message(argv, result), result.diag};
     }
 
-    std::string dependency_signatures_joined(const string_list& paths) const
-    {
-        return paths
-            | std::views::transform([&](const std::string& path) { return dependency_signature(path); })
-            | std::views::join_with("|"sv)
-            | std::ranges::to<std::string>();
-    }
-
+    // What identifies this link in the executable cache: every input's timestamp, plus the flag
+    // sets that would change the result even when no input moved.
     std::string compute_link_signature(const translation_unit& tu, const string_list& shared_objects) const {
         auto paths = string_list{};
         paths.push_back(tu.object_path);
@@ -2446,17 +2455,16 @@ private:
             std::string signature{};
             std::optional<output::rebuild_info> reason{};
         };
-        auto decisions = std::vector<link_decision>{};
-        for(const auto& tu : units_in_topological_order)
-        {
+        auto decisions = units_in_topological_order
             // Exact base name only — substring matches like contest_runner / aaa_test_runner
             // are ordinary mains and must not be excluded from normal linking.
-            if(not tu.has_main or tu.base_name == test_runner_name)
-                continue;
-            auto signature = compute_link_signature(tu, shared_objects);
-            auto reason = needs_relinking(tu.executable_path, signature, link_cache);
-            decisions.push_back(link_decision{&tu, std::move(signature), std::move(reason)});
-        }
+            | std::views::filter([&](const translation_unit& tu) {
+                  return tu.has_main and tu.base_name != test_runner_name; })
+            | std::views::transform([&](const translation_unit& tu) {
+                  auto signature = compute_link_signature(tu, shared_objects);
+                  auto reason = needs_relinking(tu.executable_path, signature, link_cache);
+                  return link_decision{&tu, std::move(signature), std::move(reason)}; })
+            | std::ranges::to<std::vector>();
 
         for(const auto& decision : decisions)
         {
