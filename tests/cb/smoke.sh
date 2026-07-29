@@ -182,6 +182,35 @@ test_header_stale() {
   end_case header_stale
 }
 
+test_header_stale_relative_include() {
+  should_run header_stale_relative_include || return 0
+  begin_case header_stale_relative_include
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  # Documented `-I include/path` is relative. Clang -MMD then records
+  # `include/value.h++` rather than an absolute path; filtering that spelling
+  # against absolute source_dir used to skip the header and answer the edit
+  # below with a cache hit.
+  mkdir -p "${work_dir}/include"
+  printf '%s\n' '#pragma once' 'inline int header_value() { return 1; }' > "${work_dir}/include/value.h++"
+  printf '%s\n' '#include <value.h++>' 'int main() { return header_value() - 1; }' > "${work_dir}/hello.c++"
+
+  run_cb_build "${work_dir}" -I include
+  run_cb_build "${work_dir}" -I include
+  assert_compile_cache_hits 2 "relative_include_seed_cache_hit"
+
+  printf '%s\n' '// touched header via relative -I' >> "${work_dir}/include/value.h++"
+  run_cb_build "${work_dir}" -I include
+  assert_compile_end "hello.c++" false header_stale true "relative_include_edited_header_rebuild"
+  assert_jsonl_contains '"rebuild":{"kind":"header_stale"' "relative_include_rebuild_object"
+  assert_rebuild_summary header_stale 1 "" "relative_include_summary"
+
+  run_cb_build "${work_dir}" -I include
+  assert_compile_cache_hits 2 "relative_include_settles_to_cache_hit"
+  end_case header_stale_relative_include
+}
+
 test_depfile_unusable() {
   should_run depfile_unusable || return 0
   begin_case depfile_unusable
@@ -1303,6 +1332,7 @@ main() {
   test_compile_start
   test_source_stale
   test_header_stale
+  test_header_stale_relative_include
   test_depfile_unusable
   test_strict_arguments
   test_source_list

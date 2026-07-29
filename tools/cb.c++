@@ -1988,6 +1988,11 @@ private:
     // own — it is the only record of the unit's textual includes, so a cache hit would silently
     // ignore every header edit until the source changed. Every compile writes one (`-MMD` writes
     // it even for a unit that includes nothing), so this fires once and then settles.
+    //
+    // Resolve each prerequisite first. Clang -MMD writes a relative path when -I is relative
+    // (the documented `-I include/path` form), while source_dir is absolute — comparing the
+    // relative spelling with starts_with would skip every such header and never fire
+    // header_stale.
     std::optional<output::rebuild_info> stale_header(const translation_unit& tu,
                                                      fs::file_time_type object_timestamp) const
     {
@@ -1998,15 +2003,16 @@ private:
 
         for(const auto& prerequisite : *prerequisites)
         {
-            if(prerequisite == tu.full_path or not prerequisite.starts_with(source_dir))
+            const auto resolved = normalize_path(prerequisite);
+            if(resolved == tu.full_path or not resolved.starts_with(source_dir))
                 continue;
 
             auto error = std::error_code{};
-            const auto timestamp = fs::last_write_time(prerequisite, error);
+            const auto timestamp = fs::last_write_time(resolved, error);
             if(error)
                 continue;
             if(timestamp > object_timestamp)
-                return output::rebuild_info{.kind = output::rebuild_kind::header_stale, .trigger_path = prerequisite};
+                return output::rebuild_info{.kind = output::rebuild_kind::header_stale, .trigger_path = resolved};
         }
         return std::nullopt;
     }
