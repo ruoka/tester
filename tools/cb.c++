@@ -1274,6 +1274,12 @@ private:
     bool hit = false;
 };
 
+// What run_step needs of a scope: somewhere to hand the child's own output when the step fails,
+// so the failure reaches stdout as a diagnostic rather than as a bare ok:false. compile_scope and
+// link_scope both qualify, which is the whole reason one function can run either phase's steps.
+template <typename Scope>
+concept step_scope = requires(Scope& scope, output::diagnostics said) { scope.failed(std::move(said)); };
+
 // One test_start, exactly one test_end, and the run's duration belongs to the scope rather than
 // to two locals beside it. Nothing between the events throws today — a runner that fails comes
 // back as a status, not an exception — so this states the pairing rather than repairing it, and
@@ -1729,6 +1735,19 @@ private:
             throw std::runtime_error{command_failure_message(argv, result)};
     }
 
+    // The same command, run as a step of a reported build phase: a failure is the scope's before
+    // it is the caller's, so the compiler's or linker's output travels on compile_end / link_end
+    // and the exception only has to name the command. A modular unit runs two of these, each
+    // link one. execute_system_command above is this without a scope — the std module builds
+    // report no events of their own.
+    void run_step(step_scope auto& scope, const string_list& argv, std::string_view capture) const
+    {
+        if(const auto result = invoke_shell(argv, capture); not result.ok()) {
+            scope.failed(result.diag);
+            throw std::runtime_error{command_failure_message(argv, result)};
+        }
+    }
+
     static std::string command_failure_message(const string_list& argv, const output::process_result& result)
     {
         auto message = "Command failed: " + detail::join_argv(argv);
@@ -1773,7 +1792,7 @@ private:
         return std::string{executable_path} + ".link.log";
     }
 
-    string_list precompile_argv(const translation_unit& tu) const
+    string_list compile_pcm_argv(const translation_unit& tu) const
     {
         auto argv = base_compile_argv();
         argv.append_range(module_flags);
@@ -1785,7 +1804,7 @@ private:
         return argv;
     }
 
-    string_list pcm_object_argv(const translation_unit& tu) const
+    string_list compile_pcm_object_argv(const translation_unit& tu) const
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
@@ -1798,7 +1817,7 @@ private:
         return argv;
     }
 
-    string_list source_object_argv(const translation_unit& tu) const
+    string_list compile_source_object_argv(const translation_unit& tu) const
     {
         auto argv = base_compile_argv();
         argv.append_range(module_flags);
@@ -1867,17 +1886,15 @@ private:
         return argv;
     }
 
-    string_list link_test_runner_argv(const std::string& output_path,
-                                      const std::string& test_runner_obj,
-                                      const string_list& link_module_ldflags) const
+    string_list link_test_runner_argv(const translation_unit& runner,
+                                      const std::string& output_path) const
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
         argv.append_range(compile_flags);
-        argv.append_range(link_module_ldflags);
+        argv.append_range(collect_module_ldflags(runner.imports));
         argv.append_range(module_flags);
-        if(not test_runner_obj.empty())
-            argv.push_back(test_runner_obj);
+        argv.push_back(runner.object_path);
         argv.append_range(linkable_object_paths());
         argv.append_range(test_object_paths());
         argv.push_back(std_obj_path());
@@ -1925,6 +1942,17 @@ private:
             string_list{},
             [&](string_list flags, const std::string& m) {
                 flags.append_range(detail::parse_external_flag_text(module_ldflags.at(m)));
+                return flags;
+            });
+    }
+
+    string_list collect_test_module_ldflags() const
+    {
+        return std::ranges::fold_left(
+            test_units(),
+            string_list{},
+            [&](string_list flags, const translation_unit& tu) {
+                flags.append_range(collect_module_ldflags(tu.imports));
                 return flags;
             });
     }
@@ -2538,21 +2566,11 @@ private:
 
     void compile_unit(const translation_unit& tu, const output::rebuild_info& rebuild) {
         auto compile = compile_scope{compile_unit_of(tu), rebuild};
-        const auto capture = diagnostics_path(tu);
-
-        const auto step = [&](const string_list& argv) {
-            const auto result = invoke_shell(argv, capture);
-            if (not result.ok()) {
-                compile.failed(result.diag);
-                throw std::runtime_error{command_failure_message(argv, result)};
-            }
-        };
-
         if (tu.is_modular) {
-            step(precompile_argv(tu));
-            step(pcm_object_argv(tu));
+            run_step(compile, compile_pcm_argv(tu), diagnostics_path(tu));
+            run_step(compile, compile_pcm_object_argv(tu), diagnostics_path(tu));
         } else {
-            step(source_object_argv(tu));
+            run_step(compile, compile_source_object_argv(tu), diagnostics_path(tu));
         }
         compile.succeeded();
     }
@@ -2619,12 +2637,9 @@ private:
                          const output::rebuild_info& rebuild) {
         if (not tu.has_main) return;
         auto link = link_scope{tu.executable_path, rebuild};
-        const auto argv = link_executable_argv(tu, shared_objects);
-        const auto result = invoke_shell(argv, diagnostics_path_for_executable(tu.executable_path));
-        if (not result.ok()) {
-            link.failed(result.diag);
-            throw std::runtime_error{command_failure_message(argv, result)};
-        }
+        run_step(link,
+                 link_executable_argv(tu, shared_objects),
+                 diagnostics_path_for_executable(tu.executable_path));
         link.succeeded();
     }
 
@@ -2680,34 +2695,16 @@ private:
     // ============================================================================
     // Test Support
     // ============================================================================
-    // The link phase once more, for a single executable whose inputs are gathered from the units
-    // rather than named by one of them: find what goes in, decide, report a hit or link, save the
-    // signature. link_test_runner_executable is the counterpart of link_executable.
-
-    bool has_test_runner_link_inputs(bool has_runner_unit) const
-    {
-        if(has_runner_unit)
-            return true;
-        return std::ranges::any_of(units_in_topological_order, [](const translation_unit& tu) {
-            return not tu.has_main;
-        });
-    }
-
-    string_list collect_test_module_ldflags() const
-    {
-        return std::ranges::fold_left(
-            test_units(),
-            string_list{},
-            [&](string_list flags, const translation_unit& tu) {
-                flags.append_range(collect_module_ldflags(tu.imports));
-                return flags;
-            });
-    }
+    // The same order as Linking: one executable, its signature, then the pass. test_runner_unit
+    // is the one extra — Linking filters mains inline; here a missing or duplicate runner is an
+    // error rather than a skip, so the unit is named first.
 
     // Require an exact base name. Substring selection (e.g. aaa_test_runner / contest_runner)
     // can link a different bin/<name> while run_tests always executes bin/test_runner — leaving a
-    // stale runner and silent CI passes.
-    const translation_unit* find_test_runner_unit() const
+    // stale runner and silent CI passes. Never absent: linking the test objects without a main
+    // reaches the linker and dies with `undefined symbol: main`, so a project with no runner
+    // source is told so here instead of through a clang command dump.
+    const translation_unit& test_runner_unit() const
     {
         const auto is_runner = [](const translation_unit& tu) {
             return tu.has_main and tu.base_name == test_runner_name;
@@ -2717,73 +2714,44 @@ private:
                 "multiple test_runner mains found — keep a single source named test_runner"};
 
         const auto found = std::ranges::find_if(units_in_topological_order, is_runner);
-        return found != units_in_topological_order.end() ? &*found : nullptr;
+        if(found == units_in_topological_order.end())
+            throw std::runtime_error{
+                "test_runner not found — make sure .test.c++ files or test_runner.c++ exist"};
+        return *found;
     }
 
-    // What goes into the runner: the object of the project's test_runner unit when it has one,
-    // and the module link flags the objects need. Two flag lists because the link takes the
-    // runner's own imports when it exists, while the signature has to cover every test unit's
-    // imports either way — a change to any of them is a relink.
-    struct test_runner_inputs
-    {
-        bool has_runner_unit = false;
-        std::string object{};
-        string_list module_ldflags{};
-        string_list signature_flags{};
-    };
-
-    test_runner_inputs test_runner_inputs_of(const translation_unit* runner) const
-    {
-        const auto runner_ldflags = runner ? collect_module_ldflags(runner->imports) : string_list{};
-        const auto test_ldflags = collect_test_module_ldflags();
-
-        auto inputs = test_runner_inputs{.has_runner_unit = runner != nullptr,
-                                        .object = runner ? runner->object_path : std::string{},
-                                        .module_ldflags = runner ? runner_ldflags : test_ldflags,
-                                        .signature_flags = test_ldflags};
-        inputs.signature_flags.append_range(runner_ldflags);
-        return inputs;
-    }
-
-    // What the runner takes in: the runner unit's object when there is one, the test objects, the
-    // shared objects, the std object.
-    std::string compute_test_runner_signature(const test_runner_inputs& inputs) const {
-        auto paths = string_list{};
-        if(not inputs.object.empty())
-            paths.push_back(inputs.object);
-        paths.append_range(test_object_paths());
-        paths.append_range(linkable_object_paths());
-        paths.push_back(std_obj_path());
-        return link_signature(paths, inputs.signature_flags);
-    }
-
-    void link_test_runner_executable(const std::string& executable_path,
-                                     const test_runner_inputs& inputs,
+    void link_test_runner_executable(const translation_unit& runner,
+                                     const std::string& executable_path,
                                      const output::rebuild_info& rebuild)
     {
         auto link = link_scope{executable_path, rebuild};
-        const auto argv = link_test_runner_argv(executable_path, inputs.object, inputs.module_ldflags);
-        const auto result = invoke_shell(argv, diagnostics_path_for_executable(executable_path));
-        if(not result.ok()) {
-            link.failed(result.diag);
-            throw std::runtime_error{command_failure_message(argv, result)};
-        }
+        run_step(link,
+                 link_test_runner_argv(runner, executable_path),
+                 diagnostics_path_for_executable(executable_path));
         link.succeeded();
     }
 
-    void link_test_runner() {
-        const auto* runner = find_test_runner_unit();
-        if(not has_test_runner_link_inputs(runner != nullptr)) {
-            output::notify(&output::observer::info, "No objects to link for test_runner");
-            return;
-        }
+    // What the runner takes in: its object, the test objects, the shared objects, the std object.
+    // The flag tail covers every test unit's imports as well as the runner's — a change to any
+    // of them is a relink — while the argv itself only needs the runner's own imports, the same
+    // split link_executable has between its signature and its command line.
+    std::string compute_test_runner_signature(const translation_unit& runner) const {
+        auto paths = string_list{runner.object_path};
+        paths.append_range(test_object_paths());
+        paths.append_range(linkable_object_paths());
+        paths.push_back(std_obj_path());
+        auto flags = collect_test_module_ldflags();
+        flags.append_range(collect_module_ldflags(runner.imports));
+        return link_signature(paths, flags);
+    }
 
+    void link_test_runner() {
         // Always the canonical path that run_tests executes.
+        const auto& runner = test_runner_unit();
         const auto executable_path = detail::join_dir(binary_dir(), test_runner_name);
-        const auto inputs = test_runner_inputs_of(runner);
 
         auto link_cache = load_executable_cache();
-        const auto signature = compute_test_runner_signature(inputs);
+        const auto signature = compute_test_runner_signature(runner);
         const auto reason = needs_relinking(executable_path, signature, link_cache);
         if(not reason)
         {
@@ -2791,10 +2759,8 @@ private:
             return;
         }
 
-        link_test_runner_executable(executable_path, inputs, *reason);
-        output::notify(&output::observer::success,
-                       inputs.has_runner_unit ? "test_runner linked with test objects"
-                                              : "test_runner linked successfully");
+        link_test_runner_executable(runner, executable_path, *reason);
+        output::notify(&output::observer::success, "test_runner linked with test objects");
         {
             auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
             link_cache[executable_path] = signature;
@@ -2952,11 +2918,11 @@ public:
         include_tests = true;
         auto runner = detail::join_dir(binary_dir(), test_runner_name);
         {
+            // No check that the runner is there afterwards: link_test_runner either produced
+            // it or threw, and the missing-source case is the sentence it throws.
             auto build = build_scope{config_name(), true, include_examples};
             build_steps();
             link_test_runner();
-            if(not fs::exists(runner))
-                throw std::runtime_error{"test_runner not found — make sure .test.c++ files or test_runner.c++ exist"};
             build.succeeded();
         }
         output::notify(&output::observer::success, "Build completed: "s + build_root());
