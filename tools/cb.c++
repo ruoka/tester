@@ -971,6 +971,52 @@ private:
     std::counting_semaphore<> slots;
 };
 
+// Compiling and linking differ only in the work: both run one worker per job, at most limit at
+// a time, start nothing new once a job has failed, and rethrow the first failure after every
+// worker has joined, so a failing build never leaves a toolchain process running. Written twice,
+// the two copies had to agree about the relaxed loads, the recheck after the slot, and which
+// exception survives.
+template <std::ranges::input_range Jobs, typename Work>
+void run_in_parallel(Jobs&& jobs, std::ptrdiff_t limit, Work work)
+{
+    auto threads = thread_list{};
+    auto failed = std::atomic_bool{false};
+    auto failure = std::exception_ptr{};
+    auto failure_mutex = std::mutex{};
+    auto gate = job_gate{limit};
+
+    for(const auto& job : jobs)
+    {
+        // The job is addressed, not copied: it outlives join(), and a build decision carries a
+        // rebuild reason of four strings.
+        threads.emplace_back([&work, item = std::addressof(job), &failed, &failure, &failure_mutex, &gate]()
+        {
+            if(failed.load(std::memory_order_relaxed))
+                return;
+            const auto slot = job_gate::slot{gate};
+            // Recheck: a failure may have landed while waiting for a slot.
+            if(failed.load(std::memory_order_relaxed))
+                return;
+            try
+            {
+                work(*item);
+            }
+            catch(...)
+            {
+                failed.store(true, std::memory_order_relaxed);
+                auto lock = std::lock_guard<std::mutex>{failure_mutex};
+                if(not failure)
+                    failure = std::current_exception();
+            }
+        });
+    }
+
+    for(auto& thread : threads)
+        thread.join();
+    if(failure)
+        std::rethrow_exception(failure);
+}
+
 // One build_start, exactly one build_end, whichever way the steps end. The pairing lives
 // here rather than in the callers, which had to remember a phase flag, an emitted flag and a
 // catch-and-rethrow each, and rather than in the observers, which would each have to
@@ -1315,6 +1361,24 @@ private:
             detail::module_file_flag("std", std_pcm_path()),
             std::string{prebuilt_module_path_flag_prefix} + module_cache_dir(),
         };
+    }
+
+    // The rest of module_flags: one -fmodule-file= per modular unit, which is why it cannot be
+    // set above — the units are only known once scan_and_order has run. build_steps calls this
+    // between the two.
+    void update_module_flags()
+    {
+        module_flags.append_range(
+            units_in_topological_order
+            | std::views::filter([](const translation_unit& tu) { return tu.is_modular; })
+            | std::views::transform([](const translation_unit& tu)
+            {
+                return detail::module_file_flag(tu.module, tu.pcm_path);
+            })
+            | std::views::filter([&](const auto& flag)
+            {
+                return not std::ranges::contains(module_flags, flag);
+            }));
     }
 
     // ============================================================================
@@ -2233,21 +2297,6 @@ private:
         compile.succeeded();
     }
 
-    void update_module_flags()
-    {
-        module_flags.append_range(
-            units_in_topological_order
-            | std::views::filter([](const translation_unit& tu) { return tu.is_modular; })
-            | std::views::transform([](const translation_unit& tu)
-            {
-                return detail::module_file_flag(tu.module, tu.pcm_path);
-            })
-            | std::views::filter([&](const auto& flag)
-            {
-                return not std::ranges::contains(module_flags, flag);
-            }));
-    }
-
     void compile_units() {
         if (units_in_topological_order.empty()) return;
         auto cache = load_object_cache();
@@ -2279,48 +2328,26 @@ private:
                       return compile_decision{tu, needs_recompile(*tu, cache, u2tu)}; })
                 | std::ranges::to<std::vector>();
 
-            auto threads = thread_list{};
-            auto failed = std::atomic_bool{false};
-            auto failure = std::exception_ptr{};
-            auto failure_mutex = std::mutex{};
-            auto gate = job_gate{job_limit()};
-
             for (const auto& decision : decisions) {
-                if(decision.reason) {
-                    // Capture the decision by reference — decisions outlives join(), and the
-                    // reason it holds is four strings not worth copying per worker.
-                    threads.emplace_back([this, &decision, &cache, &failed, &failure, &failure_mutex, &gate]() {
-                        if(failed.load(std::memory_order_relaxed))
-                            return;
-                        const auto slot = job_gate::slot{gate};
-                        // Recheck: a failure may have landed while waiting for a slot.
-                        if(failed.load(std::memory_order_relaxed))
-                            return;
-                        const auto& tu = *decision.tu;
-                        try {
-                            compile_unit(tu, *decision.reason);
-                            auto lock = std::lock_guard<std::mutex>{cache_mutex};
-                            cache.entries[tu.full_path] = tu.last_modified;
-                        } catch (...) {
-                            failed.store(true, std::memory_order_relaxed);
-                            auto lock = std::lock_guard<std::mutex>{failure_mutex};
-                            if(not failure)
-                                failure = std::current_exception();
-                            return;
-                        }
-                    });
-                } else {
-                    const auto now = std::chrono::steady_clock::now();
-                    const auto unit = compile_unit_of(*decision.tu);
-                    output::notify(&output::observer::compile_start, unit, output::rebuild_info{});
-                    output::notify(&output::observer::compile_end,
-                                   unit,
-                                   output::step_result{.ok = true, .cache_hit = true, .timing = {now, now}});
-                }
+                if(decision.reason)
+                    continue;
+                const auto now = std::chrono::steady_clock::now();
+                const auto unit = compile_unit_of(*decision.tu);
+                output::notify(&output::observer::compile_start, unit, output::rebuild_info{});
+                output::notify(&output::observer::compile_end,
+                               unit,
+                               output::step_result{.ok = true, .cache_hit = true, .timing = {now, now}});
             }
-            for (auto& thread : threads) thread.join();
-            if(failure)
-                std::rethrow_exception(failure);
+
+            run_in_parallel(decisions | std::views::filter([](const compile_decision& decision) {
+                                            return decision.reason.has_value(); }),
+                            job_limit(),
+                            [&](const compile_decision& decision) {
+                                const auto& tu = *decision.tu;
+                                compile_unit(tu, *decision.reason);
+                                auto lock = std::lock_guard<std::mutex>{cache_mutex};
+                                cache.entries[tu.full_path] = tu.last_modified;
+                            });
         }
         save_object_cache(cache.entries);
     }
@@ -2412,56 +2439,36 @@ private:
             decisions.push_back(link_decision{&tu, std::move(signature), std::move(reason)});
         }
 
-        auto threads = thread_list{};
-        auto failed = std::atomic_bool{false};
-        auto failure = std::exception_ptr{};
-        auto failure_mutex = std::mutex{};
-        auto gate = job_gate{job_limit()};
         for(const auto& decision : decisions)
         {
-            const auto& tu = *decision.tu;
-            if(not decision.reason)
-            {
-                output::notify(&output::observer::info, "Skipping link (up-to-date): "s + tu.executable_path);
-                const auto now = std::chrono::steady_clock::now();
-                output::notify(&output::observer::link_end,
-                               tu.executable_path,
-                               output::step_result{.ok = true, .cache_hit = true, .timing = {now, now}});
+            if(decision.reason)
                 continue;
-            }
-            // Capture decision by reference — it outlives join(); do not bind a per-iteration local.
-            threads.emplace_back([this, &decision, &shared_objects, &link_cache, &failed, &failure, &failure_mutex, &gate]() {
-                if(failed.load(std::memory_order_relaxed))
-                    return;
-                const auto slot = job_gate::slot{gate};
-                if(failed.load(std::memory_order_relaxed))
-                    return;
-                const auto& tu = *decision.tu;
-                auto link = link_scope{tu.executable_path, *decision.reason};
-                try {
-                    link_executable(tu, shared_objects);
-                    link.succeeded();
-                    auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
-                    link_cache[tu.executable_path] = decision.signature;
-                } catch (const link_failure& error) {
-                    link.failed(error.diag);
-                    failed.store(true, std::memory_order_relaxed);
-                    auto lock = std::lock_guard<std::mutex>{failure_mutex};
-                    if(not failure)
-                        failure = std::current_exception();
-                    return;
-                } catch (...) {
-                    failed.store(true, std::memory_order_relaxed);
-                    auto lock = std::lock_guard<std::mutex>{failure_mutex};
-                    if(not failure)
-                        failure = std::current_exception();
-                    return;
-                }
-            });
+            const auto& tu = *decision.tu;
+            output::notify(&output::observer::info, "Skipping link (up-to-date): "s + tu.executable_path);
+            const auto now = std::chrono::steady_clock::now();
+            output::notify(&output::observer::link_end,
+                           tu.executable_path,
+                           output::step_result{.ok = true, .cache_hit = true, .timing = {now, now}});
         }
-        for(auto& thread : threads) thread.join();
-        if(failure)
-            std::rethrow_exception(failure);
+
+        run_in_parallel(decisions | std::views::filter([](const link_decision& decision) {
+                                        return decision.reason.has_value(); }),
+                        job_limit(),
+                        [&](const link_decision& decision) {
+                            const auto& tu = *decision.tu;
+                            auto link = link_scope{tu.executable_path, *decision.reason};
+                            try {
+                                link_executable(tu, shared_objects);
+                            } catch (const link_failure& error) {
+                                // The linker's own output belongs on this link_end; the runner
+                                // records the failure and stops the remaining links.
+                                link.failed(error.diag);
+                                throw;
+                            }
+                            link.succeeded();
+                            auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
+                            link_cache[tu.executable_path] = decision.signature;
+                        });
         save_executable_cache(link_cache);
     }
 
