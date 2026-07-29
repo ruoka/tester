@@ -386,6 +386,7 @@ Namespace `tester::assertions` — matching `check_*` (non-fatal) and `require_*
 - Signed against unsigned operands are compared as mathematical values via `std::cmp_*`, so `check_eq(-1, 4294967295u)` fails and `check_lt(-1, 1u)` passes. Comparing through `std::common_type_t` would convert the signed operand and invert both answers
 - This covers every integer operand, not only `int` against `unsigned`. `bool`, the character types and unscoped enumerations are promoted first, since `std::cmp_*` does not accept them as written, so `check_eq(char{-1}, 4294967295u)` fails as well while `check_eq('a', 97u)` and `check_eq(true, 1u)` pass. An enumeration compared against its own type keeps whatever comparison the type provides
 - A `std::pair`, `std::tuple` or other tuple-like operand is compared member by member by those same rules, and ordering is lexicographic over them, so `check_eq(std::pair{std::string::npos, 0}, std::pair{-1L, 0})` fails and `check_lt(std::pair{-1, 0}, std::pair{4294967295u, 0})` passes. Heterogeneous composites have a common type too, and converting through it converted every member. A composite member is walked again, and the floating-point epsilon reaches a member
+- A tuple-like operand is reported as its members, `(18446744073709551615, 0)`, in both channels, and each member by its own rule — a character member reads `'a' (97)` inside the composite too
 - A character operand is reported by value: `97` in JSONL, `'a' (97)` on the console. The character alone would put a raw byte where the schema promises a number, and for a negative `char` it would hide the value that was compared
 
 ### Boolean
@@ -401,7 +402,7 @@ Namespace `tester::assertions` — matching `check_*` (non-fatal) and `require_*
 - `check_container_eq`, `require_container_eq`
 - `check_contains`, `require_contains` (string or container element)
 - `check_starts_with`, `require_starts_with`, `check_ends_with`, `require_ends_with`
-- Elements are compared by the same rule as `check_eq`, so signedness and the floating-point epsilon behave identically inside a container: `check_contains(std::vector<std::size_t>{std::string::npos}, -1)` fails, while `require_container_eq(std::vector<double>{0.1 + 0.2}, std::vector<double>{0.3})` passes
+- Elements are compared and reported by the same rules as `check_eq`, so signedness and the floating-point epsilon behave identically inside a container, and an element with no stream inserter — a `std::pair`, say — is compared and shown as its members rather than failing to compile: `check_contains(std::vector<std::size_t>{std::string::npos}, -1)` fails, while `require_container_eq(std::vector<double>{0.1 + 0.2}, std::vector<double>{0.3})` passes
 
 ### Messaging
 - `succeed`, `failed`, `warning`

@@ -61,12 +61,9 @@ namespace tester::assertions
     template<typename A, typename E> constexpr bool values_equal(const A& actual, const E& expected);
     template<typename A, typename E> constexpr bool values_less(const A& actual, const E& expected);
 
-    // A pair, a tuple, an array — whatever the standard's tuple protocol describes, spelled
-    // as the protocol itself rather than as a list of types, so a user's own tuple-like type
-    // is covered too. std::tuple_size is left incomplete for everything else, which is what
-    // the requires-expression asks about.
-    template<typename T>
-    constexpr bool is_tuple_like_v = requires { std::tuple_size<std::remove_cvref_t<T>>::value; };
+    // What a composite is, asked once for the whole framework: tester:utils needs the same
+    // answer to know a pair reads as its members.
+    using output::is_tuple_like_v;
 
     // Arity is asked only once both sides are tuple-like: tuple_size_v on anything else is
     // an error rather than a false. Two composites of different length fall through to the
@@ -705,10 +702,10 @@ namespace tester::assertions
         for (const auto& elem : container) {
             if (!first) result += ", ";
             first = false;
-            // Use stringstream to format individual elements
-            auto ss = std::ostringstream{};
-            ss << elem;
-            result += ss.str();
+            // The shared operand formatter, not `<<`: an element that has no stream
+            // inserter — a pair, say — did not compile, so a container of them could not
+            // be compared at all, and one that has one reads here as it does everywhere.
+            result += output::value_to_display_string(elem);
         }
         result += "]";
         return result;
@@ -727,7 +724,9 @@ namespace tester::assertions
         while (actual_it != actual_end && expected_it != expected_end) {
             if (!values_equal(*actual_it, *expected_it)) {
                 auto msg = std::ostringstream{};
-                msg << "mismatch at index " << index << ": actual=" << *actual_it << ", expected=" << *expected_it;
+                msg << "mismatch at index " << index
+                    << ": actual=" << output::value_to_display_string(*actual_it)
+                    << ", expected=" << output::value_to_display_string(*expected_it);
                 return {false, msg.str()};
             }
             ++actual_it;
@@ -980,9 +979,8 @@ namespace tester::assertions
         data::statistics().successful_assertions += ok;
         
         auto container_str = format_container(container);
-        auto elem_str = std::ostringstream{};
-        elem_str << element;
-        publisher::assertion(ok, container_str, std::string{"contains: "} + elem_str.str(), location);
+        publisher::assertion(ok, container_str,
+                             std::string{"contains: "} + output::value_to_display_string(element), location);
         return ok;
     }
 
@@ -996,12 +994,12 @@ namespace tester::assertions
         data::statistics().successful_assertions += ok;
         
         auto container_str = format_container(container);
-        auto elem_str = std::ostringstream{};
-        elem_str << element;
-        publisher::assertion(ok, container_str, std::string{"contains: "} + elem_str.str(), location);
+        publisher::assertion(ok, container_str,
+                             std::string{"contains: "} + output::value_to_display_string(element), location);
         if (!ok) {
             auto msg = std::ostringstream{};
-            msg << "Container does not contain expected element: " << element;
+            msg << "Container does not contain expected element: "
+                << output::value_to_display_string(element);
             throw assertion_failure{msg.str()};
         }
     }
