@@ -698,6 +698,63 @@ test_raw_string_splice_reversion() {
   end_case raw_string_splice_reversion
 }
 
+test_commented_raw_opener_does_not_freeze_splices() {
+  should_run commented_raw_opener_does_not_freeze_splices || return 0
+  begin_case commented_raw_opener_does_not_freeze_splices
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+  rm -f "${work_dir}/hello.c++"
+
+  # Phase-2 splicing runs before comments, but recognising a raw-string opener is phase 3.
+  # An `R"( ` inside `//` or `/*` is not a raw string to clang; treating it as an unclosed
+  # one during the splice pass stops every later join. Then `#if \` stays a live body
+  # (false cycle) and `import \` stays split (missing edge). Both spellings are covered.
+  printf '%s\n' \
+    'export module cycle_a;' \
+    '// note R"(not a string' \
+    '#if \' \
+    '0' \
+    'import cycle_b;' \
+    '#endif' \
+    '/* also R"(not a string' \
+    'import \' \
+    'helpers;' \
+    '*/' \
+    'import \' \
+    'helpers;' \
+    'export int a_value() { return helper_value() + 1; }' > "${work_dir}/cycle_a.c++m"
+  printf '%s\n' \
+    'export module cycle_b;' \
+    'import cycle_a;' \
+    'export int b_value() { return a_value() + 1; }' > "${work_dir}/cycle_b.c++m"
+  printf '%s\n' \
+    'export module helpers;' \
+    'export int helper_value() { return 2; }' > "${work_dir}/helpers.c++m"
+  printf '%s\n' \
+    'import cycle_a;' \
+    'int main() { return a_value() - 3; }' > "${work_dir}/main.c++"
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if run_cb_list "${work_dir}"; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"commented_raw_opener_list_ok"}'
+  else
+    fail "list failed on a project clang accepts: a commented raw opener froze splicing"
+  fi
+  assert_jsonl_contains '"module":"cycle_a","kind":"interface","imports":["helpers"]' "commented_raw_opener_real_import_edge"
+  assert_jsonl_not_contains 'Cyclic dependency' "commented_raw_opener_no_false_cycle"
+  assert_jsonl_not_contains '"imports":["helpers","cycle_b"]' "commented_raw_opener_no_dead_if_edge"
+  assert_jsonl_not_contains '"imports":["cycle_b"]' "commented_raw_opener_no_phantom_only"
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if run_cb_build "${work_dir}"; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"commented_raw_opener_build_ok"}'
+  else
+    fail "build failed on a project clang accepts: a commented raw opener froze splicing"
+  fi
+  assert_jsonl_event_value build_end ok true "commented_raw_opener_build_end_ok"
+  end_case commented_raw_opener_does_not_freeze_splices
+}
+
 test_dead_conditional_arms() {
   should_run dead_conditional_arms || return 0
   begin_case dead_conditional_arms
@@ -1281,6 +1338,7 @@ main() {
   test_spliced_and_raw_literals
   test_spliced_directives
   test_raw_string_splice_reversion
+  test_commented_raw_opener_does_not_freeze_splices
   test_dead_conditional_arms
   test_commented_import_no_false_cycle
   test_gmf_preamble
