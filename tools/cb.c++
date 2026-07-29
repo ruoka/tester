@@ -566,126 +566,19 @@ constexpr std::string_view object_cache_format = "cb-object-cache-v3"sv;
 // says — `#if \` on its own line is `#if 0` to the compiler and an unrecognised directive
 // here, leaving a dead body live, and `import \` hides a real edge in plain sight.
 //
-// [lex.pptoken] reverts phase-2 splices inside a raw string before the closer is identified.
-// Splicing the body the way an ordinary line is spliced is not equivalent: `)\` / `"` becomes
-// a false `)"` closer, the cleaner erases only the prefix, and a following `import` that is
-// still inside the literal to the compiler becomes a live graph edge — the same false-cycle
-// shape as a spliced `#if`. So a raw string's body is copied verbatim once its opener has
-// been recognised (the opener itself is still assembled with splicing, because `R\` / `"( `
-// is a raw string to the compiler).
-inline std::size_t line_splice_length(std::string_view after_backslash)
+// Every splice goes, including one inside a raw-string body, which [lex.pptoken] reverts before
+// it looks for the closer. Honouring that reversion means deciding whether an `R"(` opens a raw
+// string or is text inside a comment or another literal, and that decision is lexical state
+// rather than a pattern: scanning here is regex-based on purpose, so a source that needs a
+// tokenizer to scan is out of scope. The cost is a raw string whose body ends a line with `)\`,
+// read as closing one line early — against a comment or a literal that merely mentions `R"(`,
+// which is the far likelier text and stays harmless. Deciding it the other way round cost both:
+// a fake opener with no closer froze every later splice to the end of the file.
+inline static const std::regex line_splice_regex{R"(\\[ \t\v\f]*\r?\n)"};
+
+inline std::string splice_physical_lines(const std::string& text)
 {
-    const auto next = after_backslash.find_first_not_of(" \t\v\f");
-    const auto rest = next == std::string_view::npos ? std::string_view{} : after_backslash.substr(next);
-    if(rest.starts_with('\n'))
-        return (next == std::string_view::npos ? std::size_t{0} : next) + 1;
-    if(rest.starts_with("\r\n"))
-        return (next == std::string_view::npos ? std::size_t{0} : next) + 2;
-    return 0;
-}
-
-// One logical character after phase-2 splices. Returns false at end of input.
-inline bool take_logical_char(std::string_view& text, std::string& logical)
-{
-    while(not text.empty())
-    {
-        if(text.front() == '\\')
-        {
-            if(const auto skip = line_splice_length(text.substr(1)); skip > 0)
-            {
-                text.remove_prefix(1 + skip);
-                continue;
-            }
-        }
-        logical += text.front();
-        text.remove_prefix(1);
-        return true;
-    }
-    return false;
-}
-
-// When text starts with `R`, try to take a full raw string with phase-2 reversion in the
-// body. On success, appends it to `out` and advances `text` past the closer.
-inline bool try_append_raw_string(std::string_view& text, std::string& out)
-{
-    if(not text.starts_with('R'))
-        return false;
-
-    auto cursor = text;
-    auto opener = std::string{};
-    if(not take_logical_char(cursor, opener) or opener != "R")
-        return false;
-    if(not take_logical_char(cursor, opener) or not opener.ends_with('"'))
-        return false;
-
-    for(;;)
-    {
-        if(not take_logical_char(cursor, opener))
-            return false;
-        const auto c = opener.back();
-        if(c == '(')
-            break;
-        // d-char: same exclusions as comment_or_literal_regex's delimiter class.
-        if(c == ')' or c == '\\' or c == ' ' or c == '\t' or c == '\v' or c == '\f'
-            or c == '\r' or c == '\n' or c == '"' or opener.size() - 2 > 16)
-            return false;
-    }
-
-    const auto delim = std::string_view{opener}.substr(2, opener.size() - 3);
-    const auto closer = std::string{')'} + std::string{delim} + '"';
-    const auto close_at = cursor.find(closer);
-    out += opener;
-    if(close_at == std::string_view::npos)
-    {
-        // Unclosed: keep the body physical so a splice cannot invent a closer.
-        out.append(cursor);
-        text = {};
-        return true;
-    }
-    out.append(cursor.substr(0, close_at + closer.size()));
-    text = cursor.substr(close_at + closer.size());
-    return true;
-}
-
-inline std::string splice_physical_lines(std::string_view text)
-{
-    auto spliced = std::string{};
-    spliced.reserve(text.size());
-
-    while(not text.empty())
-    {
-        if(try_append_raw_string(text, spliced))
-            continue;
-
-        const auto backslash = text.find('\\');
-        const auto raw = text.find('R');
-        const auto chunk_end = std::min(
-            backslash == std::string_view::npos ? text.size() : backslash,
-            raw == std::string_view::npos ? text.size() : raw);
-
-        if(chunk_end > 0)
-        {
-            spliced.append(text.substr(0, chunk_end));
-            text.remove_prefix(chunk_end);
-            continue;
-        }
-
-        if(text.starts_with('\\'))
-        {
-            text.remove_prefix(1);
-            if(const auto skip = line_splice_length(text); skip > 0)
-                text.remove_prefix(skip);
-            else
-                spliced += '\\';
-            continue;
-        }
-
-        // `R` that is not a raw-string opener (e.g. an identifier).
-        spliced += text.front();
-        text.remove_prefix(1);
-    }
-
-    return spliced;
+    return std::regex_replace(text, line_splice_regex, "");
 }
 
 // One alternation over the whole preamble, because a block comment and a raw string still

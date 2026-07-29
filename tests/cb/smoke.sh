@@ -642,29 +642,30 @@ test_spliced_directives() {
   end_case spliced_directives
 }
 
-test_raw_string_splice_reversion() {
-  should_run raw_string_splice_reversion || return 0
-  begin_case raw_string_splice_reversion
+test_mentioned_raw_opener() {
+  should_run mentioned_raw_opener || return 0
+  begin_case mentioned_raw_opener
   local work_dir
   work_dir="$(prepare_work_dir)"
   rm -f "${work_dir}/hello.c++"
 
-  # [lex.pptoken] reverts phase-2 splices inside a raw string before the closer is found.
-  # Splicing the body anyway turns `)\` / `"` into a false `)"`, so the cleaner stops early
-  # and an `import` that clang still treats as string contents becomes a live edge — enough
-  # to invent a cycle through a module that exists. Tagged delimiters have the same shape.
-  # Real imports stay in the preamble; the raw strings that hide phantoms are declarations.
+  # An `R"(` in a comment or a literal is text, not a raw-string opener. Deciding otherwise is
+  # what honouring [lex.pptoken]'s reversion costs a regex scanner, and it cost both bugs the
+  # reversion was meant to prevent: a mention with no closer stopped every later splice to the
+  # end of the file, so a dead `#if \` body came back as a phantom edge — a cycle through a
+  # module that exists — and a real `import \` stayed split, losing an edge without a word.
+  # Phase 2 is one substitution, so a mention cannot reach the graph from any of the three.
   printf '%s\n' \
     'export module cycle_a;' \
-    'import helpers;' \
-    'export const char* raw = R"(body)\' \
-    '";' \
+    '// spelling note: a raw string starts with R"(' \
+    'import \' \
+    'helpers;' \
+    '#if \' \
+    '0' \
     'import cycle_b;' \
-    ')";' \
-    'export const char* tagged = R"tag(body)tag\' \
-    '";' \
-    'import phantom_tagged_splice;' \
-    ')tag";' \
+    '#endif' \
+    '/* mentioned again in a block comment: R"( */' \
+    'export const char* mentions = "R\"( in a literal";' \
     'export int a_value() { return helper_value() + 1; }' > "${work_dir}/cycle_a.c++m"
   printf '%s\n' \
     'export module cycle_b;' \
@@ -679,23 +680,22 @@ test_raw_string_splice_reversion() {
 
   TESTS_RUN=$((TESTS_RUN + 1))
   if run_cb_list "${work_dir}"; then
-    jsonl_emit '{"type":"smoke_assert_passed","matcher":"raw_string_splice_reversion_list_ok"}'
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"mentioned_raw_opener_list_ok"}'
   else
-    fail "list failed on a project clang accepts: a spliced raw-string closer invented an edge"
+    fail "list failed on a project clang accepts: a mentioned R\"( froze the splice pass"
   fi
-  assert_jsonl_contains '"module":"cycle_a","kind":"interface","imports":["helpers"]' "raw_string_splice_reversion_only_real_edge"
-  assert_jsonl_not_contains 'Cyclic dependency' "raw_string_splice_reversion_no_false_cycle"
-  assert_jsonl_not_contains 'phantom_tagged_splice' "raw_string_splice_reversion_no_tagged_edge"
-  assert_jsonl_not_contains '"imports":["helpers","cycle_b"]' "raw_string_splice_reversion_no_empty_delim_edge"
+  assert_jsonl_contains '"module":"cycle_a","kind":"interface","imports":["helpers"]' "mentioned_raw_opener_keeps_real_edge"
+  assert_jsonl_not_contains 'Cyclic dependency' "mentioned_raw_opener_no_false_cycle"
+  assert_jsonl_not_contains 'cycle_b"]' "mentioned_raw_opener_no_dead_body_edge"
 
   TESTS_RUN=$((TESTS_RUN + 1))
   if run_cb_build "${work_dir}"; then
-    jsonl_emit '{"type":"smoke_assert_passed","matcher":"raw_string_splice_reversion_build_ok"}'
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"mentioned_raw_opener_build_ok"}'
   else
-    fail "build failed on a project clang accepts: a spliced raw-string closer invented an edge"
+    fail "build failed on a project clang accepts: a mentioned R\"( froze the splice pass"
   fi
-  assert_jsonl_event_value build_end ok true "raw_string_splice_reversion_build_end_ok"
-  end_case raw_string_splice_reversion
+  assert_jsonl_event_value build_end ok true "mentioned_raw_opener_build_end_ok"
+  end_case mentioned_raw_opener
 }
 
 test_dead_conditional_arms() {
@@ -1316,7 +1316,7 @@ main() {
   test_commented_out_imports
   test_spliced_and_raw_literals
   test_spliced_directives
-  test_raw_string_splice_reversion
+  test_mentioned_raw_opener
   test_dead_conditional_arms
   test_commented_import_no_false_cycle
   test_gmf_preamble
