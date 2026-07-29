@@ -2462,9 +2462,7 @@ private:
         {
             if(decision.reason)
                 continue;
-            const auto& tu = *decision.tu;
-            output::notify(&output::observer::info, "Skipping link (up-to-date): "s + tu.executable_path);
-            const auto hit = link_scope{tu.executable_path};
+            const auto hit = link_scope{decision.tu->executable_path};
         }
 
         run_in_parallel(decisions | std::views::filter([](const link_decision& decision) {

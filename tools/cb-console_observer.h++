@@ -195,9 +195,14 @@ struct observer final : cb::output::observer
         }
     }
 
+    // A skipped link is worth a line — there are one or two executables, and their absence from
+    // the output would be indistinguishable from nothing having been asked. Cached compiles stay
+    // silent on purpose: one line per up-to-date unit would be dozens of lines saying so.
     void link_end(std::string_view executable_path, const step_result& step) override
     {
-        if(not step.cache_hit and not step.rebuild.empty())
+        if(step.cache_hit)
+            info("Skipping link (up-to-date): " + std::string{executable_path});
+        else if(not step.rebuild.empty())
             info(link_rebuild_message(executable_path, step.rebuild));
     }
 
