@@ -2206,16 +2206,20 @@ private:
         for (const auto& tu : units_in_topological_order)
             levels[tu.dependency_level >= 0 ? tu.dependency_level : INT_MAX].push_back(&tu);
 
+        // A reason is a fact about this moment: after the compile runs, or after a unit at this
+        // level rewrites its pcm, needs_recompile answers differently — for the unit just built
+        // it answers nothing. So the decision and the reason it rests on are one answer, taken
+        // together before any worker starts, the same snapshot link_decision takes.
+        struct compile_decision {
+            const translation_unit* tu = nullptr;
+            std::optional<output::rebuild_info> reason{};
+        };
+
         for (const auto& [lvl, group] : levels) {
-            auto decisions = std::vector<std::pair<const translation_unit*, std::optional<output::rebuild_info>>>{};
-            decisions.reserve(group.size());
-            for(const auto* tu : group)
-            {
-                if(auto reason = needs_recompile(*tu, cache, u2tu))
-                    decisions.emplace_back(tu, std::move(*reason));
-                else
-                    decisions.emplace_back(tu, std::nullopt);
-            }
+            auto decisions = group
+                | std::views::transform([&](const translation_unit* tu) {
+                      return compile_decision{tu, needs_recompile(*tu, cache, u2tu)}; })
+                | std::ranges::to<std::vector>();
 
             auto threads = thread_list{};
             auto failed = std::atomic_bool{false};
@@ -2223,19 +2227,22 @@ private:
             auto failure_mutex = std::mutex{};
             auto gate = job_gate{job_limit()};
 
-            for (const auto& [tu, reason] : decisions) {
-                if(reason) {
-                    threads.emplace_back([this, tu, reason, &cache, &failed, &failure, &failure_mutex, &gate]() {
+            for (const auto& decision : decisions) {
+                if(decision.reason) {
+                    // Capture the decision by reference — decisions outlives join(), and the
+                    // reason it holds is four strings not worth copying per worker.
+                    threads.emplace_back([this, &decision, &cache, &failed, &failure, &failure_mutex, &gate]() {
                         if(failed.load(std::memory_order_relaxed))
                             return;
                         const auto slot = job_gate::slot{gate};
                         // Recheck: a failure may have landed while waiting for a slot.
                         if(failed.load(std::memory_order_relaxed))
                             return;
+                        const auto& tu = *decision.tu;
                         try {
-                            compile_unit(*tu, *reason);
+                            compile_unit(tu, *decision.reason);
                             auto lock = std::lock_guard<std::mutex>{cache_mutex};
-                            cache.entries[tu->full_path] = tu->last_modified;
+                            cache.entries[tu.full_path] = tu.last_modified;
                         } catch (...) {
                             failed.store(true, std::memory_order_relaxed);
                             auto lock = std::lock_guard<std::mutex>{failure_mutex};
@@ -2246,7 +2253,7 @@ private:
                     });
                 } else {
                     const auto now = std::chrono::steady_clock::now();
-                    const auto unit = compile_unit_of(*tu);
+                    const auto unit = compile_unit_of(*decision.tu);
                     output::notify(&output::observer::compile_start, unit, output::rebuild_info{});
                     output::notify(&output::observer::compile_end,
                                    unit,
