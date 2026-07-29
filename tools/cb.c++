@@ -1004,6 +1004,79 @@ private:
     bool reported = false;
 };
 
+// One compile_start, exactly one compile_end: build_scope's pairing one level down. A modular
+// unit compiles in two steps and either can fail, so without the scope each exit path carried
+// its own copy of the event and had to agree with the others about the unit, the reason and the
+// clock. failed() attaches the compiler's own output, so a consumer reading stdout sees the
+// diagnostic and not just ok:false.
+class compile_scope
+{
+public:
+    compile_scope(const output::compile_unit& compiled, const output::rebuild_info& reason)
+        : unit{compiled}, rebuild{reason}
+    {
+        output::notify(&output::observer::compile_start, unit, rebuild);
+    }
+
+    compile_scope(const compile_scope&) = delete;
+    compile_scope& operator=(const compile_scope&) = delete;
+
+    // A compile that never reports success failed, including when a step threw.
+    ~compile_scope()
+    {
+        output::notify(&output::observer::compile_end,
+                       unit,
+                       output::step_result{.ok = ok,
+                                           .timing = {started, std::chrono::steady_clock::now()},
+                                           .rebuild = rebuild,
+                                           .diag = diag});
+    }
+
+    void succeeded() { ok = true; }
+    void failed(output::diagnostics said) { diag = std::move(said); }
+
+private:
+    output::compile_unit unit;
+    output::rebuild_info rebuild;
+    output::diagnostics diag{};
+    std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+    bool ok = false;
+};
+
+// Linking has no start event, so this is the exit half only: exactly one link_end however the
+// link ends. The three copies it replaces needed a linked flag to keep the catch-all from
+// emitting a second one — a latch in a bool, which is what a scope is for.
+class link_scope
+{
+public:
+    link_scope(std::string_view executable, const output::rebuild_info& reason)
+        : executable_path{executable}, rebuild{reason}
+    {}
+
+    link_scope(const link_scope&) = delete;
+    link_scope& operator=(const link_scope&) = delete;
+
+    ~link_scope()
+    {
+        output::notify(&output::observer::link_end,
+                       executable_path,
+                       output::step_result{.ok = ok,
+                                           .timing = {started, std::chrono::steady_clock::now()},
+                                           .rebuild = rebuild,
+                                           .diag = diag});
+    }
+
+    void succeeded() { ok = true; }
+    void failed(output::diagnostics said) { diag = std::move(said); }
+
+private:
+    std::string executable_path;
+    output::rebuild_info rebuild;
+    output::diagnostics diag{};
+    std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+    bool ok = false;
+};
+
 class build_system {
 public:
     enum class build_config { debug, release };
@@ -2140,23 +2213,13 @@ private:
     // ============================================================================
 
     void compile_unit(const translation_unit& tu, const output::rebuild_info& rebuild) {
-        const auto unit = compile_unit_of(tu);
-        output::notify(&output::observer::compile_start, unit, rebuild);
-        const auto started = std::chrono::steady_clock::now();
+        auto compile = compile_scope{compile_unit_of(tu), rebuild};
         const auto capture = diagnostics_path(tu);
 
-        // Attach the compiler's own output to the failing compile_end, so a consumer
-        // reading stdout sees the diagnostic and not just ok:false.
         const auto step = [&](const string_list& argv) {
             const auto result = invoke_shell(argv, capture);
             if (not result.ok()) {
-                output::notify(&output::observer::compile_end,
-                               unit,
-                               output::step_result{
-                                   .ok = false,
-                                   .timing = {started, std::chrono::steady_clock::now()},
-                                   .rebuild = rebuild,
-                                   .diag = result.diag});
+                compile.failed(result.diag);
                 throw std::runtime_error{command_failure_message(argv, result)};
             }
         };
@@ -2167,12 +2230,7 @@ private:
         } else {
             step(source_object_argv(tu));
         }
-        output::notify(&output::observer::compile_end,
-                       unit,
-                       output::step_result{
-                           .ok = true,
-                           .timing = {started, std::chrono::steady_clock::now()},
-                           .rebuild = rebuild});
+        compile.succeeded();
     }
 
     void update_module_flags()
@@ -2279,15 +2337,14 @@ private:
             | std::ranges::to<string_list>();
     }
 
-    // Returns the linker's captured output when the link fails, so the caller can
-    // attach it to link_end before rethrowing.
-    output::diagnostics link_executable(const translation_unit& tu, const string_list& shared_objects) {
-        if (not tu.has_main) return {};
+    // A failing link throws link_failure carrying the linker's captured output, which is how
+    // the caller attaches it to link_end.
+    void link_executable(const translation_unit& tu, const string_list& shared_objects) {
+        if (not tu.has_main) return;
         const auto argv = link_executable_argv(tu, shared_objects);
         const auto result = invoke_shell(argv, diagnostics_path_for_executable(tu.executable_path));
         if (not result.ok())
             throw link_failure{command_failure_message(argv, result), result.diag};
-        return {};
     }
 
     struct link_failure : std::runtime_error
@@ -2380,41 +2437,20 @@ private:
                 if(failed.load(std::memory_order_relaxed))
                     return;
                 const auto& tu = *decision.tu;
-                const auto started = std::chrono::steady_clock::now();
-                auto linked = false;
+                auto link = link_scope{tu.executable_path, *decision.reason};
                 try {
                     link_executable(tu, shared_objects);
-                    linked = true;
-                    const auto finished = std::chrono::steady_clock::now();
-                    output::notify(&output::observer::link_end,
-                                   tu.executable_path,
-                                   output::step_result{
-                                       .ok = true,
-                                       .timing = {started, finished},
-                                       .rebuild = *decision.reason});
+                    link.succeeded();
                     auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
                     link_cache[tu.executable_path] = decision.signature;
                 } catch (const link_failure& error) {
-                    output::notify(&output::observer::link_end,
-                                   tu.executable_path,
-                                   output::step_result{
-                                       .ok = false,
-                                       .timing = {started, std::chrono::steady_clock::now()},
-                                       .rebuild = *decision.reason,
-                                       .diag = error.diag});
+                    link.failed(error.diag);
                     failed.store(true, std::memory_order_relaxed);
                     auto lock = std::lock_guard<std::mutex>{failure_mutex};
                     if(not failure)
                         failure = std::current_exception();
                     return;
                 } catch (...) {
-                    if(not linked)
-                        output::notify(&output::observer::link_end,
-                                       tu.executable_path,
-                                       output::step_result{
-                                           .ok = false,
-                                           .timing = {started, std::chrono::steady_clock::now()},
-                                           .rebuild = *decision.reason});
                     failed.store(true, std::memory_order_relaxed);
                     auto lock = std::lock_guard<std::mutex>{failure_mutex};
                     if(not failure)
