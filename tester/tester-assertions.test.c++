@@ -696,6 +696,17 @@ auto register_tests()
                     std::chrono::duration<unsigned>{4294967295u});
         require_eq(std::chrono::duration<int>{1},
                    std::chrono::duration<unsigned>{1u});
+        // Cross-period floating reps must keep chrono's floating common_type. Widening
+        // to intmax_t is ill-formed (float→int truncation is refused) and broke
+        // check_eq(1.5ms, 1500us). Integer cross-period still widens first.
+        require_eq(std::chrono::duration<double, std::milli>{1.5},
+                   std::chrono::duration<double, std::micro>{1500.0});
+        require_neq(std::chrono::duration<double, std::milli>{1.7},
+                    std::chrono::duration<double, std::micro>{1000.0});
+        require_eq(std::chrono::duration<int, std::milli>{1},
+                   std::chrono::duration<unsigned, std::micro>{1000u});
+        require_lt(std::chrono::duration<int, std::milli>{-1},
+                   std::chrono::duration<unsigned, std::micro>{0u});
         require_contains(std::vector{std::unexpected<int>{1}},
                          std::unexpected<unsigned>{1u});
         auto atomics = std::array<std::atomic<int>, 1>{};
@@ -832,6 +843,13 @@ auto register_tests()
                    tpu{std::chrono::duration<unsigned>{5}});
         require_lt(tpi{std::chrono::duration<int>{1}},
                    tpi{std::chrono::duration<int>{2}});
+        // Floating epoch periods: same intmax widen trap as durations.
+        using tpm = std::chrono::time_point<clock, std::chrono::duration<double, std::milli>>;
+        using tpmu = std::chrono::time_point<clock, std::chrono::duration<double, std::micro>>;
+        require_eq(tpm{std::chrono::duration<double, std::milli>{1.5}},
+                   tpmu{std::chrono::duration<double, std::micro>{1500.0}});
+        require_neq(tpm{std::chrono::duration<double, std::milli>{1.7}},
+                    tpmu{std::chrono::duration<double, std::micro>{1000.0}});
 
         const auto result = probe("[.probe-time-point-signedness]");
         require_neq(result.exit_code, 0);
