@@ -287,7 +287,8 @@ output::object_cache_profile_diff diff_object_cache_profiles(std::string_view ol
     const auto new_fields = parse_object_cache_profile_fields(new_profile);
     auto diff = output::object_cache_profile_diff{};
 
-    const auto field_value = [](const profile_fields& fields, std::string_view key){
+    // Trailing return type required: `return {}` cannot deduce against std::string.
+    const auto field_value = [](const profile_fields& fields, std::string_view key) -> std::string {
         if(fields.contains(key))
             return fields.at(key);
         return {};
@@ -790,7 +791,8 @@ translation_unit parse_translation_unit(const fs::path& project_root, const fs::
     int lines_scanned = 0;
     const int max_lines = 1000;  // generous
 
-    auto trim = [](std::string_view s){
+    // Trailing return type required: `return {}` cannot deduce against string_view.
+    auto trim = [](std::string_view s) -> std::string_view {
         auto start = s.find_first_not_of(" \t\r");
         if (start == std::string::npos) return {};
         auto end = s.find_last_not_of(" \t\r");
@@ -2952,7 +2954,8 @@ int main(int argc, char* argv[])
         auto max_jobs = 0; // 0 = derive from hardware_concurrency
 
         // Returns nullopt if not a --jsonl form; false if the mode is unknown.
-        const auto apply_jsonl_arg = [&](std::string_view argument)
+        // Trailing return type required: bool and nullopt_t do not deduce together.
+        const auto apply_jsonl_arg = [&](std::string_view argument) -> std::optional<bool>
         {
             if(argument == "--jsonl")
             {
