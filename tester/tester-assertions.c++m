@@ -64,6 +64,8 @@ namespace tester::assertions
     // What a composite is, asked once for the whole framework: tester:utils needs the same
     // answer to know a pair reads as its members.
     using output::is_tuple_like_v;
+    using output::is_optional_like_v;
+    using output::is_expected_like_v;
 
     // Arity is asked only once both sides are tuple-like: tuple_size_v on anything else is
     // an error rather than a false. Two composites of different length fall through to the
@@ -112,6 +114,85 @@ namespace tester::assertions
                 return false;
             return tuple_values_less<member + 1>(actual, expected);
         }
+    }
+
+    // optional and expected are not tuple-like, so the composite walk never reached them.
+    // Their common_type with a bare integer is the wrapper itself, and constructing that
+    // wrapper from the integer reintroduced the wraparound: check_eq(optional{-1},
+    // 4294967295u) built optional{unsigned(-1)} and reported equal. Unwrap to the
+    // contained value and apply the scalar rule there; engagement must match first.
+    template<typename A, typename E>
+    constexpr bool optional_values_equal(const A& actual, const E& expected)
+    {
+        if constexpr (is_optional_like_v<A> and is_optional_like_v<E>)
+        {
+            if(actual.has_value() != expected.has_value())
+                return false;
+            if(not actual.has_value())
+                return true;
+            return values_equal(*actual, *expected);
+        }
+        else if constexpr (is_optional_like_v<A>)
+            return actual.has_value() and values_equal(*actual, expected);
+        else
+            return expected.has_value() and values_equal(actual, *expected);
+    }
+
+    // nullopt is less than any engaged value, matching std::optional's ordering; engaged
+    // values go through values_less.
+    template<typename A, typename E>
+    constexpr bool optional_values_less(const A& actual, const E& expected)
+    {
+        if constexpr (is_optional_like_v<A> and is_optional_like_v<E>)
+        {
+            if(not actual.has_value())
+                return expected.has_value();
+            if(not expected.has_value())
+                return false;
+            return values_less(*actual, *expected);
+        }
+        else if constexpr (is_optional_like_v<A>)
+            return not actual.has_value() or values_less(*actual, expected);
+        else
+            return expected.has_value() and values_less(actual, *expected);
+    }
+
+    // Same unwrap for expected: value-to-value and error-to-error through values_equal;
+    // a value compared with a bare operand only when the expected holds a value, as
+    // std::expected's own operator== does.
+    template<typename A, typename E>
+    constexpr bool expected_values_equal(const A& actual, const E& expected)
+    {
+        if constexpr (is_expected_like_v<A> and is_expected_like_v<E>)
+        {
+            if(actual.has_value() and expected.has_value())
+                return values_equal(*actual, *expected);
+            if(not actual.has_value() and not expected.has_value())
+                return values_equal(actual.error(), expected.error());
+            return false;
+        }
+        else if constexpr (is_expected_like_v<A>)
+            return actual.has_value() and values_equal(*actual, expected);
+        else
+            return expected.has_value() and values_equal(actual, *expected);
+    }
+
+    // Unexpected is less than a value (has_value false < true); matching sides unwrap.
+    template<typename A, typename E>
+    constexpr bool expected_values_less(const A& actual, const E& expected)
+    {
+        if constexpr (is_expected_like_v<A> and is_expected_like_v<E>)
+        {
+            if(actual.has_value() != expected.has_value())
+                return not actual.has_value() and expected.has_value();
+            if(actual.has_value())
+                return values_less(*actual, *expected);
+            return values_less(actual.error(), expected.error());
+        }
+        else if constexpr (is_expected_like_v<A>)
+            return not actual.has_value() or values_less(*actual, expected);
+        else
+            return expected.has_value() and values_less(actual, *expected);
     }
 
     // Floating-point comparator with epsilon tolerance
@@ -181,6 +262,8 @@ namespace tester::assertions
             if constexpr (both_are_floating_point_v<A,E>) return floating_point_equal<T>{}(actual, expected);
             else if constexpr (both_are_promotable_integers_v<A,E>) return std::cmp_equal(+actual, +expected);
             else if constexpr (both_are_tuple_like_v<A,E>) return tuple_values_equal(actual, expected);
+            else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return optional_values_equal(actual, expected);
+            else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return expected_values_equal(actual, expected);
             else return std::equal_to<T>{}(actual, expected);
         }
     };
@@ -196,6 +279,8 @@ namespace tester::assertions
             if constexpr (both_are_floating_point_v<A,E>) return not floating_point_equal<T>{}(actual, expected);
             else if constexpr (both_are_promotable_integers_v<A,E>) return std::cmp_not_equal(+actual, +expected);
             else if constexpr (both_are_tuple_like_v<A,E>) return not tuple_values_equal(actual, expected);
+            else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return not optional_values_equal(actual, expected);
+            else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return not expected_values_equal(actual, expected);
             else return std::not_equal_to<T>{}(actual, expected);
         }
     };
@@ -207,6 +292,8 @@ namespace tester::assertions
         {
             if constexpr (both_are_promotable_integers_v<A,E>) return std::cmp_less(+actual, +expected);
             else if constexpr (both_are_tuple_like_v<A,E>) return tuple_values_less(actual, expected);
+            else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return optional_values_less(actual, expected);
+            else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return expected_values_less(actual, expected);
             else return std::less<T>{}(actual, expected);
         }
     };
@@ -218,6 +305,8 @@ namespace tester::assertions
         {
             if constexpr (both_are_promotable_integers_v<A,E>) return std::cmp_less_equal(+actual, +expected);
             else if constexpr (both_are_tuple_like_v<A,E>) return not tuple_values_less(expected, actual);
+            else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return not optional_values_less(expected, actual);
+            else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return not expected_values_less(expected, actual);
             else return std::less_equal<T>{}(actual, expected);
         }
     };
@@ -229,6 +318,8 @@ namespace tester::assertions
         {
             if constexpr (both_are_promotable_integers_v<A,E>) return std::cmp_greater(+actual, +expected);
             else if constexpr (both_are_tuple_like_v<A,E>) return tuple_values_less(expected, actual);
+            else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return optional_values_less(expected, actual);
+            else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return expected_values_less(expected, actual);
             else return std::greater<T>{}(actual, expected);
         }
     };
@@ -240,6 +331,8 @@ namespace tester::assertions
         {
             if constexpr (both_are_promotable_integers_v<A,E>) return std::cmp_greater_equal(+actual, +expected);
             else if constexpr (both_are_tuple_like_v<A,E>) return not tuple_values_less(actual, expected);
+            else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return not optional_values_less(actual, expected);
+            else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return not expected_values_less(actual, expected);
             else return std::greater_equal<T>{}(actual, expected);
         }
     };
@@ -250,12 +343,18 @@ namespace tester::assertions
     // std::vector<std::size_t>{std::string::npos}, -1) passed, and so did
     // check_container_eq({-1}, {4294967295u}). Elements go through the same comparator, so
     // the epsilon applies to floating point here too. Element types with no common type
-    // keep their own operator==, which is all std::common_type_t would have to work with.
+    // keep their own operator==, which is all std::common_type_t would have to work with —
+    // except optional and expected, which unwrap here the same way the matchers do, so a
+    // missing common_type cannot fall back into the wraparound their operator== still has.
     template<typename A, typename E>
     constexpr bool values_equal(const A& actual, const E& expected)
     {
         if constexpr (requires { typename std::common_type<A,E>::type; })
             return numeric_equal_to<std::common_type_t<A,E>>{}(actual, expected);
+        else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>)
+            return optional_values_equal(actual, expected);
+        else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>)
+            return expected_values_equal(actual, expected);
         else
             return actual == expected;
     }
@@ -266,6 +365,10 @@ namespace tester::assertions
     {
         if constexpr (requires { typename std::common_type<A,E>::type; })
             return numeric_less<std::common_type_t<A,E>>{}(actual, expected);
+        else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>)
+            return optional_values_less(actual, expected);
+        else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>)
+            return expected_values_less(actual, expected);
         else
             return actual < expected;
     }

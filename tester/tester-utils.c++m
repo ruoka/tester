@@ -194,6 +194,27 @@ constexpr bool is_ascii_printable(auto code)
 export template<typename T>
 constexpr bool is_tuple_like_v = requires { std::tuple_size<std::remove_cvref_t<T>>::value; };
 
+// optional and expected both expose has_value / *, so error_type is what separates them.
+// Exported with the tuple protocol: assertions unwrap these the way they walk composites,
+// and the formatter has to show the contained value for a failure to be actionable.
+export template<typename T>
+constexpr bool is_optional_like_v =
+    requires(const T& value) {
+        typename T::value_type;
+        { value.has_value() } -> std::convertible_to<bool>;
+        { *value };
+    } and not requires { typename T::error_type; };
+
+export template<typename T>
+constexpr bool is_expected_like_v =
+    requires(const T& value) {
+        typename T::value_type;
+        typename T::error_type;
+        { value.has_value() } -> std::convertible_to<bool>;
+        { *value };
+        { value.error() };
+    };
+
 export template<typename V>
 std::string value_to_display_string(const V& val)
 {
@@ -268,6 +289,22 @@ std::string value_to_display_string(const V& val)
             ((stream << (member == 0 ? "" : ", ") << value_to_display_string(get<member>(val))), ...);
         }(std::make_index_sequence<std::tuple_size_v<T>>{});
         stream << ')';
+    }
+    else if constexpr (is_optional_like_v<T>)
+    {
+        // The engaged value, or nullopt — naming the type alone hid the wraparound that
+        // check_eq(optional{-1}, 4294967295u) used to accept.
+        if(val.has_value())
+            stream << value_to_display_string(*val);
+        else
+            stream << "nullopt";
+    }
+    else if constexpr (is_expected_like_v<T>)
+    {
+        if(val.has_value())
+            stream << value_to_display_string(*val);
+        else
+            stream << "unexpected(" << value_to_display_string(val.error()) << ')';
     }
     else if constexpr (requires { stream << val; })
         stream << std::boolalpha << val;
@@ -347,6 +384,12 @@ observed_value observe_value(const V& val)
     {
         // Text rather than a type name: the members are what the comparison walked, so they
         // are what the stream has to carry for the failure to be actionable.
+        value = value_to_display_string(val);
+    }
+    else if constexpr (is_optional_like_v<T> or is_expected_like_v<T>)
+    {
+        // Same reason as composites: the contained value (or nullopt / unexpected(...))
+        // is what the comparison walked.
         value = value_to_display_string(val);
     }
     else

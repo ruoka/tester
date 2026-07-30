@@ -611,6 +611,63 @@ auto register_tests()
         require_eq(field(contains_failure, "expected"), std::string{"\"contains: (3, 4)\""});
     };
 
+    test_case("test_case [.probe-optional-signedness] optional and expected failures across signedness") = []
+    {
+        check_eq(std::optional<int>{-1}, 4294967295u);
+        check_eq(std::optional<unsigned>{4294967295u}, -1);
+        check_eq(std::optional<std::size_t>{std::string::npos}, -1L);
+        check_eq(std::expected<int, std::string>{-1}, 4294967295u);
+        check_contains(std::vector<std::optional<unsigned>>{4294967295u},
+                       std::optional<int>{-1});
+        check_lt(std::optional<int>{-1}, std::optional<unsigned>{0});
+        check_eq(std::optional<int>{}, 0); // nullopt is not 0
+    };
+
+    test_case("test_case [self] optional and expected follow the scalar comparison rule") = []
+    {
+        // optional and expected are not tuple-like, so the composite walk never reached
+        // them. Their common_type with a bare integer is the wrapper itself, and building
+        // that wrapper from the integer reintroduced the wraparound: optional{-1} met
+        // 4294967295u and reported equal. Unwrap to the contained value now.
+        require_neq(std::optional<int>{-1}, 4294967295u);
+        require_neq(std::optional<unsigned>{4294967295u}, -1);
+        require_neq(std::optional<std::size_t>{std::string::npos}, -1L);
+        require_neq(std::expected<int, std::string>{-1}, 4294967295u);
+        require_lt(std::optional<int>{-1}, std::optional<unsigned>{0});
+        require_gt(std::optional<unsigned>{1}, std::optional<int>{-1});
+
+        // Equal values still match across the wrapper, including nullopt with nullopt and
+        // an engaged optional with a bare equal value.
+        require_eq(std::optional<int>{1}, 1u);
+        require_eq(std::optional<int>{}, std::optional<unsigned>{});
+        require_eq(std::expected<int, std::string>{2}, 2u);
+        require_neq(std::optional<int>{}, 0);
+
+        // Containers of optionals go through the same unwrap. std::ranges::contains still
+        // answers yes here via optional's own operator== — the same conversion the matcher
+        // used to accept — which is why the probe's check_contains must fail.
+        const auto wrapped = std::vector{std::optional<unsigned>{4294967295u}};
+        require_true(std::ranges::contains(wrapped, std::optional<int>{-1}));
+        require_contains(std::vector{std::optional<int>{1}}, std::optional<unsigned>{1u});
+        require_container_eq(std::vector{std::optional<int>{1}},
+                             std::vector{std::optional<unsigned>{1u}});
+
+        const auto result = probe("[.probe-optional-signedness]");
+        require_neq(result.exit_code, 0);
+
+        require_eq(field(failure(result.stdout_text, 0), "matcher"), std::string{"\"check_eq\""});
+        // The contained value, not the type name — naming optional alone hid the wrap.
+        require_eq(field(failure(result.stdout_text, 0), "actual"), std::string{"\"-1\""});
+        require_eq(field(failure(result.stdout_text, 0), "expected"), std::string{"4294967295"});
+
+        require_eq(field(failure(result.stdout_text, 3), "matcher"), std::string{"\"check_eq\""});
+        require_eq(field(failure(result.stdout_text, 3), "actual"), std::string{"\"-1\""});
+
+        require_eq(field(failure(result.stdout_text, 4), "matcher"), std::string{"\"check_contains\""});
+        require_eq(field(failure(result.stdout_text, 6), "matcher"), std::string{"\"check_eq\""});
+        require_eq(field(failure(result.stdout_text, 6), "actual"), std::string{"\"nullopt\""});
+    };
+
     test_case("test_case [self] container elements follow the scalar comparison rule") = []
     {
         // The container matchers compared elements with `==`, so they kept converting
