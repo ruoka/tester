@@ -757,8 +757,9 @@ auto register_tests()
         // These must fail: mixed-signedness epochs wrap through common_type / operator==.
         check_eq(tpi{std::chrono::duration<int>{-1}},
                  tpu{std::chrono::duration<unsigned>{4294967295u}});
-        check_lt(tpi{std::chrono::duration<int>{-1}},
-                 tpu{std::chrono::duration<unsigned>{0}});
+        // Ordering wrap: 0 < max after conversion, so check_lt used to pass.
+        check_lt(tpu{std::chrono::duration<unsigned>{0}},
+                 tpi{std::chrono::duration<int>{-1}});
         check_contains(std::vector{tpu{std::chrono::duration<unsigned>{4294967295u}}},
                        tpi{std::chrono::duration<int>{-1}});
     };
