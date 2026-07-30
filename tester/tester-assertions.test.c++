@@ -667,6 +667,35 @@ auto register_tests()
         require_eq(field(failure(result.stdout_text, 5), "actual"), std::string{"\"nullopt\""});
     };
 
+    test_case("test_case [.probe-expected-void] expected<void> value vs unexpected") = []
+    {
+        using E = std::expected<void, std::string>;
+        check_eq(E{}, E{std::unexpect, "x"});
+        check_eq(E{std::unexpect, "a"}, E{std::unexpect, "b"});
+    };
+
+    test_case("test_case [self] expected<void> compares without forming a void expression") = []
+    {
+        // expected<void, E> has no contained value: *e is a void expression. The unwrap
+        // path from optional/expected signedness used values_equal(*a, *b) on every
+        // engaged pair, which made require_eq(E{}, E{}) ill-formed after that fix.
+        using E = std::expected<void, std::string>;
+        require_eq(E{}, E{});
+        require_neq(E{}, E{std::unexpect, "x"});
+        require_eq(E{std::unexpect, "x"}, E{std::unexpect, "x"});
+        require_neq(E{std::unexpect, "a"}, E{std::unexpect, "b"});
+        require_lt(E{std::unexpect, "a"}, E{});
+        require_lt(E{std::unexpect, "a"}, E{std::unexpect, "b"});
+
+        const auto result = probe("[.probe-expected-void]");
+        require_neq(result.exit_code, 0);
+        require_eq(field(failure(result.stdout_text, 0), "matcher"), std::string{"\"check_eq\""});
+        require_eq(field(failure(result.stdout_text, 0), "actual"), std::string{"\"void\""});
+        require_eq(field(failure(result.stdout_text, 0), "expected"),
+                   std::string{"\"unexpected(x)\""});
+        require_eq(field(failure(result.stdout_text, 1), "matcher"), std::string{"\"check_eq\""});
+    };
+
     test_case("test_case [self] container elements follow the scalar comparison rule") = []
     {
         // The container matchers compared elements with `==`, so they kept converting

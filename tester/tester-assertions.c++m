@@ -159,25 +159,45 @@ namespace tester::assertions
 
     // Same unwrap for expected: value-to-value and error-to-error through values_equal;
     // a value compared with a bare operand only when the expected holds a value, as
-    // std::expected's own operator== does.
+    // std::expected's own operator== does. expected<void, E> has no contained value to
+    // pass to values_equal — *e is a void expression — so two engaged voids compare equal
+    // without unwrapping, matching operator== before the unwrap path existed.
     template<typename A, typename E>
     constexpr bool expected_values_equal(const A& actual, const E& expected)
     {
         if constexpr (is_expected_like_v<A> and is_expected_like_v<E>)
         {
-            if(actual.has_value() and expected.has_value())
-                return values_equal(*actual, *expected);
-            if(not actual.has_value() and not expected.has_value())
+            if(actual.has_value() != expected.has_value())
+                return false;
+            if(not actual.has_value())
                 return values_equal(actual.error(), expected.error());
-            return false;
+            if constexpr (std::is_void_v<typename std::remove_cvref_t<A>::value_type>
+                      and std::is_void_v<typename std::remove_cvref_t<E>::value_type>)
+                return true;
+            else if constexpr (std::is_void_v<typename std::remove_cvref_t<A>::value_type>
+                            or std::is_void_v<typename std::remove_cvref_t<E>::value_type>)
+                return false;
+            else
+                return values_equal(*actual, *expected);
         }
         else if constexpr (is_expected_like_v<A>)
-            return actual.has_value() and values_equal(*actual, expected);
+        {
+            if constexpr (std::is_void_v<typename std::remove_cvref_t<A>::value_type>)
+                return false;
+            else
+                return actual.has_value() and values_equal(*actual, expected);
+        }
         else
-            return expected.has_value() and values_equal(actual, *expected);
+        {
+            if constexpr (std::is_void_v<typename std::remove_cvref_t<E>::value_type>)
+                return false;
+            else
+                return expected.has_value() and values_equal(actual, *expected);
+        }
     }
 
     // Unexpected is less than a value (has_value false < true); matching sides unwrap.
+    // Engaged void has nothing to order through values_less — two voids are equal, not less.
     template<typename A, typename E>
     constexpr bool expected_values_less(const A& actual, const E& expected)
     {
@@ -185,14 +205,28 @@ namespace tester::assertions
         {
             if(actual.has_value() != expected.has_value())
                 return not actual.has_value() and expected.has_value();
-            if(actual.has_value())
+            if(not actual.has_value())
+                return values_less(actual.error(), expected.error());
+            if constexpr (std::is_void_v<typename std::remove_cvref_t<A>::value_type>
+                       or std::is_void_v<typename std::remove_cvref_t<E>::value_type>)
+                return false;
+            else
                 return values_less(*actual, *expected);
-            return values_less(actual.error(), expected.error());
         }
         else if constexpr (is_expected_like_v<A>)
-            return not actual.has_value() or values_less(*actual, expected);
+        {
+            if constexpr (std::is_void_v<typename std::remove_cvref_t<A>::value_type>)
+                return not actual.has_value();
+            else
+                return not actual.has_value() or values_less(*actual, expected);
+        }
         else
-            return expected.has_value() and values_less(actual, *expected);
+        {
+            if constexpr (std::is_void_v<typename std::remove_cvref_t<E>::value_type>)
+                return false;
+            else
+                return expected.has_value() and values_less(actual, *expected);
+        }
     }
 
     // Floating-point comparator with epsilon tolerance
