@@ -719,6 +719,88 @@ auto register_tests()
                    std::string{"\"contains: unexpected(4294967295)\""});
     };
 
+    test_case("test_case [.probe-expected-void] expected<void> value vs unexpected") = []
+    {
+        using E = std::expected<void, std::string>;
+        check_eq(E{}, E{std::unexpect, "x"});
+        check_eq(E{std::unexpect, "a"}, E{std::unexpect, "b"});
+    };
+
+    test_case("test_case [self] expected<void> compares without forming a void expression") = []
+    {
+        // expected<void, E> has no contained value: *e is a void expression. The unwrap
+        // path from optional/expected signedness used values_equal(*a, *b) on every
+        // engaged pair, which made require_eq(E{}, E{}) ill-formed after that fix.
+        using E = std::expected<void, std::string>;
+        require_eq(E{}, E{});
+        require_neq(E{}, E{std::unexpect, "x"});
+        require_eq(E{std::unexpect, "x"}, E{std::unexpect, "x"});
+        require_neq(E{std::unexpect, "a"}, E{std::unexpect, "b"});
+        require_lt(E{std::unexpect, "a"}, E{});
+        require_lt(E{std::unexpect, "a"}, E{std::unexpect, "b"});
+
+        const auto result = probe("[.probe-expected-void]");
+        require_neq(result.exit_code, 0);
+        require_eq(field(failure(result.stdout_text, 0), "matcher"), std::string{"\"check_eq\""});
+        require_eq(field(failure(result.stdout_text, 0), "actual"), std::string{"\"void\""});
+        require_eq(field(failure(result.stdout_text, 0), "expected"),
+                   std::string{"\"unexpected(x)\""});
+        require_eq(field(failure(result.stdout_text, 1), "matcher"), std::string{"\"check_eq\""});
+    };
+
+    test_case("test_case [.probe-unwrap-partners] nullopt and unexpected partner failures") = []
+    {
+        // These must fail: disengaged optional equals nullopt, and unexpected expected
+        // equals the matching unexpected. The unwrap used to treat both partners as bare
+        // operands and report not-equal, so check_neq falsely passed.
+        check_neq(std::optional<int>{}, std::nullopt);
+        check_neq(std::nullopt, std::optional<int>{});
+        check_lt(std::optional<int>{}, std::nullopt);
+        check_neq(std::expected<int, int>{std::unexpect, 5}, std::unexpected<int>{5});
+        check_neq(std::unexpected<int>{5}, std::expected<int, int>{std::unexpect, 5});
+        check_neq(std::expected<void, std::string>{std::unexpect, "x"},
+                  std::unexpected<std::string>{"x"});
+        check_eq(std::expected<int, int>{std::unexpect, -1},
+                 std::unexpected<unsigned>{4294967295u});
+    };
+
+    test_case("test_case [self] optional nullopt and expected unexpected partners compare") = []
+    {
+        // After the optional/expected unwrap, common_type partners were mishandled:
+        // nullopt and unexpected converted as bare operands, so optional{} == nullopt and
+        // expected{unexpect, 5} == unexpected{5} returned false. require_neq then passed.
+        require_eq(std::optional<int>{}, std::nullopt);
+        require_eq(std::nullopt, std::optional<int>{});
+        require_neq(std::optional<int>{1}, std::nullopt);
+        require_lt(std::nullopt, std::optional<int>{1});
+        require_false(std::optional<int>{} < std::nullopt);
+
+        require_eq(std::expected<int, int>{std::unexpect, 5}, std::unexpected<int>{5});
+        require_eq(std::unexpected<int>{5}, std::expected<int, int>{std::unexpect, 5});
+        require_neq(std::expected<int, int>{std::unexpect, 5}, std::unexpected<int>{6});
+        require_neq(std::expected<int, int>{5}, std::unexpected<int>{5});
+        require_lt(std::unexpected<int>{5}, std::expected<int, int>{5});
+        require_eq(std::expected<void, std::string>{std::unexpect, "x"},
+                   std::unexpected<std::string>{"x"});
+        require_neq(std::expected<int, int>{std::unexpect, -1},
+                    std::unexpected<unsigned>{4294967295u});
+
+        const auto result = probe("[.probe-unwrap-partners]");
+        require_neq(result.exit_code, 0);
+        require_eq(field(failure(result.stdout_text, 0), "matcher"), std::string{"\"check_neq\""});
+        require_eq(field(failure(result.stdout_text, 0), "actual"), std::string{"\"nullopt\""});
+        require_eq(field(failure(result.stdout_text, 0), "expected"), std::string{"\"nullopt\""});
+        require_eq(field(failure(result.stdout_text, 3), "matcher"), std::string{"\"check_neq\""});
+        require_eq(field(failure(result.stdout_text, 3), "actual"),
+                   std::string{"\"unexpected(5)\""});
+        require_eq(field(failure(result.stdout_text, 3), "expected"),
+                   std::string{"\"unexpected(5)\""});
+        require_eq(field(failure(result.stdout_text, 5), "matcher"), std::string{"\"check_neq\""});
+        require_eq(field(failure(result.stdout_text, 5), "actual"),
+                   std::string{"\"unexpected(x)\""});
+        require_eq(field(failure(result.stdout_text, 6), "matcher"), std::string{"\"check_eq\""});
+    };
+
     test_case("test_case [self] container elements follow the scalar comparison rule") = []
     {
         // The container matchers compared elements with `==`, so they kept converting

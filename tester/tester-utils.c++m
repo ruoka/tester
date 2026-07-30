@@ -252,6 +252,9 @@ constexpr bool is_atomic_like_v =
         { value.load() } -> std::convertible_to<typename T::value_type>;
     };
 
+export template<typename T>
+constexpr bool is_nullopt_v = std::is_same_v<std::remove_cvref_t<T>, std::nullopt_t>;
+
 export template<typename V>
 std::string value_to_display_string(const V& val)
 {
@@ -327,6 +330,8 @@ std::string value_to_display_string(const V& val)
         }(std::make_index_sequence<std::tuple_size_v<T>>{});
         stream << ')';
     }
+    else if constexpr (is_nullopt_v<T>)
+        stream << "nullopt";
     else if constexpr (is_optional_like_v<T>)
     {
         // The engaged value, or nullopt — naming the type alone hid the wraparound that
@@ -336,10 +341,19 @@ std::string value_to_display_string(const V& val)
         else
             stream << "nullopt";
     }
+    else if constexpr (is_unexpected_like_v<T>)
+        stream << "unexpected(" << value_to_display_string(val.error()) << ')';
     else if constexpr (is_expected_like_v<T>)
     {
+        // expected<void, E> has no *val to format — naming it "void" keeps the failure
+        // readable without forming a void expression the same way comparison avoids.
         if(val.has_value())
-            stream << value_to_display_string(*val);
+        {
+            if constexpr (std::is_void_v<typename T::value_type>)
+                stream << "void";
+            else
+                stream << value_to_display_string(*val);
+        }
         else
             stream << "unexpected(" << value_to_display_string(val.error()) << ')';
     }
@@ -347,8 +361,6 @@ std::string value_to_display_string(const V& val)
         stream << value_to_display_string(val.get());
     else if constexpr (is_duration_like_v<T>)
         stream << value_to_display_string(val.count());
-    else if constexpr (is_unexpected_like_v<T>)
-        stream << "unexpected(" << value_to_display_string(val.error()) << ')';
     else if constexpr (is_atomic_like_v<T>)
         stream << value_to_display_string(val.load());
     else if constexpr (requires { stream << val; })
@@ -433,7 +445,8 @@ observed_value observe_value(const V& val)
     }
     else if constexpr (is_optional_like_v<T> or is_expected_like_v<T>
         or is_reference_wrapper_v<T> or is_duration_like_v<T>
-        or is_unexpected_like_v<T> or is_atomic_like_v<T>)
+        or is_unexpected_like_v<T> or is_atomic_like_v<T>
+        or is_nullopt_v<T>)
     {
         // Same reason as composites: the contained / counted / loaded value is what the
         // comparison walked (or unexpected(...)).
