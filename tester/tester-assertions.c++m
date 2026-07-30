@@ -47,14 +47,18 @@ namespace tester::assertions
     template<typename T>
     constexpr bool promotes_to_integer_v = std::integral<T> or (std::is_enum_v<T> and not std::is_scoped_enum_v<T>);
 
-    // The value comparison also asks for one plain integer, so an enumeration compared
-    // against its own type keeps whatever comparison it has: promoting both sides would
-    // bypass an operator== written for the enum. Against a number there is no such
-    // operator in the ordinary case, and the built-in comparison is the conversion that
-    // was wrong.
+    // Same-type enumerations keep whatever comparison they have: promoting both sides
+    // would bypass an operator== written for the enum. Against a number — or against a
+    // different unscoped enumeration — there is no such operator in the ordinary case,
+    // and the built-in / common_type comparison is the conversion that was wrong:
+    // check_eq(legacy_flag::minus_one, other_flag::max) reported equal the same way
+    // enum-vs-unsigned did. Two different promotable enumerations therefore take cmp_*
+    // as well; only the same-type case is carved out.
     template<typename A, typename E>
     constexpr bool both_are_promotable_integers_v =
-        promotes_to_integer_v<A> and promotes_to_integer_v<E> and (std::integral<A> or std::integral<E>);
+        promotes_to_integer_v<A> and promotes_to_integer_v<E>
+        and (std::integral<A> or std::integral<E>
+             or not std::is_same_v<std::remove_cvref_t<A>, std::remove_cvref_t<E>>);
 
     // Declared here and defined below with the container matchers that share them: the
     // composite walks call them, and they call the comparators the walks belong to.
