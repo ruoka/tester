@@ -714,6 +714,9 @@ auto register_tests()
         require_eq(field(failure(result.stdout_text, 2), "actual"), std::string{"\"-1\""});
         require_eq(field(failure(result.stdout_text, 3), "matcher"), std::string{"\"check_contains\""});
         require_eq(field(failure(result.stdout_text, 4), "matcher"), std::string{"\"check_contains\""});
+        // Five probe failures: ref eq, ref gt, duration eq, unexpected contains, atomic contains.
+        require_eq(field(failure(result.stdout_text, 3), "expected"),
+                   std::string{"\"contains: unexpected(4294967295)\""});
     };
 
     test_case("test_case [self] container elements follow the scalar comparison rule") = []

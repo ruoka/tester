@@ -234,12 +234,13 @@ constexpr bool is_duration_like_v =
         { value.count() } -> std::convertible_to<typename T::rep>;
     };
 
-// unexpected has error_type but no has_value — that is what separates it from expected.
+// unexpected has error() but no has_value — that is what separates it from expected.
+// Do not require error_type: libc++'s unexpected omits the typedef the standard names,
+// and requiring it left check_contains falling through to operator== (wraparound).
 export template<typename T>
 constexpr bool is_unexpected_like_v =
     requires(const T& value) {
-        typename T::error_type;
-        { value.error() } -> std::convertible_to<const typename T::error_type&>;
+        { value.error() };
     } and not requires(const T& value) {
         { value.has_value() } -> std::convertible_to<bool>;
     };
