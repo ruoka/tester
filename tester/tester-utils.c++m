@@ -215,14 +215,41 @@ constexpr bool is_expected_like_v =
         { value.error() };
     };
 
+// The same wraparound returns through wrappers that are neither tuple-like nor
+// optional/expected: common_type with an integer decays to the integer (or builds a
+// duration whose rep is unsigned), and equal_to then converts. Detect them by the
+// protocol assertions unwrap, so a failure shows the referred / counted / loaded value.
+export template<typename T>
+constexpr bool is_reference_wrapper_v =
+    requires(const T& value) {
+        typename T::type;
+        { value.get() } -> std::convertible_to<const typename T::type&>;
+    };
+
+export template<typename T>
+constexpr bool is_duration_like_v =
+    requires(const T& value) {
+        typename T::rep;
+        typename T::period;
+        { value.count() } -> std::convertible_to<typename T::rep>;
+    };
+
 // unexpected has error() but no has_value — that is what separates it from expected.
-// Do not require error_type: libc++'s unexpected omits the typedef the standard names.
+// Do not require error_type: libc++'s unexpected omits the typedef the standard names,
+// and requiring it left check_contains falling through to operator== (wraparound).
 export template<typename T>
 constexpr bool is_unexpected_like_v =
     requires(const T& value) {
         { value.error() };
     } and not requires(const T& value) {
         { value.has_value() } -> std::convertible_to<bool>;
+    };
+
+export template<typename T>
+constexpr bool is_atomic_like_v =
+    requires(const T& value) {
+        typename T::value_type;
+        { value.load() } -> std::convertible_to<typename T::value_type>;
     };
 
 export template<typename T>
@@ -341,9 +368,15 @@ std::string value_to_display_string(const V& val)
         else
             stream << "unexpected(" << value_to_display_string(val.error()) << ')';
     }
+    else if constexpr (is_reference_wrapper_v<T>)
+        stream << value_to_display_string(val.get());
+    else if constexpr (is_duration_like_v<T>)
+        stream << value_to_display_string(val.count());
     else if constexpr (is_time_point_like_v<T>)
         // Epoch count — that is what the comparison walks after unwrap.
         stream << value_to_display_string(val.time_since_epoch().count());
+    else if constexpr (is_atomic_like_v<T>)
+        stream << value_to_display_string(val.load());
     else if constexpr (requires { stream << val; })
         stream << std::boolalpha << val;
     else
@@ -425,10 +458,13 @@ observed_value observe_value(const V& val)
         value = value_to_display_string(val);
     }
     else if constexpr (is_optional_like_v<T> or is_expected_like_v<T>
-        or is_unexpected_like_v<T> or is_nullopt_v<T> or is_time_point_like_v<T>)
+        or is_reference_wrapper_v<T> or is_duration_like_v<T>
+        or is_time_point_like_v<T>
+        or is_unexpected_like_v<T> or is_atomic_like_v<T>
+        or is_nullopt_v<T>)
     {
-        // Same reason as composites: the contained value (or nullopt / unexpected(...) /
-        // epoch count) is what the comparison walked.
+        // Same reason as composites: the contained / counted / loaded / epoch value is
+        // what the comparison walked (or unexpected(...)).
         value = value_to_display_string(val);
     }
     else
