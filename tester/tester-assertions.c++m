@@ -24,12 +24,8 @@ namespace tester::assertions
         std::string m_message;
     };
 
-    // Check if type is a floating-point type
-    template<typename T>
-    constexpr bool is_floating_point_v = std::is_floating_point_v<T>;
-
     template<typename A, typename E>
-    constexpr bool both_are_floating_point_v = is_floating_point_v<A> and is_floating_point_v<E>;
+    constexpr bool are_floating_point_v = std::is_floating_point_v<A> and std::is_floating_point_v<E>;
 
     // Types std::cmp_* can answer for once promoted. Passing bool, a character type or an
     // enumeration straight to cmp_* is ill-formed: it is specified over the signed and
@@ -45,7 +41,7 @@ namespace tester::assertions
     // with an overloaded unary + keeps its own operator==. Extended integer types such as
     // __int128 are admitted wherever the implementation accepts them.
     template<typename T>
-    constexpr bool promotes_to_integer_v = std::integral<T> or (std::is_enum_v<T> and not std::is_scoped_enum_v<T>);
+    constexpr bool is_promotable_integer_v = std::integral<T> or (std::is_enum_v<T> and not std::is_scoped_enum_v<T>);
 
     // Same-type enumerations keep whatever comparison they have: promoting both sides
     // would bypass an operator== written for the enum. Against a number — or against a
@@ -55,8 +51,8 @@ namespace tester::assertions
     // enum-vs-unsigned did. Two different promotable enumerations therefore take cmp_*
     // as well; only the same-type case is carved out.
     template<typename A, typename E>
-    constexpr bool both_are_promotable_integers_v =
-        promotes_to_integer_v<A> and promotes_to_integer_v<E>
+    constexpr bool are_promotable_integers_v =
+        is_promotable_integer_v<A> and is_promotable_integer_v<E>
         and (std::integral<A> or std::integral<E>
              or not std::is_same_v<std::remove_cvref_t<A>, std::remove_cvref_t<E>>);
 
@@ -90,7 +86,7 @@ namespace tester::assertions
     }
 
     template<typename A, typename E>
-    constexpr bool both_are_tuple_like_v = composites_of_equal_arity<A,E>();
+    constexpr bool are_tuple_like_with_equal_arity_v = composites_of_equal_arity<A,E>();
 
     // The scalar rule reaches into composites, because a heterogeneous pair or tuple has a
     // common type of its own: comparing through it converted every member the way scalars
@@ -539,9 +535,9 @@ namespace tester::assertions
         template<typename A, typename E>
         constexpr bool operator()(const A& actual, const E& expected) const
         {
-            if constexpr (both_are_floating_point_v<A,E>) return floating_point_equal<T>{}(actual, expected);
-            else if constexpr (both_are_promotable_integers_v<A,E>) return std::cmp_equal(+actual, +expected);
-            else if constexpr (both_are_tuple_like_v<A,E>) return tuple_values_equal(actual, expected);
+            if constexpr (are_floating_point_v<A,E>) return floating_point_equal<T>{}(actual, expected);
+            else if constexpr (are_promotable_integers_v<A,E>) return std::cmp_equal(+actual, +expected);
+            else if constexpr (are_tuple_like_with_equal_arity_v<A,E>) return tuple_values_equal(actual, expected);
             else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return optional_values_equal(actual, expected);
             else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return expected_values_equal(actual, expected);
             else if constexpr (is_reference_wrapper_v<A> or is_reference_wrapper_v<E>) return reference_wrapper_values_equal(actual, expected);
@@ -561,9 +557,9 @@ namespace tester::assertions
             // The epsilon has to appear here too, negated: while this compared floating
             // point exactly, two values within the tolerance satisfied check_eq and
             // check_neq at the same time.
-            if constexpr (both_are_floating_point_v<A,E>) return not floating_point_equal<T>{}(actual, expected);
-            else if constexpr (both_are_promotable_integers_v<A,E>) return std::cmp_not_equal(+actual, +expected);
-            else if constexpr (both_are_tuple_like_v<A,E>) return not tuple_values_equal(actual, expected);
+            if constexpr (are_floating_point_v<A,E>) return not floating_point_equal<T>{}(actual, expected);
+            else if constexpr (are_promotable_integers_v<A,E>) return std::cmp_not_equal(+actual, +expected);
+            else if constexpr (are_tuple_like_with_equal_arity_v<A,E>) return not tuple_values_equal(actual, expected);
             else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return not optional_values_equal(actual, expected);
             else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return not expected_values_equal(actual, expected);
             else if constexpr (is_reference_wrapper_v<A> or is_reference_wrapper_v<E>) return not reference_wrapper_values_equal(actual, expected);
@@ -580,8 +576,8 @@ namespace tester::assertions
         template<typename A, typename E>
         constexpr bool operator()(const A& actual, const E& expected) const
         {
-            if constexpr (both_are_promotable_integers_v<A,E>) return std::cmp_less(+actual, +expected);
-            else if constexpr (both_are_tuple_like_v<A,E>) return tuple_values_less(actual, expected);
+            if constexpr (are_promotable_integers_v<A,E>) return std::cmp_less(+actual, +expected);
+            else if constexpr (are_tuple_like_with_equal_arity_v<A,E>) return tuple_values_less(actual, expected);
             else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return optional_values_less(actual, expected);
             else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return expected_values_less(actual, expected);
             else if constexpr (is_reference_wrapper_v<A> or is_reference_wrapper_v<E>) return reference_wrapper_values_less(actual, expected);
@@ -598,8 +594,8 @@ namespace tester::assertions
         template<typename A, typename E>
         constexpr bool operator()(const A& actual, const E& expected) const
         {
-            if constexpr (both_are_promotable_integers_v<A,E>) return std::cmp_less_equal(+actual, +expected);
-            else if constexpr (both_are_tuple_like_v<A,E>) return not tuple_values_less(expected, actual);
+            if constexpr (are_promotable_integers_v<A,E>) return std::cmp_less_equal(+actual, +expected);
+            else if constexpr (are_tuple_like_with_equal_arity_v<A,E>) return not tuple_values_less(expected, actual);
             else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return not optional_values_less(expected, actual);
             else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return not expected_values_less(expected, actual);
             else if constexpr (is_reference_wrapper_v<A> or is_reference_wrapper_v<E>) return not reference_wrapper_values_less(expected, actual);
@@ -616,8 +612,8 @@ namespace tester::assertions
         template<typename A, typename E>
         constexpr bool operator()(const A& actual, const E& expected) const
         {
-            if constexpr (both_are_promotable_integers_v<A,E>) return std::cmp_greater(+actual, +expected);
-            else if constexpr (both_are_tuple_like_v<A,E>) return tuple_values_less(expected, actual);
+            if constexpr (are_promotable_integers_v<A,E>) return std::cmp_greater(+actual, +expected);
+            else if constexpr (are_tuple_like_with_equal_arity_v<A,E>) return tuple_values_less(expected, actual);
             else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return optional_values_less(expected, actual);
             else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return expected_values_less(expected, actual);
             else if constexpr (is_reference_wrapper_v<A> or is_reference_wrapper_v<E>) return reference_wrapper_values_less(expected, actual);
@@ -634,8 +630,8 @@ namespace tester::assertions
         template<typename A, typename E>
         constexpr bool operator()(const A& actual, const E& expected) const
         {
-            if constexpr (both_are_promotable_integers_v<A,E>) return std::cmp_greater_equal(+actual, +expected);
-            else if constexpr (both_are_tuple_like_v<A,E>) return not tuple_values_less(actual, expected);
+            if constexpr (are_promotable_integers_v<A,E>) return std::cmp_greater_equal(+actual, +expected);
+            else if constexpr (are_tuple_like_with_equal_arity_v<A,E>) return not tuple_values_less(actual, expected);
             else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return not optional_values_less(actual, expected);
             else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return not expected_values_less(actual, expected);
             else if constexpr (is_reference_wrapper_v<A> or is_reference_wrapper_v<E>) return not reference_wrapper_values_less(actual, expected);
