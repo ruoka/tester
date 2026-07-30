@@ -255,6 +255,17 @@ constexpr bool is_atomic_like_v =
 export template<typename T>
 constexpr bool is_nullopt_v = std::is_same_v<std::remove_cvref_t<T>, std::nullopt_t>;
 
+// time_point is not duration-like (no count/rep/period on the point itself). Two points
+// whose duration reps differ in signedness still share a common_type whose epoch
+// comparison wraps the same way bare durations do.
+export template<typename T>
+constexpr bool is_time_point_like_v =
+    requires(const T& value) {
+        typename T::clock;
+        typename T::duration;
+        { value.time_since_epoch() } -> std::convertible_to<typename T::duration>;
+    };
+
 export template<typename V>
 std::string value_to_display_string(const V& val)
 {
@@ -361,6 +372,9 @@ std::string value_to_display_string(const V& val)
         stream << value_to_display_string(val.get());
     else if constexpr (is_duration_like_v<T>)
         stream << value_to_display_string(val.count());
+    else if constexpr (is_time_point_like_v<T>)
+        // Epoch count — that is what the comparison walks after unwrap.
+        stream << value_to_display_string(val.time_since_epoch().count());
     else if constexpr (is_atomic_like_v<T>)
         stream << value_to_display_string(val.load());
     else if constexpr (requires { stream << val; })
@@ -445,11 +459,12 @@ observed_value observe_value(const V& val)
     }
     else if constexpr (is_optional_like_v<T> or is_expected_like_v<T>
         or is_reference_wrapper_v<T> or is_duration_like_v<T>
+        or is_time_point_like_v<T>
         or is_unexpected_like_v<T> or is_atomic_like_v<T>
         or is_nullopt_v<T>)
     {
-        // Same reason as composites: the contained / counted / loaded value is what the
-        // comparison walked (or unexpected(...)).
+        // Same reason as composites: the contained / counted / loaded / epoch value is
+        // what the comparison walked (or unexpected(...)).
         value = value_to_display_string(val);
     }
     else
