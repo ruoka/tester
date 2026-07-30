@@ -215,6 +215,19 @@ constexpr bool is_expected_like_v =
         { value.error() };
     };
 
+// unexpected has error() but no has_value — that is what separates it from expected.
+// Do not require error_type: libc++'s unexpected omits the typedef the standard names.
+export template<typename T>
+constexpr bool is_unexpected_like_v =
+    requires(const T& value) {
+        { value.error() };
+    } and not requires(const T& value) {
+        { value.has_value() } -> std::convertible_to<bool>;
+    };
+
+export template<typename T>
+constexpr bool is_nullopt_v = std::is_same_v<std::remove_cvref_t<T>, std::nullopt_t>;
+
 export template<typename V>
 std::string value_to_display_string(const V& val)
 {
@@ -290,6 +303,8 @@ std::string value_to_display_string(const V& val)
         }(std::make_index_sequence<std::tuple_size_v<T>>{});
         stream << ')';
     }
+    else if constexpr (is_nullopt_v<T>)
+        stream << "nullopt";
     else if constexpr (is_optional_like_v<T>)
     {
         // The engaged value, or nullopt — naming the type alone hid the wraparound that
@@ -299,6 +314,8 @@ std::string value_to_display_string(const V& val)
         else
             stream << "nullopt";
     }
+    else if constexpr (is_unexpected_like_v<T>)
+        stream << "unexpected(" << value_to_display_string(val.error()) << ')';
     else if constexpr (is_expected_like_v<T>)
     {
         // expected<void, E> has no *val to format — naming it "void" keeps the failure
@@ -393,7 +410,8 @@ observed_value observe_value(const V& val)
         // are what the stream has to carry for the failure to be actionable.
         value = value_to_display_string(val);
     }
-    else if constexpr (is_optional_like_v<T> or is_expected_like_v<T>)
+    else if constexpr (is_optional_like_v<T> or is_expected_like_v<T>
+        or is_unexpected_like_v<T> or is_nullopt_v<T>)
     {
         // Same reason as composites: the contained value (or nullopt / unexpected(...))
         // is what the comparison walked.

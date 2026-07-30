@@ -66,6 +66,8 @@ namespace tester::assertions
     using output::is_tuple_like_v;
     using output::is_optional_like_v;
     using output::is_expected_like_v;
+    using output::is_unexpected_like_v;
+    using output::is_nullopt_v;
 
     // Arity is asked only once both sides are tuple-like: tuple_size_v on anything else is
     // an error rather than a false. Two composites of different length fall through to the
@@ -121,6 +123,8 @@ namespace tester::assertions
     // wrapper from the integer reintroduced the wraparound: check_eq(optional{-1},
     // 4294967295u) built optional{unsigned(-1)} and reported equal. Unwrap to the
     // contained value and apply the scalar rule there; engagement must match first.
+    // nullopt is a partner of optional (common_type is the optional), so treat it as
+    // disengaged rather than attempting *optional against nullopt_t.
     template<typename A, typename E>
     constexpr bool optional_values_equal(const A& actual, const E& expected)
     {
@@ -132,6 +136,10 @@ namespace tester::assertions
                 return true;
             return values_equal(*actual, *expected);
         }
+        else if constexpr (is_optional_like_v<A> and is_nullopt_v<E>)
+            return not actual.has_value();
+        else if constexpr (is_nullopt_v<A> and is_optional_like_v<E>)
+            return not expected.has_value();
         else if constexpr (is_optional_like_v<A>)
             return actual.has_value() and values_equal(*actual, expected);
         else
@@ -139,7 +147,7 @@ namespace tester::assertions
     }
 
     // nullopt is less than any engaged value, matching std::optional's ordering; engaged
-    // values go through values_less.
+    // values go through values_less. nullopt compared with a disengaged optional is a tie.
     template<typename A, typename E>
     constexpr bool optional_values_less(const A& actual, const E& expected)
     {
@@ -151,6 +159,10 @@ namespace tester::assertions
                 return false;
             return values_less(*actual, *expected);
         }
+        else if constexpr (is_optional_like_v<A> and is_nullopt_v<E>)
+            return false;
+        else if constexpr (is_nullopt_v<A> and is_optional_like_v<E>)
+            return expected.has_value();
         else if constexpr (is_optional_like_v<A>)
             return not actual.has_value() or values_less(*actual, expected);
         else
@@ -162,6 +174,8 @@ namespace tester::assertions
     // std::expected's own operator== does. expected<void, E> has no contained value to
     // pass to values_equal — *e is a void expression — so two engaged voids compare equal
     // without unwrapping, matching operator== before the unwrap path existed.
+    // unexpected is also a partner (common_type is the expected): match disengaged and
+    // compare errors, rather than treating unexpected as a bare value operand.
     template<typename A, typename E>
     constexpr bool expected_values_equal(const A& actual, const E& expected)
     {
@@ -182,14 +196,20 @@ namespace tester::assertions
         }
         else if constexpr (is_expected_like_v<A>)
         {
-            if constexpr (std::is_void_v<typename std::remove_cvref_t<A>::value_type>)
+            if constexpr (is_unexpected_like_v<E>)
+                return not actual.has_value()
+                    and values_equal(actual.error(), expected.error());
+            else if constexpr (std::is_void_v<typename std::remove_cvref_t<A>::value_type>)
                 return false;
             else
                 return actual.has_value() and values_equal(*actual, expected);
         }
         else
         {
-            if constexpr (std::is_void_v<typename std::remove_cvref_t<E>::value_type>)
+            if constexpr (is_unexpected_like_v<A>)
+                return not expected.has_value()
+                    and values_equal(actual.error(), expected.error());
+            else if constexpr (std::is_void_v<typename std::remove_cvref_t<E>::value_type>)
                 return false;
             else
                 return expected.has_value() and values_equal(actual, *expected);
@@ -198,6 +218,8 @@ namespace tester::assertions
 
     // Unexpected is less than a value (has_value false < true); matching sides unwrap.
     // Engaged void has nothing to order through values_less — two voids are equal, not less.
+    // An unexpected partner converts like a disengaged expected: compare errors, or lose to
+    // an engaged value.
     template<typename A, typename E>
     constexpr bool expected_values_less(const A& actual, const E& expected)
     {
@@ -215,14 +237,26 @@ namespace tester::assertions
         }
         else if constexpr (is_expected_like_v<A>)
         {
-            if constexpr (std::is_void_v<typename std::remove_cvref_t<A>::value_type>)
+            if constexpr (is_unexpected_like_v<E>)
+            {
+                if(actual.has_value())
+                    return false;
+                return values_less(actual.error(), expected.error());
+            }
+            else if constexpr (std::is_void_v<typename std::remove_cvref_t<A>::value_type>)
                 return not actual.has_value();
             else
                 return not actual.has_value() or values_less(*actual, expected);
         }
         else
         {
-            if constexpr (std::is_void_v<typename std::remove_cvref_t<E>::value_type>)
+            if constexpr (is_unexpected_like_v<A>)
+            {
+                if(not expected.has_value())
+                    return values_less(actual.error(), expected.error());
+                return true;
+            }
+            else if constexpr (std::is_void_v<typename std::remove_cvref_t<E>::value_type>)
                 return false;
             else
                 return expected.has_value() and values_less(actual, *expected);
