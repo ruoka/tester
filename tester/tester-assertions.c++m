@@ -68,6 +68,7 @@ namespace tester::assertions
     using output::is_expected_like_v;
     using output::is_unexpected_like_v;
     using output::is_nullopt_v;
+    using output::is_time_point_like_v;
 
     // Arity is asked only once both sides are tuple-like: tuple_size_v on anything else is
     // an error rather than a false. Two composites of different length fall through to the
@@ -263,6 +264,62 @@ namespace tester::assertions
         }
     }
 
+    // time_point is not duration-like, but two points whose duration reps differ in
+    // signedness still share a common_type: equal_to / operator== then compare epochs
+    // through an unsigned common duration and wrap -1 into max. Compare epoch tick
+    // counts with the scalar rule. Same period is the direct count; different periods
+    // widen to intmax_t first so a common-period conversion cannot pick an unsigned
+    // rep and rewrap.
+    template<typename A, typename E>
+    constexpr bool time_point_values_equal(const A& actual, const E& expected)
+    {
+        if constexpr (is_time_point_like_v<A> and is_time_point_like_v<E>)
+        {
+            using period_a = typename A::duration::period;
+            using period_e = typename E::duration::period;
+            if constexpr (std::ratio_equal_v<period_a, period_e>)
+                return values_equal(actual.time_since_epoch().count(),
+                                    expected.time_since_epoch().count());
+            else
+            {
+                using wide_a = std::chrono::duration<std::intmax_t, period_a>;
+                using wide_e = std::chrono::duration<std::intmax_t, period_e>;
+                using common = std::common_type_t<wide_a, wide_e>;
+                return values_equal(common{wide_a{actual.time_since_epoch()}}.count(),
+                                    common{wide_e{expected.time_since_epoch()}}.count());
+            }
+        }
+        else if constexpr (is_time_point_like_v<A>)
+            return values_equal(actual.time_since_epoch().count(), expected);
+        else
+            return values_equal(actual, expected.time_since_epoch().count());
+    }
+
+    template<typename A, typename E>
+    constexpr bool time_point_values_less(const A& actual, const E& expected)
+    {
+        if constexpr (is_time_point_like_v<A> and is_time_point_like_v<E>)
+        {
+            using period_a = typename A::duration::period;
+            using period_e = typename E::duration::period;
+            if constexpr (std::ratio_equal_v<period_a, period_e>)
+                return values_less(actual.time_since_epoch().count(),
+                                   expected.time_since_epoch().count());
+            else
+            {
+                using wide_a = std::chrono::duration<std::intmax_t, period_a>;
+                using wide_e = std::chrono::duration<std::intmax_t, period_e>;
+                using common = std::common_type_t<wide_a, wide_e>;
+                return values_less(common{wide_a{actual.time_since_epoch()}}.count(),
+                                   common{wide_e{expected.time_since_epoch()}}.count());
+            }
+        }
+        else if constexpr (is_time_point_like_v<A>)
+            return values_less(actual.time_since_epoch().count(), expected);
+        else
+            return values_less(actual, expected.time_since_epoch().count());
+    }
+
     // Floating-point comparator with epsilon tolerance
     template<typename T>
     requires std::is_floating_point_v<T>
@@ -332,6 +389,7 @@ namespace tester::assertions
             else if constexpr (both_are_tuple_like_v<A,E>) return tuple_values_equal(actual, expected);
             else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return optional_values_equal(actual, expected);
             else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return expected_values_equal(actual, expected);
+            else if constexpr (is_time_point_like_v<A> or is_time_point_like_v<E>) return time_point_values_equal(actual, expected);
             else return std::equal_to<T>{}(actual, expected);
         }
     };
@@ -349,6 +407,7 @@ namespace tester::assertions
             else if constexpr (both_are_tuple_like_v<A,E>) return not tuple_values_equal(actual, expected);
             else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return not optional_values_equal(actual, expected);
             else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return not expected_values_equal(actual, expected);
+            else if constexpr (is_time_point_like_v<A> or is_time_point_like_v<E>) return not time_point_values_equal(actual, expected);
             else return std::not_equal_to<T>{}(actual, expected);
         }
     };
@@ -362,6 +421,7 @@ namespace tester::assertions
             else if constexpr (both_are_tuple_like_v<A,E>) return tuple_values_less(actual, expected);
             else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return optional_values_less(actual, expected);
             else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return expected_values_less(actual, expected);
+            else if constexpr (is_time_point_like_v<A> or is_time_point_like_v<E>) return time_point_values_less(actual, expected);
             else return std::less<T>{}(actual, expected);
         }
     };
@@ -375,6 +435,7 @@ namespace tester::assertions
             else if constexpr (both_are_tuple_like_v<A,E>) return not tuple_values_less(expected, actual);
             else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return not optional_values_less(expected, actual);
             else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return not expected_values_less(expected, actual);
+            else if constexpr (is_time_point_like_v<A> or is_time_point_like_v<E>) return not time_point_values_less(expected, actual);
             else return std::less_equal<T>{}(actual, expected);
         }
     };
@@ -388,6 +449,7 @@ namespace tester::assertions
             else if constexpr (both_are_tuple_like_v<A,E>) return tuple_values_less(expected, actual);
             else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return optional_values_less(expected, actual);
             else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return expected_values_less(expected, actual);
+            else if constexpr (is_time_point_like_v<A> or is_time_point_like_v<E>) return time_point_values_less(expected, actual);
             else return std::greater<T>{}(actual, expected);
         }
     };
@@ -401,6 +463,7 @@ namespace tester::assertions
             else if constexpr (both_are_tuple_like_v<A,E>) return not tuple_values_less(actual, expected);
             else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return not optional_values_less(actual, expected);
             else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return not expected_values_less(actual, expected);
+            else if constexpr (is_time_point_like_v<A> or is_time_point_like_v<E>) return not time_point_values_less(actual, expected);
             else return std::greater_equal<T>{}(actual, expected);
         }
     };
@@ -412,8 +475,9 @@ namespace tester::assertions
     // check_container_eq({-1}, {4294967295u}). Elements go through the same comparator, so
     // the epsilon applies to floating point here too. Element types with no common type
     // keep their own operator==, which is all std::common_type_t would have to work with —
-    // except optional and expected, which unwrap here the same way the matchers do, so a
-    // missing common_type cannot fall back into the wraparound their operator== still has.
+    // except optional, expected, and time_point, which unwrap here the same way the matchers
+    // do, so a missing common_type cannot fall back into the wraparound their operator==
+    // still has.
     template<typename A, typename E>
     constexpr bool values_equal(const A& actual, const E& expected)
     {
@@ -423,6 +487,8 @@ namespace tester::assertions
             return optional_values_equal(actual, expected);
         else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>)
             return expected_values_equal(actual, expected);
+        else if constexpr (is_time_point_like_v<A> or is_time_point_like_v<E>)
+            return time_point_values_equal(actual, expected);
         else
             return actual == expected;
     }
@@ -437,6 +503,8 @@ namespace tester::assertions
             return optional_values_less(actual, expected);
         else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>)
             return expected_values_less(actual, expected);
+        else if constexpr (is_time_point_like_v<A> or is_time_point_like_v<E>)
+            return time_point_values_less(actual, expected);
         else
             return actual < expected;
     }

@@ -749,6 +749,46 @@ auto register_tests()
         require_eq(field(failure(result.stdout_text, 6), "matcher"), std::string{"\"check_eq\""});
     };
 
+    test_case("test_case [.probe-time-point-signedness] time_point failures across signedness") = []
+    {
+        using clock = std::chrono::system_clock;
+        using tpi = std::chrono::time_point<clock, std::chrono::duration<int>>;
+        using tpu = std::chrono::time_point<clock, std::chrono::duration<unsigned>>;
+        // These must fail: mixed-signedness epochs wrap through common_type / operator==.
+        check_eq(tpi{std::chrono::duration<int>{-1}},
+                 tpu{std::chrono::duration<unsigned>{4294967295u}});
+        check_lt(tpi{std::chrono::duration<int>{-1}},
+                 tpu{std::chrono::duration<unsigned>{0}});
+        check_contains(std::vector{tpu{std::chrono::duration<unsigned>{4294967295u}}},
+                       tpi{std::chrono::duration<int>{-1}});
+    };
+
+    test_case("test_case [self] time_point epochs follow the scalar comparison rule") = []
+    {
+        // time_point is not duration-like, but two points whose duration reps differ in
+        // signedness still share a common_type: equal_to / operator== then compare epochs
+        // through an unsigned common duration and wrap -1 into max. Unwrap to epoch counts.
+        using clock = std::chrono::system_clock;
+        using tpi = std::chrono::time_point<clock, std::chrono::duration<int>>;
+        using tpu = std::chrono::time_point<clock, std::chrono::duration<unsigned>>;
+        require_neq(tpi{std::chrono::duration<int>{-1}},
+                    tpu{std::chrono::duration<unsigned>{4294967295u}});
+        require_lt(tpi{std::chrono::duration<int>{-1}},
+                   tpu{std::chrono::duration<unsigned>{0}});
+        require_eq(tpi{std::chrono::duration<int>{5}},
+                   tpu{std::chrono::duration<unsigned>{5}});
+        require_lt(tpi{std::chrono::duration<int>{1}},
+                   tpi{std::chrono::duration<int>{2}});
+
+        const auto result = probe("[.probe-time-point-signedness]");
+        require_neq(result.exit_code, 0);
+        require_eq(field(failure(result.stdout_text, 0), "matcher"), std::string{"\"check_eq\""});
+        require_eq(field(failure(result.stdout_text, 0), "actual"), std::string{"\"-1\""});
+        require_eq(field(failure(result.stdout_text, 0), "expected"), std::string{"\"4294967295\""});
+        require_eq(field(failure(result.stdout_text, 1), "matcher"), std::string{"\"check_lt\""});
+        require_eq(field(failure(result.stdout_text, 2), "matcher"), std::string{"\"check_contains\""});
+    };
+
     test_case("test_case [self] container elements follow the scalar comparison rule") = []
     {
         // The container matchers compared elements with `==`, so they kept converting
