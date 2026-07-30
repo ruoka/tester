@@ -225,15 +225,24 @@ namespace tester::assertions
 
     // Two durations of differently signed reps have a common_type whose rep is unsigned,
     // so comparing through it (or via duration's own operator==) wraps the signed count.
-    // Convert both to that common duration for the period, then compare counts with the
-    // scalar rule — same answer for equal ticks, without the conversion of -1 to max.
+    // Compare the tick counts with the scalar rule. Same period is the direct count;
+    // different periods are first widened to intmax_t so the common-period conversion
+    // cannot pick an unsigned rep and wrap -1 into max again.
     template<typename A, typename E>
     constexpr bool duration_values_equal(const A& actual, const E& expected)
     {
         if constexpr (is_duration_like_v<A> and is_duration_like_v<E>)
         {
-            using common = std::common_type_t<A, E>;
-            return values_equal(common{actual}.count(), common{expected}.count());
+            if constexpr (std::ratio_equal_v<typename A::period, typename E::period>)
+                return values_equal(actual.count(), expected.count());
+            else
+            {
+                using wide_a = std::chrono::duration<std::intmax_t, typename A::period>;
+                using wide_e = std::chrono::duration<std::intmax_t, typename E::period>;
+                using common = std::common_type_t<wide_a, wide_e>;
+                return values_equal(common{wide_a{actual}}.count(),
+                                    common{wide_e{expected}}.count());
+            }
         }
         else if constexpr (is_duration_like_v<A>)
             return values_equal(actual.count(), expected);
@@ -246,8 +255,16 @@ namespace tester::assertions
     {
         if constexpr (is_duration_like_v<A> and is_duration_like_v<E>)
         {
-            using common = std::common_type_t<A, E>;
-            return values_less(common{actual}.count(), common{expected}.count());
+            if constexpr (std::ratio_equal_v<typename A::period, typename E::period>)
+                return values_less(actual.count(), expected.count());
+            else
+            {
+                using wide_a = std::chrono::duration<std::intmax_t, typename A::period>;
+                using wide_e = std::chrono::duration<std::intmax_t, typename E::period>;
+                using common = std::common_type_t<wide_a, wide_e>;
+                return values_less(common{wide_a{actual}}.count(),
+                                   common{wide_e{expected}}.count());
+            }
         }
         else if constexpr (is_duration_like_v<A>)
             return values_less(actual.count(), expected);
