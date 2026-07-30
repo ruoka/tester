@@ -15,6 +15,8 @@ import :observer;
 import :utils;
 import std;
 
+using namespace std::string_literals;
+
 namespace tester::output::jsonl
 {
 
@@ -22,7 +24,7 @@ export enum class jsonl_mode { summary, failures, trace };
 
 namespace {
 
-auto strip_ansi(std::string_view sv) -> std::string
+auto strip_ansi(std::string_view sv)
 {
     auto out = std::string{};
     out.reserve(sv.size());
@@ -56,7 +58,7 @@ struct prepared_output
     std::size_t original_bytes = 0;
 };
 
-auto prepare_output(std::string_view raw, std::size_t max_bytes) -> prepared_output
+auto prepare_output(std::string_view raw, std::size_t max_bytes)
 {
     auto cleaned = strip_ansi(raw);
     const auto original_bytes = cleaned.size();
@@ -72,16 +74,16 @@ auto prepare_output(std::string_view raw, std::size_t max_bytes) -> prepared_out
     return prepared_output{std::move(cleaned), truncated, original_bytes};
 }
 
-auto failure_message_for(const data::test_result& r) -> std::string
+auto failure_message_for(const data::test_result& r)
 {
     if(!r.output.empty())
         return r.output;
     if(r.assertions_ok < r.assertions_total)
-        return "assertion failure";
-    return "test failed";
+        return "assertion failure"s;
+    return "test failed"s;
 }
 
-auto demangle_type_name(std::string_view mangled) -> std::string
+auto demangle_type_name(std::string_view mangled)
 {
 #if defined(__GNUG__) && __has_include(<cxxabi.h>)
     int status = 0;
@@ -96,7 +98,7 @@ auto demangle_type_name(std::string_view mangled) -> std::string
     return std::string{mangled};
 }
 
-auto exception_type_name(const std::exception& ex) -> std::string
+auto exception_type_name(const std::exception& ex)
 {
     return demangle_type_name(typeid(ex).name());
 }
@@ -158,12 +160,12 @@ void write_observed_value(std::ostream& os, const observed_value& value)
 
 } // namespace
 
-export auto test_failed(const data::test_result& r) -> bool
+export auto test_failed(const data::test_result& r)
 {
     return !r.success || r.assertions_ok < r.assertions_total;
 }
 
-export auto collect_failures(const std::list<data::test_result>& results) -> failure_index
+export auto collect_failures(const std::list<data::test_result>& results)
 {
     auto index = failure_index{};
     for(const auto& r : results)

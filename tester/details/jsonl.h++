@@ -211,7 +211,7 @@ struct jsonl_context
         }
     };
 
-    friend auto operator<<(stream_type& os, event_builder ev) -> pending_event
+    friend auto operator<<(stream_type& os, event_builder ev)
     {
         return pending_event{&os, ev};
     }

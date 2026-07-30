@@ -60,7 +60,7 @@ constexpr std::array g_run_env_keys = {
     std::string_view{"CURSOR_SANDBOX"},
 };
 
-auto collect_run_env() -> std::vector<std::pair<std::string, std::string>>
+auto collect_run_env()
 {
     auto out = std::vector<std::pair<std::string, std::string>>{};
     for(const auto key : g_run_env_keys)

@@ -101,7 +101,7 @@ Examples:
   test_runner --tags="^scenario.*test$"
 )";
 
-static auto parse_usize(std::string_view sv) -> std::optional<std::size_t>
+static std::optional<std::size_t> parse_usize(std::string_view sv)
 {
     if(sv.empty()) return std::nullopt;
     std::size_t value = 0;

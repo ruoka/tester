@@ -85,7 +85,7 @@ auto sort_test_cases()
     // Calculate dependency levels (tests with no dependencies = level 0, etc.)
     auto levels = std::map<test_case*, int>{};
     auto visiting = std::flat_set<test_case*>{};
-    auto calculate_level = [&](test_case* tc, auto& self) -> int
+    auto calculate_level = [&](test_case* tc, auto& self)
     {
         if(levels.contains(tc))
             return levels.at(tc);
@@ -118,7 +118,7 @@ auto sort_test_cases()
     for(auto& tc : test_cases)
         sorted.push_back(&tc);
 
-    auto compare = [&levels](const test_case* a, const test_case* b) -> bool
+    auto compare = [&levels](const test_case* a, const test_case* b)
     {
         const auto level_a = levels[const_cast<test_case*>(a)];
         const auto level_b = levels[const_cast<test_case*>(b)];

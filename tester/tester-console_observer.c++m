@@ -359,7 +359,7 @@ export struct observer final : tester::output::observer
         const auto failed_tests = stats.total_tests - stats.successful_tests;
         const auto failed_assertions = stats.total_assertions - stats.successful_assertions;
 
-        auto pct = [](std::size_t ok, std::size_t total) -> double {
+        auto pct = [](std::size_t ok, std::size_t total){
             if(total == 0) return 100.0;
             return 100.0 * static_cast<double>(ok) / static_cast<double>(total);
         };
@@ -371,7 +371,7 @@ export struct observer final : tester::output::observer
         {
             slowest.reserve(data::test_results.size());
             for(const auto& r : data::test_results) slowest.push_back(&r);
-            auto compare = [](const data::test_result* a, const data::test_result* b) -> bool {
+            auto compare = [](const data::test_result* a, const data::test_result* b){
                 return a->duration > b->duration;
             };
             std::stable_sort(slowest.begin(), slowest.end(), compare);

@@ -893,7 +893,7 @@ namespace tester::assertions
     } // namespace
 
     // Outside anonymous namespace: check_throws_as is instantiated in test TUs.
-    inline auto throws_as_failure_message(std::string_view actual) -> std::string_view
+    inline auto throws_as_failure_message(std::string_view actual)
     {
         return actual == "?"sv ? "expected exception of specified type"sv : "wrong exception type"sv;
     }
