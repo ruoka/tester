@@ -293,9 +293,11 @@ namespace tester::assertions
 
     // Two durations of differently signed reps have a common_type whose rep is unsigned,
     // so comparing through it (or via duration's own operator==) wraps the signed count.
-    // Compare the tick counts with the scalar rule. Same period is the direct count;
-    // different periods are first widened to intmax_t so the common-period conversion
-    // cannot pick an unsigned rep and wrap -1 into max again.
+    // Compare the tick counts with the scalar rule. Same period is the direct count.
+    // Different periods: floating reps keep chrono's floating common_type (widening to
+    // intmax_t is ill-formed — chrono refuses float→int truncation — and broke
+    // check_eq(1.5ms, 1500us)); integer reps widen to intmax_t first so the common
+    // conversion cannot pick an unsigned rep and wrap -1 into max again.
     template<typename A, typename E>
     constexpr bool duration_values_equal(const A& actual, const E& expected)
     {
@@ -303,6 +305,12 @@ namespace tester::assertions
         {
             if constexpr (std::ratio_equal_v<typename A::period, typename E::period>)
                 return values_equal(actual.count(), expected.count());
+            else if constexpr (std::chrono::treat_as_floating_point_v<typename A::rep>
+                            or std::chrono::treat_as_floating_point_v<typename E::rep>)
+            {
+                using common = std::common_type_t<A, E>;
+                return values_equal(common{actual}.count(), common{expected}.count());
+            }
             else
             {
                 using wide_a = std::chrono::duration<std::intmax_t, typename A::period>;
@@ -325,6 +333,12 @@ namespace tester::assertions
         {
             if constexpr (std::ratio_equal_v<typename A::period, typename E::period>)
                 return values_less(actual.count(), expected.count());
+            else if constexpr (std::chrono::treat_as_floating_point_v<typename A::rep>
+                            or std::chrono::treat_as_floating_point_v<typename E::rep>)
+            {
+                using common = std::common_type_t<A, E>;
+                return values_less(common{actual}.count(), common{expected}.count());
+            }
             else
             {
                 using wide_a = std::chrono::duration<std::intmax_t, typename A::period>;
@@ -344,22 +358,28 @@ namespace tester::assertions
     // signedness still share a common_type: equal_to / operator== then compare epochs
     // through an unsigned common duration and wrap -1 into max. Compare epoch tick
     // counts with the scalar rule. Same period is the direct count; different periods
-    // widen to intmax_t first so a common-period conversion cannot pick an unsigned
-    // rep and rewrap.
+    // mirror duration_values_* (floating common_type vs intmax_t widen for integers).
     template<typename A, typename E>
     constexpr bool time_point_values_equal(const A& actual, const E& expected)
     {
         if constexpr (is_time_point_like_v<A> and is_time_point_like_v<E>)
         {
-            using period_a = typename A::duration::period;
-            using period_e = typename E::duration::period;
-            if constexpr (std::ratio_equal_v<period_a, period_e>)
+            using duration_a = typename A::duration;
+            using duration_e = typename E::duration;
+            if constexpr (std::ratio_equal_v<typename duration_a::period, typename duration_e::period>)
                 return values_equal(actual.time_since_epoch().count(),
                                     expected.time_since_epoch().count());
+            else if constexpr (std::chrono::treat_as_floating_point_v<typename duration_a::rep>
+                            or std::chrono::treat_as_floating_point_v<typename duration_e::rep>)
+            {
+                using common = std::common_type_t<duration_a, duration_e>;
+                return values_equal(common{actual.time_since_epoch()}.count(),
+                                    common{expected.time_since_epoch()}.count());
+            }
             else
             {
-                using wide_a = std::chrono::duration<std::intmax_t, period_a>;
-                using wide_e = std::chrono::duration<std::intmax_t, period_e>;
+                using wide_a = std::chrono::duration<std::intmax_t, typename duration_a::period>;
+                using wide_e = std::chrono::duration<std::intmax_t, typename duration_e::period>;
                 using common = std::common_type_t<wide_a, wide_e>;
                 return values_equal(common{wide_a{actual.time_since_epoch()}}.count(),
                                     common{wide_e{expected.time_since_epoch()}}.count());
@@ -376,15 +396,22 @@ namespace tester::assertions
     {
         if constexpr (is_time_point_like_v<A> and is_time_point_like_v<E>)
         {
-            using period_a = typename A::duration::period;
-            using period_e = typename E::duration::period;
-            if constexpr (std::ratio_equal_v<period_a, period_e>)
+            using duration_a = typename A::duration;
+            using duration_e = typename E::duration;
+            if constexpr (std::ratio_equal_v<typename duration_a::period, typename duration_e::period>)
                 return values_less(actual.time_since_epoch().count(),
                                    expected.time_since_epoch().count());
+            else if constexpr (std::chrono::treat_as_floating_point_v<typename duration_a::rep>
+                            or std::chrono::treat_as_floating_point_v<typename duration_e::rep>)
+            {
+                using common = std::common_type_t<duration_a, duration_e>;
+                return values_less(common{actual.time_since_epoch()}.count(),
+                                   common{expected.time_since_epoch()}.count());
+            }
             else
             {
-                using wide_a = std::chrono::duration<std::intmax_t, period_a>;
-                using wide_e = std::chrono::duration<std::intmax_t, period_e>;
+                using wide_a = std::chrono::duration<std::intmax_t, typename duration_a::period>;
+                using wide_e = std::chrono::duration<std::intmax_t, typename duration_e::period>;
                 using common = std::common_type_t<wide_a, wide_e>;
                 return values_less(common{wide_a{actual.time_since_epoch()}}.count(),
                                    common{wide_e{expected.time_since_epoch()}}.count());
