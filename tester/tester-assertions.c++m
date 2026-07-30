@@ -66,6 +66,10 @@ namespace tester::assertions
     using output::is_tuple_like_v;
     using output::is_optional_like_v;
     using output::is_expected_like_v;
+    using output::is_reference_wrapper_v;
+    using output::is_duration_like_v;
+    using output::is_unexpected_like_v;
+    using output::is_atomic_like_v;
 
     // Arity is asked only once both sides are tuple-like: tuple_size_v on anything else is
     // an error rather than a false. Two composites of different length fall through to the
@@ -195,6 +199,110 @@ namespace tester::assertions
             return expected.has_value() and values_less(actual, *expected);
     }
 
+    // reference_wrapper's common_type with an integer is the integer, so equal_to converts
+    // through the referred type and reintroduces the wraparound. Unwrap with get().
+    template<typename A, typename E>
+    constexpr bool reference_wrapper_values_equal(const A& actual, const E& expected)
+    {
+        if constexpr (is_reference_wrapper_v<A> and is_reference_wrapper_v<E>)
+            return values_equal(actual.get(), expected.get());
+        else if constexpr (is_reference_wrapper_v<A>)
+            return values_equal(actual.get(), expected);
+        else
+            return values_equal(actual, expected.get());
+    }
+
+    template<typename A, typename E>
+    constexpr bool reference_wrapper_values_less(const A& actual, const E& expected)
+    {
+        if constexpr (is_reference_wrapper_v<A> and is_reference_wrapper_v<E>)
+            return values_less(actual.get(), expected.get());
+        else if constexpr (is_reference_wrapper_v<A>)
+            return values_less(actual.get(), expected);
+        else
+            return values_less(actual, expected.get());
+    }
+
+    // Two durations of differently signed reps have a common_type whose rep is unsigned,
+    // so comparing through it (or via duration's own operator==) wraps the signed count.
+    // Convert both to that common duration for the period, then compare counts with the
+    // scalar rule — same answer for equal ticks, without the conversion of -1 to max.
+    template<typename A, typename E>
+    constexpr bool duration_values_equal(const A& actual, const E& expected)
+    {
+        if constexpr (is_duration_like_v<A> and is_duration_like_v<E>)
+        {
+            using common = std::common_type_t<A, E>;
+            return values_equal(common{actual}.count(), common{expected}.count());
+        }
+        else if constexpr (is_duration_like_v<A>)
+            return values_equal(actual.count(), expected);
+        else
+            return values_equal(actual, expected.count());
+    }
+
+    template<typename A, typename E>
+    constexpr bool duration_values_less(const A& actual, const E& expected)
+    {
+        if constexpr (is_duration_like_v<A> and is_duration_like_v<E>)
+        {
+            using common = std::common_type_t<A, E>;
+            return values_less(common{actual}.count(), common{expected}.count());
+        }
+        else if constexpr (is_duration_like_v<A>)
+            return values_less(actual.count(), expected);
+        else
+            return values_less(actual, expected.count());
+    }
+
+    // unexpected is not expected-like (no has_value). Its operator== compares errors with
+    // the built-in conversion, so a container of unexpected<int> still matched
+    // unexpected<unsigned>{max}. Unwrap the error.
+    template<typename A, typename E>
+    constexpr bool unexpected_values_equal(const A& actual, const E& expected)
+    {
+        if constexpr (is_unexpected_like_v<A> and is_unexpected_like_v<E>)
+            return values_equal(actual.error(), expected.error());
+        else if constexpr (is_unexpected_like_v<A>)
+            return values_equal(actual.error(), expected);
+        else
+            return values_equal(actual, expected.error());
+    }
+
+    template<typename A, typename E>
+    constexpr bool unexpected_values_less(const A& actual, const E& expected)
+    {
+        if constexpr (is_unexpected_like_v<A> and is_unexpected_like_v<E>)
+            return values_less(actual.error(), expected.error());
+        else if constexpr (is_unexpected_like_v<A>)
+            return values_less(actual.error(), expected);
+        else
+            return values_less(actual, expected.error());
+    }
+
+    // atomic's operator== loads then converts. Load first so mixed signedness hits cmp_*.
+    template<typename A, typename E>
+    constexpr bool atomic_values_equal(const A& actual, const E& expected)
+    {
+        if constexpr (is_atomic_like_v<A> and is_atomic_like_v<E>)
+            return values_equal(actual.load(), expected.load());
+        else if constexpr (is_atomic_like_v<A>)
+            return values_equal(actual.load(), expected);
+        else
+            return values_equal(actual, expected.load());
+    }
+
+    template<typename A, typename E>
+    constexpr bool atomic_values_less(const A& actual, const E& expected)
+    {
+        if constexpr (is_atomic_like_v<A> and is_atomic_like_v<E>)
+            return values_less(actual.load(), expected.load());
+        else if constexpr (is_atomic_like_v<A>)
+            return values_less(actual.load(), expected);
+        else
+            return values_less(actual, expected.load());
+    }
+
     // Floating-point comparator with epsilon tolerance
     template<typename T>
     requires std::is_floating_point_v<T>
@@ -264,6 +372,10 @@ namespace tester::assertions
             else if constexpr (both_are_tuple_like_v<A,E>) return tuple_values_equal(actual, expected);
             else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return optional_values_equal(actual, expected);
             else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return expected_values_equal(actual, expected);
+            else if constexpr (is_reference_wrapper_v<A> or is_reference_wrapper_v<E>) return reference_wrapper_values_equal(actual, expected);
+            else if constexpr (is_duration_like_v<A> or is_duration_like_v<E>) return duration_values_equal(actual, expected);
+            else if constexpr (is_unexpected_like_v<A> or is_unexpected_like_v<E>) return unexpected_values_equal(actual, expected);
+            else if constexpr (is_atomic_like_v<A> or is_atomic_like_v<E>) return atomic_values_equal(actual, expected);
             else return std::equal_to<T>{}(actual, expected);
         }
     };
@@ -281,6 +393,10 @@ namespace tester::assertions
             else if constexpr (both_are_tuple_like_v<A,E>) return not tuple_values_equal(actual, expected);
             else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return not optional_values_equal(actual, expected);
             else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return not expected_values_equal(actual, expected);
+            else if constexpr (is_reference_wrapper_v<A> or is_reference_wrapper_v<E>) return not reference_wrapper_values_equal(actual, expected);
+            else if constexpr (is_duration_like_v<A> or is_duration_like_v<E>) return not duration_values_equal(actual, expected);
+            else if constexpr (is_unexpected_like_v<A> or is_unexpected_like_v<E>) return not unexpected_values_equal(actual, expected);
+            else if constexpr (is_atomic_like_v<A> or is_atomic_like_v<E>) return not atomic_values_equal(actual, expected);
             else return std::not_equal_to<T>{}(actual, expected);
         }
     };
@@ -294,6 +410,10 @@ namespace tester::assertions
             else if constexpr (both_are_tuple_like_v<A,E>) return tuple_values_less(actual, expected);
             else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return optional_values_less(actual, expected);
             else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return expected_values_less(actual, expected);
+            else if constexpr (is_reference_wrapper_v<A> or is_reference_wrapper_v<E>) return reference_wrapper_values_less(actual, expected);
+            else if constexpr (is_duration_like_v<A> or is_duration_like_v<E>) return duration_values_less(actual, expected);
+            else if constexpr (is_unexpected_like_v<A> or is_unexpected_like_v<E>) return unexpected_values_less(actual, expected);
+            else if constexpr (is_atomic_like_v<A> or is_atomic_like_v<E>) return atomic_values_less(actual, expected);
             else return std::less<T>{}(actual, expected);
         }
     };
@@ -307,6 +427,10 @@ namespace tester::assertions
             else if constexpr (both_are_tuple_like_v<A,E>) return not tuple_values_less(expected, actual);
             else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return not optional_values_less(expected, actual);
             else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return not expected_values_less(expected, actual);
+            else if constexpr (is_reference_wrapper_v<A> or is_reference_wrapper_v<E>) return not reference_wrapper_values_less(expected, actual);
+            else if constexpr (is_duration_like_v<A> or is_duration_like_v<E>) return not duration_values_less(expected, actual);
+            else if constexpr (is_unexpected_like_v<A> or is_unexpected_like_v<E>) return not unexpected_values_less(expected, actual);
+            else if constexpr (is_atomic_like_v<A> or is_atomic_like_v<E>) return not atomic_values_less(expected, actual);
             else return std::less_equal<T>{}(actual, expected);
         }
     };
@@ -320,6 +444,10 @@ namespace tester::assertions
             else if constexpr (both_are_tuple_like_v<A,E>) return tuple_values_less(expected, actual);
             else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return optional_values_less(expected, actual);
             else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return expected_values_less(expected, actual);
+            else if constexpr (is_reference_wrapper_v<A> or is_reference_wrapper_v<E>) return reference_wrapper_values_less(expected, actual);
+            else if constexpr (is_duration_like_v<A> or is_duration_like_v<E>) return duration_values_less(expected, actual);
+            else if constexpr (is_unexpected_like_v<A> or is_unexpected_like_v<E>) return unexpected_values_less(expected, actual);
+            else if constexpr (is_atomic_like_v<A> or is_atomic_like_v<E>) return atomic_values_less(expected, actual);
             else return std::greater<T>{}(actual, expected);
         }
     };
@@ -333,6 +461,10 @@ namespace tester::assertions
             else if constexpr (both_are_tuple_like_v<A,E>) return not tuple_values_less(actual, expected);
             else if constexpr (is_optional_like_v<A> or is_optional_like_v<E>) return not optional_values_less(actual, expected);
             else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>) return not expected_values_less(actual, expected);
+            else if constexpr (is_reference_wrapper_v<A> or is_reference_wrapper_v<E>) return not reference_wrapper_values_less(actual, expected);
+            else if constexpr (is_duration_like_v<A> or is_duration_like_v<E>) return not duration_values_less(actual, expected);
+            else if constexpr (is_unexpected_like_v<A> or is_unexpected_like_v<E>) return not unexpected_values_less(actual, expected);
+            else if constexpr (is_atomic_like_v<A> or is_atomic_like_v<E>) return not atomic_values_less(actual, expected);
             else return std::greater_equal<T>{}(actual, expected);
         }
     };
@@ -344,8 +476,9 @@ namespace tester::assertions
     // check_container_eq({-1}, {4294967295u}). Elements go through the same comparator, so
     // the epsilon applies to floating point here too. Element types with no common type
     // keep their own operator==, which is all std::common_type_t would have to work with —
-    // except optional and expected, which unwrap here the same way the matchers do, so a
-    // missing common_type cannot fall back into the wraparound their operator== still has.
+    // except the wrappers that unwrap here the same way the matchers do (optional, expected,
+    // reference_wrapper, duration, unexpected, atomic), so a missing common_type cannot
+    // fall back into the wraparound their operator== still has.
     template<typename A, typename E>
     constexpr bool values_equal(const A& actual, const E& expected)
     {
@@ -355,6 +488,14 @@ namespace tester::assertions
             return optional_values_equal(actual, expected);
         else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>)
             return expected_values_equal(actual, expected);
+        else if constexpr (is_reference_wrapper_v<A> or is_reference_wrapper_v<E>)
+            return reference_wrapper_values_equal(actual, expected);
+        else if constexpr (is_duration_like_v<A> or is_duration_like_v<E>)
+            return duration_values_equal(actual, expected);
+        else if constexpr (is_unexpected_like_v<A> or is_unexpected_like_v<E>)
+            return unexpected_values_equal(actual, expected);
+        else if constexpr (is_atomic_like_v<A> or is_atomic_like_v<E>)
+            return atomic_values_equal(actual, expected);
         else
             return actual == expected;
     }
@@ -369,6 +510,14 @@ namespace tester::assertions
             return optional_values_less(actual, expected);
         else if constexpr (is_expected_like_v<A> or is_expected_like_v<E>)
             return expected_values_less(actual, expected);
+        else if constexpr (is_reference_wrapper_v<A> or is_reference_wrapper_v<E>)
+            return reference_wrapper_values_less(actual, expected);
+        else if constexpr (is_duration_like_v<A> or is_duration_like_v<E>)
+            return duration_values_less(actual, expected);
+        else if constexpr (is_unexpected_like_v<A> or is_unexpected_like_v<E>)
+            return unexpected_values_less(actual, expected);
+        else if constexpr (is_atomic_like_v<A> or is_atomic_like_v<E>)
+            return atomic_values_less(actual, expected);
         else
             return actual < expected;
     }

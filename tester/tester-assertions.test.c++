@@ -667,6 +667,55 @@ auto register_tests()
         require_eq(field(failure(result.stdout_text, 5), "actual"), std::string{"\"nullopt\""});
     };
 
+    test_case("test_case [.probe-wrapper-signedness] reference_wrapper duration unexpected atomic failures") = []
+    {
+        int n = -1;
+        check_eq(std::ref(n), 4294967295u);
+        check_gt(std::ref(n), 0u);
+        check_eq(std::chrono::duration<int>{-1},
+                 std::chrono::duration<unsigned>{4294967295u});
+        check_contains(std::vector{std::unexpected<int>{-1}},
+                       std::unexpected<unsigned>{4294967295u});
+        auto atomics = std::array<std::atomic<int>, 1>{};
+        atomics[0].store(-1);
+        check_contains(atomics, 4294967295u);
+    };
+
+    test_case("test_case [self] wrappers follow the scalar comparison rule") = []
+    {
+        // reference_wrapper's common_type with an integer is the integer, so equal_to
+        // converted through the referred type and wrapped: ref(-1) met 4294967295u.
+        // Durations of differently signed reps build a common_type whose rep is unsigned.
+        // unexpected and atomic have no common_type with a hetero partner, so container
+        // matchers fell through to operator==, which still converts.
+        int n = -1;
+        require_neq(std::ref(n), 4294967295u);
+        require_lt(std::ref(n), 0u);
+        require_eq(std::ref(n), -1);
+        require_neq(std::chrono::duration<int>{-1},
+                    std::chrono::duration<unsigned>{4294967295u});
+        require_eq(std::chrono::duration<int>{1},
+                   std::chrono::duration<unsigned>{1u});
+        require_contains(std::vector{std::unexpected<int>{1}},
+                         std::unexpected<unsigned>{1u});
+        auto atomics = std::array<std::atomic<int>, 1>{};
+        atomics[0].store(1);
+        require_contains(atomics, 1u);
+
+        const auto result = probe("[.probe-wrapper-signedness]");
+        require_neq(result.exit_code, 0);
+
+        require_eq(field(failure(result.stdout_text, 0), "matcher"), std::string{"\"check_eq\""});
+        require_eq(field(failure(result.stdout_text, 0), "actual"), std::string{"\"-1\""});
+        require_eq(field(failure(result.stdout_text, 0), "expected"), std::string{"4294967295"});
+
+        require_eq(field(failure(result.stdout_text, 1), "matcher"), std::string{"\"check_gt\""});
+        require_eq(field(failure(result.stdout_text, 2), "matcher"), std::string{"\"check_eq\""});
+        require_eq(field(failure(result.stdout_text, 2), "actual"), std::string{"\"-1\""});
+        require_eq(field(failure(result.stdout_text, 3), "matcher"), std::string{"\"check_contains\""});
+        require_eq(field(failure(result.stdout_text, 4), "matcher"), std::string{"\"check_contains\""});
+    };
+
     test_case("test_case [self] container elements follow the scalar comparison rule") = []
     {
         // The container matchers compared elements with `==`, so they kept converting
