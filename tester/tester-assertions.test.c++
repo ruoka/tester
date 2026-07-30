@@ -55,6 +55,11 @@ struct counted
 // check_eq(legacy_flag::minus_one, 4294967295u) report equal.
 enum legacy_flag { minus_one = -1, two = 2 };
 
+// A second unscoped enumeration with an unsigned underlying type: heterogeneous enum
+// pairs used to miss both_are_promotable_integers_v (neither operand is std::integral)
+// and wrap through common_type the same way enum-vs-unsigned did.
+enum other_flag : unsigned { max_value = 4294967295u };
+
 // An enumeration with a comparison of its own, and one that disagrees with its values on
 // purpose: if the matchers promoted both operands they would answer from the values and
 // never call this.
@@ -283,6 +288,13 @@ auto register_tests()
         require_neq(true, 2u);
         require_neq(legacy_flag::minus_one, 4294967295u);
         require_eq(legacy_flag::two, 2u);
+
+        // Two different unscoped enumerations are not carved out with the same-type case:
+        // neither is std::integral, so the old trait fell through to equal_to on an
+        // unsigned common_type and check_eq(minus_one, max_value) reported equal.
+        require_neq(legacy_flag::minus_one, other_flag::max_value);
+        require_lt(legacy_flag::minus_one, other_flag::max_value);
+        require_eq(legacy_flag::two, static_cast<other_flag>(2));
 
         // A wide character operand is comparable and reportable at all only because it is
         // promoted: C++20 deleted the narrow stream inserters these types used to reach.
