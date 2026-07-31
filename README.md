@@ -342,6 +342,9 @@ Trace mode emits all test events: `run_start`, `run_end`, `case`, `test`, `messa
 | **JUnit XML** | First-class (`--junit=`, with JSONL) | Native `--reporter junit` | gtest XML / adapters |
 | **Test catalogue API** | `test --list --jsonl` | `--list-tests` (text) | GTest filters (text) |
 | **BDD style** | Built-in `scenario`/`given` | Via macros / tags | Via adapters |
+| **Parallel tests** | In-process `--jobs=N` (default 1); respects `depends_on` | In-process serial; parallel via shards / CTest processes | Process-level (`gtest_parallel`, CTest `-j`) |
+| **Parallel builds** | CB `--jobs=N` (default hardware concurrency) | Bring your own | CMake / Ninja `-j` typical |
+| **Threads in a test** | Allowed; TLS execution context + locked observers | Allowed; reporters need care | Allowed; death tests / fixtures have rules |
 | **Maturity** | Young, focused | Very mature | Very mature |
 
 Tester fits module-native projects that want minimal glue and agent-friendly output. Large existing GTest/Catch codebases may not be worth migrating.
