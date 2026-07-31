@@ -347,7 +347,7 @@ Tester fits module-native projects that want minimal glue and agent-friendly out
 
 ## Requirements
 
-Both platforms run the same checks — the `[self]` suite, the CB and MCP smoke tests, and JSONL schema validation. CI runs them on Linux with Clang 21 on every push; on macOS they are run locally against a locally built LLVM, because no clang available on a hosted macOS runner builds C++23 modules yet. A macOS lane will be added once one does. Windows is not supported.
+Both platforms run the same checks — the `[self]` suite, the CB and MCP smoke tests, and JSONL schema validation. CI runs them on Linux with Clang 21 on every push; on macOS they are run locally against a locally built LLVM, because no clang available on a hosted macOS runner builds C++23 modules yet. A macOS lane will be added once one does. Windows is not supported. Test steps also emit `--junit=` reports (uploaded as artifacts); gate suites are summarized in the job summary via `test-summary/action`.
 
 ### Linux
 - Clang 21 (`clang++-21`) — required for CI and dev containers

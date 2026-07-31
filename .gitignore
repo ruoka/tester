@@ -30,6 +30,7 @@ compile_commands.json
 # Captured build/test output (local debug artifacts)
 *.jsonl
 *.log
+test_results*.xml
 
 ###############################################################################
 # IDE and Editor Files

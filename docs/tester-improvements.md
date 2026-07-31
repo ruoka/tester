@@ -176,7 +176,7 @@ Machine-parseable test and build output for CI and automation. Human output rema
 
 ### 3.8 Additional report formats
 
-- ✅ JUnit / xUnit XML observer (`tester-junit_observer.c++m`). Additive file sink via `--junit=<path>` (alias `--xunit-xml=`); runs alongside console or `--jsonl` through `observe()` after `select_observer`. CB forwards the flag. Self-tests cover parallel JSONL+JUnit, `<failure>` / `<error>` mapping, and empty-filter synthetic failures.
+- ✅ JUnit / xUnit XML observer (`tester-junit_observer.c++m`). Additive file sink via `--junit=<path>` (alias `--xunit-xml=`); runs alongside console or `--jsonl` through `observe()` after `select_observer`. CB forwards the flag. Self-tests cover parallel JSONL+JUnit, `<failure>` / `<error>` mapping, and empty-filter synthetic failures. GitHub Actions emits the reports beside JSONL and publishes gate-suite results with `test-summary/action` (demos stay artifact-only so expected failures do not muddy the job summary).
 
 ### 3.9 Output performance & shared code
 
