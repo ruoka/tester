@@ -791,10 +791,9 @@ translation_unit parse_translation_unit(const fs::path& project_root, const fs::
     int lines_scanned = 0;
     const int max_lines = 1000;  // generous
 
-    // Named, because `return {}` has nothing to deduce from.
-    auto trim = [](std::string_view s) -> std::string_view {
+    auto trim = [](std::string_view s) {
         auto start = s.find_first_not_of(" \t\r");
-        if (start == std::string::npos) return {};
+        if (start == std::string::npos) return ""sv;
         auto end = s.find_last_not_of(" \t\r");
         return s.substr(start, end - start + 1);
     };
