@@ -44,6 +44,8 @@ Use **`--jsonl=failures`**. Parse **stdout only** (one JSON object per line, `sc
 
 1. Find the last `summary` on stdout (`run_end` is trace-only).
 
+ **No `summary` and no `eof`?** The run aborted before the first test. Ordering metadata is validated up front, and a duplicate `test_order.id`, a `depends_on` id nothing registered, or a dependency cycle throws: stdout ends after `run_start`, the runner exits `1`, and the reason is the one line on stderr — `Unhandled exception: Duplicate test id "…" used by "…" and "…"`, `Unknown test id "…" in depends_on of "…"`, or `Cyclic test dependency involving "…"`. A missing `summary` always means the run did not finish, so treat it as failure; this is the one case where the explanation is on stderr rather than in an event. Fix the metadata the message names, then re-run. If the stream instead breaks off partway through the tests, the runner died on a signal — stderr carries its stack trace, and no `summary` is written for that either.
+
 2. Check the result:
  - If `passed` is `true` → this scoped run succeeded. You're done.
  - If `false`:
@@ -263,5 +265,5 @@ Smoke: `./tests/mcp/smoke.sh --jsonl`.
 ## More detail
 
 - Machine-readable contract: [docs/jsonl-schema.json](docs/jsonl-schema.json) (JSON Schema 2020-12). Validate a live stream with `./tests/jsonl/validate.py`, which runs the canonical commands and checks every line — including a probe that emits non-UTF-8 assertion data.
-- Event fields and examples: [README.md — JSONL sections](README.md#jsonl-assertion-events)
+- Event fields and examples: [README.md — JSONL & Automation](README.md#jsonl--automation)
 - Improvement backlog: [docs/tester-improvements.md](docs/tester-improvements.md)

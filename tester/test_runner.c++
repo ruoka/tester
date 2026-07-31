@@ -94,7 +94,7 @@ Examples:
   test_runner --jsonl=failures --tags=[self]
   test_runner --jsonl=trace --slowest=10
   test_runner --tags=scenario("My test")
-  test_runner --tags=[acceptor]
+  test_runner --tags=[self][order]
   test_runner --tags="scenario.*Happy"
   test_runner --tags="test_case.*CRUD"
   test_runner --tags="scenario.*path"

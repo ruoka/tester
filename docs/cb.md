@@ -94,9 +94,9 @@ For a large existing CMake codebase, migrating to CB is usually not worth it. Fo
 
 Honest positioning — each tool has a sweet spot.
 
-| Concern | **CB** | **CMake** | **Make** (legacy here) | **Ninja** | **Bazel** |
+| Concern | **CB** | **CMake** | **Make** (this repo's alternative) | **Ninja** | **Bazel** |
 |---------|--------|-----------|------------------------|-----------|-----------|
-| **C++23 module PCM ordering** | Built-in topological sort | Possible; manual or generator-dependent | Manual rules | Backend only; needs generator | Rules + toolchains |
+| **C++23 module PCM ordering** | Built-in topological sort | Possible; manual or generator-dependent | Generated rules — `clang-scan-deps` p1689 here | Backend only; needs generator | Rules + toolchains |
 | **Zero config for this layout** | Yes — convention over configuration | No — `CMakeLists.txt` required | Partial — existing `Makefile` | No — needs build file | No — `BUILD` files |
 | **Standalone clone → build → test** | One command | Several steps + generator | `make` targets vary | Via CMake/etc. | `bazel test` setup |
 | **Submodule embed** | `CB.sh.core` wrapper pattern | Per-parent project | Per-parent project | Via parent generator | Workspace rules |
@@ -107,21 +107,23 @@ Honest positioning — each tool has a sweet spot.
 | **Read/modify entire build logic** | ~single file (`cb.c++`) | Scattered CMake + scripts | Makefiles + rules | Build graph file | Starlark + rules |
 | **Ecosystem & maturity** | Young, focused | Very mature | Mature, low-level | Mature backend | Mature at scale |
 
-### Make (legacy in this repo)
+### Make (the alternative in this repo)
 
-A `Makefile` remains for compatibility. CB is recommended; Make predates module-aware dependency resolution.
+The `Makefile` is a supported second path, not a leftover: it orders modules with `clang-scan-deps` (p1689 output parsed by [`scripts/parse_module_deps.py`](../scripts/parse_module_deps.py)), builds the same library and runner, and works standalone or invoked from a parent `make`. What it lacks is CB's object cache, its build telemetry, and CI coverage — so it is verified by running it, which [release-policy.md](release-policy.md) makes a release criterion.
 
 | Target | Purpose |
 |--------|---------|
-| `make help` | List targets and configuration knobs |
 | `make module` | Build modules and `libtester.a` |
-| `make run_examples` | Compile and run `examples/` demos |
-| `make tests` | Build standalone `test_runner` |
-| `make tools` | Build utilities under `${BUILD_DIR}/bin/tools/` |
-| `make clean` | Remove `bin/`, `lib/`, submodule stamps; **preserves** `std.pcm` |
-| `make mostlyclean` | Drop only `${BUILD_DIR}/obj` for a fast incremental rebuild |
+| `make tests` | Build `${BUILD_DIR}/bin/test_runner` |
+| `make run_tests` | Build and run it; pass flags as `TEST_TAGS='--tags=[self]'` |
+| `make run_examples` | Compile and run `examples/` demos (the default goal) |
+| `make tools` | Build utilities under `${BUILD_DIR}/bin/tools/` — Linux only: it globs `tools/*.c++`, and `core_pc.c++` includes `<elf.h>` |
+| `make deps` | Regenerate the module dependency graph only |
+| `make mostlyclean` | Drop `${BUILD_DIR}/obj` and `${BUILD_DIR}/pcm`, `std.pcm` included |
+| `make clean` | The above plus `bin/` and `lib/` |
+| `make dump` | Print every file-scope make variable, for debugging the configuration |
 
-Makefile artifacts use `build-<os>/` (e.g. `build-linux/pcm`, `build-linux/lib`). Override layout with `BUILD_DIR` or `PREFIX`.
+Makefile artifacts use `build-<os>/` (e.g. `build-linux/pcm`, `build-darwin/lib`), where `<os>` is `uname -s` lowercased. Override the layout with `BUILD_DIR` or `PREFIX`. Because a `make` build has no cache to skip work, a full rebuild is also the pass that shows every compiler warning — an incremental CB build reports only the units it recompiled.
 
 When tester is embedded as a submodule, the **parent** Makefile/CB entry point owns paths — submodules typically share the parent's `build-<os>/` tree rather than a separate tester build root.
 
@@ -356,7 +358,9 @@ CB uses C++23 range pipelines instead of hand-written accumulation loops where t
 
 ## See also
 
-- [README — Built-in Builder](../README.md#built-in-builder-cb) — quick start, commands, legacy Makefile
+- [README — Built-in Builder](../README.md#built-in-builder-cb) — quick start and commands
+- [README — Makefile runner](../README.md#makefile-runner-alternative-to-cb) — the non-CB path
+- [CONTRIBUTING.md](../CONTRIBUTING.md) — both build paths and the checks a change has to pass
 - [YarDB](https://github.com/ruoka/YarDB) — public reference project (`deps/tester` + parent `tools/CB.sh`)
 - [AGENTS.md](../AGENTS.md) — JSONL events, triage, correlation
 - [tester-improvements.md §4–§5](tester-improvements.md#4-c-builder-cbc) — CB backlog and bootstrap scripts

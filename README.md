@@ -40,6 +40,7 @@ const auto _ = register_tests();
 - [JSONL & Automation](#jsonl--automation)
 - [How Tester Compares](#how-tester-compares)
 - [Requirements](#requirements)
+- [Versioning & Releases](#versioning--releases)
 - [Repository Layout](#repository-layout)
 - [Assertion Reference](#assertion-reference)
 - [Utilities](#utilities)
@@ -64,7 +65,7 @@ Tester embeds as a git submodule (`deps/tester`) in larger projects. For a publi
 ## Quick Start
 
 ```bash
-git clone --recursive https://github.com/ruoka/tester.git
+git clone https://github.com/ruoka/tester.git   # no submodules; a plain clone is complete
 cd tester
 
 # Framework contract tests (CI gate)
@@ -77,17 +78,13 @@ cd tester
 ./tools/CB.sh debug test
 ```
 
-If you did not clone with `--recursive`:
-
-```bash
-git submodule update --init --recursive
-```
-
 The `[self]` suite exercises JSONL catalogue events, `run_start` metadata, tag filtering, and `depends_on` ordering. CI requires `summary.passed` (or `run_end.passed`) to be `true`.
 
 ## Writing Tests
 
-Tests live in `*.test.c++` (or `*.test.c++m`) files. Register cases from a function called at namespace scope (`const auto _ = register_tests();`). Put bracket tags in the case name, e.g. `test_case("my feature [api] does X")`.
+Tests live in `*.test.c++` (or `*.test.c++m`) files. Register cases from a function called at namespace scope (`const auto _ = register_tests();`). Put bracket tags in the case name, e.g. `test_case("my feature [api] does X")`; they are parsed once at registration and are what `--tags` filters on.
+
+Ordering metadata is checked before the first test runs. A `test_order{.id = …}` must be unique, and every `depends_on` entry must name an id that exists — a duplicate id, an unknown dependency, or a cycle stops the run with a message naming the id, rather than quietly dropping the ordering constraint.
 
 ### Unit test (module + test file)
 
@@ -225,14 +222,21 @@ Pass test_runner options directly (CB recognizes them):
 
 The runner prints human-readable results on stderr (stdout in human mode), returns non-zero when any test fails, and emits JSONL on stdout with `--jsonl[=summary|failures|trace]`.
 
-### Makefile runner (legacy)
+### Makefile runner (alternative to CB)
+
+CB is not required. The bundled `Makefile` builds the same library and runner with
+`clang-scan-deps` for module ordering, into `build-<os>/` — useful if your project already
+builds with make, or as a second opinion when a CB result looks wrong:
 
 ```bash
-make tests
-build-linux/bin/test_runner --list
-build-linux/bin/test_runner --tags=[acceptor]
-build-linux/bin/test_runner --tags="scenario.*Happy"
+make tests                                       # build-<os>/bin/test_runner
+build-darwin/bin/test_runner --tags='[self]'      # build-linux on Linux
+build-darwin/bin/test_runner --list
+build-darwin/bin/test_runner --tags='scenario.*Happy'
+make run_tests TEST_TAGS='--tags=[self]'         # build and run in one step
 ```
+
+It also works embedded: invoked from a parent `make`, it picks up `../../config/compiler.mk` and the parent's `PREFIX`. What it does not have is CB's object cache, JSONL build telemetry, or CI coverage — the framework's own gate is CB, so a `make` regression is found by running it, which is worth doing before a release.
 
 ## Built-in Builder (CB)
 
@@ -254,7 +258,7 @@ Tester ships with **CB** (`tools/cb.c++`), a module-aware build system in a sing
 
 Artifacts land in `build-<os>-<config>/` (`pcm/`, `obj/`, `bin/`, `cache/`). Object-cache profile format and invalidation: [`docs/cb.md` — Object cache profile](docs/cb.md#object-cache-profile). When embedded as a submodule, examples are excluded from default builds; standalone `./tools/CB.sh debug test` includes them. Use `--include-examples` to build demos explicitly.
 
-**Makefile (legacy):** `make module`, `make run_examples`, `make tests`, `make tools` — see `Makefile` for targets. Prefer CB for new work.
+**Not using CB?** The `Makefile` builds the same library and runner with `clang-scan-deps` — see [Makefile runner](#makefile-runner-alternative-to-cb) above and the target table in [`docs/cb.md`](docs/cb.md#make-the-alternative-in-this-repo).
 
 ## JSONL & Automation
 
@@ -341,6 +345,8 @@ Tester fits module-native projects that want minimal glue and agent-friendly out
 
 ## Requirements
 
+Both platforms run the same checks — the `[self]` suite, the CB and MCP smoke tests, and JSONL schema validation. CI runs them on Linux with Clang 21 on every push; on macOS they are run locally against a locally built LLVM, because no clang available on a hosted macOS runner builds C++23 modules yet. A macOS lane will be added once one does. Windows is not supported.
+
 ### Linux
 - Clang 21 (`clang++-21`) — required for CI and dev containers
 - LLVM 21 (`std.cppm` at `/usr/lib/llvm-21/share/libc++/v1/std.cppm`)
@@ -351,12 +357,21 @@ Tester fits module-native projects that want minimal glue and agent-friendly out
 - Homebrew `llvm` is unsupported: exception unwinding fails on Apple Silicon ([#92121](https://github.com/llvm/llvm-project/issues/92121), [#168287 comment](https://github.com/llvm/llvm-project/issues/168287#issuecomment-3712718691))
 - Xcode system clang does not fully support C++23 modules
 
+### Windows
+- Not supported: no toolchain path and no CI coverage
+
 ### Optional environment variables (build bootstrap)
 - `LLVM_PATH` — override path to `std.cppm`
 - `CXX` — override C++ compiler
 - `CB_INCLUDE_FLAGS` — override include paths for `tools/CB.sh`
 
 Test runner output is configured via CLI options, not environment variables.
+
+## Versioning & Releases
+
+Tester is **pre-release**: there is no supported tag yet, and the `v1.0.0` pre-release from November 2025 predates most of what this README documents. Consume `main` as a submodule pinned to a commit you choose — every push is verified by CI, but no compatibility is promised between commits. [`CHANGELOG.md`](CHANGELOG.md) tracks what changed under `Unreleased`.
+
+[`docs/release-policy.md`](docs/release-policy.md) states what counts as public API, how versions will be numbered, what breaks a consumer, and the criteria a release has to meet. The first release waits until the repository's own [technical review](docs/repository-technical-review.md) rates it at or close to 9 / 10.
 
 ## Repository Layout
 
@@ -451,5 +466,7 @@ MIT — see [LICENSE](LICENSE).
 - [AGENTS.md](AGENTS.md) — JSONL automation guide for CI and AI agents
 - [docs/ai-agent-recommendation.md](docs/ai-agent-recommendation.md) — practical benefits and token-efficient agent workflow
 - [docs/tester-improvements.md](docs/tester-improvements.md) — improvement backlog
+- [docs/release-policy.md](docs/release-policy.md) — public API surface, versioning rules, and release criteria
+- [CHANGELOG.md](CHANGELOG.md) — notable changes to the public surface
 - [YarDB](https://github.com/ruoka/YarDB) — public reference project using tester + CB (P1204R0 layout)
 - [P1204R0](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1204r0.html) — canonical C++ project structure
