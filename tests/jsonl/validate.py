@@ -68,10 +68,16 @@ COMMANDS = [
     ("cache_status", ["debug", "cache", "status", "--jsonl=failures"]),
     ("test_list", ["debug", "test", "--list", "--jsonl=failures"]),
     ("test_self", ["debug", "test", "--jsonl=failures", "--tags=[self]"]),
-    ("test_trace", ["debug", "test", "--jsonl=trace", "--tags=[self][harness]"]),
+    # The whole [self] suite, not a corner of it: trace is the only mode that emits an
+    # operand from a passing assertion, so scoping this to [self][harness] left most of the
+    # framework's own operands unvalidated. That is how `"actual":inf` — an infinity written
+    # as a JSON number, which no parser accepts — survived in the float tests.
+    ("test_trace", ["debug", "test", "--jsonl=trace", "--tags=[self]"]),
     ("test_summary", ["debug", "test", "--jsonl=summary", "--tags=[self]"]),
     # Deliberately emits invalid UTF-8 in assertion operands.
     ("test_utf8_probe", ["debug", "test", "--jsonl=failures", "--tags=[.jsonl-utf8-probe]"]),
+    # Deliberately emits infinity and NaN operands.
+    ("test_nonfinite_probe", ["debug", "test", "--jsonl=failures", "--tags=[.jsonl-nonfinite-probe]"]),
 ]
 
 

@@ -17,49 +17,49 @@ namespace tester::behavior_driven_development
         std::string id;
     };
 
-    export auto& scenario(std::string_view description, const std::source_location location1 = std::source_location::current()) noexcept
+    export auto scenario(std::string_view description, const std::source_location location1 = std::source_location::current()) noexcept
     {
         const auto location2 = std::source_location::current();
         return make_test_case(description, 0, {}, {}, location1, location2);
     }
 
-    export auto& scenario(std::string_view description, const test_order& order, const std::source_location location1 = std::source_location::current()) noexcept
+    export auto scenario(std::string_view description, const test_order& order, const std::source_location location1 = std::source_location::current()) noexcept
     {
         const auto location2 = std::source_location::current();
         return make_test_case(description, order.priority, order.depends_on, order.id, location1, location2);
     }
 
-    export auto& given(std::string_view description, const std::source_location location1 = std::source_location::current()) noexcept
+    export auto given(std::string_view description, const std::source_location location1 = std::source_location::current()) noexcept
     {
         const auto location2 = std::source_location::current();
         return make_test_case(description, 0, {}, {}, location1, location2);
     }
 
-    export auto& and_given(std::string_view description, const std::source_location location1 = std::source_location::current()) noexcept
+    export auto and_given(std::string_view description, const std::source_location location1 = std::source_location::current()) noexcept
     {
         const auto location2 = std::source_location::current();
         return make_test_case(description, 0, {}, {}, location1, location2);
     }
 
-    export auto& when(std::string_view description, const std::source_location location1 = std::source_location::current()) noexcept
+    export auto when(std::string_view description, const std::source_location location1 = std::source_location::current()) noexcept
     {
         const auto location2 = std::source_location::current();
         return make_test_case(description, 0, {}, {}, location1, location2);
     }
 
-    export auto& and_when(std::string_view description, const std::source_location location1 = std::source_location::current()) noexcept
+    export auto and_when(std::string_view description, const std::source_location location1 = std::source_location::current()) noexcept
     {
         const auto location2 = std::source_location::current();
         return make_test_case(description, 0, {}, {}, location1, location2);
     }
 
-    export auto& then(std::string_view description, const std::source_location location1 = std::source_location::current()) noexcept
+    export auto then(std::string_view description, const std::source_location location1 = std::source_location::current()) noexcept
     {
         const auto location2 = std::source_location::current();
         return make_test_case(description, 0, {}, {}, location1, location2);
     }
 
-    export auto& and_then(std::string_view description, const std::source_location location1 = std::source_location::current()) noexcept
+    export auto and_then(std::string_view description, const std::source_location location1 = std::source_location::current()) noexcept
     {
         const auto location2 = std::source_location::current();
         return make_test_case(description, 0, {}, {}, location1, location2);

@@ -13,8 +13,64 @@ namespace tester::engine {
 using namespace data;
 using namespace std::literals;
 
+// What a run lends the engine for as long as it lasts. A step executes while the case it belongs
+// to is still running, so the tag filter and the current-test bookkeeping have to be reachable
+// from there and not only from the loop that started the run.
+struct run_context
+{
+    std::function<bool(const test_case&)> excluded{};
+    std::function<void(std::string_view)> set_test_id{};
+    std::function<void()> clear_test_id{};
+    std::function<std::string_view()> current_test_id{};
+};
 
-auto& make_test_case(std::string_view description, int priority, std::vector<std::string> depends_on, std::string id, const std::source_location location1, const std::source_location location2) noexcept
+// Null outside a run: registration happens at static-initialisation time, before a runner exists.
+inline const run_context* active_run = nullptr;
+
+// Where the case now running collects its console text. Non-null means the case being started is
+// a step of that one, which is all "nested" means once a run is under way.
+inline std::string* current_output = nullptr;
+
+// What a case's steps have consumed, so a case can report the assertions it checked itself.
+inline std::size_t step_assertions_total = 0;
+inline std::size_t step_assertions_ok = 0;
+
+void execute_test_case(const run_context& run, test_case& tc);
+
+// The API is `construct("name") = body`, so an assignment is the only place a case can be handed
+// its body — and the only place the two kinds of case part company. A scenario or test_case is
+// stored for the run loop; a step runs right here, in the frame it was written in, which is what
+// lets it capture the enclosing locals by reference. Deferring the step instead left every such
+// capture dangling by the time it ran.
+class test_slot
+{
+public:
+    explicit test_slot(test_case& registered) noexcept
+        : m_registered{&registered}
+    {}
+
+    // A step is only ever made while a run is under way, and is assigned in the same statement,
+    // so the run it reports to is the one that was active when it was made.
+    test_slot(test_case&& step, const run_context& run) noexcept
+        : m_step{std::move(step)}, m_run{&run}
+    {}
+
+    template<typename Body>
+    void operator=(Body&& body)
+    {
+        auto& target = m_registered ? *m_registered : *m_step;
+        target.run = std::forward<Body>(body);
+        if(not m_registered)
+            execute_test_case(*m_run, target);
+    }
+
+private:
+    test_case* m_registered = nullptr;
+    std::optional<test_case> m_step{};
+    const run_context* m_run = nullptr;
+};
+
+test_slot make_test_case(std::string_view description, int priority, std::vector<std::string> depends_on, std::string id, const std::source_location location1, const std::source_location location2) noexcept
 {
     auto test_type = std::string_view{location2.function_name()};
 
@@ -53,23 +109,16 @@ auto& make_test_case(std::string_view description, int priority, std::vector<std
         std::move(assigned_id)
     };
 
-    if(test_type.contains("scenario") or test_type.contains("test_case"))
+    // scenario and test_case are what a run iterates; the rest are steps of whichever case is
+    // running. A step written where no case is running has no frame to belong to, so it becomes
+    // an ordinary case rather than executing before the run it would report to has begun.
+    if(test_type.contains("scenario") or test_type.contains("test_case") or active_run == nullptr)
     {
-        test_cases.push_back(test_case);
-        return test_cases.back().run;
+        test_cases.push_back(std::move(test_case));
+        return test_slot{test_cases.back()};
     }
-    else
-    {
-        auto itr = test_cases.begin();
-        if(test_type.starts_with("and_"))
-            test_type.remove_prefix(4); // remove "and_"
-        while(itr != test_cases.end() and
-              (itr->test_name.starts_with("then") or
-               itr->test_name.starts_with("and_then") or
-               itr->test_name.contains(test_type))) // given, and_given, when, and_when, section
-           ++itr;
-        return test_cases.insert(itr,test_case)->run;
-    }
+
+    return test_slot{std::move(test_case), *active_run};
 }
 
 auto sort_test_cases()
@@ -160,102 +209,143 @@ export void finish_statistics(std::chrono::steady_clock::time_point run_finished
     data::statistics().run_finished = run_finished;
 }
 
-export auto run_test_cases(auto filter, auto set_test_id, auto clear_test_id, auto /*get_test_id*/)
+// One case, whether the run loop reached it or an enclosing case started it as a step. Steps used
+// to come back here through the loop, which is why this had to be one place rather than two: a
+// step is reported, counted and filtered exactly like the case it belongs to.
+void execute_test_case(const run_context& run, test_case& tc)
+{
+    if(run.excluded(tc))
+        return;
+
+    // Reserved before the body runs, so a case is listed ahead of the steps it starts. The
+    // deferred design got that order by inserting each step in front of its parent; running the
+    // step where it is written gets it from the call stack, and test_metadata is const, so the
+    // fields the run fills are written in place rather than assigned.
+    auto& result = *test_results.insert(test_results.end(), test_result{tc});
+
+    // One capture buffer serves every case, so the enclosing case's text comes off it before this
+    // case resets it, and the buffer is handed back empty when this case is done.
+    auto* const outer_output = current_output;
+    auto output = std::string{};
+    if(outer_output)
+        *outer_output += publisher::captured_output();
+    current_output = &output;
+
+    const auto outer_id = std::string{run.current_test_id()};
+
+    publisher::test_case(tc);
+
+    run.set_test_id(tc.test_id);
+
+    auto& stats = statistics();
+    const auto assertions_total_before = stats.total_assertions;
+    const auto assertions_ok_before = stats.successful_assertions;
+    const auto steps_total_before = step_assertions_total;
+    const auto steps_ok_before = step_assertions_ok;
+
+    const auto started = std::chrono::steady_clock::now();
+    const auto started_sys = std::chrono::system_clock::now();
+    auto failure_message = std::string{};
+    try
+    {
+        ++stats.total_tests;
+        tc.run();
+    }
+    catch(const assertions::assertion_failure& ex)
+    {
+        result.success = false;
+        failure_message = ex.what();
+        publisher::exception(tc,ex);
+    }
+    catch(const std::exception& ex)
+    {
+        result.success = false;
+        failure_message = ex.what();
+        publisher::exception(tc,ex);
+    }
+    catch(...)
+    {
+        result.success = false;
+        failure_message = "Unknown exception";
+        publisher::exception(tc,std::runtime_error{"Unknown exception"});
+    }
+    const auto finished = std::chrono::steady_clock::now();
+    const auto finished_sys = std::chrono::system_clock::now();
+
+    const auto assertions_total = stats.total_assertions - assertions_total_before;
+    const auto assertions_ok = stats.successful_assertions - assertions_ok_before;
+    // A step's assertions are the step's own. Taking off what the steps consumed leaves what this
+    // case checked itself, so a scenario still reports its own count and a failing step fails
+    // itself rather than everything it is written inside.
+    //
+    // Each step adds only its own, never its descendants': every step in the subtree adds its own
+    // while this body runs, and those sum to exactly what the immediate steps consumed. Adding
+    // the whole subtree instead counted the deeper steps once per level between them.
+    result.assertions_total = assertions_total - (step_assertions_total - steps_total_before);
+    result.assertions_ok = assertions_ok - (step_assertions_ok - steps_ok_before);
+    if(outer_output)
+    {
+        step_assertions_total += result.assertions_total;
+        step_assertions_ok += result.assertions_ok;
+    }
+
+    result.duration = std::chrono::duration_cast<std::chrono::nanoseconds>(finished - started);
+    result.started_at = started_sys;
+    result.finished_at = finished_sys;
+
+    // A non-fatal check_* failure does not throw, so returning normally is not enough to call
+    // the test successful. Counting it here — rather than right after run() — keeps
+    // summary.tests_ok consistent with failed_test_ids.
+    if(result.success and result.assertions_ok == result.assertions_total)
+        ++stats.successful_tests;
+    else
+        result.success = false;
+
+    // Back to the case this one is a step of, so its remaining assertions are attributed to it.
+    if(outer_id.empty())
+        run.clear_test_id();
+    else
+        run.set_test_id(outer_id);
+
+    // The captured output holds the per-assertion detail, which is precisely what
+    // a reader needs for a failure. Using the exception message instead meant a
+    // check_*-only failure — which throws nothing — reported no detail at all.
+    output += publisher::captured_output();
+    publisher::reset_captured_output();
+    current_output = outer_output;
+    if(not failure_message.empty())
+        output += failure_message + '\n';
+    result.output = std::move(output);
+}
+
+// The callbacks belong to the runner and outlive the run, but a step reaches them through
+// active_run, so the pointer is cleared however the run ends.
+class run_scope
+{
+public:
+    explicit run_scope(const run_context& context) noexcept { active_run = &context; }
+    ~run_scope() { active_run = nullptr; }
+    run_scope(const run_scope&) = delete;
+    run_scope& operator=(const run_scope&) = delete;
+};
+
+export auto run_test_cases(auto filter, auto set_test_id, auto clear_test_id, auto get_test_id)
 {
     sort_test_cases();
 
+    const auto context = run_context{filter, set_test_id, clear_test_id, get_test_id};
+    const auto run = run_scope{context};
+    step_assertions_total = 0;
+    step_assertions_ok = 0;
+
+    // Erasing the case that just ran is what lets the loop pick up cases registered while it
+    // runs: steps never arrive here — they go straight through execute_test_case — but a
+    // scenario or test_case written inside another one is appended and reached by a later turn.
     while(not test_cases.empty())
     {
         auto tc = test_cases.begin();
-
-        if(filter(*tc))
-        {
-            test_cases.erase(tc);
-            continue;
-        }
-
-        publisher::test_case(*tc);
-
-        auto tr = test_result{*tc};
-        set_test_id(tc->test_id);
-        
-        const auto started = std::chrono::steady_clock::now();
-        const auto started_sys = std::chrono::system_clock::now();
-        const auto assertions_total_before = statistics().total_assertions;
-        const auto assertions_ok_before = statistics().successful_assertions;
-        auto failure_message = std::string{};
-        try
-        {
-            ++statistics().total_tests;
-            // NOTE: When tc->run() executes a scenario/test_case lambda, it may add nested
-            // test cases (given/when/then) to test_cases. Those nested test cases' lambdas
-            // should capture parent-scope variables BY VALUE, not by reference, because:
-            // 1. The parent lambda's local variables are destroyed when tc->run() returns
-            // 2. The nested test cases are executed later in subsequent loop iterations
-            // 3. If nested lambdas capture by reference ([&var]), they will have dangling
-            //    references when they execute.
-            // Example of CORRECT usage:
-            //   scenario("Test") = [] {
-            //       auto data = std::make_shared<Data>();  // or capture by value
-            //       given("Setup") = [data] { ... };  // capture by value
-            //   };
-            // Example of INCORRECT usage (will cause undefined behavior):
-            //   scenario("Test") = [] {
-            //       auto data = Data{};
-            //       given("Setup") = [&data] { ... };  // BUG: dangling reference
-            //   };
-            tc->run();
-        }
-        catch(const assertions::assertion_failure& ex)
-        {
-            tr.success = false;
-            failure_message = ex.what();
-            publisher::exception(*tc,ex);
-        }
-        catch(const std::exception& ex)
-        {
-            tr.success = false;
-            failure_message = ex.what();
-            publisher::exception(*tc,ex);
-        }
-        catch(...)
-        {
-            tr.success = false;
-            failure_message = "Unknown exception";
-            publisher::exception(*tc,std::runtime_error{"Unknown exception"});
-        }
-        const auto finished = std::chrono::steady_clock::now();
-        const auto finished_sys = std::chrono::system_clock::now();
-        tr.duration = std::chrono::duration_cast<std::chrono::nanoseconds>(finished - started);
-        tr.started_at = started_sys;
-        tr.finished_at = finished_sys;
-        tr.assertions_total = statistics().total_assertions - assertions_total_before;
-        tr.assertions_ok = statistics().successful_assertions - assertions_ok_before;
-
-        // A non-fatal check_* failure does not throw, so returning normally is not
-        // enough to call the test successful. Counting it here — rather than right
-        // after tc->run() — keeps summary.tests_ok consistent with failed_test_ids.
-        if(tr.success and tr.assertions_ok == tr.assertions_total)
-            ++statistics().successful_tests;
-        else
-            tr.success = false;
-
-        
-        clear_test_id();
-        
-        // Erase the test case after execution. Note that if nested test cases were added
-        // during tc->run(), they are already in test_cases and will be processed in
-        // subsequent loop iterations. The test_case object itself is safe to erase here
-        // because nested test cases store their own copies of the lambda (with captured
-        // values), not references to this test_case object.
+        execute_test_case(context, *tc);
         test_cases.erase(tc);
-        // The captured output holds the per-assertion detail, which is precisely what
-        // a reader needs for a failure. Using the exception message instead meant a
-        // check_*-only failure — which throws nothing — reported no detail at all.
-        tr.output = publisher::captured_output();
-        if(not failure_message.empty())
-            tr.output += failure_message + '\n';
-        test_results.push_back(tr);
     }
 }
 

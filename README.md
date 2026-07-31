@@ -141,7 +141,7 @@ When the test TU is part of a named module, use a module declaration at the top 
 
 ### Behaviour-driven test
 
-**Important:** Nested lambdas (`given` / `when` / `then`) run after the parent `scenario` lambda returns. Capture parent-scope variables **by value** (e.g. `std::shared_ptr`), not by reference (`[&]`), or you will get dangling references.
+A step (`given` / `when` / `then` and their `and_` forms, or `section` in a `test_case`) runs the moment it is assigned — inside the body that declared it, before that body reaches its next line. Capturing enclosing locals by reference (`[&]`) is therefore safe, and each step sees what the steps before it did. Every step is still reported as a test case of its own, listed after the case it belongs to, with the assertions it made itself.
 
 ```c++
 import std;
@@ -162,13 +162,13 @@ auto readme_bdd_feature()
     using ordering::order;
 
     scenario("Customer places an order") = [] {
-        auto o = std::make_shared<order>();
-        given("a draft order") = [o] {
-            when("the customer confirms") = [o] {
-                o->submit();
-                then("the order is marked as submitted") = [o] {
-                    require_true(o->submitted);
-                    require_nothrow([o]{ o->submit(); });
+        auto o = order{};
+        given("a draft order") = [&] {
+            when("the customer confirms") = [&] {
+                o.submit();
+                then("the order is marked as submitted") = [&] {
+                    require_true(o.submitted);
+                    require_nothrow([&]{ o.submit(); });
                 };
             };
         };
@@ -388,6 +388,7 @@ Namespace `tester::assertions` — matching `check_*` (non-fatal) and `require_*
 - A `std::pair`, `std::tuple` or other tuple-like operand is compared member by member by those same rules, and ordering is lexicographic over them, so `check_eq(std::pair{std::string::npos, 0}, std::pair{-1L, 0})` fails and `check_lt(std::pair{-1, 0}, std::pair{4294967295u, 0})` passes. Heterogeneous composites have a common type too, and converting through it converted every member. A composite member is walked again, and the floating-point epsilon reaches a member
 - A tuple-like operand is reported as its members, `(18446744073709551615, 0)`, in both channels, and each member by its own rule — a character member reads `'a' (97)` inside the composite too
 - A character operand is reported by value: `97` in JSONL, `'a' (97)` on the console. The character alone would put a raw byte where the schema promises a number, and for a negative `char` it would hide the value that was compared
+- An infinity or a NaN is reported as a quoted string, `"inf"`, `"-inf"`, `"nan"`, since JSON has no numeric form for either; finite operands stay numbers. Bare, `"actual":inf` made the whole line unparseable, and `null` would have parsed while losing which of the three it was
 
 ### Boolean
 - `check_true`, `check_false`, `require_true`, `require_false`

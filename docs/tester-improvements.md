@@ -59,6 +59,7 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 - ✅ `check_neq` no longer contradicts `check_eq` on floating point. `check_neq` compared exactly while `check_eq` compared within an epsilon, so a pair inside the tolerance satisfied both matchers at once — the same class of defect as the mixed-signedness pass. Inequality is now the negation of the epsilon comparison. Ordering stays exact, as in every comparable framework.
 - ✅ Assertions take operands by **forwarding reference**, so nothing is copied and move-only types are comparable. By value cost one copy per operand per layer: a copy-counting type measured **six copies per assertion**, two each in the wrapper, the hub and the comparators. A plain `const&` does not work — deduction against it drops the const of a string literal's element type, making `A` become `char[4]`, whose common type is `char*` and cannot hold the `const char*` the literal decays to, so `check_eq("abc", "abc")` stops compiling. Forwarding references preserve it, and `std::common_type_t` already decays, so every comparator still sees the same `T` and the hub signature is unchanged. Operands are only ever read: the comparators and the publisher take them by `const&`, so nothing is forwarded onward. A `[self]` test pins zero copies and zero moves across seven assertions, plus a `std::unique_ptr` comparison.
 - ✅ Unprintable operands are reported by demangled type name. Two `typeid(...).name()` sites reported the mangled spelling (`N6tester8selftest10assertions12_GLOBAL__N_17countedE`) while exception types already went through `demangle_type`; this surfaced the moment move-only and non-streamable operands became comparable.
+- ✅ An infinity or a NaN operand is quoted, so the line still parses. Every floating-point operand went out as a JSON number, but JSON has no way to write either value: `require_eq(infinity, infinity)` emitted `"actual":inf` and the NaN case emitted `nan`, and a parser rejects the whole line rather than the token, so one float assertion cost a consumer the entire event. They are now `"inf"` / `"-inf"` / `"nan"` and finite operands stay numbers — `null` would have parsed while discarding which of the three it was, and identity is precisely what a float comparison reports when it fails on something other than tolerance. The gap was in the validator's reach, not only in the writer: `tests/jsonl/validate.py` ran trace mode — the only mode carrying operands from *passing* assertions — over `[self][harness]` alone, so the framework's own float tests were never parsed. It now runs the whole `[self]` suite in trace, plus a `[.jsonl-nonfinite-probe]` for the failure path, and a `[self]` test pins the quoted forms next to a finite operand.
 
 ### 1.8 Matcher naming
 
@@ -77,8 +78,8 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 
 ### 2.2 BDD ergonomics
 
-- ✅ Nested `given` / `when` / `then` with `shared_ptr` capture pattern (see `examples/readme_bdd_example.test.c++`).
-- 📋 Static analysis or compile-time hint when nested lambdas capture by reference (common footgun).
+- ✅ A step — `given` / `when` / `then` and their `and_` forms, or `section` — runs at its assignment, inside the body that declared it, so `[&]` is safe and each step sees what the ones before it did. Queuing the step instead ran it after that body had returned, which left every reference capture dangling and could only be documented around: `examples/readme_bdd_example.test.c++` shared its state through a `shared_ptr` for no reason other than this. What the runner reports is unchanged — a step is still its own test case, listed after the case it belongs to, counting the assertions it made itself and failing alone — and the [self] suite pins both halves: a scenario whose steps hold its locals by reference, and a spawned probe where one step fails and its sibling still runs.
+- ✅ The insert-position search went with it. A queued step used to be placed in the run list by scanning the pending names for BDD keywords, to approximate the order the steps were written in; the call stack gives that order exactly.
 - 📋 Optional flat `test_case` + `section` guidance in README for non-BDD modules.
 
 ### 2.3 Dependencies & ordering
@@ -87,7 +88,7 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 - 📋 Expose dependency graph in `--list` output.
 - 📋 Fail fast with a clear message when dependency cycle is detected.
 - 📋 Report unresolved `depends_on` ids and duplicate test ids instead of silently ignoring them.
-- 📋 Re-sort test cases after nested registration so `priority` / `depends_on` take effect inside `scenario`.
+- ✅ Nothing to re-sort after a step registers: only `scenario` and `test_case` accept a `test_order`, and a step now runs where it is written rather than joining the list the sort had already put in order.
 - ✅ Framework self-tests in `tester/*.test.c++` tagged `[self]`; CI runs `./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'` and requires `summary.passed`.
 
 ### 2.4 Matcher naming in JSONL

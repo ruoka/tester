@@ -186,6 +186,44 @@ auto register_tests()
         check_eq(std::string{"caf\xe9 \xff\xfe"}, std::string{"expected"});
     };
 
+    test_case("test_case [self] non-finite float operands are quoted, not bare") = []
+    {
+        const auto result = run_test_runner({
+            "--jsonl=failures",
+            "--tags=[.jsonl-nonfinite-probe]"});
+
+        require_eq(result.exit_code, 1);
+
+        // JSON has no infinity and no NaN. Written as numbers they made `"actual":inf`,
+        // which json.loads rejects — and it rejects the line, not the token, so one float
+        // assertion cost a consumer the whole event. Quoted, the value survives and the
+        // line parses; dropping it or writing null would parse and say nothing.
+        const auto first = tester_selftest::find_event(result.stdout_text, "assertion_failed", 0);
+        require_eq(tester_selftest::field(first, "actual"), std::string{"\"inf\""});
+        require_eq(tester_selftest::field(first, "expected"), std::string{"1"});
+
+        const auto second = tester_selftest::find_event(result.stdout_text, "assertion_failed", 1);
+        require_eq(tester_selftest::field(second, "actual"), std::string{"\"-inf\""});
+
+        const auto third = tester_selftest::find_event(result.stdout_text, "assertion_failed", 2);
+        require_eq(tester_selftest::field(third, "actual"), std::string{"\"nan\""});
+
+        // A finite operand stays a number: quoting everything would make every arithmetic
+        // operand a string for the sake of three values.
+        const auto fourth = tester_selftest::find_event(result.stdout_text, "assertion_failed", 3);
+        require_eq(tester_selftest::field(fourth, "actual"), std::string{"0.5"});
+    };
+
+    test_case("test_case [.jsonl-nonfinite-probe] non-finite float operands") = []
+    {
+        const auto infinity = std::numeric_limits<double>::infinity();
+
+        check_eq(infinity, 1.0);
+        check_eq(-infinity, 1.0);
+        check_eq(std::nan(""), 1.0);
+        check_eq(0.5, 1.0);
+    };
+
     return 0;
 }
 
