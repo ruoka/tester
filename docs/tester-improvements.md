@@ -164,7 +164,7 @@ Machine-parseable test and build output for CI and automation. Human output rema
 - ✅ Structured `rebuild` object on compile/link events (`kind`, `module`, paths, `hint`, `message`, optional `see_event`) plus `build_end.rebuild_summary` (`by kind` counts + `top_modules`).
 - ✅ `profile_changed` event with `profile_diff` on profile mismatch (scalar fields + token diff on `compile`/`cpp`; not repeated on each `compile_end`).
 - ✅ Compact CB modes suppress successful command/TU events and enrich `build_end` with compile/link/cache/failure totals.
-- 📋 Surface compiler **warnings** from successful compiles. `diagnostics` is only attached when `ok:false`, so warnings on a TU that compiles reach neither stdout JSONL nor stderr — a project can accumulate them invisibly. Verified by replaying a `command_start` argv by hand: clang reports the warning, CB reports nothing.
+- ✅ Surface compiler **warnings** from successful compiles. Capture files are read whenever the child printed anything, not only on `ok:false`; `diagnostics` rides on `compile_end` / `link_end` / `command_end` for those successes, failures mode still emits the event (silent successes stay suppressed), and the console observer prints the text as `WARNING`. A modular unit's two steps accumulate into one `compile_end` so a warning on `--precompile` is not lost when the object step is quiet.
 
 ### 3.7 Recommended automation invocation
 
@@ -403,7 +403,6 @@ Ordered by consequence, not by effort. Items marked **verified** were reproduced
 
 | Priority | Item | Rationale |
 |----------|------|-----------|
-| Medium | Warnings from successful compiles are invisible (§3.6) | **Verified:** clang reports them, CB attaches them to no event, so they reach neither JSONL nor stderr — warnings accumulate unnoticed |
 | Medium | JUnit XML observer (§3.8) | Cheap against the existing observer contract; unlocks CI test UIs |
 | Medium | `compile_commands.json` from `list` (§4.1) | Nearly free given existing argv builders; unblocks clangd |
 | Low | Death tests, regex / predicate matchers, container prefix-suffix (§1.2–1.5) | Framework parity. Death tests are cheaper than they look — the spawn and signal-decode helpers already exist |

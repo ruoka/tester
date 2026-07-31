@@ -97,8 +97,8 @@ inline void write_process_status(std::ostream& os, const process_status& status)
         os << ",\"signal\":" << status.signal;
 }
 
-// Compiler output travels inline so that a consumer reading stdout only has the
-// error text, with a path to the untruncated capture for anything longer.
+// Toolchain output travels inline so that a consumer reading stdout only has the
+// error or warning text, with a path to the untruncated capture for anything longer.
 inline void write_diagnostics(std::ostream& os, const diagnostics& diag)
 {
     if(diag.empty())
@@ -335,7 +335,10 @@ struct observer final : cb::output::observer
         const auto ok = result.ok();
         if(not ok)
             ++m.commands_failed;
-        if(m.mode == jsonl_mode::summary || (m.mode == jsonl_mode::failures && ok))
+        // Failures mode keeps silent successes off the wire, but a success that printed
+        // warnings is actionable — the same rule as compile_end / link_end below.
+        if(m.mode == jsonl_mode::summary
+           || (m.mode == jsonl_mode::failures && ok && result.diag.empty()))
             return;
 
         m.json << m.jsonl("command_end") << [&](std::ostream& os){
@@ -424,7 +427,8 @@ struct observer final : cb::output::observer
             ++m.link_cache_hits;
         if(not step.ok)
             ++m.link_failed;
-        if(m.mode == jsonl_mode::summary || (m.mode == jsonl_mode::failures && step.ok))
+        if(m.mode == jsonl_mode::summary
+           || (m.mode == jsonl_mode::failures && step.ok && step.diag.empty()))
             return;
 
         m.json << m.jsonl("link_end") << [&](std::ostream& os){
@@ -455,7 +459,8 @@ struct observer final : cb::output::observer
         }
         if(not step.ok)
             ++m.compile_failed;
-        if(m.mode == jsonl_mode::summary || (m.mode == jsonl_mode::failures && step.ok))
+        if(m.mode == jsonl_mode::summary
+           || (m.mode == jsonl_mode::failures && step.ok && step.diag.empty()))
             return;
 
         m.json << m.jsonl("compile_end") << [&](std::ostream& os){

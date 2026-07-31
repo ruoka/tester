@@ -227,8 +227,9 @@ struct process_status
     bool ok() const { return not signaled and exit_code == 0; }
 };
 
-// Captured output of a failed toolchain command. `command_end.ok:false` alone is not
-// actionable — an agent told to parse stdout only has no way to see why clang failed.
+// Captured toolchain output. Failed commands always carry this so an agent reading stdout
+// only can see why clang failed; successful ones carry it when the compiler or linker printed
+// anything (warnings), so a project cannot accumulate `-Wall` noise invisibly.
 struct diagnostics
 {
     std::string path;      // file holding the full captured output
@@ -239,10 +240,10 @@ struct diagnostics
     bool empty() const { return head.empty() and path.empty(); }
 };
 
-// How a spawned toolchain process ended: the wait status, plus whatever it printed if it
-// failed. One value because ok is not independent of the status — it is status.ok() — and
-// reporting them as separate arguments let an event claim success beside a status saying
-// otherwise.
+// How a spawned toolchain process ended: the wait status, plus whatever it printed when that
+// output is worth reporting (failure, or success with warnings). One value because ok is not
+// independent of the status — it is status.ok() — and reporting them as separate arguments let
+// an event claim success beside a status saying otherwise.
 struct process_result
 {
     process_status status{};
@@ -341,7 +342,7 @@ struct step_result
     bool cache_hit = false;
     interval timing{};
     rebuild_info rebuild{}; // why the step ran; empty on a cache hit
-    diagnostics diag{};     // what the toolchain said; empty unless the step failed
+    diagnostics diag{};     // toolchain output; empty when the step was silent
 };
 
 // Every file CB keeps under cache/, in one value. The four are not interchangeable — only two
