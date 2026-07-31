@@ -52,7 +52,9 @@ jobs:
 
       - name: Run self tests (${{ matrix.config }})
         run: |
-          ./tools/CB.sh ${{ matrix.config }} test --jsonl=failures --tags='\[self\]' > "test_results_self_${{ matrix.config }}.jsonl"
+          ./tools/CB.sh ${{ matrix.config }} test --jsonl=failures \
+            --junit="test_results_self_${{ matrix.config }}.xml" \
+            --tags='\[self\]' > "test_results_self_${{ matrix.config }}.jsonl"
           if command -v jq >/dev/null 2>&1; then
             passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' "test_results_self_${{ matrix.config }}.jsonl")
             if [ "$passed" != "true" ]; then
@@ -68,7 +70,9 @@ jobs:
       # carry hidden [.demo] tags, which is why an unfiltered run is expected to pass.
       - name: Run standalone suite (${{ matrix.config }})
         run: |
-          ./tools/CB.sh ${{ matrix.config }} test --jsonl=failures > "test_results_${{ matrix.config }}.jsonl"
+          ./tools/CB.sh ${{ matrix.config }} test --jsonl=failures \
+            --junit="test_results_${{ matrix.config }}.xml" \
+            > "test_results_${{ matrix.config }}.jsonl"
           passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' "test_results_${{ matrix.config }}.jsonl")
           if [ "$passed" != "true" ]; then
             echo "Standalone suite failed (summary.passed=$passed)"
@@ -83,7 +87,9 @@ jobs:
       - name: Run failure demos (must fail)
         if: matrix.config == 'debug'
         run: |
-          if ./tools/CB.sh debug test --jsonl=failures --tags='\[.demo\]' > test_results_demos.jsonl; then
+          if ./tools/CB.sh debug test --jsonl=failures \
+            --junit=test_results_demos.xml \
+            --tags='\[.demo\]' > test_results_demos.jsonl; then
             echo "Failure demos exited 0; they are supposed to fail"
             exit 1
           fi
@@ -115,6 +121,15 @@ jobs:
           ./tests/jsonl/validate.py --require-schema --jsonl | tee jsonl_validate.jsonl
           grep '"type":"jsonl_validate_summary"' jsonl_validate.jsonl | tail -1 | grep -q '"passed":true'
 
+      # Gate suites only — demos are expected to fail and would muddy the job summary.
+      - name: Publish JUnit test summary
+        uses: test-summary/action@v2
+        if: always()
+        with:
+          paths: |
+            test_results_self_${{ matrix.config }}.xml
+            test_results_${{ matrix.config }}.xml
+
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: always()
@@ -124,6 +139,9 @@ jobs:
             test_results_${{ matrix.config }}.jsonl
             test_results_self_${{ matrix.config }}.jsonl
             test_results_demos.jsonl
+            test_results_${{ matrix.config }}.xml
+            test_results_self_${{ matrix.config }}.xml
+            test_results_demos.xml
 
   cb-smoke:
     runs-on: ubuntu-latest
