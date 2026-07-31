@@ -73,7 +73,7 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 
 - ✅ Regex and substring tag filters via `--tags=`.
 - 📋 Document bracket-tag convention (`[module]` in scenario names) in one canonical example table.
-- 📋 Make tags first-class via `test_order{ .tags = {…} }` rather than encoding them in the test name, and extend the query language with OR (`[a],[b]`) and negation (`~[a]`).
+- 🔶 Tags are data on the case, but they are still authored in the name. `extract_bracket_tags` used to run on the rendered display name every time a decision needed them — once per case in `has_hidden_tag`, again in `match_literal_tags`, and a third time in the catalogue — so filtering read text the framework had itself composed, and three call sites had to agree about what a tag is. `test_case::tags` is filled once at registration from the description, and the filter, the hidden-tag check and `registered_test` read it; `runner::included` keeps a name-only overload for callers holding just a string (`examples/test_regex.c++`), which delegates to the same two-argument core after parsing. What remains is the authoring half: `test_order{ .tags = {…} }` instead of brackets in the name, plus OR (`[a],[b]`) and negation (`~[a]`) in the query language.
 - ✅ `test_runner --list --jsonl=failures`: `test_list_start`, `registered_test`, `test_list_summary`.
 
 ### 2.2 BDD ergonomics
@@ -86,8 +86,8 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 
 - ✅ `priority` and `depends_on` fields on `test_case`.
 - 📋 Expose dependency graph in `--list` output.
-- 📋 Fail fast with a clear message when dependency cycle is detected.
-- 📋 Report unresolved `depends_on` ids and duplicate test ids instead of silently ignoring them.
+- ✅ Fail fast with a clear message when a dependency cycle is detected: a re-visit while ancestors are still resolving throws `Cyclic test dependency involving "<id>"` instead of recursing until the stack overflows.
+- ✅ Ordering metadata that cannot mean what it says stops the run. Two cases claiming one id used to overwrite each other in the map `depends_on` resolves through, so an edge pointed at whichever registered last and the run still looked ordered; a `depends_on` id nothing registered contributed no edge and no diagnostic, so a typo read as "no ordering constraint" and passed. Both now throw before the first test runs, from the place the silence was — the id map build and the level walk — and both messages name the id, since which one collided or went missing is the whole diagnosis. `label()` picks the id over the display name for all three messages, cycles included. The suite already had no duplicates, standalone or with examples, so nothing had been relying on the old behaviour; two spawned probes (`[.duplicate-id-probe]`, `[.unknown-dependency-probe]`) pin exit code 1, no signal, and the message text.
 - ✅ Nothing to re-sort after a step registers: only `scenario` and `test_case` accept a `test_order`, and a step now runs where it is written rather than joining the list the sort had already put in order.
 - ✅ Framework self-tests in `tester/*.test.c++` tagged `[self]`; CI runs `./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'` and requires `summary.passed`.
 
@@ -320,8 +320,11 @@ Per-project wrappers compile `cb.c++` and invoke it with the right include paths
 ### 5.3 Sandbox & CI
 
 - ✅ `CURSOR_SANDBOX` can auto-set `NET_DISABLE_NETWORK_TESTS` in network-heavy projects.
+- 📋 `make tools` only works on Linux: it globs `tools/*.c++`, and `core_pc.c++` includes `<elf.h>`. CB does not scan `tools/`, so that utility has no other build path and nothing notices it rot. Either guard the source for non-Linux, move it out of the default glob, or drop it.
+- 📋 Give the Makefile path a CI lane, or accept it as release-time only. It is a supported alternative to CB — `make tests` scans modules with `clang-scan-deps`, builds into `build-<os>/`, and its runner passes `[self]` 58/58 — but nothing verifies it between releases, so it can rot silently. A full rebuild there is also the only pass that shows every warning: it surfaced two dead templates in `tester-console_observer.c++m` and an unused lambda capture in `tester-utils.c++m` that CB's cache had stopped re-emitting, both now removed. Until a lane exists, [release-policy.md](release-policy.md) makes running it a release criterion.
 - 📋 Document sandbox behaviour in CONTRIBUTING.
 - 📋 JSONL-first `ci` example in README: `./tools/CB.sh ci --jsonl`.
+- ✅ Every CI step that reads as a check is one, and the job that could not check anything is gone. `test-examples` was `continue-on-error`, ran the suite through `|| true`, and then looked for a `result` event the framework stopped emitting — three independent reasons it could not fail, on the job whose entire purpose was asserting that the failure demos still fail. Repairing it turned out to be the wrong fix: `tools/CB.sh` sets `CB_INCLUDE_EXAMPLES_MODE=always`, so a standalone `./tools/CB.sh debug test` already includes `examples/`, and the job was installing LLVM and rebuilding the same 36 units to run the same tests as `build-and-test`. It is retired, and its one unique check is a step there: selecting `[.demo]` must exit non-zero *and* report `passed: false`, with the command as the `if` condition since the non-zero exit is the expected outcome. `build-and-test` also stopped writing a synthetic `{"type":"eof"}` line for the JSONL validation step to inspect — a check of a file CI had just written itself, justified by a comment claiming all tests live in `examples/` and fail — and runs the whole suite instead, which is 146 passing tests and a real stream. Static analysis stays advisory, now by decision: the job is named `static-analysis (advisory)`, says why in a comment (neither tool is given the module graph, so a module interface reports diagnostics no fix can remove), and uploads its output as an artifact so the findings can be read rather than being discarded to `/dev/null`.
 
 ---
 
@@ -376,6 +379,9 @@ When tester is used as `deps/tester` inside a larger repo:
 - ✅ Parent repos should bump the submodule pointer after tester fixes (e.g. JSONL capture cleanup, `first_failure`); nested `deps/*/tester` copies lag until each submodule updates.
 - 📋 Document resolution order in README (sibling vs nested vs `CB_FETCH_DEPS=1`).
 - 📋 Avoid duplicating stale tester docs inside nested `deps/tester` trees — bump the submodule pointer instead.
+- ✅ What a consumer can rely on is written down: [release-policy.md](release-policy.md) names the public surface (the re-exported partitions, both CLIs, the JSONL schema, the `CB_*` bootstrap variables) against the parts that may change in any release (engine and publisher internals, `cb.c++` structure, everything under `build-*/cache/`, `tester/details/`, the hidden probe fixtures), and states the versioning rules — additive JSONL fields are MINOR because consumers must ignore what they do not know, raising the minimum compiler is breaking whatever the source compatibility, and a deprecated name survives at least one MINOR. It also fixes the bar: no release until this repository's own review rates it at or close to 9 / 10, which makes "pre-release" a stated position rather than an omission.
+- ✅ [CHANGELOG.md](../CHANGELOG.md) records public-surface changes as they land, with an `Unreleased` section covering everything after the November 2025 pre-release — JSONL and its schema, the observer model, CB's telemetry and cache inspection, eager BDD steps, strict ordering metadata, the mixed-signedness comparison fixes, and the scanner fixes. Cutting a release renames the section; it is not reconstructed from the git log afterwards.
+- 📋 Cut the first release once the policy's criteria are met: a tag consumers can pin instead of a commit, and release notes leading with breaking changes and the minimum compiler.
 
 ---
 
@@ -392,7 +398,6 @@ Ordered by consequence, not by effort. Items marked **verified** were reproduced
 | Priority | Item | Rationale |
 |----------|------|-----------|
 | Medium | Warnings from successful compiles are invisible (§3.6) | **Verified:** clang reports them, CB attaches them to no event, so they reach neither JSONL nor stderr — warnings accumulate unnoticed |
-| Medium | Unresolved `depends_on` / duplicate test ids (§2.3) | Silently ignored today, so a typo'd dependency looks like a passing run |
 | Medium | JUnit XML observer (§3.8) | Cheap against the existing observer contract; unlocks CI test UIs |
 | Medium | `compile_commands.json` from `list` (§4.1) | Nearly free given existing argv builders; unblocks clangd |
 | Low | Death tests, regex / predicate matchers, container prefix-suffix (§1.2–1.5) | Framework parity. Death tests are cheaper than they look — the spawn and signal-decode helpers already exist |
