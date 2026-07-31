@@ -69,9 +69,9 @@ commit on `main`; there is no supported tag yet.
   Current test id, nested capture pointers, step assertion counters, results, and
   statistics live on a per-run / per-worker context activated with `execution_scope`.
   The registration catalogue remains shared.
-- **Nested BDD steps run eagerly**, at the point of assignment inside the parent's frame,
-  so `given` / `when` / `then` bodies capturing parent locals by reference are safe. They
-  previously ran after the parent returned.
+- **Nested BDD steps run at assignment**, inside the parent's frame, so `given` / `when` /
+  `then` bodies capturing parent locals by reference are safe. They previously ran after
+  the parent returned.
 - **Ordering metadata is now refused rather than reinterpreted**: duplicate test ids,
   `depends_on` ids that name no test, and dependency cycles each fail before the first
   test runs, with a message naming the offender.
