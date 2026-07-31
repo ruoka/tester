@@ -37,6 +37,8 @@ commit on `main`; there is no supported tag yet.
   matches the current toolchain profile; `cache invalidate` removes them.
 - **`compile_commands.json` from `list`**: writes a clangd compilation database at the
   project root for the active TU set, using the same compile argv builders as a build.
+- **Modular compile capture files**: `--precompile` and pcm→object use distinct `.pcm.log`
+  / `.o.log` paths so `diagnostics.path` still names a file that contains the warning text.
 - **`--jobs=N`** to bound concurrent compile and link processes.
 - **Diagnostics in events**: a failed compile, link, or command carries the toolchain
   output in `diagnostics.text` (with the full capture at `diagnostics.path`), so a failure
