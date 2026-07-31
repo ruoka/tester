@@ -101,9 +101,18 @@ export struct execution_context
 // a temporary context without losing the runner's.
 inline thread_local execution_context* tls_execution = nullptr;
 
+// Run-wide fallback for threads that never install an execution_scope. A test may
+// assert from a thread it started (console observer / JSONL lock exist for that),
+// and those threads do not inherit TLS — without this, statistics() throws and the
+// worker hits std::terminate. The first scope that finds both slots empty binds it;
+// nested scopes and later worker scopes leave it alone so they cannot steal the run.
+inline execution_context* g_run_execution = nullptr;
+
 export execution_context* active_execution() noexcept
 {
-    return tls_execution;
+    if(tls_execution != nullptr)
+        return tls_execution;
+    return g_run_execution;
 }
 
 export class execution_scope
@@ -111,13 +120,18 @@ export class execution_scope
 public:
     explicit execution_scope(execution_context& context) noexcept
         : m_previous{tls_execution}
+        , m_binds_run{tls_execution == nullptr and g_run_execution == nullptr}
     {
         tls_execution = &context;
+        if(m_binds_run)
+            g_run_execution = &context;
     }
 
     ~execution_scope()
     {
         tls_execution = m_previous;
+        if(m_binds_run)
+            g_run_execution = nullptr;
     }
 
     execution_scope(const execution_scope&) = delete;
@@ -125,6 +139,7 @@ public:
 
 private:
     execution_context* m_previous = nullptr;
+    bool m_binds_run = false;
 };
 
 [[noreturn]] inline void require_active_execution(std::string_view api)
@@ -134,18 +149,21 @@ private:
 
 export test_statistics& statistics()
 {
-    if(tls_execution == nullptr)
-        require_active_execution("statistics()");
-    return tls_execution->statistics;
+    if(auto* const ctx = active_execution(); ctx != nullptr)
+        return ctx->statistics;
+    require_active_execution("statistics()");
 }
 
 export std::list<test_result>& results()
 {
-    if(tls_execution == nullptr)
-        require_active_execution("results()");
-    return tls_execution->results;
+    if(auto* const ctx = active_execution(); ctx != nullptr)
+        return ctx->results;
+    require_active_execution("results()");
 }
 
+// TLS only — child threads intentionally see an empty id, matching the pre-context
+// thread_local current-test-id. Falling back to the run context here would attribute
+// a late worker assert to whichever case the main thread had moved on to.
 export std::string_view current_test_id()
 {
     if(tls_execution == nullptr)
