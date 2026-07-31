@@ -336,13 +336,14 @@ Trace mode emits all test events: `run_start`, `run_end`, `case`, `test`, `messa
 | | **Tester** | **Catch2 / doctest** | **Google Test + CMake** |
 |---|------------|----------------------|-------------------------|
 | **C++23 modules** | Native (`import tester`) | Header / macro based | Header / macro based |
+| **Module internals** | Native — `*.test.c++` as `module foo;` sees non-exported names | Not native; friends, test-only exports, or headers | Same workarounds (public API / `friend` / test builds) |
 | **Macros** | None | Many (`TEST_CASE`, `SECTION`, `REQUIRE`, `SCENARIO`, …) | Many (`TEST`, `TEST_F`, `EXPECT_*`, `ASSERT_*`, …) |
 | **Build system** | CB included; Makefile optional | Bring your own | CMake typical |
 | **Compile time** | Modules avoid per-TU header reparse; PCM / `std` module cost on cold builds | Header-heavy (Catch2 often costly; doctest lighter) | Header includes per TU; usually moderate |
 | **JSONL output** | First-class (`--jsonl`) | No | No (XML/JUnit via adapters) |
 | **JUnit XML** | First-class (`--junit=`, with JSONL) | Native `--reporter junit` | gtest XML / adapters |
 | **Test catalogue API** | `test --list --jsonl` | `--list-tests` (text) | GTest filters (text) |
-| **BDD style** | Built-in nested `scenario` / `given` / `when` / `then` (eager steps) | Macros (`SCENARIO` / `GIVEN` / …) | Via adapters |
+| **BDD style** | Yes — nested `scenario` / `given` / `when` / `then` (eager steps) | Yes — `SCENARIO` / `GIVEN` / `WHEN` / `THEN` | Via adapters |
 | **Nested tests** | Yes — `section` in `test_case`; BDD steps nest; nested `test_case`/`scenario` run later | `SECTION` / `SUBCASE` nesting | No section model; fixtures / `TEST_P` instead |
 | **Parallel tests** | In-process `--jobs=N` (default 1); respects `depends_on` | In-process serial; parallel via shards / CTest processes | Process-level (`gtest_parallel`, CTest `-j`) |
 | **Parallel builds** | CB `--jobs=N` (default hardware concurrency) | Bring your own | CMake / Ninja `-j` typical |
