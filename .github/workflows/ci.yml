@@ -63,31 +63,46 @@ jobs:
             echo "✓ Self tests passed"
           fi
 
-      - name: Create empty test results
-        # All tests are in examples/ and intentionally fail, so we don't run them here
-        # Compilation is verified by the previous step
+      # The whole suite, not only the [self] subset. tools/CB.sh sets
+      # CB_INCLUDE_EXAMPLES_MODE=always, so this covers examples/ too: their failure demos
+      # carry hidden [.demo] tags, which is why an unfiltered run is expected to pass.
+      - name: Run standalone suite (${{ matrix.config }})
         run: |
-          echo '{"type":"eof","schema":"cb-jsonl","version":1,"pid":0,"ts_unix_ms":0}' > test_results_${{ matrix.config }}.jsonl
+          ./tools/CB.sh ${{ matrix.config }} test --jsonl=failures > "test_results_${{ matrix.config }}.jsonl"
+          passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' "test_results_${{ matrix.config }}.jsonl")
+          if [ "$passed" != "true" ]; then
+            echo "Standalone suite failed (summary.passed=$passed)"
+            tail -20 "test_results_${{ matrix.config }}.jsonl"
+            exit 1
+          fi
+          echo "✓ Standalone suite passed"
+
+      # The demos exist to show what a failure looks like, so a passing run means they
+      # stopped demonstrating anything. Non-zero exit is the expected outcome, which is
+      # why the command is the `if` condition instead of being followed by `|| true`.
+      - name: Run failure demos (must fail)
+        if: matrix.config == 'debug'
+        run: |
+          if ./tools/CB.sh debug test --jsonl=failures --tags='\[.demo\]' > test_results_demos.jsonl; then
+            echo "Failure demos exited 0; they are supposed to fail"
+            exit 1
+          fi
+          passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' test_results_demos.jsonl)
+          if [ "$passed" != "false" ]; then
+            echo "Failure demos reported summary.passed=$passed"
+            exit 1
+          fi
+          echo "✓ Failure demos still fail as designed"
 
       - name: Validate JSONL output
         run: |
-          if [ ! -f "test_results_${{ matrix.config }}.jsonl" ]; then
-            echo "ERROR: JSONL output file not found!"
+          echo "JSONL lines: $(wc -l < "test_results_${{ matrix.config }}.jsonl")"
+          if ! tail -1 "test_results_${{ matrix.config }}.jsonl" | jq -e '.type == "eof"' >/dev/null; then
+            echo "✗ EOF marker missing — the stream was truncated"
+            tail -5 "test_results_${{ matrix.config }}.jsonl"
             exit 1
           fi
-          line_count=$(wc -l < "test_results_${{ matrix.config }}.jsonl")
-          echo "JSONL lines: $line_count"
-          if command -v jq >/dev/null 2>&1; then
-            echo "Validating JSONL structure..."
-            jq -r '.type' "test_results_${{ matrix.config }}.jsonl" | head -10
-            last_line=$(tail -1 "test_results_${{ matrix.config }}.jsonl")
-            if echo "$last_line" | jq -e '.type == "eof"' >/dev/null 2>&1; then
-              echo "✓ EOF marker found"
-            else
-              echo "✗ EOF marker missing!"
-              exit 1
-            fi
-          fi
+          echo "✓ EOF marker found"
 
       # Structural jq checks above cannot catch a line that is unparseable, or one
       # missing a field agents depend on. This validates every line of the canonical
@@ -108,6 +123,7 @@ jobs:
           path: |
             test_results_${{ matrix.config }}.jsonl
             test_results_self_${{ matrix.config }}.jsonl
+            test_results_demos.jsonl
 
   cb-smoke:
     runs-on: ubuntu-latest
@@ -167,47 +183,12 @@ jobs:
           name: mcp-smoke-results
           path: mcp_smoke.jsonl
 
-  test-examples:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    continue-on-error: true
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-          submodules: recursive
-
-      - name: Setup LLVM (for examples)
-        uses: ./.github/actions/setup-llvm
-
-      - name: Build project with examples
-        run: ./tools/CB.sh debug --include-examples build
-
-      - name: Run tests with examples (expect failures)
-        run: |
-          ./tools/CB.sh debug --include-examples test --jsonl=failures > test_results_examples.jsonl || true
-
-      - name: Verify expected failures
-        run: |
-          if command -v jq >/dev/null 2>&1; then
-            passed=$(jq -r 'select(.type == "result") | .passed' "test_results_examples.jsonl" | head -1)
-            if [ "$passed" = "false" ]; then
-              echo "✓ Examples failed as expected"
-              jq 'select(.type == "result")' "test_results_examples.jsonl"
-            else
-              echo "⚠ Unexpected: Examples passed (they should fail to demonstrate failure scenarios)"
-            fi
-          fi
-
-      - name: Upload example test results
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: test-results-examples
-          path: test_results_examples.jsonl
-
+  # Advisory by decision, not by accident. Neither tool is given the module graph — a
+  # module interface analysed without -fmodule-file reports diagnostics no fix can remove —
+  # so their output is collected for reading rather than used as a gate. The findings are
+  # uploaded; making either one gate requires a curated check set first.
   static-analysis:
+    name: static-analysis (advisory)
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -222,21 +203,28 @@ jobs:
         with:
           packages: "libc++-21-dev libc++abi-21-dev clang-21 lld-21 lldb-21 jq clang-tools-21 clang-tidy-21 cppcheck"
 
-      - name: Run clang-tidy on core files
+      - name: Run clang-tidy on core files (advisory)
         run: |
           find tester -name "*.c++m" | head -10 | xargs -I {} sh -c '
             echo "Analyzing {}"
-            clang-tidy-21 {} -- -std=c++23 -I/usr/lib/llvm-21/include/c++/v1 2>/dev/null || true
-          '
+            clang-tidy-21 {} -- -std=c++23 -I/usr/lib/llvm-21/include/c++/v1 2>&1 || true
+          ' | tee -a static-analysis.log
 
-      - name: Run cppcheck
+      - name: Run cppcheck (advisory)
         run: |
           cppcheck --enable=all --std=c++23 --language=c++ \
             --suppress=missingIncludeSystem \
             --suppress=unusedFunction \
             --inline-suppr \
             --quiet \
-            tester/ tools/ 2>/dev/null || true
+            tester/ tools/ 2>&1 | tee -a static-analysis.log || true
+
+      - name: Upload static analysis output
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: static-analysis
+          path: static-analysis.log
 
   submodule-check:
     runs-on: ubuntu-latest
