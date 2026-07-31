@@ -19,11 +19,15 @@ auto& dependency_run_counter()
 
 struct recording_observer final : output::observer
 {
-    int assertions = 0;
+    // Under --jobs>1 other workers also notify; count only this case's events.
+    std::string filter_id{};
+    std::atomic<int> assertions{0};
 
-    void assertion(const output::assertion_event&) override
+    void assertion(const output::assertion_event& event) override
     {
-        ++assertions;
+        if(not filter_id.empty() and event.test_id != filter_id)
+            return;
+        assertions.fetch_add(1);
     }
 };
 
@@ -294,10 +298,11 @@ auto register_tests()
     test_case("test_case [self] output observers receive assertion events") = []
     {
         auto recorder = recording_observer{};
+        recorder.filter_id = std::string{tester::data::current_test_id()};
         output::observe(recorder);
         check_eq(1, 1);
         output::unobserve(recorder);
-        require_eq(recorder.assertions, 1);
+        require_eq(recorder.assertions.load(), 1);
     };
 
     // A step runs where it is written, so the enclosing frame is still alive: capturing a local
