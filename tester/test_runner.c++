@@ -13,6 +13,7 @@ module tester;
 import std;
 import :console_observer;
 import :jsonl_observer;
+import :junit_observer;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wmain-attached-to-named-module"
 using namespace std::literals;
@@ -86,12 +87,14 @@ constexpr auto usage =
 R"(test_runner [--help] [--list] [--tags=<tag>]
             [--jsonl[=<summary|failures|trace>]] [--slowest=<N>]
             [--jsonl-output-max-bytes=<N>] [--result]
+            [--junit=<path>] [--xunit-xml=<path>]
             [<tags>]
 Examples:
   test_runner
   test_runner --list
   test_runner --list --jsonl
   test_runner --jsonl=failures --tags=[self]
+  test_runner --jsonl=failures --junit=report.xml --tags=[self]
   test_runner --jsonl=trace --slowest=10
   test_runner --tags=scenario("My test")
   test_runner --tags=[self][order]
@@ -154,6 +157,7 @@ int main(int argc, char** argv)
     auto slowest = std::size_t{0};
     auto jsonl_mode = tester::output::jsonl::jsonl_mode::failures;
     auto output_max_bytes = std::size_t{16384};
+    auto junit_path = std::filesystem::path{};
 
     for(std::string_view option : arguments)
     {
@@ -219,6 +223,22 @@ int main(int argc, char** argv)
             continue;
         }
 
+        // Additive file sink — may run alongside console or JSONL (not a select_observer).
+        if(option.starts_with("--junit=") || option.starts_with("--xunit-xml="))
+        {
+            const auto prefix = option.starts_with("--junit=")
+                ? "--junit="sv
+                : "--xunit-xml="sv;
+            const auto value = option.substr(prefix.size());
+            if(value.empty())
+            {
+                std::clog << "Missing path for " << prefix.substr(0, prefix.size() - 1) << std::endl;
+                return 1;
+            }
+            junit_path = value;
+            continue;
+        }
+
         if(option.starts_with("-"))
         {
             std::clog << "Unknown option: " << option << std::endl;
@@ -245,6 +265,14 @@ int main(int argc, char** argv)
         {
             std::clog << "Unknown output observer: " << output_name << '\n';
             return 1;
+        }
+        // JUnit/xUnit XML is additive: observe() after select_observer so JSONL (or
+        // console) keeps the primary stream while the report file is written too.
+        if(not junit_path.empty())
+        {
+            auto& junit = tester::output::junit::observer_instance();
+            junit.configure(junit_path);
+            tester::output::observe(junit);
         }
         jsonl_crash_output = output_name == "jsonl";
 

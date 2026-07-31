@@ -211,6 +211,7 @@ Pass test_runner options directly (CB recognizes them):
 ```bash
 ./tools/CB.sh debug test --jsonl=trace --slowest=10
 ./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'
+./tools/CB.sh debug test --jsonl=failures --junit=report.xml --tags='\[self\]'
 ./tools/CB.sh debug test --result   # stable RESULT: line on stderr in JSONL mode
 ```
 
@@ -220,7 +221,7 @@ Pass test_runner options directly (CB recognizes them):
 - **Substring** — `--tags=simulator` matches any test name containing `simulator`
 - **Regex** — `--tags="scenario.*Happy"`; invalid regex falls back to substring matching
 
-The runner prints human-readable results on stderr (stdout in human mode), returns non-zero when any test fails, and emits JSONL on stdout with `--jsonl[=summary|failures|trace]`.
+The runner prints human-readable results on stderr (stdout in human mode), returns non-zero when any test fails, and emits JSONL on stdout with `--jsonl[=summary|failures|trace]`. `--junit=<path>` (alias `--xunit-xml=`) also writes a JUnit-compatible XML report; it is additive, so it can run next to JSONL.
 
 ### Makefile runner (alternative to CB)
 
@@ -337,6 +338,7 @@ Trace mode emits all test events: `run_start`, `run_end`, `case`, `test`, `messa
 | **Macros** | None | Some (`TEST_CASE`, etc.) | `TEST()`, `EXPECT_*` |
 | **Build system** | CB included; Makefile optional | Bring your own | CMake typical |
 | **JSONL output** | First-class (`--jsonl`) | No | No (XML/JUnit via adapters) |
+| **JUnit XML** | First-class (`--junit=`, with JSONL) | Native `--reporter junit` | gtest XML / adapters |
 | **Test catalogue API** | `test --list --jsonl` | `--list-tests` (text) | GTest filters (text) |
 | **BDD style** | Built-in `scenario`/`given` | Via macros / tags | Via adapters |
 | **Maturity** | Young, focused | Very mature | Very mature |
@@ -452,7 +454,7 @@ build-<os>-debug/bin/tools/core_pc /path/to/core
 
 **Testing framework** — global registration (`const auto _ = …`), automatic discovery of `*.test.c++` registrations, tag/regex filtering, `depends_on` ordering, rich assertions with source locations.
 
-**Observers** — `tester:observer` defines the format-neutral event contract and the registry, and each part of the framework publishes its own events through `notify()`: the runner reports the run lifecycle, catalogue and aggregates, the engine reports tests and exceptions, and the assertion matchers build and report assertion events. Nobody selects a destination. `test_runner.c++` is the composition root: it registers observers by name and selects one from the CLI option. Additional observers derive from `tester::output::observer` and use `register_observer()` / `select_observer()`; runner and assertion code do not change.
+**Observers** — `tester:observer` defines the format-neutral event contract and the registry, and each part of the framework publishes its own events through `notify()`: the runner reports the run lifecycle, catalogue and aggregates, the engine reports tests and exceptions, and the assertion matchers build and report assertion events. Nobody selects a destination. `test_runner.c++` is the composition root: it registers console and JSONL by name and selects one primary sink from the CLI, then may `observe()` additional sinks (JUnit XML via `--junit=`) so machine streams and CI reports run together. Additional observers derive from `tester::output::observer` and use `register_observer()` / `select_observer()` / `observe()`; runner and assertion code do not change.
 
 **CB** — parses module dependencies, topological sort, incremental PCM/object caching, parallel compilation, executable linking with module awareness.
 

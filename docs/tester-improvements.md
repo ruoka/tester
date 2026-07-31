@@ -176,7 +176,7 @@ Machine-parseable test and build output for CI and automation. Human output rema
 
 ### 3.8 Additional report formats
 
-- 📋 JUnit XML observer. Small against the existing observer contract, and it unlocks the native test UI on every major CI platform.
+- ✅ JUnit / xUnit XML observer (`tester-junit_observer.c++m`). Additive file sink via `--junit=<path>` (alias `--xunit-xml=`); runs alongside console or `--jsonl` through `observe()` after `select_observer`. CB forwards the flag. Self-tests cover parallel JSONL+JUnit, `<failure>` / `<error>` mapping, and empty-filter synthetic failures.
 
 ### 3.9 Output performance & shared code
 
@@ -403,7 +403,6 @@ Ordered by consequence, not by effort. Items marked **verified** were reproduced
 
 | Priority | Item | Rationale |
 |----------|------|-----------|
-| Medium | JUnit XML observer (§3.8) | Cheap against the existing observer contract; unlocks CI test UIs |
 | Low | Death tests, regex / predicate matchers, container prefix-suffix (§1.2–1.5) | Framework parity. Death tests are cheaper than they look — the spawn and signal-decode helpers already exist |
 | Low | Index-loop joins in tester's observer (§3.9) | Violates the project's own `AGENTS.md` rule; no behavioural impact |
 | Low | Decompose `cb.c++` (§4.1) | Large refactor with no user-visible change; the smoke suite is strong enough to support it when desired |

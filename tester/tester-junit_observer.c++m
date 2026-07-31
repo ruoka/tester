@@ -1,0 +1,324 @@
+// Copyright (c) 2025-2026 Kaius Ruokonen. All rights reserved.
+// SPDX-License-Identifier: MIT
+// See the LICENSE file in the project root for full license text.
+
+module;
+#include "details/xml.h++"
+#if defined(__GNUG__) && __has_include(<cxxabi.h>)
+#   include <cxxabi.h>
+#endif
+
+export module tester:junit_observer;
+
+import :data;
+import :observer;
+import :assertions;
+import std;
+
+using namespace std::string_literals;
+using namespace std::string_view_literals;
+
+namespace tester::output::junit
+{
+
+namespace {
+
+auto demangle_type_name(std::string_view mangled)
+{
+#if defined(__GNUG__) && __has_include(<cxxabi.h>)
+    int status = 0;
+    auto buffer = std::string{mangled};
+    if(auto* demangled = abi::__cxa_demangle(buffer.c_str(), nullptr, nullptr, &status); demangled != nullptr)
+    {
+        std::string result{demangled};
+        std::free(demangled);
+        return result;
+    }
+#endif
+    return std::string{mangled};
+}
+
+auto exception_type_name(const std::exception& ex)
+{
+    return demangle_type_name(typeid(ex).name());
+}
+
+auto seconds_string(std::chrono::nanoseconds duration)
+{
+    const auto seconds = std::chrono::duration<double>(duration).count();
+    return std::format("{:.3f}", seconds);
+}
+
+auto iso8601_utc(std::chrono::system_clock::time_point tp)
+{
+    if(tp == std::chrono::system_clock::time_point{})
+        return std::string{};
+
+    // sys_time formats in UTC — no POSIX gmtime_r needed.
+    const auto seconds = std::chrono::floor<std::chrono::seconds>(tp);
+    return std::format("{:%Y-%m-%dT%H:%M:%SZ}", seconds);
+}
+
+struct failure_detail
+{
+    std::string type;
+    std::string message;
+    std::string body;
+};
+
+struct test_events
+{
+    std::vector<failure_detail> failures;
+    std::vector<failure_detail> errors;
+};
+
+auto test_failed(const data::test_result& r)
+{
+    return not r.success || r.assertions_ok < r.assertions_total;
+}
+
+} // namespace
+
+export struct observer final : tester::output::observer
+{
+    std::filesystem::path path;
+    std::mutex mutex{};
+    std::flat_map<std::string, test_events, std::less<>> by_test{};
+    std::string run_tags{};
+    std::chrono::system_clock::time_point started_at{};
+    bool written = false;
+
+    void configure(std::filesystem::path report_path)
+    {
+        auto lock = std::lock_guard{mutex};
+        path = std::move(report_path);
+        by_test.clear();
+        run_tags.clear();
+        started_at = {};
+        written = false;
+    }
+
+    void activate() override
+    {
+        auto lock = std::lock_guard{mutex};
+        by_test.clear();
+        run_tags.clear();
+        started_at = {};
+        written = false;
+    }
+
+    void run_start(const run_info& run) override
+    {
+        auto lock = std::lock_guard{mutex};
+        run_tags = std::string{run.tags};
+        started_at = run.started_at;
+    }
+
+    void assertion(const assertion_event& event) override
+    {
+        if(event.ok)
+            return;
+
+        auto detail = failure_detail{
+            .type = event.matcher.empty() ? "assertion"s : event.matcher,
+            .message = event.message.empty()
+                ? (event.matcher.empty() ? "assertion failed"s : event.matcher + " failed")
+                : event.message,
+            .body = std::format("{} at {}:{}:{}\nactual: {}\nexpected: {}",
+                event.matcher,
+                event.file, event.line, event.column,
+                event.actual.display.empty() ? event.actual.value : event.actual.display,
+                event.expected.display.empty() ? event.expected.value : event.expected.display)};
+
+        auto lock = std::lock_guard{mutex};
+        by_test[event.test_id].failures.push_back(std::move(detail));
+    }
+
+    void exception(const data::test_case& tc, const std::exception& ex) override
+    {
+        // require_* already notified an assertion_failed before throwing
+        // assertion_failure — keep that as <failure>, not a second record.
+        if(dynamic_cast<const assertions::assertion_failure*>(&ex) != nullptr)
+            return;
+
+        auto detail = failure_detail{
+            .type = exception_type_name(ex),
+            .message = ex.what(),
+            .body = std::format("{}: {}\n{}:{}:{}",
+                exception_type_name(ex),
+                ex.what(),
+                tc.file_name, tc.line, tc.column)};
+
+        auto lock = std::lock_guard{mutex};
+        by_test[tc.test_id].errors.push_back(std::move(detail));
+    }
+
+    void summary(const run_summary& run, const failure_index&) override
+    {
+        auto lock = std::lock_guard{mutex};
+        write_report_locked(run);
+    }
+
+    void eof() override
+    {
+        // Run mode always reaches summary before eof. List mode never writes a report.
+    }
+
+private:
+
+    void write_element(std::ostream& os, std::string_view tag, const failure_detail& detail) const
+    {
+        os << "      <" << tag
+           << " message=\"" << ::xml::escape(detail.message) << '"'
+           << " type=\"" << ::xml::escape(detail.type) << "\">"
+           << ::xml::escape(detail.body)
+           << "</" << tag << ">\n";
+    }
+
+    void write_report_locked(const run_summary& run)
+    {
+        if(path.empty() || written)
+            return;
+
+        const auto& stats = run.statistics;
+        auto failures = std::size_t{0};
+        auto errors = std::size_t{0};
+        auto suite_time = std::chrono::nanoseconds{0};
+
+        for(const auto& result : data::test_results)
+        {
+            suite_time += result.duration;
+            const auto* events = by_test.contains(result.test_id)
+                ? &by_test.at(result.test_id)
+                : nullptr;
+            if(events != nullptr)
+            {
+                failures += events->failures.size();
+                errors += events->errors.size();
+            }
+            else if(test_failed(result))
+            {
+                ++failures;
+            }
+        }
+
+        // A non-empty filter that matches nothing fails the run; give CI UIs a row.
+        const auto empty_filter_failure = not run_tags.empty() and stats.total_tests == 0;
+        if(empty_filter_failure)
+            ++failures;
+
+        const auto tests_attr = empty_filter_failure ? 1uz : stats.total_tests;
+        auto xml_body = std::ostringstream{};
+        xml_body << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+        xml_body << "<testsuites name=\"tester\""
+                 << " tests=\"" << tests_attr << '"'
+                 << " failures=\"" << failures << '"'
+                 << " errors=\"" << errors << '"'
+                 << " time=\"" << seconds_string(suite_time) << "\">\n";
+        xml_body << "  <testsuite name=\"tester\""
+                 << " tests=\"" << tests_attr << '"'
+                 << " failures=\"" << failures << '"'
+                 << " errors=\"" << errors << '"'
+                 << " skipped=\"0\""
+                 << " time=\"" << seconds_string(suite_time) << '"';
+        if(const auto stamp = iso8601_utc(started_at); not stamp.empty())
+            xml_body << " timestamp=\"" << stamp << '"';
+        xml_body << ">\n";
+
+        if(not run_tags.empty())
+        {
+            xml_body << "    <properties>\n"
+                     << "      <property name=\"tags\" value=\""
+                     << ::xml::escape(run_tags) << "\"/>\n"
+                     << "    </properties>\n";
+        }
+
+        if(empty_filter_failure)
+        {
+            xml_body << "    <testcase classname=\"tester\" name=\"no tests matched filter\" time=\"0.000\">\n";
+            xml_body << "      <failure message=\"Tag filter matched no tests\""
+                     << " type=\"empty_filter\">"
+                     << ::xml::escape("tags="s + run_tags)
+                     << "</failure>\n";
+            xml_body << "    </testcase>\n";
+        }
+
+        for(const auto& result : data::test_results)
+        {
+            xml_body << "    <testcase"
+                     << " classname=\"" << ::xml::escape(result.test_set_name) << '"'
+                     << " name=\"" << ::xml::escape(result.test_name) << '"'
+                     << " time=\"" << seconds_string(result.duration) << '"'
+                     << " file=\"" << ::xml::escape(result.file_name) << '"'
+                     << " line=\"" << result.line << "\"";
+
+            const auto* events = by_test.contains(result.test_id)
+                ? &by_test.at(result.test_id)
+                : nullptr;
+            const auto has_failures = events != nullptr and not events->failures.empty();
+            const auto has_errors = events != nullptr and not events->errors.empty();
+            const auto failed = test_failed(result) or has_failures or has_errors;
+
+            if(not failed and result.output.empty())
+            {
+                xml_body << "/>\n";
+                continue;
+            }
+
+            xml_body << ">\n";
+
+            if(has_failures)
+            {
+                for(const auto& detail : events->failures)
+                    write_element(xml_body, "failure", detail);
+            }
+            else if(test_failed(result) and not has_errors)
+            {
+                auto detail = failure_detail{
+                    .type = "test_failed"s,
+                    .message = result.output.empty() ? "test failed"s : result.output,
+                    .body = result.output};
+                write_element(xml_body, "failure", detail);
+            }
+
+            if(has_errors)
+            {
+                for(const auto& detail : events->errors)
+                    write_element(xml_body, "error", detail);
+            }
+
+            if(not result.output.empty())
+            {
+                xml_body << "      <system-out>"
+                         << ::xml::escape(result.output)
+                         << "</system-out>\n";
+            }
+
+            xml_body << "    </testcase>\n";
+        }
+
+        xml_body << "  </testsuite>\n";
+        xml_body << "</testsuites>\n";
+
+        if(path.has_parent_path())
+            std::filesystem::create_directories(path.parent_path());
+
+        auto file = std::ofstream{path, std::ios::binary | std::ios::trunc};
+        if(not file)
+            throw std::runtime_error{"Failed to write JUnit report: " + path.string()};
+
+        file << xml_body.view();
+        if(not file)
+            throw std::runtime_error{"Failed to write JUnit report: " + path.string()};
+
+        written = true;
+    }
+};
+
+export inline auto& observer_instance()
+{
+    static auto value = observer{};
+    return value;
+}
+
+} // namespace tester::output::junit

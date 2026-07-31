@@ -16,6 +16,10 @@ commit on `main`; there is no supported tag yet.
 
 ### Added
 
+- **JUnit / xUnit XML reports** via `--junit=<path>` (alias `--xunit-xml=`). Additive with
+  console or `--jsonl`: JSONL stays on stdout for agents while the XML file feeds CI test
+  UIs. CB forwards the flag. Empty tag filters emit a synthetic failing testcase so the
+  run does not look green in Jenkins/GitHub Actions.
 - **JSONL output** for both phases, with `--jsonl`, `--jsonl=summary`, `--jsonl=failures`,
   and `--jsonl=trace` selecting how much is emitted. Machine contract published as JSON
   Schema 2020-12 in [`docs/jsonl-schema.json`](docs/jsonl-schema.json), with
