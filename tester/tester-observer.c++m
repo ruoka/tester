@@ -64,6 +64,7 @@ public:
     virtual void activate() {}
     virtual void emit_eof() {}
     virtual std::string_view captured_output() const { return {}; }
+    virtual void reset_captured_output() {}
 
     virtual void run_start(
         std::string_view,

@@ -141,7 +141,7 @@ When the test TU is part of a named module, use a module declaration at the top 
 
 ### Behaviour-driven test
 
-**Important:** Nested lambdas (`given` / `when` / `then`) run after the parent `scenario` lambda returns. Capture parent-scope variables **by value** (e.g. `std::shared_ptr`), not by reference (`[&]`), or you will get dangling references.
+A step (`given` / `when` / `then` and their `and_` forms, or `section` in a `test_case`) runs the moment it is assigned — inside the body that declared it, before that body reaches its next line. Capturing enclosing locals by reference (`[&]`) is therefore safe, and each step sees what the steps before it did. Every step is still reported as a test case of its own, listed after the case it belongs to, with the assertions it made itself.
 
 ```c++
 import std;
@@ -162,13 +162,13 @@ auto readme_bdd_feature()
     using ordering::order;
 
     scenario("Customer places an order") = [] {
-        auto o = std::make_shared<order>();
-        given("a draft order") = [o] {
-            when("the customer confirms") = [o] {
-                o->submit();
-                then("the order is marked as submitted") = [o] {
-                    require_true(o->submitted);
-                    require_nothrow([o]{ o->submit(); });
+        auto o = order{};
+        given("a draft order") = [&] {
+            when("the customer confirms") = [&] {
+                o.submit();
+                then("the order is marked as submitted") = [&] {
+                    require_true(o.submitted);
+                    require_nothrow([&]{ o.submit(); });
                 };
             };
         };

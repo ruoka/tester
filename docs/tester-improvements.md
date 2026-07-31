@@ -74,8 +74,8 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 
 ### 2.2 BDD ergonomics
 
-- ✅ Nested `given` / `when` / `then` with `shared_ptr` capture pattern (see `examples/readme_bdd_example.test.c++`).
-- 📋 Static analysis or compile-time hint when nested lambdas capture by reference (common footgun).
+- ✅ A step — `given` / `when` / `then` and their `and_` forms, or `section` — runs at its assignment, inside the body that declared it, so `[&]` is safe and each step sees what the ones before it did. Queuing the step instead ran it after that body had returned, which left every reference capture dangling and could only be documented around: `examples/readme_bdd_example.test.c++` shared its state through a `shared_ptr` for no reason other than this. What the runner reports is unchanged — a step is still its own test case, listed after the case it belongs to, counting the assertions it made itself and failing alone — and the [self] suite pins both halves: a scenario whose steps hold its locals by reference, and a spawned probe where one step fails and its sibling still runs.
+- ✅ The insert-position search went with it. A queued step used to be placed in the run list by scanning the pending names for BDD keywords, to approximate the order the steps were written in; the call stack gives that order exactly.
 - 📋 Optional flat `test_case` + `section` guidance in README for non-BDD modules.
 
 ### 2.3 Dependencies & ordering
@@ -84,7 +84,7 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 - 📋 Expose dependency graph in `--list` output.
 - 📋 Fail fast with a clear message when dependency cycle is detected.
 - 📋 Report unresolved `depends_on` ids and duplicate test ids instead of silently ignoring them.
-- 📋 Re-sort test cases after nested registration so `priority` / `depends_on` take effect inside `scenario`.
+- ✅ Nothing to re-sort after a step registers: only `scenario` and `test_case` accept a `test_order`, and a step now runs where it is written rather than joining the list the sort had already put in order.
 - ✅ Framework self-tests in `tester/*.test.c++` tagged `[self]`; CI runs `./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'` and requires `summary.passed`.
 
 ### 2.4 Matcher naming in JSONL

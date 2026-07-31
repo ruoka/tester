@@ -448,6 +448,7 @@ export struct observer final : tester::output::observer
 
     std::string_view stream_view() const { return stream.view(); }
     std::string_view captured_output() const override { return stream_view(); }
+    void reset_captured_output() override { reset(); }
     void reset_stream() { reset(); }
 };
 

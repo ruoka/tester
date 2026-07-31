@@ -53,6 +53,13 @@ export std::string_view captured_output()
     return output;
 }
 
+// Hand the buffer back empty. A case is reported with the text of its own assertions, and its
+// steps run inside it, so whoever collected a segment says so and the next one starts clean.
+export void reset_captured_output()
+{
+    notify([](observer& target){ target.reset_captured_output(); });
+}
+
 namespace {
 
 constexpr std::array g_run_env_keys = {
