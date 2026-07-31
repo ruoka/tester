@@ -238,7 +238,7 @@ build-darwin/bin/test_runner --tags='scenario.*Happy'
 make run_tests TEST_TAGS='--tags=[self]'         # build and run in one step
 ```
 
-It also works embedded: invoked from a parent `make`, it picks up `../../config/compiler.mk` and the parent's `PREFIX`. What it does not have is CB's object cache or JSONL build telemetry. CI gates `make tests` plus the `[self]` suite on every push (`makefile-build-and-test`); CB remains the primary path and also surfaces compiler warnings from units it compiles.
+It also works embedded: invoked from a parent `make`, it picks up `../../config/compiler.mk` and the parent's `PREFIX`. What it does not have is CB's object cache or JSONL build telemetry. CI gates `make tests` / `make run_tests` with `[self]` on every push (`makefile-build-and-test`); CB remains the primary path and also surfaces compiler warnings from units it compiles.
 
 ## Built-in Builder (CB)
 

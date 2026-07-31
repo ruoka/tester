@@ -66,7 +66,7 @@ as done below rather than as recommendations:
 | CI honesty | The redundant `test-examples` job is retired and its one real check — `[.demo]` must still fail — gates inside `build-and-test`; the synthetic `eof` step became a real standalone run; static analysis is labelled advisory with its output uploaded |
 | Platform statement | `README.md` says which platform CI verifies on every push, which one is verified on demand, and that Windows is unsupported |
 | Release practice | [`docs/release-policy.md`](release-policy.md) defines the public surface, the versioning rules and the criteria for a release; [`CHANGELOG.md`](../CHANGELOG.md) records public-surface changes as they land |
-| Second build path | The Makefile is documented as an alternative to CB rather than as legacy; CI gates `make tests` + `[self]` (`makefile-build-and-test`); the dead code its warnings exposed is removed |
+| Second build path | The Makefile is documented as an alternative to CB rather than as legacy; CI gates `make run_tests` with `[self]` (`makefile-build-and-test`); the dead code its warnings exposed is removed |
 | Document accuracy | `CONTRIBUTING.md` rewritten around both build paths and the checks CI gates; `cb.md`'s make targets corrected against the Makefile; `AGENTS.md` now covers the abort that produces no `summary`; the `[acceptor]` example is gone from the runner's `--help`; every cross-document link and heading anchor checked |
 
 ## Verified Signals

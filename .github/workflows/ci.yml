@@ -179,18 +179,11 @@ jobs:
           fi
           echo "✓ make tests built warning-free"
 
-      - name: Run self tests (Makefile runner)
+      - name: Run self tests (make run_tests)
         run: |
           set -euo pipefail
-          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-          runner="./build-${os}/bin/test_runner"
-          if [ ! -x "$runner" ]; then
-            echo "✗ expected runner at $runner"
-            exit 1
-          fi
-          "$runner" --jsonl=failures \
-            --junit=test_results_make_self.xml \
-            --tags='[self]' > test_results_make_self.jsonl
+          make run_tests TEST_TAGS="--jsonl=failures --junit=test_results_make_self.xml --tags=[self]" \
+            > test_results_make_self.jsonl
           passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' test_results_make_self.jsonl)
           if [ "$passed" != "true" ]; then
             echo "Makefile self tests failed (summary.passed=$passed)"

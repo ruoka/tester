@@ -70,8 +70,7 @@ Before opening a pull request:
 ```bash
 ./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'   # must report passed: true
 ./tools/CB.sh debug test --jsonl=failures                     # standalone suite
-make clean && make tests                                      # second path; CI gates this too
-./build-$(uname -s | tr '[:upper:]' '[:lower:]')/bin/test_runner --tags='[self]'
+make clean && make run_tests TEST_TAGS='--tags=[self]'        # second path; CI gates this too
 ./tests/cb/smoke.sh                                           # if you touched tools/
 ./tests/mcp/smoke.sh                                          # if you touched tools/cb_mcp.py
 ./tests/jsonl/validate.py --require-schema                    # if you touched any event

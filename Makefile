@@ -274,7 +274,7 @@ tests: all $(test-target)
 
 .PHONY: run_tests
 run_tests: tests
-	$(test-target) $(TEST_TAGS)
+	@$(test-target) $(TEST_TAGS)
 
 # Targets that must run sequentially (not in parallel)
 .NOTPARALLEL: clean mostlyclean $(module_depfile)
