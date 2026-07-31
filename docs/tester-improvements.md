@@ -210,7 +210,7 @@ Design rationale and comparison with CMake, Make, and other build tools: [`docs/
 - ✅ `debug` / `release` configurations; `clean`, `list`, `ci`, `--build-tests`.
 - 📋 Multiple custom configurations beyond debug/release (e.g. `asan`, `coverage`).
 - 📋 Export compile/link graph as JSON for external tools.
-- 📋 Emit `compile_commands.json` from `list` — nearly free given the existing argv builders, and it unblocks clangd. (Full CMake export stays optional and does conflict with the “zero config” philosophy; `compile_commands.json` alone does not.)
+- ✅ Emit `compile_commands.json` from `list` — one entry per scanned source using the existing argv builders (`--precompile` for modular interfaces/partitions, `-c` otherwise), after `update_module_flags` so `-fmodule-file=` is present. Written at the project root (gitignored). Full CMake export stays out of scope.
 - 📋 Richer diagnostics on module dependency cycles and missing PCM.
 - 📋 Support alternate module naming conventions beyond current `*.c++m` / `*.impl.c++` rules.
 - ✅ Import scanning ignores non-code text. Comments, string literals and `#if 0` bodies are stripped from the preamble before the module regexes run, so a commented-out `import` no longer becomes a graph edge. Previously such an edge could close a loop through a real one and abort a valid build with `Cyclic dependency detected` — commenting out an import you used to have was enough to trigger it. Scanning stays regex-based and therefore compiler-independent (no `clang-scan-deps`), which matters for planned GCC support: one alternation covers comments and literals, and `#if` depth is counted because balanced delimiters are not a regular language. Genuine `#ifdef` branches remain over-approximated by design. Costs ~2 ms per translation unit, all of it `std::regex` overhead rather than the pattern.
@@ -404,7 +404,6 @@ Ordered by consequence, not by effort. Items marked **verified** were reproduced
 | Priority | Item | Rationale |
 |----------|------|-----------|
 | Medium | JUnit XML observer (§3.8) | Cheap against the existing observer contract; unlocks CI test UIs |
-| Medium | `compile_commands.json` from `list` (§4.1) | Nearly free given existing argv builders; unblocks clangd |
 | Low | Death tests, regex / predicate matchers, container prefix-suffix (§1.2–1.5) | Framework parity. Death tests are cheaper than they look — the spawn and signal-decode helpers already exist |
 | Low | Index-loop joins in tester's observer (§3.9) | Violates the project's own `AGENTS.md` rule; no behavioural impact |
 | Low | Decompose `cb.c++` (§4.1) | Large refactor with no user-visible change; the smoke suite is strong enough to support it when desired |

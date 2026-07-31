@@ -80,7 +80,7 @@ CB is **not** trying to replace CMake, Bazel, or Meson for general-purpose build
 |------|-------------------|
 | Multi-language monorepos (C++, Rust, Protobuf codegen, …) | CB compiles C++ module TUs only |
 | Install rules, packaging, CPack, distro `.deb` / `.rpm` | No install/export target model |
-| IDE project generation (`compile_commands.json`, presets) | Not generated today (see backlog) |
+| IDE project generation beyond `compile_commands.json` (presets, CMake export) | `list` writes `compile_commands.json` for clangd; full IDE/CMake export stays out of scope |
 | Cross-compilation matrices (Android, embedded, many triples) | Single-host `debug` / `release` configs |
 | FetchContent / vcpkg / Conan dependency ecosystems | Dependencies are git submodules + include dirs |
 | Complex conditional target graphs | No CMake-style generator expressions |
@@ -131,7 +131,7 @@ When tester is embedded as a submodule, the **parent** Makefile/CB entry point o
 
 CMake excels at portable project configuration, dependency fetching, install trees, and IDE integration. CB deliberately avoids a second configuration language: discovery and conventions replace `CMakeLists.txt`. The trade-off is less flexibility outside the ruoka module layout.
 
-If you need `compile_commands.json` for clangd, that is a known gap — tracked as a proposed (optional) feature in [tester-improvements.md §4.1](tester-improvements.md#41-core-build-system), explicitly marked as conflicting with zero-config philosophy.
+`list` writes `compile_commands.json` at the project root for clangd (one entry per scanned source, using the same argv builders as a real compile). The file is gitignored; regenerate with `./tools/CB.sh debug list` after the TU set or flags change. Full CMake export stays out of scope.
 
 ### Ninja / Meson / Bazel
 
@@ -240,7 +240,7 @@ Prerequisites are filtered to the project tree. Toolchain headers change as a un
 
 **Scanner scope:** the module graph is scanned with regular expressions, so a source that needs a tokenizer to read is out of scope. The known case is [lex.pptoken]'s reversion of phase-2 splices inside a raw-string body: honouring it means deciding whether an `R"(` opens a literal or is text inside a comment, which is lexical state rather than a pattern. A raw string whose body ends a line with `)\` is therefore read as closing one line early and may contribute a phantom edge — the same over-approximation `#ifdef` branches get. A comment or literal that merely mentions `R"(` is harmless, which is the likelier text and the reason the trade goes this way.
 
-**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job) — `profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `source_stale`, `header_stale`, `depfile_unusable`, `strict_arguments`, `source_list`, `compile_failure`, `link_failure`, `test_link_failure`, `link_rebuild_reason`, `implementation_pcm`, `rebuild_summary`, `test_lifecycle`, `cache_invalidate`, `profile_change`, `cache_status`, `std_module_reported`, `jsonl_modes`, `jsonl_failure_mode`.
+**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job) — `profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `source_stale`, `header_stale`, `depfile_unusable`, `strict_arguments`, `source_list`, `compile_commands`, `compile_failure`, `link_failure`, `test_link_failure`, `link_rebuild_reason`, `implementation_pcm`, `rebuild_summary`, `test_lifecycle`, `cache_invalidate`, `profile_change`, `cache_status`, `std_module_reported`, `jsonl_modes`, `jsonl_failure_mode`.
 
 **Optional follow-up:** `cache prune` for disk/orphan cleanup — backlog only; see [tester-improvements.md §4.4](tester-improvements.md#44-cache-maintenance-optional--add-if-operational-issues-appear).
 

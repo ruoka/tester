@@ -95,6 +95,7 @@ constexpr auto std_module_profile_filename = "std-module-profile.txt"sv;
 constexpr auto compiler_version_filename = "compiler-version.txt"sv;
 constexpr auto std_pcm_filename = "std.pcm"sv;
 constexpr auto std_obj_filename = "std.o"sv;
+constexpr auto compile_commands_filename = "compile_commands.json"sv;
 constexpr auto std_module_name = "std"sv;
 constexpr auto pcm_extension = ".pcm"sv;
 constexpr auto object_extension = ".o"sv;
@@ -2894,8 +2895,49 @@ public:
         return result.ok();
     }
 
+    // The compilation-database entry for a source is the argv that reads that source —
+    // --precompile for modular interfaces/partitions, -c for everything else. The second
+    // modular step (pcm → .o) is omitted: it has no distinct source path for clangd.
+    string_list compile_argv_for_database(const translation_unit& tu) const
+    {
+        if(tu.is_modular)
+            return compile_pcm_argv(tu);
+        return compile_source_object_argv(tu);
+    }
+
+    // clangd discovers how each file is built through this file. list already scanned the
+    // active TU set; writing here keeps the database aligned with that inventory without a
+    // second configuration language. Module -fmodule-file= flags require update_module_flags.
+    void write_compile_commands() const
+    {
+        const auto path = detail::join_dir(source_dir, compile_commands_filename);
+        write_cache_file(path, "compile commands database", [&](std::ostream& file) {
+            file << "[\n";
+            auto first = true;
+            for(const auto& tu : units_in_topological_order)
+            {
+                if(not first)
+                    file << ",\n";
+                first = false;
+                const auto arguments = compile_argv_for_database(tu);
+                file << "  {\n";
+                file << "    \"directory\": \"" << output::jsonl::escape(source_dir) << "\",\n";
+                file << "    \"file\": \"" << output::jsonl::escape(tu.full_path) << "\",\n";
+                file << "    \"arguments\": [" << output::jsonl::join_json_strings(arguments) << "]\n";
+                file << "  }";
+            }
+            file << "\n]\n";
+        });
+        output::notify(&output::observer::info,
+                       "Wrote "s + path + " (" + std::to_string(units_in_topological_order.size())
+                           + " entries)");
+    }
+
     void list_sources() {
         scan_and_order();
+        // Same as build: per-module -fmodule-file= flags are only known after the scan.
+        update_module_flags();
+        write_compile_commands();
         auto inventory = output::source_inventory{
             .config = std::string{config_name()},
             .include_tests = include_tests,
@@ -3121,7 +3163,7 @@ int main(int argc, char* argv[])
                           << "  build            Build the project (default if no action specified)\n"
                           << "  clean            Remove build directories\n"
                           << "  ci               Clean and run tests (shortcut for: clean test)\n"
-                          << "  list             List all translation units\n"
+                          << "  list             List all translation units; write compile_commands.json for clangd\n"
                           << "  cache status     Inspect object-cache profile and entry counts\n"
                           << "  cache invalidate Remove object/link cache indexes (lighter than clean)\n"
                           << "  test [filter]  Build and run tests (optional substring filter)\n"

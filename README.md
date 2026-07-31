@@ -247,8 +247,8 @@ Tester ships with **CB** (`tools/cb.c++`), a module-aware build system in a sing
 ./tools/CB.sh release build        # optimized; tests off by default
 ./tools/CB.sh release build --build-tests   # compile tests without running
 ./tools/CB.sh debug test
-./tools/CB.sh debug list           # human TU inventory
-./tools/CB.sh debug list --jsonl=failures   # machine-readable inventory
+./tools/CB.sh debug list           # human TU inventory; writes compile_commands.json
+./tools/CB.sh debug list --jsonl=failures   # machine-readable inventory (+ compile_commands.json)
 ./tools/CB.sh debug clean
 ./tools/CB.sh debug cache status      # inspect object-cache profile
 ./tools/CB.sh debug cache invalidate  # drop cache indexes only (lighter than clean)
@@ -277,7 +277,7 @@ Every line is valid UTF-8 and valid JSON regardless of what the test data contai
 ./tools/CB.sh debug test --jsonl=summary --tags='\[self\]'   # CI aggregate
 ./tools/CB.sh debug test --list --jsonl=failures             # test catalogue
 ./tools/CB.sh debug build --jsonl=trace                       # full compile telemetry
-./tools/CB.sh debug list --jsonl=failures                     # TU inventory
+./tools/CB.sh debug list --jsonl=failures                     # TU inventory + compile_commands.json
 ```
 
 **Unified JSONL modes:**
