@@ -9,8 +9,10 @@ Tester and CB are particularly effective for AI-assisted C++ work because they t
 Successful test runs can produce megabytes of assertion and compiler output. With failures or summary mode, an agent normally needs only the final `summary` event:
 
 ```json
-{"type":"summary","tests_ok":318,"tests_total":318,"passed":true,"failed_test_ids":[]}
+{"type":"summary","tests_ok":146,"tests_total":146,"passed":true,"failed_test_ids":[]}
 ```
+
+Abridged — a real line also carries `schema`, `version`, `pid`, `ts_unix_ms`, `run_id`, and the assertion totals. The counts are this repository's standalone suite, so `./tools/CB.sh debug test --jsonl=summary` reproduces them.
 
 On failure, `first_failure`, `assertion_failed`, or `command_end` identifies the file, line, matcher, command, and expected/actual values. The agent can read those events instead of ingesting the full log.
 

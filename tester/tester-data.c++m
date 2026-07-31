@@ -32,6 +32,9 @@ struct test_case : public test_metadata
     int priority = 0;  // Lower numbers run first (default: 0)
     std::vector<std::string> depends_on;  // Test names this test depends on
     std::string id;  // Unique identifier for dependency references
+    // Bracket tags, parsed once from the description at registration. Filtering and the
+    // catalogue read these rather than re-parsing the rendered display name.
+    std::vector<std::string> tags;
 };
 
 auto test_cases = std::list<test_case>{};
@@ -79,5 +82,41 @@ export inline test_statistics& statistics()
     static test_statistics stats{};
     return stats;
 }
+
+// Run-scoped state, alongside the run's other data. The runner writes it, the engine and the
+// assertion matchers read it, and it is per-run rather than per-object — so it lives here
+// instead of being threaded through every call that might eventually need it.
+inline output_config g_config{};
+inline std::vector<std::string> g_run_argv{};
+
+// Which test an assertion belongs to. Thread-local because a test body may report from a
+// thread it started, and that assertion still belongs to the test that spawned it.
+inline thread_local std::string g_current_test_id{};
+
+export const output_config& config()
+{
+    return g_config;
+}
+
+export void set_slowest(std::size_t n) { g_config.slowest = n; }
+
+export std::span<const std::string> run_argv()
+{
+    return g_run_argv;
+}
+
+export void set_run_argv(int argc, char** argv)
+{
+    g_run_argv.clear();
+    if(argc <= 0 || argv == nullptr)
+        return;
+
+    g_run_argv.reserve(static_cast<std::size_t>(argc));
+    for(int i = 0; i < argc; ++i)
+        g_run_argv.emplace_back(argv[i] != nullptr ? argv[i] : "");
+}
+
+export void set_current_test_id(std::string_view test_id) { g_current_test_id = std::string{test_id}; }
+export std::string_view current_test_id() { return std::string_view{g_current_test_id}; }
 
 }

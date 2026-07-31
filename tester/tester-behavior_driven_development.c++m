@@ -65,3 +65,10 @@ namespace tester::behavior_driven_development
         return make_test_case(description, 0, {}, {}, location1, location2);
     }
 }
+
+namespace tester
+{
+    // The short name the steps above are written under: tester::bdd::given. It belongs with the
+    // namespace it abbreviates rather than in the module's list of re-exports.
+    export namespace bdd = behavior_driven_development;
+}

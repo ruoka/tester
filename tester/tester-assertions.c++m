@@ -3,7 +3,7 @@
 // See the LICENSE file in the project root for full license text.
 
 export module tester:assertions;
-import :publisher;
+import :observer;
 import :data;
 import :utils;
 import std;
@@ -13,6 +13,49 @@ namespace tester::assertions
     using namespace std::literals;
     using data::test;
     using data::statistics;
+    using output::notify;
+    using output::observer;
+
+    // What a matcher reports. Assembled here because this is where the pieces are — both
+    // operands, the assertion's own location, and the matcher's — and an observer is handed a
+    // finished event. Nothing outside this module builds one.
+    //
+    // matcher_location defaults to the caller's location, which is how a matcher that does not
+    // pass one explicitly still names itself: the default is evaluated in the matcher's body.
+    template<typename A, typename E>
+    void report_assertion(const bool ok, const A& actual, const E& expected, const std::source_location location, const std::source_location matcher_location = std::source_location::current(), std::string_view message = {})
+    {
+        const auto event = output::assertion_event{
+            ok,
+            output::extract_matcher_name(matcher_location),
+            output::display_matcher_name(matcher_location),
+            output::observe_value(actual),
+            output::observe_value(expected),
+            std::string{message},
+            std::string{data::current_test_id()},
+            location.file_name(),
+            location.line(),
+            location.column()};
+        notify([&](observer& target){ target.assertion(event); });
+    }
+
+    // A message carries text rather than operands, so it streams the value and reports where the
+    // call was written as well as where the matcher is.
+    void report_message(const bool ok, auto&& msg, const std::source_location location, const std::source_location caller_location = std::source_location::current())
+    {
+        auto stream = std::ostringstream{};
+        stream << msg;
+        const auto event = output::message_event{
+            ok,
+            stream.str(),
+            output::display_matcher_name(location),
+            location.file_name(),
+            location.line(),
+            location.column(),
+            caller_location.file_name(),
+            caller_location.line()};
+        notify([&](observer& target){ target.message(event); });
+    }
 
     // Exception thrown by fatal assertions (require_*)
     export class assertion_failure : public std::exception
@@ -701,7 +744,7 @@ namespace tester::assertions
     }
 
     // Operands are taken by forwarding reference and only ever read: the comparator and
-    // the publisher both take them by const reference, so nothing is forwarded onward and
+    // report_assertion both take them by const reference, so nothing is forwarded onward and
     // nothing is consumed. By value copied each operand once per layer, which ruled out
     // move-only types entirely. A plain const A& would not do, because deduction against
     // it drops the const of a string literal's element type — A becomes char[4], whose
@@ -713,7 +756,7 @@ namespace tester::assertions
     // reference preserves char[N] where a by-value parameter produced const char*, and
     // both layers below expect the pointer: the comparator is instantiated on
     // std::common_type_t, which is the decayed type, so a non-const array cannot bind to
-    // it at all, and the publisher reports a pointer as its characters but an array as its
+    // it at all, and observe_value reports a pointer as its characters but an array as its
     // type name. Everything else is forwarded untouched.
     template<typename T>
     constexpr decltype(auto) decayed(T&& value)
@@ -731,7 +774,7 @@ namespace tester::assertions
         ++data::statistics().total_assertions;
         const auto ok = match(decayed(actual),decayed(expected));
         data::statistics().successful_assertions += ok;
-        publisher::assertion(ok,decayed(actual),decayed(expected),location,matcher_location);
+        report_assertion(ok,decayed(actual),decayed(expected),location,matcher_location);
         return ok;
     };
 
@@ -742,7 +785,7 @@ namespace tester::assertions
         ++data::statistics().total_assertions;
         const auto ok = match(decayed(actual),decayed(expected));
         data::statistics().successful_assertions += ok;
-        publisher::assertion(ok,decayed(actual),decayed(expected),location,matcher_location);
+        report_assertion(ok,decayed(actual),decayed(expected),location,matcher_location);
         if(not ok)
         {
             throw assertion_failure{"Assertion failed"};
@@ -917,7 +960,7 @@ namespace tester::assertions
             actual = "?"sv;
         }
         data::statistics().successful_assertions += ok;
-        publisher::assertion(ok, actual, expected, location, matcher_location, ok ? ""sv : msg_expected_no_exception);
+        report_assertion(ok, actual, expected, location, matcher_location, ok ? ""sv : msg_expected_no_exception);
     }
 
     export auto check_throws(auto&& t, const std::source_location location = std::source_location::current())
@@ -942,7 +985,7 @@ namespace tester::assertions
             actual = "?"sv;
         }
         data::statistics().successful_assertions += ok;
-        publisher::assertion(ok, actual, expected, location, matcher_location, ok ? ""sv : msg_expected_exception);
+        report_assertion(ok, actual, expected, location, matcher_location, ok ? ""sv : msg_expected_exception);
     }
 
     export template<typename E>
@@ -972,7 +1015,7 @@ namespace tester::assertions
             ok = not ok;
         }
         data::statistics().successful_assertions += ok;
-        publisher::assertion(ok, actual, expected, location, matcher_location, ok ? ""sv : throws_as_failure_message(actual));
+        report_assertion(ok, actual, expected, location, matcher_location, ok ? ""sv : throws_as_failure_message(actual));
     }
 
     // Deprecated: the exception argument was only ever used to deduce E, forcing
@@ -995,18 +1038,18 @@ namespace tester::assertions
             ++data::statistics().total_assertions;
             t();
             ++data::statistics().successful_assertions;
-            publisher::assertion(true,actual,expected,location,matcher_location);
+            report_assertion(true,actual,expected,location,matcher_location);
         }
         catch(const std::exception& e)
         {
             actual = output::demangle_type(typeid(e));
-            publisher::assertion(false, actual, expected, location, matcher_location, msg_expected_no_exception);
+            report_assertion(false, actual, expected, location, matcher_location, msg_expected_no_exception);
             throw assertion_failure{"Assertion failed: expected no exception"};
         }
         catch(...)
         {
             actual = "?"sv;
-            publisher::assertion(false, actual, expected, location, matcher_location, msg_expected_no_exception);
+            report_assertion(false, actual, expected, location, matcher_location, msg_expected_no_exception);
             throw assertion_failure{"Assertion failed: expected no exception"};
         }
     }
@@ -1021,7 +1064,7 @@ namespace tester::assertions
             ++data::statistics().total_assertions;
             t();
             actual = "none"sv;
-            publisher::assertion(false, actual, expected, location, matcher_location, msg_expected_exception);
+            report_assertion(false, actual, expected, location, matcher_location, msg_expected_exception);
             throw assertion_failure{"Assertion failed: expected exception"};
         }
         catch(const assertion_failure&)
@@ -1032,13 +1075,13 @@ namespace tester::assertions
         {
             actual = output::demangle_type(typeid(e));
             ++data::statistics().successful_assertions;
-            publisher::assertion(true,actual,expected,location,matcher_location);
+            report_assertion(true,actual,expected,location,matcher_location);
         }
         catch(...)
         {
             actual = "?"sv;
             ++data::statistics().successful_assertions;
-            publisher::assertion(true,actual,expected,location,matcher_location);
+            report_assertion(true,actual,expected,location,matcher_location);
         }
     }
 
@@ -1053,7 +1096,7 @@ namespace tester::assertions
             ++data::statistics().total_assertions;
             t();
             actual = "none"sv;
-            publisher::assertion(false, actual, expected, location, matcher_location, msg_expected_exception_type);
+            report_assertion(false, actual, expected, location, matcher_location, msg_expected_exception_type);
             throw assertion_failure{"Assertion failed: expected exception of type " + std::string{expected}};
         }
         catch(const assertion_failure&)
@@ -1064,18 +1107,18 @@ namespace tester::assertions
         {
             actual = output::demangle_type(typeid(E));
             ++data::statistics().successful_assertions;
-            publisher::assertion(true,actual,expected,location,matcher_location);
+            report_assertion(true,actual,expected,location,matcher_location);
         }
         catch(const std::exception& e)
         {
             actual = output::demangle_type(typeid(e));
-            publisher::assertion(false, actual, expected, location, matcher_location, msg_wrong_exception_type);
+            report_assertion(false, actual, expected, location, matcher_location, msg_wrong_exception_type);
             throw assertion_failure{"Assertion failed: expected exception of type " + std::string{expected} + " but got " + std::string{actual}};
         }
         catch(...)
         {
             actual = "?"sv;
-            publisher::assertion(false, actual, expected, location, matcher_location, msg_wrong_exception_type);
+            report_assertion(false, actual, expected, location, matcher_location, msg_wrong_exception_type);
             throw assertion_failure{"Assertion failed: expected exception of type " + std::string{expected}};
         }
     }
@@ -1090,7 +1133,7 @@ namespace tester::assertions
 
     export auto message(const bool ok, auto&& msg, const std::source_location location = std::source_location::current())
     {
-        publisher::message(ok,msg,location);
+        report_message(ok,msg,location);
     }
 
     export auto succeed(auto&& msg, const std::source_location location = std::source_location::current())
@@ -1194,7 +1237,7 @@ namespace tester::assertions
             expected_final = expected_str + " (" + diff_msg.value() + ")";
         }
         
-        publisher::assertion(ok, actual_str, expected_final, location);
+        report_assertion(ok, actual_str, expected_final, location);
         return ok;
     }
 
@@ -1212,7 +1255,7 @@ namespace tester::assertions
             expected_final = expected_str + " (" + diff_msg.value() + ")";
         }
         
-        publisher::assertion(ok, actual_str, expected_final, location);
+        report_assertion(ok, actual_str, expected_final, location);
         if (!ok) {
             auto msg = std::string{"Container equality assertion failed"};
             if (diff_msg.has_value()) {
@@ -1258,7 +1301,7 @@ namespace tester::assertions
         auto needle_str = to_std_string(needle);
         const auto ok = haystack_str.contains(needle_str);
         data::statistics().successful_assertions += ok;
-        publisher::assertion(ok, haystack_str, std::string{"contains: "} + needle_str, location);
+        report_assertion(ok, haystack_str, std::string{"contains: "} + needle_str, location);
         return ok;
     }
 
@@ -1271,7 +1314,7 @@ namespace tester::assertions
         auto needle_str = to_std_string(needle);
         const auto ok = haystack_str.contains(needle_str);
         data::statistics().successful_assertions += ok;
-        publisher::assertion(ok, haystack_str, std::string{"contains: "} + needle_str, location);
+        report_assertion(ok, haystack_str, std::string{"contains: "} + needle_str, location);
         if (!ok) {
             throw assertion_failure{"String does not contain expected substring: " + needle_str};
         }
@@ -1323,7 +1366,7 @@ namespace tester::assertions
         auto prefix_val = to_std_string(prefix);
         const auto ok = string_starts_with(str, prefix_val);
         data::statistics().successful_assertions += ok;
-        publisher::assertion(ok, str_val, std::string{"starts with: "} + prefix_val, location);
+        report_assertion(ok, str_val, std::string{"starts with: "} + prefix_val, location);
         return ok;
     }
 
@@ -1336,7 +1379,7 @@ namespace tester::assertions
         auto prefix_val = to_std_string(prefix);
         const auto ok = string_starts_with(str, prefix_val);
         data::statistics().successful_assertions += ok;
-        publisher::assertion(ok, str_val, std::string{"starts with: "} + prefix_val, location);
+        report_assertion(ok, str_val, std::string{"starts with: "} + prefix_val, location);
         if (!ok) {
             throw assertion_failure{"String does not start with expected prefix: " + prefix_val};
         }
@@ -1351,7 +1394,7 @@ namespace tester::assertions
         auto suffix_val = to_std_string(suffix);
         const auto ok = string_ends_with(str, suffix_val);
         data::statistics().successful_assertions += ok;
-        publisher::assertion(ok, str_val, std::string{"ends with: "} + suffix_val, location);
+        report_assertion(ok, str_val, std::string{"ends with: "} + suffix_val, location);
         return ok;
     }
 
@@ -1364,7 +1407,7 @@ namespace tester::assertions
         auto suffix_val = to_std_string(suffix);
         const auto ok = str_val.ends_with(suffix_val);
         data::statistics().successful_assertions += ok;
-        publisher::assertion(ok, str_val, std::string{"ends with: "} + suffix_val, location);
+        report_assertion(ok, str_val, std::string{"ends with: "} + suffix_val, location);
         if (!ok) {
             throw assertion_failure{"String does not end with expected suffix: " + suffix_val};
         }
@@ -1377,7 +1420,7 @@ namespace tester::assertions
         const auto ok = haystack.contains(needle);
         data::statistics().successful_assertions += ok;
         auto needle_str = std::string(1, needle);
-        publisher::assertion(ok, haystack, std::string{"contains: '"} + needle_str + "'", location);
+        report_assertion(ok, haystack, std::string{"contains: '"} + needle_str + "'", location);
         return ok;
     }
 
@@ -1387,7 +1430,7 @@ namespace tester::assertions
         const auto ok = haystack.contains(needle);
         data::statistics().successful_assertions += ok;
         auto needle_str = std::string(1, needle);
-        publisher::assertion(ok, haystack, std::string{"contains: '"} + needle_str + "'", location);
+        report_assertion(ok, haystack, std::string{"contains: '"} + needle_str + "'", location);
         if (!ok) {
             throw assertion_failure{"String does not contain expected character: '" + needle_str + "'"};
         }
@@ -1409,7 +1452,7 @@ namespace tester::assertions
         data::statistics().successful_assertions += ok;
         
         auto container_str = format_container(container);
-        publisher::assertion(ok, container_str,
+        report_assertion(ok, container_str,
                              std::string{"contains: "} + output::value_to_display_string(element), location);
         return ok;
     }
@@ -1424,7 +1467,7 @@ namespace tester::assertions
         data::statistics().successful_assertions += ok;
         
         auto container_str = format_container(container);
-        publisher::assertion(ok, container_str,
+        report_assertion(ok, container_str,
                              std::string{"contains: "} + output::value_to_display_string(element), location);
         if (!ok) {
             auto msg = std::ostringstream{};

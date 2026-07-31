@@ -1,130 +1,178 @@
 # Contributing to Tester
 
-Thank you for your interest in contributing to Tester! This document provides guidelines and instructions for contributing.
+Thanks for your interest. This describes how to build the project, what has to pass before
+a change is submitted, and the conventions the code follows.
 
 ## Development Setup
 
 ### Prerequisites
 
-- **Clang 21** (`clang++-21`) with C++23 modules support and built-in std module
-- **Make** build system
-- **Git** for version control
+- **Clang 21 or newer** with C++23 module support and a libc++ `std` module. Trunk Clang
+  also works; the CI configuration is Clang 21 on Linux. On macOS you need a locally built
+  LLVM — see [`docs/clang-modules-macos.md`](docs/clang-modules-macos.md). Windows is not
+  supported.
+- **`clang-scan-deps`** (ships with the toolchain) — required only for the Makefile path.
+- **Python 3** — for the JSONL schema validator and the MCP bridge.
+- **Git.** There are no submodules in this repository; a plain `git clone` is complete.
 
-### Getting Started
+The repository includes a devcontainer with the Linux toolchain: open it in VS Code and
+choose "Reopen in Container".
 
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/ruoka/tester.git
-   cd tester
-   ```
+### Build and test with CB (what CI gates)
 
-2. **Initialize submodules:**
-   ```bash
-   git submodule init
-   git submodule update
-   ```
+[CB](docs/cb.md) is the default path. It discovers translation units, orders module
+imports, compiles in parallel, and caches objects, so the usual loop is one command:
 
-3. **Build the project:**
-   ```bash
-   make clean
-   make module
-   ```
+```bash
+git clone https://github.com/ruoka/tester.git
+cd tester
 
-4. **Run examples:**
-   ```bash
-   make run_examples
-   ```
+./tools/CB.sh debug test --tags='\[self\]'   # framework contract tests
+./tools/CB.sh debug test                     # everything, examples included
+./tools/CB.sh debug build                    # build only
+./tools/CB.sh debug clean                    # start over
+```
 
-5. **Run tests:**
-   ```bash
-   make tests
-   build/bin/test_runner
-   ```
+Artifacts land in `build-<os>-<config>/` (`pcm/`, `obj/`, `bin/`, `cache/`), so the runner
+is at `build-<os>-<config>/bin/test_runner` — for example `build-darwin-debug/bin/test_runner`.
 
-### Using Dev Containers
+Add `--jsonl=failures` to any command for machine-readable output; that is what CI and
+agents read, and [`AGENTS.md`](AGENTS.md) documents the contract.
 
-The project includes a VS Code devcontainer configuration. Simply open the project in VS Code and select "Reopen in Container" when prompted.
+### Build and test with make
 
-## Code Style
+The `Makefile` is a supported alternative that uses `clang-scan-deps` for module ordering
+and needs no CB bootstrap. It has no object cache and no build telemetry, and CI does not
+exercise it, so run it when you change module structure or want a second opinion:
 
-The project follows the [C++ Core Guidelines](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines) for code style and best practices, with the following exceptions:
+```bash
+make tests                                     # build-<os>/bin/test_runner
+make run_tests TEST_TAGS='--tags=[self]'       # build and run
+make run_examples                              # build and run examples/
+make module                                    # modules + build-<os>/lib/libtester.a
+make mostlyclean                               # drop obj/ and pcm/, std.pcm included
+make clean                                     # the above plus bin/ and lib/
+```
 
-**Naming Convention:**
-- **All identifiers use `snake_case`** (including class names, functions, variables, etc.)
-- This differs from the Core Guidelines' typical PascalCase for classes and camelCase for functions
-- Examples:
-  - Classes: `test_case`, `test_runner` (not `TestCase`, `TestRunner`)
-  - Functions: `require_eq()`, `check_neq()` (not `requireEq()`, `checkNeq()`)
-  - Variables: `test_name`, `assertion_count` (not `testName`, `assertionCount`)
+`make tools` builds `tools/*.c++` into `build-<os>/bin/tools/`, but only on Linux: the glob
+picks up `core_pc.c++`, which includes `<elf.h>`. CB does not scan `tools/` at all, so that
+utility has no other build path.
 
-**Other Style Rules:**
-- Use 4 spaces for indentation in C++ files
-- Follow P1204R0 module organization guidelines
-- Keep modules focused and well-documented
-- Refer to the C++ Core Guidelines for:
-  - [Functions](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#S-functions)
-  - [Classes and class hierarchies](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#S-class)
-  - [Resource management](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#S-resource)
-  - [Error handling](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#S-errors)
-  - And other sections as applicable
+A full `make` rebuild compiles everything, which makes it the pass that shows every
+compiler warning — an incremental CB build reports only what it recompiled. Changes should
+be warning-free.
 
-## Module Organization
+## What has to pass
 
-- Module files use `.c++m` extension
-- Implementation files use `.impl.c++` extension
-- Test files use `.test.c++` extension (co-located with source)
-- Module names use the `tester` namespace with submodules (`tester:assertions`, `tester:basic`, etc.)
+Before opening a pull request:
 
-## Testing
+```bash
+./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'   # must report passed: true
+./tools/CB.sh debug test --jsonl=failures                     # standalone suite
+./tests/cb/smoke.sh                                           # if you touched tools/
+./tests/mcp/smoke.sh                                          # if you touched tools/cb_mcp.py
+./tests/jsonl/validate.py --require-schema                    # if you touched any event
+```
 
-- Unit tests are co-located with source files using `.test.c++` extension
-- Examples are in the `examples/` directory
-- Run tests with `build/bin/test_runner`
-- Use tag-based filtering for selective test execution:
-  ```bash
-  build/bin/test_runner --tags="scenario.*Happy"
-  build/bin/test_runner --tags=[acceptor]
-  ```
-- Ensure all tests pass before submitting a pull request
+The `[self]` suite is the gate: it covers registration, tag filtering, `depends_on`
+ordering, the assertion matchers, and the JSONL events. A change to framework behaviour
+belongs with a `[self]` test that fails without it.
+
+Read the verdict from the last `summary` event's `passed` field, not from the exit code
+alone — see [`AGENTS.md`](AGENTS.md#triage-workflow-test-failure).
+
+## Testing conventions
+
+- Tests are co-located with sources as `*.test.c++`, framework tests under `tester/`,
+  examples under `examples/`.
+- Tag framework tests `[self]` so they run in the gate.
+- Bracket tags starting with `.` are hidden from unfiltered runs (`[.demo]` marks the
+  intentional failure demos in `examples/`). Select them explicitly when you need them.
+- Filter by tag or by name pattern:
+
+```bash
+build-darwin-debug/bin/test_runner --tags='[self]'
+build-darwin-debug/bin/test_runner --tags='scenario.*Happy'
+build-darwin-debug/bin/test_runner --list
+```
+
+- Ordering metadata is checked before the first test runs. A duplicate `test_order::id`, a
+  `depends_on` id that names no test, or a dependency cycle aborts the run with a message
+  naming the offender.
 
 ## Assertions
 
-Tester provides both fatal (`require_*`) and non-fatal (`check_*`) assertions:
+Two families, both macro-free:
 
-- **Fatal assertions** (`require_*`): Stop test execution on failure by throwing `assertion_failure`
-- **Non-fatal assertions** (`check_*`): Log failures but continue test execution
+- **`require_*`** — fatal: throws `assertion_failure` and ends that test.
+- **`check_*`** — non-fatal: records the failure and continues.
 
-Examples:
-- `require_eq(a, b)` - Fatal: throws if `a != b`
-- `check_eq(a, b)` - Non-fatal: logs if `a != b`, continues
-- `require_throws([] { throw std::exception{}; })` - Fatal: throws if no exception
-- `check_throws([] { throw std::exception{}; })` - Non-fatal: logs if no exception
+```cpp
+require_eq(a, b);                       // fatal if a != b
+check_eq(a, b);                         // records and continues
+require_throws_as<std::runtime_error>([]{ throw std::runtime_error{"x"}; });
+```
+
+Name the exception type rather than passing an instance; the instance form is deprecated.
+The full list is in [README — Assertion Reference](README.md#assertion-reference).
+
+## Code Style
+
+The project follows the [C++ Core Guidelines](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines)
+with these deviations and additions:
+
+**Naming** — all identifiers are `snake_case`, including types:
+
+- Types: `test_case`, `build_system` (not `TestCase`, `BuildSystem`)
+- Functions: `require_eq()`, `check_neq()` (not `requireEq()`)
+- Variables: `test_name`, `assertion_count`
+
+**Formatting** — 4 spaces, no tabs. Prefer the spelled operators `not`, `and`, `or` over
+`!`, `&&`, `||` in new code.
+
+**Standard library first** — the project targets C++23 and prefers standard algorithms and
+views over hand-rolled loops: `contains` over `find(...) != end()`, `views::join_with` over
+index loops with delimiter checks, `views::split` over ad-hoc parsers.
+[`AGENTS.md`](AGENTS.md#c-style-tools-and-tester) has the full policy with examples,
+including the rule that `tools/` and `tester/` use ISO C++ rather than POSIX APIs, with the
+documented exceptions (`std::system` for subprocesses, `<execinfo.h>` for crash traces).
+
+**Comments** explain intent, trade-offs, and constraints the code cannot state — not what
+the next line does.
+
+## Module Organization
+
+- Module interfaces use `.c++m`, other translation units `.c++`, tests `*.test.c++`.
+- Module names are partitions of `tester` (`tester:assertions`, `tester:runner`, …), one
+  partition per file, named `tester-<partition>.c++m`.
+- Follow [P1204R0](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1204r0.html)
+  layout: the module tree is `tester/`, tools are in `tools/`, tests live beside sources.
+- A partition is internal unless [`tester/tester.c++m`](tester/tester.c++m) re-exports it —
+  `:engine` is deliberately not exported. Adding to the exported set is a
+  public API change; see [`docs/release-policy.md`](docs/release-policy.md).
 
 ## Submitting Changes
 
-1. **Create a branch:**
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
+1. Branch: `git checkout -b fix/what-it-fixes`
+2. Make the change, with a test that fails without it
+3. Run the checks above; keep the build warning-free
+4. Commit with a message that says why, not what
+5. Push and open a pull request
 
-2. **Make your changes** and ensure tests pass
+If the change touches the public surface — exported names, either CLI, or the JSONL events
+— add an entry to [`CHANGELOG.md`](CHANGELOG.md) under `Unreleased`.
 
-3. **Commit your changes:**
-   ```bash
-   git add .
-   git commit -m "Description of your changes"
-   ```
+## Where Things Are Documented
 
-4. **Push and create a pull request**
+| Topic | Document |
+|-------|----------|
+| Using the framework | [`README.md`](README.md) |
+| JSONL contract, agent workflow | [`AGENTS.md`](AGENTS.md), [`docs/jsonl-schema.json`](docs/jsonl-schema.json) |
+| CB design, cache model, targets | [`docs/cb.md`](docs/cb.md) |
+| Versioning and release criteria | [`docs/release-policy.md`](docs/release-policy.md) |
+| Known gaps and planned work | [`docs/tester-improvements.md`](docs/tester-improvements.md) |
+| macOS toolchain setup | [`docs/clang-modules-macos.md`](docs/clang-modules-macos.md) |
 
-## Build System
+## Questions
 
-- Main Makefile is in the project root
-- Compiler configuration is in `config/compiler.mk` (if present) or inherited from parent
-- Build artifacts go to `build/` directory
-- Submodules are built with `PREFIX=../../build` when embedded in a parent project
-
-## Questions?
-
-If you have questions or need help, please open an issue on GitHub.
-
+Open an issue on GitHub.

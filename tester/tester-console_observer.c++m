@@ -3,12 +3,6 @@
 // See the LICENSE file in the project root for full license text.
 
 module;
-#if defined(__GNUG__) && __has_include(<cxxabi.h>)
-#   include <cxxabi.h>
-#   define TESTER_HAVE_CXXABI 1
-#else
-#   define TESTER_HAVE_CXXABI 0
-#endif
 #include "details/terminal-colors.h++"
 
 export module tester:console_observer;
@@ -23,34 +17,8 @@ namespace tester::output::console
 namespace color = ::term;
 using namespace data;
 
-namespace {
-
-template<class T>
-concept chrono_clock = requires {
-    typename T::time_point;
-    T::now();
-};
-
-// Local like chrono_clock above, since tester:utils keeps its copy internal. See
-// is_character_v there: a character type has to be reported apart from the other
-// arithmetic ones, because streaming it emits a raw byte.
-template<typename T>
-constexpr bool is_character_v =
-    std::is_same_v<T, char> or std::is_same_v<T, signed char> or std::is_same_v<T, unsigned char>
-    or std::is_same_v<T, char8_t> or std::is_same_v<T, char16_t> or std::is_same_v<T, char32_t>
-    or std::is_same_v<T, wchar_t>;
-
-// See is_ascii_printable in tester:utils, which explains why this is a value range and not
-// std::isprint: that classifies a byte, and the cast it needs turns char16_t{0x161} into
-// 'a' while the global locale can make it admit bytes from 0x80 up.
-constexpr bool is_ascii_printable(auto code)
-{
-    return code >= 0x20 and code < 0x7f;
-}
-
-} // namespace
-
-export struct observer final : tester::output::observer
+// The buffer this keeps is what a failing test reports, so it is also the run's output capture.
+export struct observer final : tester::output::observer, tester::output::output_capture
 {
     std::ostream& human;
     std::ostream& result;
@@ -58,131 +26,44 @@ export struct observer final : tester::output::observer
     std::ostringstream stream{};
     bool verbose = false;
 
+    // A test may assert from a thread it started, and everything below writes to the buffer or
+    // to a stream. The JSONL observer takes its own lock for the same reason.
+    mutable std::mutex mutex{};
+
     explicit observer(std::ostream& human_stream, std::ostream& result_stream, bool emit_result_line)
         : human{human_stream}, result{result_stream}, result_line{emit_result_line}
     {}
 
     std::ostream& human_os() { return human; }
     std::ostream& result_os() { return result; }
-    
-    void reset()
+
+    // For callers that already hold the lock. reset() is the locked entry point, which the
+    // engine uses to hand the buffer back empty between tests.
+    void clear_buffer()
     {
         stream = std::ostringstream{};
     }
 
-    std::string demangle_impl(std::string_view name) const
+    void activate() override
     {
-#if TESTER_HAVE_CXXABI
-        int status = 0;
-        auto buffer = std::string{name};
-        auto demangled = abi::__cxa_demangle(buffer.c_str(), nullptr, nullptr, &status);
-        if(demangled != nullptr)
-        {
-            std::string result{demangled};
-            std::free(demangled);
-            return result;
-        }
-#endif
-        return std::string{name};
+        capture_into(*this);
     }
 
-    std::string function_name_impl(const std::source_location sl = std::source_location::current()) const
+    std::string text() const override
     {
-        using namespace std::literals;
-        auto name = std::string_view{sl.function_name()};
-
-        if(auto assertions_pos = name.find("assertions::"); assertions_pos != std::string_view::npos)
-            name.remove_prefix(assertions_pos + "assertions::"s.length());
-
-        auto base = name.substr(0, name.find_first_of("("));
-        auto display = std::string{base};
-
-        if(auto bracket = name.find('['); bracket != std::string_view::npos)
-        {
-            auto end = name.find(']', bracket);
-            auto parameters = end != std::string_view::npos
-                              ? name.substr(bracket + 1, end - bracket - 1)
-                              : name.substr(bracket + 1);
-
-            auto trim = [](std::string_view sv)
-            {
-                auto start = sv.find_first_not_of(" \t");
-                if(start == std::string_view::npos) return std::string_view{};
-                auto finish = sv.find_last_not_of(" \t");
-                return sv.substr(start, finish - start + 1);
-            };
-
-            auto clean = [](std::string text)
-            {
-                auto replace_all = [](std::string& target, std::string_view from, std::string_view to)
-                {
-                    for(auto pos = target.find(from); pos != std::string::npos; pos = target.find(from, pos + to.size()))
-                        target.replace(pos, from.size(), to);
-                };
-
-                replace_all(text, "std::__1::", "std::");
-                replace_all(text, "std::basic_string<char>", "std::string");
-                replace_all(text, "std::basic_string<wchar_t>", "std::wstring");
-                replace_all(text, " >", ">");
-
-                return text;
-            };
-
-            display.push_back(' ');
-            display.push_back('[');
-
-            auto remaining = parameters;
-            auto first = true;
-            while(true)
-            {
-                auto pos = remaining.find(',');
-                auto token = trim(remaining.substr(0, pos));
-                if(not token.empty())
-                {
-                    if(not first) display.append(", ");
-                    auto eq = token.find('=');
-                    if(eq != std::string_view::npos)
-                    {
-                        auto key = trim(token.substr(0, eq));
-                        auto value = trim(token.substr(eq + 1));
-                        display.append(std::string{key});
-                        display.append("=");
-                        display.append(demangle_impl(clean(std::string{value})));
-                    }
-                    else
-                    {
-                        display.append(demangle_impl(clean(std::string{token})));
-                    }
-                    first = false;
-                }
-                if(pos == std::string_view::npos) break;
-                remaining.remove_prefix(pos + 1);
-            }
-
-            display.push_back(']');
-        }
-
-        return display;
-    }
-    
-    auto as_ms_impl(std::chrono::nanoseconds ns) const
-    {
-        return std::chrono::duration_cast<std::chrono::milliseconds>(ns).count();
+        auto lock = std::lock_guard<std::mutex>{mutex};
+        return std::string{stream.view()};
     }
 
-    // The one operand formatter: this used to be a line-by-line copy of
-    // value_to_display_string, carrying a comment that any change to how an operand reads
-    // belonged in all three places. Two of them are now one, and a composite operand reads
-    // the same here as it does in the stream without anybody having to remember.
-    template <typename V>
-    void format_value(const V& val)
+    void reset() override
     {
-        stream << value_to_display_string(val);
+        auto lock = std::lock_guard<std::mutex>{mutex};
+        clear_buffer();
     }
 
     void on_test_case(const data::test_case& tc)
     {
-        reset();
+        clear_buffer();
 
         if(tc.test_name.starts_with("scenario") or tc.test_name.starts_with("test_case"))
             stream << color::background::blue
@@ -197,6 +78,7 @@ export struct observer final : tester::output::observer
 
     void test_case(const data::test_case& tc) override
     {
+        auto lock = std::lock_guard<std::mutex>{mutex};
         on_test_case(tc);
     }
 
@@ -211,11 +93,13 @@ export struct observer final : tester::output::observer
 
     void exception(const data::test_case& tc, const std::exception& ex) override
     {
+        auto lock = std::lock_guard<std::mutex>{mutex};
         on_exception(tc, ex);
     }
 
     void assertion(const assertion_event& event) override
     {
+        auto lock = std::lock_guard<std::mutex>{mutex};
         stream << (event.ok ? color::text::green : color::text::red)
                << event.display_matcher << '\n'
                << "  actual:   " << event.actual.display << '\n'
@@ -230,6 +114,7 @@ export struct observer final : tester::output::observer
 
     void message(const message_event& event) override
     {
+        auto lock = std::lock_guard<std::mutex>{mutex};
         stream << (event.ok ? color::text::yellow : color::text::red)
                << event.display_matcher << '\n'
                << "  message:  " << event.message << '\n'
@@ -241,70 +126,20 @@ export struct observer final : tester::output::observer
             std::clog << stream.view();
     }
 
-    template<typename A, typename E>
-    void assertion(bool ok, const A& actual, const E& expected, const std::source_location location1, const std::source_location location2 = std::source_location::current())
-    {
-        if(ok)
-            stream << color::text::green;
-        else
-            stream << color::text::red;
-
-        stream << this->function_name_impl(location2) << '\n';
-
-        stream << "  actual:   ";
-        this->format_value(actual);
-        stream << '\n';
-
-        stream << "  expected: ";
-        this->format_value(expected);
-        stream << '\n';
-
-        stream << "  location: "
-               << location1.file_name() << " "
-               << location1.line() << ":" << location1.column()
-               << color::reset << '\n';
-
-        if(verbose) std::clog << stream.view();
-    }
-
-    void message(bool ok, auto msg, const std::source_location location1, [[maybe_unused]] const std::source_location location2 = std::source_location::current())
-    {
-        if(ok)
-            stream << color::text::yellow;
-        else
-            stream << color::text::red;
-
-        stream << this->function_name_impl(location1) << '\n';
-        stream << "  message:  " << msg << '\n';
-        stream << "  location: "
-               << location1.file_name() << " "
-               << location1.line() << ":" << location1.column()
-               << color::reset << '\n';
-
-        if(verbose) std::clog << stream.view();
-    }
-
-    void print_test_cases(std::function<bool(const data::test_case&)> included)
+    void print_test_cases(std::span<const data::test_case* const> matched)
     {
         human_os() << "Test cases:\n";
-        for(auto tc : data::test_cases)
-            if(included(tc))
-                human_os() << color::text::yellow
-                           << tc.test_name
-                           << " (" << tc.file_name << " " << tc.line << ':' << tc.column << ")"
-                           << color::reset << std::endl;
+        for(const auto* tc : matched)
+            human_os() << color::text::yellow
+                       << tc->test_name
+                       << " (" << tc->file_name << " " << tc->line << ':' << tc->column << ")"
+                       << color::reset << std::endl;
     }
 
-    void test_catalogue(
-        const std::function<bool(const data::test_case&)>& included,
-        std::string_view) override
+    void test_catalogue(const catalogue& tests) override
     {
-        print_test_cases(included);
-    }
-
-    void test_cases(const std::function<bool(const data::test_case&)>& included) override
-    {
-        print_test_cases(included);
+        auto lock = std::lock_guard<std::mutex>{mutex};
+        print_test_cases(tests.matched);
     }
 
     void print_test_results()
@@ -318,6 +153,7 @@ export struct observer final : tester::output::observer
 
     void test_results() override
     {
+        auto lock = std::lock_guard<std::mutex>{mutex};
         print_test_results();
     }
 
@@ -346,16 +182,16 @@ export struct observer final : tester::output::observer
 
     void test_failures() override
     {
+        auto lock = std::lock_guard<std::mutex>{mutex};
         print_test_failures();
     }
 
-    void print_test_statistics(std::size_t slowest_n, 
-                               std::chrono::steady_clock::time_point run_started,
-                               std::chrono::steady_clock::time_point run_finished,
-                               std::string_view run_tags,
-                               bool want_result_line)
+    void print_test_statistics(const run_summary& run, bool want_result_line)
     {
-        const auto& stats = data::statistics();
+        const auto& stats = run.statistics;
+        const auto run_started = stats.run_started;
+        const auto run_finished = stats.run_finished;
+        const auto run_tags = std::string_view{stats.run_tags};
         const auto failed_tests = stats.total_tests - stats.successful_tests;
         const auto failed_assertions = stats.total_assertions - stats.successful_assertions;
 
@@ -363,20 +199,6 @@ export struct observer final : tester::output::observer
             if(total == 0) return 100.0;
             return 100.0 * static_cast<double>(ok) / static_cast<double>(total);
         };
-
-        const auto passed = data::run_passed(stats);
-
-        auto slowest = std::vector<const data::test_result*>{};
-        if(slowest_n > 0)
-        {
-            slowest.reserve(data::test_results.size());
-            for(const auto& r : data::test_results) slowest.push_back(&r);
-            auto compare = [](const data::test_result* a, const data::test_result* b){
-                return a->duration > b->duration;
-            };
-            std::stable_sort(slowest.begin(), slowest.end(), compare);
-            if(slowest.size() > slowest_n) slowest.resize(slowest_n);
-        }
 
         human_os() << color::text::yellow
                    << "Test statistics:" << '\n'
@@ -406,10 +228,10 @@ export struct observer final : tester::output::observer
                        << color::reset << '\n';
         }
 
-        if(slowest_n > 0)
+        if(not run.slowest.empty())
         {
             human_os() << color::text::yellow << "Slowest tests:" << color::reset << '\n';
-            for(const auto* r : slowest)
+            for(const auto* r : run.slowest)
             {
                 human_os()
                     << "  " << std::chrono::duration_cast<std::chrono::milliseconds>(r->duration).count() << "ms  "
@@ -427,29 +249,16 @@ export struct observer final : tester::output::observer
                 << " tests_total=" << stats.total_tests
                 << " assertions_ok=" << stats.successful_assertions
                 << " assertions_total=" << stats.total_assertions
-                << " passed=" << (passed ? "true" : "false")
+                << " passed=" << (run.passed ? "true" : "false")
                 << '\n';
         }
     }
 
-    void statistics(
-        const data::test_statistics& stats,
-        bool,
-        std::span<const data::test_result* const> slowest,
-        const failure_index&) override
+    void summary(const run_summary& run, const failure_index&) override
     {
-        print_test_statistics(
-            slowest.size(),
-            stats.run_started,
-            stats.run_finished,
-            stats.run_tags,
-            result_line);
+        auto lock = std::lock_guard<std::mutex>{mutex};
+        print_test_statistics(run, result_line);
     }
-
-    std::string_view stream_view() const { return stream.view(); }
-    std::string_view captured_output() const override { return stream_view(); }
-    void reset_captured_output() override { reset(); }
-    void reset_stream() { reset(); }
 };
 
 export inline auto& observer_instance(std::ostream& human, std::ostream& result, bool result_line = false)
