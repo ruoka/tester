@@ -24,7 +24,7 @@ jobs:
         config: [debug, release]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 1
           submodules: recursive
@@ -135,7 +135,7 @@ jobs:
             test_results_${{ matrix.config }}.xml
 
       - name: Upload test results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: always()
         with:
           name: test-results-${{ matrix.config }}
@@ -152,7 +152,7 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 1
           submodules: recursive
@@ -170,7 +170,7 @@ jobs:
           grep '"type":"smoke_end"' cb_smoke.jsonl | tail -1 | grep -q '"passed":true'
 
       - name: Upload CB smoke results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: always()
         with:
           name: cb-smoke-results
@@ -181,7 +181,7 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 1
           submodules: recursive
@@ -199,7 +199,7 @@ jobs:
           grep '"type":"smoke_end"' mcp_smoke.jsonl | tail -1 | grep -q '"passed":true'
 
       - name: Upload MCP smoke results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: always()
         with:
           name: mcp-smoke-results
@@ -215,7 +215,7 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 1
           submodules: recursive
@@ -242,7 +242,7 @@ jobs:
             tester/ tools/ 2>&1 | tee -a static-analysis.log || true
 
       - name: Upload static analysis output
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: always()
         with:
           name: static-analysis
@@ -253,7 +253,7 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 1
           submodules: recursive
