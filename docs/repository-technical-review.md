@@ -45,7 +45,7 @@ doctest, or GoogleTest.
 
 | Area | Change |
 |------|--------|
-| BDD lifetime | Steps execute eagerly at assignment ([`tester/tester-engine.c++m:40`](../tester/tester-engine.c++m)); reference captures are safe |
+| BDD lifetime | Steps run at assignment ([`tester/tester-engine.c++m:40`](../tester/tester-engine.c++m)); reference captures are safe |
 | Step ordering | Run order comes from the call stack; the keyword-search insertion heuristic is deleted |
 | Slot modelling | `test_slot` is a two-alternative `std::variant` (registered case vs owned step), so the impossible states are unrepresentable |
 | Comparison semantics | Upstream fixes #37–#44: optional/expected/`expected<void>`, reference wrappers, time points, cross-period chrono, heterogeneous unscoped enums |
