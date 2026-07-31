@@ -121,7 +121,7 @@
     },
     "diagnostics": {
       "type": "object",
-      "description": "Captured output of a failed toolchain command.",
+      "description": "Captured toolchain output. Present on failed commands, and on successful compiles/links/commands that printed warnings.",
       "required": ["text", "bytes", "truncated"],
       "properties": {
         "text": {

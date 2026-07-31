@@ -38,7 +38,8 @@ commit on `main`; there is no supported tag yet.
 - **`--jobs=N`** to bound concurrent compile and link processes.
 - **Diagnostics in events**: a failed compile, link, or command carries the toolchain
   output in `diagnostics.text` (with the full capture at `diagnostics.path`), so a failure
-  needs no second build to read.
+  needs no second build to read. Successful steps that printed warnings carry the same
+  field, and `--jsonl=failures` still emits those events so `-Wall` noise cannot hide.
 - **MCP stdio bridge** ([`tools/cb_mcp.py`](tools/cb_mcp.py)) wrapping the canonical CB
   commands for editors and agents.
 - **Test suites**: `[self]` contract tests for the framework, CB behaviour tests

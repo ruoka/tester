@@ -516,23 +516,53 @@ inline output::process_status decode_wait_status(int status)
 
 // Compiler output can run to megabytes on a template error; only the head is worth
 // putting on a JSONL line, and the full capture stays on disk for the human.
+inline constexpr auto diagnostics_head_limit = std::size_t{8192};
+
 inline output::diagnostics read_diagnostics(std::string_view path)
 {
-    constexpr auto head_limit = std::size_t{8192};
-
     auto file = std::ifstream{std::string{path}, std::ios::binary};
     if(not file)
         return {};
 
     auto text = std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
     auto diag = output::diagnostics{.path = std::string{path}, .bytes = text.size()};
-    if(text.size() > head_limit)
+    if(text.size() > diagnostics_head_limit)
     {
-        text.resize(head_limit);
+        text.resize(diagnostics_head_limit);
         diag.truncated = true;
     }
     diag.head = std::move(text);
     return diag;
+}
+
+// A modular unit runs two toolchain steps that share one compile_end, so warnings from the
+// first must still be visible when the second also printed (or failed). Cap the combined head
+// at the same limit a single capture uses.
+inline void append_diagnostics(output::diagnostics& into, output::diagnostics&& more)
+{
+    if(more.empty())
+        return;
+    if(into.empty())
+    {
+        into = std::move(more);
+        return;
+    }
+
+    if(not more.head.empty())
+    {
+        if(not into.head.empty())
+            into.head.push_back('\n');
+        into.head += more.head;
+        if(into.head.size() > diagnostics_head_limit)
+        {
+            into.head.resize(diagnostics_head_limit);
+            into.truncated = true;
+        }
+    }
+    into.bytes += more.bytes;
+    into.truncated = into.truncated or more.truncated;
+    if(into.path.empty())
+        into.path = std::move(more.path);
 }
 
 std::string read_first_line(const std::string& path)
@@ -1055,8 +1085,9 @@ private:
 
 // One compile_start, exactly one compile_end: build_scope's pairing one level down. A modular
 // unit compiles in two steps and either can fail, so without the scope each exit path carried its
-// own copy of the event and had to agree about the unit, the reason and the clock. failed()
-// attaches the compiler's own output, so a consumer sees the diagnostic and not just ok:false.
+// own copy of the event and had to agree about the unit, the reason and the clock. attach()
+// collects the compiler's own output — errors on failure, warnings on success — so a consumer
+// sees the diagnostic and not just ok:false / silence.
 class compile_scope
 {
 public:
@@ -1092,7 +1123,7 @@ public:
     }
 
     void succeeded() { ok = true; }
-    void failed(output::diagnostics said) { diag = std::move(said); }
+    void attach(output::diagnostics said) { detail::append_diagnostics(diag, std::move(said)); }
 
 private:
     output::compile_unit unit;
@@ -1138,7 +1169,7 @@ public:
     }
 
     void succeeded() { ok = true; }
-    void failed(output::diagnostics said) { diag = std::move(said); }
+    void attach(output::diagnostics said) { detail::append_diagnostics(diag, std::move(said)); }
 
 private:
     std::string executable_path;
@@ -1149,11 +1180,12 @@ private:
     bool hit = false;
 };
 
-// What run_step needs of a scope: somewhere to hand the child's own output when the step fails,
-// so the failure reaches stdout as a diagnostic rather than as a bare ok:false. compile_scope and
-// link_scope both qualify, which is the whole reason one function can run either phase's steps.
+// What run_step needs of a scope: somewhere to hand the child's own output — failures and
+// warnings alike — so it reaches stdout on compile_end / link_end rather than vanishing with
+// the capture file. compile_scope and link_scope both qualify, which is the whole reason one
+// function can run either phase's steps.
 template <typename Scope>
-concept step_scope = requires(Scope& scope, output::diagnostics said) { scope.failed(std::move(said)); };
+concept step_scope = requires(Scope& scope, output::diagnostics said) { scope.attach(std::move(said)); };
 
 // One test_start, exactly one test_end, with the run's duration in the scope rather than in two
 // locals beside it. Nothing between the events throws today — a failing runner comes back as a
@@ -1571,8 +1603,9 @@ private:
     // ============================================================================
 
     // Sole shell boundary: argv is non-empty (contract) and join_argv quotes each element. With
-    // capture_path the child's stdout and stderr are redirected there and read back on failure.
-    // The test runner must not be captured — its stdout is the JSONL stream the caller forwards.
+    // capture_path the child's stdout and stderr are redirected there and read back whenever the
+    // child printed anything — failures always, successes when there are warnings. The test
+    // runner must not be captured — its stdout is the JSONL stream the caller forwards.
     output::process_result invoke_shell(const string_list& argv, std::string_view capture_path = {}) const
     {
         if(argv.empty())
@@ -1591,24 +1624,33 @@ private:
         const auto finished = std::chrono::steady_clock::now();
 
         auto result = output::process_result{.status = detail::decode_wait_status(raw)};
-        if(not result.ok() and not capture_path.empty())
-            result.diag = detail::read_diagnostics(capture_path);
+        if(not capture_path.empty())
+        {
+            auto diag = detail::read_diagnostics(capture_path);
+            // A silent success leaves an empty capture; keep that off the wire. A failure still
+            // reports the path even when the child printed nothing, so the consumer can see that
+            // the capture was attempted.
+            if(not result.ok() or not diag.head.empty())
+                result.diag = std::move(diag);
+        }
 
         output::notify(&output::observer::command_end, cmd_str, argv, result,
                        output::interval{started, finished});
         return result;
     }
 
-    // Every toolchain command is a step of a reported build phase: a failure is the scope's
-    // before it is the caller's, so the compiler's or linker's output travels on compile_end /
-    // link_end and the exception only has to name the command. A modular unit runs two of these,
-    // each link one, and the std module's two go through the same path.
+    // Every toolchain command is a step of a reported build phase: its output is the scope's
+    // before it is the caller's, so the compiler's or linker's text travels on compile_end /
+    // link_end — including warnings from a successful step — and the exception only has to name
+    // a failing command. A modular unit runs two of these, each link one, and the std module's
+    // two go through the same path.
     void run_step(step_scope auto& scope, const string_list& argv, std::string_view capture) const
     {
-        if(const auto result = invoke_shell(argv, capture); not result.ok()) {
-            scope.failed(result.diag);
+        const auto result = invoke_shell(argv, capture);
+        if(not result.diag.empty())
+            scope.attach(result.diag);
+        if(not result.ok())
             throw std::runtime_error{command_failure_message(argv, result)};
-        }
     }
 
     static std::string command_failure_message(const string_list& argv, const output::process_result& result)

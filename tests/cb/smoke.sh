@@ -336,6 +336,31 @@ test_compile_failure() {
   end_case compile_failure
 }
 
+# A TU that compiles with -Wall warnings used to leave the capture on disk and attach it to
+# no event — ok:true meant silence. Failures mode must still emit that compile_end so the
+# warning cannot accumulate invisibly between clean builds.
+test_compile_warning() {
+  should_run compile_warning || return 0
+  begin_case compile_warning
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  printf '%s\n' 'int main() { int unused = 1; return 0; }' > "${work_dir}/hello.c++"
+
+  run_cb_build "${work_dir}" --jsonl=trace
+  assert_compile_end "hello.c++" false not_in_cache true "warning_compile_ok"
+  assert_jsonl_diagnostics_contain compile_end "unused" "warning_on_compile_end"
+  assert_jsonl_diagnostics_contain command_end "unused" "warning_on_command_end"
+  assert_jsonl_event_value build_end ok true "warning_build_still_ok"
+
+  rm -rf "${work_dir}/${BUILD_DIR}"
+  run_cb_build "${work_dir}" --jsonl=failures
+  assert_compile_end "hello.c++" false not_in_cache true "failures_mode_warning_compile"
+  assert_jsonl_diagnostics_contain compile_end "unused" "failures_mode_warning_text"
+  assert_jsonl_event_value compile_end ok true "failures_mode_warning_ok"
+  end_case compile_warning
+}
+
 test_link_failure() {
   should_run link_failure || return 0
   begin_case link_failure
@@ -1337,6 +1362,7 @@ main() {
   test_strict_arguments
   test_source_list
   test_compile_failure
+  test_compile_warning
   test_link_failure
   test_test_link_failure
   test_link_rebuild_reason

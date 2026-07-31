@@ -193,6 +193,10 @@ struct observer final : cb::output::observer
             auto lock = std::lock_guard<std::mutex>{mutex};
             note_rebuild(step.rebuild);
         }
+        // Failures already surface through the thrown command message; a successful compile
+        // with warnings would otherwise vanish because the capture never reaches a human sink.
+        if(step.ok and not step.diag.head.empty())
+            warning(step.diag.head);
     }
 
     // A skipped link is worth a line — there are one or two executables, and their absence from
@@ -204,6 +208,8 @@ struct observer final : cb::output::observer
             info("Skipping link (up-to-date): " + std::string{executable_path});
         else if(not step.rebuild.empty())
             info(link_rebuild_message(executable_path, step.rebuild));
+        if(step.ok and not step.diag.head.empty())
+            warning(step.diag.head);
     }
 
     // A passing run says so here rather than in the command, for the same reason the skipped-link

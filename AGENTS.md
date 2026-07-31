@@ -65,9 +65,9 @@ If `matcher` is `"require"` or `"check"` on a `require_eq` / `check_eq` line, st
 ## Triage workflow (build failure)
 
 1. Find `command_end` with `"ok":false` — use the `argv` array to rerun without shell parsing.
-2. Read `diagnostics.text` on the failed `compile_end` / `link_end` / `command_end`: it holds the compiler or linker output (truncated to 8 KiB, with `diagnostics.path` pointing at the full capture and `truncated` saying whether it was cut). You do not need to rerun the build to see the error.
+2. Read `diagnostics.text` on the failed `compile_end` / `link_end` / `command_end`: it holds the compiler or linker output (truncated to 8 KiB, with `diagnostics.path` pointing at the full capture and `truncated` saying whether it was cut). You do not need to rerun the build to see the error. The same field carries warnings when `ok:true` — failures mode still emits those events so `-Wall` noise cannot accumulate invisibly.
 3. `exit_code` is the child's own exit code. `wait_status` is the raw `std::system` value, and `signaled` / `signal` distinguish a crashed toolchain process from one that exited non-zero.
-4. In failures mode, inspect failed `compile_end` and `command_end` events. Use trace mode when successful per-TU cache/rebuild telemetry is needed.
+4. In failures mode, inspect failed `compile_end` / `command_end` events and any successful ones that carry `diagnostics` (warnings). Use trace mode when successful per-TU cache/rebuild telemetry is needed.
 5. A failed compiler invocation emits `compile_end` with `ok:false`; CB joins the remaining workers before emitting one failed `build_end` and exiting.
 6. Rebuild: `./tools/CB.sh debug build --jsonl=failures`, then re-run tests.
 
@@ -113,13 +113,13 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 | `unit` | Per translation unit (`path`, `module`, `kind`, `imports[]`, `level`, `has_main`, `is_test`, `is_modular`) |
 | `list_summary` | Inventory totals (`units_total`, `main_count`, `test_count`, `max_level`) |
 | `build_start` / `build_end` | Whole build; compact modes add aggregate compile/link/cache/failure counts; `rebuild_summary` lists compile rebuilds by `kind` plus `top_modules` |
-| `command_start` / `command_end` | Every command in trace; failed commands only in failures. `command_end` carries decoded `exit_code` / `wait_status` / `signaled` and, on failure, `diagnostics` |
+| `command_start` / `command_end` | Every command in trace; failed commands and successes that printed warnings in failures. `command_end` carries decoded `exit_code` / `wait_status` / `signaled` and `diagnostics` when the child printed anything (or failed) |
 | `profile_changed` | Once per build when object-cache profile mismatches (`reason`, `profile_diff`) |
 | `cache_status` | `cache status` subcommand — all four files under `cache/`: object cache (`object_cache_path`, `profile_match`, entry counts), executable cache, `std_module_profile_*` (`_match` says `std.pcm` matches the current profile), `compiler_stamp_*`, plus `current_profile` |
 | `cache_invalidate_end` | `cache invalidate` subcommand — one flag per file `cache_status` reports (`object_cache_removed`, `executable_cache_removed`, `compiler_stamp_removed`, `std_module_profile_removed`) |
 | `compile_start` | Per TU in trace mode; on rebuild includes `rebuild_reason`, structured `rebuild`, and `message` |
-| `compile_end` | Per TU in trace; failed compilations only in failures; on `cache_hit:false` includes short `rebuild_reason` + `rebuild` (`kind`, optional `module` / `trigger_path` / `hint` / …); on `ok:false` includes `diagnostics` (compiler output). Module `std` reports here too — `std.pcm` / `std.o` are one unit CB compiles, not in the scan |
-| `link_end` | Per executable in trace; failed links only in failures; relinks include `rebuild_reason` / `rebuild`; on `ok:false` includes `diagnostics` (linker output) |
+| `compile_end` | Per TU in trace; failed compilations and successes with warnings in failures; on `cache_hit:false` includes short `rebuild_reason` + `rebuild` (`kind`, optional `module` / `trigger_path` / `hint` / …); `diagnostics` carries compiler output on failure and on success when clang printed warnings. Module `std` reports here too — `std.pcm` / `std.o` are one unit CB compiles, not in the scan |
+| `link_end` | Per executable in trace; failed links and successes with warnings in failures; relinks include `rebuild_reason` / `rebuild`; `diagnostics` carries linker output on failure and on success when the linker printed warnings |
 | `cb_error` | CB fatal/diagnostic |
 
 **Compile `rebuild_reason` kinds:** `not_in_cache` (first seen), `source_stale` (edited), `header_stale` (an `#include`d header in the project tree is newer than the object, resolved from the compiler depfile — the header is in `rebuild.trigger_path`), `depfile_unusable` (the compiler `.d` is missing, unreadable or malformed, so header freshness is unknown — the `.d` path is in `rebuild.trigger_path`), `object_missing`, `object_stale`, `own_pcm_missing`, `own_pcm_stale`, `pcm_stale`, `dependency_pcm_stale`, `profile_change` (see `profile_changed`; `rebuild.see_event` is `"profile_changed"`). Module name is in `rebuild.module`, not encoded in the reason string.
