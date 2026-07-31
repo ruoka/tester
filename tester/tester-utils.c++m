@@ -456,14 +456,10 @@ observed_value observe_value(const V& val)
             // forbids. null would parse and throw away which of the three it was, and
             // those are the operands a float comparison reports when it fails on identity
             // rather than on tolerance.
-            const auto has_a_json_number = [&val]
-            {
-                if constexpr (std::is_floating_point_v<T>)
-                    return std::isfinite(val);
-                else
-                    return true;
-            };
-            kind = has_a_json_number() ? value_kind::number : value_kind::text;
+            if constexpr (std::is_floating_point_v<T>)
+                kind = std::isfinite(val) ? value_kind::number : value_kind::text;
+            else
+                kind = value_kind::number;
         }
     }
     else if constexpr (is_tuple_like_v<T>)
