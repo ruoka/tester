@@ -26,6 +26,7 @@ Makefile.deps
 
 # clangd compilation database (written by `cb list`)
 compile_commands.json
+compile_commands.json.tmp*
 
 # Captured build/test output (local debug artifacts)
 *.jsonl

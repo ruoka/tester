@@ -371,6 +371,38 @@ PY
   end_case compile_commands
 }
 
+# list writes compile_commands.json via an exclusive sibling temp. A fixed
+# compile_commands.json.tmp in the source root would follow a planted symlink and
+# truncate an arbitrary file; this case plants that name and checks the victim survives.
+test_compile_commands_tmp_symlink() {
+  should_run compile_commands_tmp_symlink || return 0
+  begin_case compile_commands_tmp_symlink
+  local work_dir victim
+  work_dir="$(prepare_work_dir)"
+  victim="${work_dir}/victim.txt"
+
+  printf '%s\n' 'int main() { return 0; }' > "${work_dir}/hello.c++"
+  printf '%s\n' 'SECRET_CONTENT' > "${victim}"
+  ln -s "${victim}" "${work_dir}/compile_commands.json.tmp"
+
+  run_cb_list "${work_dir}"
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ "$(cat "${victim}")" == "SECRET_CONTENT" ]]; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"compile_commands_tmp_symlink_victim"}'
+  else
+    fail "list followed compile_commands.json.tmp symlink and clobbered victim.txt"
+  fi
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ -f "${work_dir}/compile_commands.json" ]] && [[ -L "${work_dir}/compile_commands.json.tmp" ]]; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"compile_commands_tmp_symlink_db"}'
+  else
+    fail "list did not write compile_commands.json beside the planted tmp symlink"
+  fi
+  end_case compile_commands_tmp_symlink
+}
+
 test_compile_failure() {
   should_run compile_failure || return 0
   begin_case compile_failure
@@ -1424,6 +1456,7 @@ main() {
   test_strict_arguments
   test_source_list
   test_compile_commands
+  test_compile_commands_tmp_symlink
   test_compile_failure
   test_compile_warning
   test_link_failure

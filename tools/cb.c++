@@ -1938,24 +1938,49 @@ private:
 
     // A cache is replaced, never edited in place: write a sibling temporary, then rename it over
     // the target, so a build interrupted mid-write leaves the previous cache rather than half of
-    // the next. The caches differ only in what they write and what the failure message calls them.
+    // the next. The temporary must be created exclusively — a fixed `path + ".tmp"` would follow a
+    // planted symlink (compile_commands.json lives in the source root after list) and truncate an
+    // arbitrary file. noreplace refuses an existing final path component, including a symlink,
+    // without opening through it. The caches differ only in what they write and what the failure
+    // message calls them.
     static void write_cache_file(const std::string& path,
                                  std::string_view what,
                                  const std::invocable<std::ostream&> auto& write_contents)
     {
-        const auto tmp = path + ".tmp";
-        auto file = std::ofstream{tmp};
+        auto tmp = std::string{};
+        auto file = std::ofstream{};
+        for(auto attempt = 0; attempt < 64; ++attempt)
+        {
+            tmp = path + ".tmp."
+                + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())
+                + '.' + std::to_string(attempt);
+            file = std::ofstream{tmp, std::ios::noreplace};
+            if(file)
+                break;
+            file = std::ofstream{};
+        }
         if(not file)
-            throw std::runtime_error{"Cannot open "s + std::string{what} + " temporary file: " + tmp};
+            throw std::runtime_error{
+                "Cannot open "s + std::string{what} + " temporary file beside: " + path};
 
-        write_contents(file);
+        try
+        {
+            write_contents(file);
 
-        file.close();
-        if(not file)
+            file.close();
+            if(not file)
+            {
+                auto ignored = std::error_code{};
+                fs::remove(tmp, ignored);
+                throw std::runtime_error{
+                    "Failed to write "s + std::string{what} + " temporary file: " + tmp};
+            }
+        }
+        catch(...)
         {
             auto ignored = std::error_code{};
             fs::remove(tmp, ignored);
-            throw std::runtime_error{"Failed to write "s + std::string{what} + " temporary file: " + tmp};
+            throw;
         }
 
         auto error = std::error_code{};
