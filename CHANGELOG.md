@@ -35,6 +35,8 @@ commit on `main`; there is no supported tag yet.
   (`depfile_unusable`).
 - **Cache inspection**: `cache status` reports all four cached artefacts and whether each
   matches the current toolchain profile; `cache invalidate` removes them.
+- **`compile_commands.json` from `list`**: writes a clangd compilation database at the
+  project root for the active TU set, using the same compile argv builders as a build.
 - **`--jobs=N`** to bound concurrent compile and link processes.
 - **Diagnostics in events**: a failed compile, link, or command carries the toolchain
   output in `diagnostics.text` (with the full capture at `diagnostics.path`), so a failure

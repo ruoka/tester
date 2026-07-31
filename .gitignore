@@ -24,6 +24,9 @@ deps/
 # Makefile dependencies
 Makefile.deps
 
+# clangd compilation database (written by `cb list`)
+compile_commands.json
+
 # Captured build/test output (local debug artifacts)
 *.jsonl
 *.log
