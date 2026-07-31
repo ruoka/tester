@@ -20,6 +20,7 @@ using output::observer;
 // by run_start, the slowest count by the statistics — while the values themselves are stored
 // with the run's other data.
 export void set_slowest(std::size_t n) { data::set_slowest(n); }
+export void set_jobs(std::size_t n) { data::set_jobs(n); }
 export void set_run_argv(int argc, char** argv) { data::set_run_argv(argc, argv); }
 
 export class runner

@@ -16,6 +16,12 @@ commit on `main`; there is no supported tag yet.
 
 ### Added
 
+- **Parallel top-level tests** via `test_runner --jobs=N` (default `1` = sequential;
+  `0` = `hardware_concurrency`). Independent cases at the same dependency wave run
+  concurrently; `depends_on` still barriers between waves. Each worker has its own
+  `execution_context`; console capture is thread-local. When CB is given `--jobs=N`,
+  that cap is also forwarded to `test_runner` (compile default remains CPU count;
+  the runner stays sequential unless `--jobs=` is set).
 - **JUnit / xUnit XML reports** via `--junit=<path>` (alias `--xunit-xml=`). Additive with
   console or `--jsonl`: JSONL stays on stdout for agents while the XML file feeds CI test
   UIs. CB forwards the flag. Empty tag filters emit a synthetic failing testcase so the
@@ -61,9 +67,8 @@ commit on `main`; there is no supported tag yet.
 
 - **Execution state is owned by `execution_context`**, not process-wide mutable globals.
   Current test id, nested capture pointers, step assertion counters, results, and
-  statistics live on a per-run (and eventually per-worker) context activated with
-  `execution_scope`. The registration catalogue remains shared. This is the
-  prerequisite for running top-level tests in parallel.
+  statistics live on a per-run / per-worker context activated with `execution_scope`.
+  The registration catalogue remains shared.
 - **Nested BDD steps run eagerly**, at the point of assignment inside the parent's frame,
   so `given` / `when` / `then` bodies capturing parent locals by reference are safe. They
   previously ran after the parent returned.

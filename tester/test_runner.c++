@@ -86,7 +86,7 @@ static auto g_schema_len = std::size_t{0};
 constexpr auto usage =
 R"(test_runner [--help] [--list] [--tags=<tag>]
             [--jsonl[=<summary|failures|trace>]] [--slowest=<N>]
-            [--jsonl-output-max-bytes=<N>] [--result]
+            [--jobs=<N>] [--jsonl-output-max-bytes=<N>] [--result]
             [--junit=<path>] [--xunit-xml=<path>]
             [<tags>]
 Examples:
@@ -96,6 +96,7 @@ Examples:
   test_runner --jsonl=failures --tags=[self]
   test_runner --jsonl=failures --junit=report.xml --tags=[self]
   test_runner --jsonl=trace --slowest=10
+  test_runner --jobs=4 --tags=[self]
   test_runner --tags=scenario("My test")
   test_runner --tags=[self][order]
   test_runner --tags="scenario.*Happy"
@@ -155,6 +156,8 @@ int main(int argc, char** argv)
     auto output_name = std::string_view{"console"};
     auto result_line = false;
     auto slowest = std::size_t{0};
+    // 1 = sequential (default); 0 = hardware_concurrency. Optional CLI override.
+    auto jobs = std::optional<std::size_t>{};
     auto jsonl_mode = tester::output::jsonl::jsonl_mode::failures;
     auto output_max_bytes = std::size_t{16384};
     auto junit_path = std::filesystem::path{};
@@ -216,6 +219,19 @@ int main(int argc, char** argv)
             continue;
         }
 
+        if(option.starts_with("--jobs="))
+        {
+            auto value = option.substr(std::string_view{"--jobs="}.size());
+            // 0 means hardware_concurrency; reject empty / non-numeric.
+            if(auto parsed = parse_usize(value); parsed.has_value())
+            {
+                jobs = *parsed;
+                continue;
+            }
+            std::clog << "--jobs expects a non-negative integer, got: " << value << std::endl;
+            return 1;
+        }
+
         if(option.starts_with("--jsonl-output-max-bytes="))
         {
             auto value = option.substr(std::string_view{"--jsonl-output-max-bytes="}.size());
@@ -255,6 +271,8 @@ int main(int argc, char** argv)
         // It handles its own internal configuration.
         tester::set_run_argv(argc, argv);
         tester::set_slowest(slowest);
+        if(jobs.has_value())
+            tester::set_jobs(*jobs);
         tester::output::register_observer(
             "jsonl",
             tester::output::jsonl::observer_instance(std::cout, std::clog, jsonl_mode, output_max_bytes));

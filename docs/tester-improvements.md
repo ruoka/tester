@@ -106,6 +106,7 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 - 📋 Let `runner` own its tag string, and make the observer instance non-latching.
 - 📋 `--shuffle` / `--seed` / `--repeat` flags, and per-test timeouts.
 - ✅ Run/execution state lives on `data::execution_context` (current id, capture nesting, step counters, results, statistics), activated per thread via `execution_scope`. The registration catalogue stays process-wide; process-wide mutable “active case” globals are gone — the prerequisite for parallel top-level runs.
+- ✅ Parallel top-level tests via `test_runner --jobs=N` (default 1). Ready cases (all `depends_on` completed) run as a wave behind a `counting_semaphore`; each worker merges into the run context. Console capture is `thread_local`. CB `--jobs=N` forwards to the runner when set.
 
 ---
 
@@ -407,7 +408,6 @@ Ordered by consequence, not by effort. Items marked **verified** were reproduced
 | Low | Death tests, regex / predicate matchers, container prefix-suffix (§1.2–1.5) | Framework parity. Death tests are cheaper than they look — the spawn and signal-decode helpers already exist |
 | Low | Index-loop joins in tester's observer (§3.9) | Violates the project's own `AGENTS.md` rule; no behavioural impact |
 | Low | Decompose `cb.c++` (§4.1) | Large refactor with no user-visible change; the smoke suite is strong enough to support it when desired |
-| Low | Parallel top-level tests (`--jobs` on the runner) | Execution state is per-context now; remaining work is a worker pool + result merge |
 | Low | `--shuffle` / `--seed` / `--repeat`, timeouts (§2.5) | Nice-to-have; flushes out inter-test coupling |
 | Low | `cache prune` (§4.4) | Only if disk bloat or orphaned artifacts show up in practice |
 

@@ -11,6 +11,8 @@ namespace tester::data
 export struct output_config
 {
     std::size_t slowest = 0;
+    // Top-level test workers. 1 = sequential (default); 0 = hardware_concurrency.
+    std::size_t jobs = 1;
 };
 
 export struct test_metadata
@@ -38,8 +40,10 @@ struct test_case : public test_metadata
 };
 
 // Registration catalogue only — written at static init (and when a nested scenario /
-// test_case is appended mid-run). Not per-execution state; safe to share.
+// test_case is appended mid-run). Not per-execution state. Parallel workers take a
+// mutex when appending mid-run so the scheduler can drain new cases safely.
 auto test_cases = std::list<test_case>{};
+inline std::mutex test_cases_mutex{};
 
 export struct test_result : public test_metadata
 {
@@ -181,6 +185,18 @@ export const output_config& config()
 }
 
 export void set_slowest(std::size_t n) { g_config.slowest = n; }
+
+export void set_jobs(std::size_t n) { g_config.jobs = n; }
+
+export std::size_t worker_count()
+{
+    if(g_config.jobs == 0)
+    {
+        const auto n = std::thread::hardware_concurrency();
+        return n == 0 ? 1uz : static_cast<std::size_t>(n);
+    }
+    return std::max<std::size_t>(1, g_config.jobs);
+}
 
 export std::span<const std::string> run_argv()
 {
