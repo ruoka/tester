@@ -284,6 +284,17 @@ test_strict_arguments() {
   output="$(cd "${work_dir}" && "${CB_BIN}" "${STD_CPPM}" debug test --tag=x 2>&1)" || status=$?
   assert_text_contains "${output}" "--tags=" "tags_typo_suggestion"
 
+  # --junit= is a test_runner forward token: CB must not reject it as unknown.
+  # The fixture has no tests, so the run fails after build — only the parse matters.
+  status=0
+  output="$(cd "${work_dir}" && "${CB_BIN}" "${STD_CPPM}" debug test --jsonl=failures --junit="${work_dir}/report.xml" 2>&1)" || status=$?
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ "${status}" -eq 2 ]] || printf '%s' "${output}" | grep -Fq "Unknown argument: --junit="; then
+    fail "CB should forward --junit= to test_runner, not reject it (status=${status})"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"forwards_junit_flag"}'
+  fi
+
   # A valid job cap still builds.
   run_cb_build "${work_dir}" --jobs=2
   assert_jsonl_event_value build_end ok true "jobs_flag_builds"

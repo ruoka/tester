@@ -3000,7 +3000,9 @@ bool is_test_runner_token(std::string_view arg)
         || arg.starts_with("--tags=")
         || arg.starts_with("--slowest=")
         || arg.starts_with("--jsonl=")
-        || arg.starts_with("--jsonl-output-max-bytes=");
+        || arg.starts_with("--jsonl-output-max-bytes=")
+        || arg.starts_with("--junit=")
+        || arg.starts_with("--xunit-xml=");
 }
 
 } // namespace
@@ -3191,6 +3193,7 @@ int main(int argc, char* argv[])
                           << "  --include-examples Include examples directory in build (excluded by default)\n"
                           << "  --build-tests    Build tests in release mode (useful for CI to verify compilation)\n"
                           << "  --jsonl[=<summary|failures|trace>]  Machine-readable output (default: failures)\n"
+                          << "  --junit=<path>   Also write a JUnit/xUnit XML report (additive with --jsonl)\n"
                           << "  --jobs=N         Limit concurrent compile/link processes (default: CPU count)\n"
                           << "  -I, --include    Add include directory (can be specified multiple times)\n"
                           << "  --link-flags     Add extra linker flags (e.g., --link-flags \"-lcrypto\")\n"
@@ -3207,6 +3210,7 @@ int main(int argc, char* argv[])
                           << "  " << argv[0] << " test\n"
                           << "  " << argv[0] << " test --tags=[module]\n"
                           << "  " << argv[0] << " test --jsonl=failures --tags=[module]\n"
+                          << "  " << argv[0] << " test --jsonl=failures --junit=report.xml --tags=[module]\n"
                           << "  " << argv[0] << " debug build --jsonl=summary\n"
                           << "  " << argv[0] << " test --jsonl=trace --slowest=10\n"
                           << "  " << argv[0] << " clean\n";
