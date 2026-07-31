@@ -28,7 +28,7 @@ Use **`--jsonl=failures`**. Parse **stdout only** (one JSON object per line, `sc
 
 **Tag syntax:** bracket tags must be escaped in shell: `--tags='\[self\]'`. Substring/regex filters also work: `--tags='Test case 3'`.
 
-**Unknown arguments are fatal.** CB exits `2` on an argument it does not recognise, so a typo such as `--tag=` (for `--tags=`) fails loudly instead of silently running the whole suite. Add `--jobs=N` to cap concurrent compile/link processes (default: CPU count).
+**Unknown arguments are fatal.** CB exits `2` on an argument it does not recognise, so a typo such as `--tag=` (for `--tags=`) fails loudly instead of silently running the whole suite. Add `--jobs=N` to cap concurrent compile/link processes (default: CPU count); when set, CB also forwards `--jobs=N` to `test_runner` (runner default remains `1` = sequential).
 
 **Hidden tags:** bracket tags starting with `.` (Catch2-style, e.g. `[.demo]`, `[.jsonl-probe]`) are **skipped on unfiltered runs**. Select explicitly: `--tags='\[.demo\]'`.
 

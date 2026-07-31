@@ -119,6 +119,76 @@ auto register_failing_step_probe()
 
 const auto _failing_step_probe = register_failing_step_probe();
 
+// Parallel runner probe: two independent sleeps must overlap under --jobs>1, and a
+// depends_on child must still see the root's write. Hidden unless the env is set.
+auto register_parallel_probe()
+{
+    if(std::getenv("TESTER_PARALLEL_PROBE") == nullptr)
+        return 0;
+
+    using tester::basic::test_case;
+    using tester::basic::test_order;
+    using namespace tester::assertions;
+
+    static auto root_done = std::atomic<int>{0};
+    static auto a_start = std::chrono::steady_clock::time_point{};
+    static auto a_end = std::chrono::steady_clock::time_point{};
+    static auto b_start = std::chrono::steady_clock::time_point{};
+    static auto b_end = std::chrono::steady_clock::time_point{};
+    static auto times_ready = std::atomic<int>{0};
+
+    test_case("test_case [.parallel-probe] independent a",
+              test_order{.priority = 0, .depends_on = {}, .id = "parallel_indep_a"}) = []
+    {
+        a_start = std::chrono::steady_clock::now();
+        std::this_thread::sleep_for(std::chrono::milliseconds{80});
+        a_end = std::chrono::steady_clock::now();
+        times_ready.fetch_add(1);
+        require_true(true);
+    };
+
+    test_case("test_case [.parallel-probe] independent b",
+              test_order{.priority = 0, .depends_on = {}, .id = "parallel_indep_b"}) = []
+    {
+        b_start = std::chrono::steady_clock::now();
+        std::this_thread::sleep_for(std::chrono::milliseconds{80});
+        b_end = std::chrono::steady_clock::now();
+        times_ready.fetch_add(1);
+        require_true(true);
+    };
+
+    test_case("test_case [.parallel-probe] dependency root",
+              test_order{.priority = 0, .depends_on = {}, .id = "parallel_order_root"}) = []
+    {
+        root_done.store(1);
+        require_eq(root_done.load(), 1);
+    };
+
+    test_case("test_case [.parallel-probe] dependency child",
+              test_order{.priority = 0, .depends_on = {"parallel_order_root"}, .id = "parallel_order_child"}) = []
+    {
+        require_eq(root_done.load(), 1);
+    };
+
+    // Runs after the independents (same level had no edge to this case). Asserts overlap
+    // once both sleeps have stored their windows — registration order puts this after a/b
+    // only if we depend on both; otherwise it could race. Pin it with depends_on.
+    test_case("test_case [.parallel-probe] independents overlapped",
+              test_order{.priority = 0,
+                         .depends_on = {"parallel_indep_a", "parallel_indep_b"},
+                         .id = "parallel_overlap_check"}) = []
+    {
+        require_eq(times_ready.load(), 2);
+        // Intervals [a_start,a_end] and [b_start,b_end] must overlap if they ran together.
+        const auto overlapped = a_start < b_end and b_start < a_end;
+        require_true(overlapped);
+    };
+
+    return 0;
+}
+
+const auto _parallel_probe = register_parallel_probe();
+
 } // namespace
 
 auto register_tests()
@@ -327,10 +397,39 @@ auto register_tests()
         const auto after_worker = tester::data::statistics().total_assertions;
         require_false(saw_logic_error.load());
         require_true(completed.load());
-        require_eq(after_worker, before + 1);
         // Empty id on the child matches pre-#52 thread_local current-test-id behaviour.
         require_eq(child_id, std::string{});
         require_true(tester::data::current_test_id().contains("soft asserts from a spawned"));
+        // Under jobs==1 the child updates the same context the parent reads. Parallel
+        // workers leave the run-wide fallback on the runner context (TLS is not
+        // inherited), so the child's check_* may not bump this worker's counters —
+        // the no-throw / completed checks above are the parallel-safe contract.
+        if(tester::data::worker_count() == 1)
+            require_eq(after_worker, before + 1);
+    };
+
+    test_case("test_case [self][parallel] --jobs runs independents together and keeps depends_on") = []
+    {
+        const auto result = run_test_runner(
+            {"--jsonl=failures", "--jobs=4", "--tags=[.parallel-probe]"},
+            "TESTER_PARALLEL_PROBE=1 ");
+
+        require_false(result.signaled);
+        require_eq(result.exit_code, 0);
+        const auto summary = tester_selftest::find_event(result.stdout_text, "summary");
+        require_eq(tester_selftest::field(summary, "passed"), std::string{"true"});
+        // Five top-level cases in the probe (two independents, overlap check, root, child).
+        require_eq(tester_selftest::field(summary, "tests_ok"), std::string{"5"});
+    };
+
+    test_case("test_case [self][parallel] worker_count maps jobs=0 to hardware concurrency") = []
+    {
+        const auto previous = tester::data::config().jobs;
+        tester::set_jobs(0);
+        require_true(tester::data::worker_count() >= 1uz);
+        tester::set_jobs(1);
+        require_eq(tester::data::worker_count(), 1uz);
+        tester::set_jobs(previous);
     };
 
     return 0;

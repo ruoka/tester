@@ -212,6 +212,7 @@ Pass test_runner options directly (CB recognizes them):
 ./tools/CB.sh debug test --jsonl=trace --slowest=10
 ./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'
 ./tools/CB.sh debug test --jsonl=failures --junit=report.xml --tags='\[self\]'
+./tools/CB.sh debug test --jobs=4 --tags='\[self\]'   # parallel top-level tests (+ compile jobs)
 ./tools/CB.sh debug test --result   # stable RESULT: line on stderr in JSONL mode
 ```
 

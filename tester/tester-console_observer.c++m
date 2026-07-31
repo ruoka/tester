@@ -18,16 +18,16 @@ namespace color = ::term;
 using namespace data;
 
 // The buffer this keeps is what a failing test reports, so it is also the run's output capture.
+// Capture text is thread_local so parallel top-level workers do not interleave assertion lines
+// into one shared ostringstream; human/result streams still take the mutex below.
 export struct observer final : tester::output::observer, tester::output::output_capture
 {
     std::ostream& human;
     std::ostream& result;
     bool result_line;
-    std::ostringstream stream{};
     bool verbose = false;
 
-    // A test may assert from a thread it started, and everything below writes to the buffer or
-    // to a stream. The JSONL observer takes its own lock for the same reason.
+    // Protects human/result stream writes (catalogue, summary, failures). Capture uses TLS.
     mutable std::mutex mutex{};
 
     explicit observer(std::ostream& human_stream, std::ostream& result_stream, bool emit_result_line)
@@ -37,11 +37,17 @@ export struct observer final : tester::output::observer, tester::output::output_
     std::ostream& human_os() { return human; }
     std::ostream& result_os() { return result; }
 
+    static std::ostringstream& tls_stream()
+    {
+        thread_local std::ostringstream stream{};
+        return stream;
+    }
+
     // For callers that already hold the lock. reset() is the locked entry point, which the
     // engine uses to hand the buffer back empty between tests.
     void clear_buffer()
     {
-        stream = std::ostringstream{};
+        tls_stream() = std::ostringstream{};
     }
 
     void activate() override
@@ -51,19 +57,18 @@ export struct observer final : tester::output::observer, tester::output::output_
 
     std::string text() const override
     {
-        auto lock = std::lock_guard<std::mutex>{mutex};
-        return std::string{stream.view()};
+        return std::string{tls_stream().view()};
     }
 
     void reset() override
     {
-        auto lock = std::lock_guard<std::mutex>{mutex};
         clear_buffer();
     }
 
     void on_test_case(const data::test_case& tc)
     {
         clear_buffer();
+        auto& stream = tls_stream();
 
         if(tc.test_name.starts_with("scenario") or tc.test_name.starts_with("test_case"))
             stream << color::background::blue
@@ -78,13 +83,12 @@ export struct observer final : tester::output::observer, tester::output::output_
 
     void test_case(const data::test_case& tc) override
     {
-        auto lock = std::lock_guard<std::mutex>{mutex};
         on_test_case(tc);
     }
 
     void on_exception(const data::test_case& tc, const std::exception& ex)
     {
-        stream << color::background::red
+        tls_stream() << color::background::red
                << ex.what()
                << " " << tc.test_name << " "
                << "(" << tc.file_name << " " <<  tc.line << ":" <<  tc.column << ")"
@@ -93,13 +97,12 @@ export struct observer final : tester::output::observer, tester::output::output_
 
     void exception(const data::test_case& tc, const std::exception& ex) override
     {
-        auto lock = std::lock_guard<std::mutex>{mutex};
         on_exception(tc, ex);
     }
 
     void assertion(const assertion_event& event) override
     {
-        auto lock = std::lock_guard<std::mutex>{mutex};
+        auto& stream = tls_stream();
         stream << (event.ok ? color::text::green : color::text::red)
                << event.display_matcher << '\n'
                << "  actual:   " << event.actual.display << '\n'
@@ -109,12 +112,15 @@ export struct observer final : tester::output::observer, tester::output::output_
                << color::reset << '\n';
 
         if(verbose)
+        {
+            auto lock = std::lock_guard<std::mutex>{mutex};
             std::clog << stream.view();
+        }
     }
 
     void message(const message_event& event) override
     {
-        auto lock = std::lock_guard<std::mutex>{mutex};
+        auto& stream = tls_stream();
         stream << (event.ok ? color::text::yellow : color::text::red)
                << event.display_matcher << '\n'
                << "  message:  " << event.message << '\n'
@@ -123,7 +129,10 @@ export struct observer final : tester::output::observer, tester::output::output_
                << color::reset << '\n';
 
         if(verbose)
+        {
+            auto lock = std::lock_guard<std::mutex>{mutex};
             std::clog << stream.view();
+        }
     }
 
     void print_test_cases(std::span<const data::test_case* const> matched)
@@ -268,4 +277,3 @@ export inline auto& observer_instance(std::ostream& human, std::ostream& result,
 }
 
 } // namespace tester::output::console
-

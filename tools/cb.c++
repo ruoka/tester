@@ -2999,6 +2999,7 @@ bool is_test_runner_token(std::string_view arg)
     return arg == "--list" || arg == "--jsonl" || arg == "--result" || arg == "--help"
         || arg.starts_with("--tags=")
         || arg.starts_with("--slowest=")
+        || arg.starts_with("--jobs=")
         || arg.starts_with("--jsonl=")
         || arg.starts_with("--jsonl-output-max-bytes=")
         || arg.starts_with("--junit=")
@@ -3056,6 +3057,9 @@ int main(int argc, char* argv[])
         auto extra_compile_flags = cb::string_list{};
         auto extra_link_flags = cb::string_list{};
         auto max_jobs = 0; // 0 = derive from hardware_concurrency
+        // When the user passes --jobs=N, also forward it to test_runner. Default compile
+        // parallelism must not flip the runner off its sequential default (jobs=1).
+        auto jobs_explicit = false;
 
         // Returns nullopt if not a --jsonl form; false if the mode is unknown. Named, because
         // the two answers are different types and deduction takes only the first one it sees.
@@ -3148,6 +3152,7 @@ int main(int argc, char* argv[])
                     return 2;
                 }
                 max_jobs = value;
+                jobs_explicit = true;
             } else if (do_run_tests && is_test_runner_token(argument)) {
                 // Forward recognized test_runner flags (e.g. --tags=, --list, --result).
                 // (--jsonl is handled above; CB injects the mode into test_runner later if needed.)
@@ -3194,7 +3199,8 @@ int main(int argc, char* argv[])
                           << "  --build-tests    Build tests in release mode (useful for CI to verify compilation)\n"
                           << "  --jsonl[=<summary|failures|trace>]  Machine-readable output (default: failures)\n"
                           << "  --junit=<path>   Also write a JUnit/xUnit XML report (additive with --jsonl)\n"
-                          << "  --jobs=N         Limit concurrent compile/link processes (default: CPU count)\n"
+                          << "  --jobs=N         Cap concurrent compile/link; also forward to test_runner\n"
+                          << "                   (compile default: CPU count; test_runner default: 1)\n"
                           << "  -I, --include    Add include directory (can be specified multiple times)\n"
                           << "  --link-flags     Add extra linker flags (e.g., --link-flags \"-lcrypto\")\n"
                           << "  --compile-flags  Add extra compiler flags\n"
@@ -3282,6 +3288,17 @@ int main(int argc, char* argv[])
                     : mode == cb::output::jsonl::jsonl_mode::trace
                         ? "--jsonl=trace"
                         : "--jsonl=failures");
+            }
+
+            // CB consumes --jobs= for the build; inject the same cap into test_runner only
+            // when the user set it, so an unset flag leaves the runner sequential.
+            if(jobs_explicit)
+            {
+                const auto already = std::ranges::any_of(test_runner_args, [](const auto& arg) {
+                    return arg.starts_with("--jobs=");
+                });
+                if(not already)
+                    args.emplace_back("--jobs=" + std::to_string(max_jobs));
             }
 
             args.append_range(test_runner_args);

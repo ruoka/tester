@@ -119,6 +119,9 @@ test_slot make_test_case(std::string_view description, int priority, std::vector
     auto* const execution = active_execution();
     if(test_type.contains("scenario") or test_type.contains("test_case") or execution == nullptr)
     {
+        // Parallel workers may append nested scenarios mid-run; the scheduler drains
+        // the catalogue between waves, so the push has to be atomic with reading .back().
+        auto lock = std::lock_guard<std::mutex>{test_cases_mutex};
         test_cases.push_back(std::move(test_case));
         return test_slot{test_cases.back()};
     }
@@ -344,10 +347,17 @@ void execute_test_case(execution_context& ctx, test_case& tc)
     result.output = std::move(output);
 }
 
-export void run_test_cases(execution_context& ctx)
+void merge_worker(execution_context& dest, execution_context& worker)
 {
-    sort_test_cases();
+    dest.statistics.successful_tests += worker.statistics.successful_tests;
+    dest.statistics.total_tests += worker.statistics.total_tests;
+    dest.statistics.successful_assertions += worker.statistics.successful_assertions;
+    dest.statistics.total_assertions += worker.statistics.total_assertions;
+    dest.results.splice(dest.results.end(), worker.results);
+}
 
+void run_test_cases_sequential(execution_context& ctx)
+{
     // Erasing the case that just ran is what lets the loop pick up cases registered while it
     // runs: steps never arrive here — they go straight through execute_test_case — but a
     // scenario or test_case written inside another one is appended and reached by a later turn.
@@ -357,6 +367,107 @@ export void run_test_cases(execution_context& ctx)
         execute_test_case(ctx, *tc);
         test_cases.erase(tc);
     }
+}
+
+void run_test_cases_parallel(execution_context& ctx, std::size_t jobs)
+{
+    // Wave scheduler: a case is ready when every depends_on id has completed. Ready cases run
+    // concurrently (bounded by jobs); the next wave starts only after the current one joins, so
+    // ordering edges stay intact. Mid-run registrations land in test_cases and become eligible
+    // on the following wave — the same “append then reach later” contract as the sequential path,
+    // without re-running sort_test_cases (which would reject depends_on ids already erased).
+    auto completed = std::flat_set<std::string, std::less<>>{};
+
+    while(not test_cases.empty())
+    {
+        auto ready = std::vector<std::list<test_case>::iterator>{};
+        {
+            auto lock = std::lock_guard<std::mutex>{test_cases_mutex};
+            for(auto it = test_cases.begin(); it != test_cases.end(); ++it)
+            {
+                if(std::ranges::all_of(it->depends_on, [&](const std::string& dep) {
+                       return completed.contains(dep);
+                   }))
+                {
+                    ready.push_back(it);
+                }
+            }
+        }
+
+        if(ready.empty())
+        {
+            throw std::runtime_error{
+                "No runnable tests remain but the catalogue is not empty (broken depends_on?)"};
+        }
+
+        // A single ready case stays on this thread — no merge, and nested registrations are
+        // visible to the next iteration immediately after it returns.
+        if(ready.size() == 1)
+        {
+            auto it = ready.front();
+            execute_test_case(ctx, *it);
+            if(not it->id.empty())
+                completed.insert(it->id);
+            auto lock = std::lock_guard<std::mutex>{test_cases_mutex};
+            test_cases.erase(it);
+            continue;
+        }
+
+        auto batch = std::vector<test_case>{};
+        batch.reserve(ready.size());
+        {
+            auto lock = std::lock_guard<std::mutex>{test_cases_mutex};
+            for(auto it : ready)
+            {
+                batch.push_back(std::move(*it));
+                test_cases.erase(it);
+            }
+        }
+
+        auto workers = std::vector<execution_context>(batch.size());
+        auto gate = std::counting_semaphore<>{static_cast<std::ptrdiff_t>(jobs)};
+        auto threads = std::vector<std::jthread>{};
+        threads.reserve(batch.size());
+
+        for(std::size_t i = 0; i < batch.size(); ++i)
+        {
+            threads.emplace_back([&, i]
+            {
+                gate.acquire();
+                struct slot_guard
+                {
+                    std::counting_semaphore<>& gate;
+                    ~slot_guard() { gate.release(); }
+                } const hold{gate};
+
+                workers[i].excluded = ctx.excluded;
+                const auto scope = execution_scope{workers[i]};
+                execute_test_case(workers[i], batch[i]);
+            });
+        }
+        threads.clear(); // join before merge
+
+        // Merge in batch order (registration / catalogue order), not completion order.
+        for(auto& worker : workers)
+            merge_worker(ctx, worker);
+
+        for(const auto& tc : batch)
+        {
+            if(not tc.id.empty())
+                completed.insert(tc.id);
+        }
+    }
+}
+
+export void run_test_cases(execution_context& ctx)
+{
+    sort_test_cases();
+
+    const auto jobs = worker_count();
+    if(jobs == 1)
+        run_test_cases_sequential(ctx);
+    else
+        run_test_cases_parallel(ctx, jobs);
 }
 
 }
