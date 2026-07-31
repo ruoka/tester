@@ -3,7 +3,6 @@
 // See the LICENSE file in the project root for full license text.
 
 module;
-#include "details/xml.h++"
 #if defined(__GNUG__) && __has_include(<cxxabi.h>)
 #   include <cxxabi.h>
 #endif
@@ -57,6 +56,121 @@ auto iso8601_utc(std::chrono::system_clock::time_point tp)
     // sys_time formats in UTC — no POSIX gmtime_r needed.
     const auto seconds = std::chrono::floor<std::chrono::seconds>(tp);
     return std::format("{:%Y-%m-%dT%H:%M:%SZ}", seconds);
+}
+
+auto utf8_sequence_length(std::string_view sv, std::size_t index)
+{
+    const auto byte = static_cast<unsigned char>(sv[index]);
+
+    auto length = std::size_t{0};
+    auto code_point = 0u;
+    if(byte < 0x80)
+        return 1uz;
+    else if((byte & 0xe0) == 0xc0) { length = 2; code_point = byte & 0x1fu; }
+    else if((byte & 0xf0) == 0xe0) { length = 3; code_point = byte & 0x0fu; }
+    else if((byte & 0xf8) == 0xf0) { length = 4; code_point = byte & 0x07u; }
+    else
+        return 0uz;
+
+    if(index + length > sv.size())
+        return 0uz;
+
+    for(auto offset = std::size_t{1}; offset < length; ++offset)
+    {
+        const auto continuation = static_cast<unsigned char>(sv[index + offset]);
+        if((continuation & 0xc0) != 0x80)
+            return 0uz;
+        code_point = (code_point << 6) | (continuation & 0x3fu);
+    }
+
+    if(length == 2 && code_point < 0x80) return 0uz;
+    if(length == 3 && code_point < 0x800) return 0uz;
+    if(length == 4 && code_point < 0x10000) return 0uz;
+    if(code_point > 0x10ffff) return 0uz;
+    if(code_point >= 0xd800 && code_point <= 0xdfff) return 0uz;
+
+    return length;
+}
+
+auto is_xml10_char(unsigned code_point)
+{
+    // Char ::= #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+    if(code_point == 0x9 || code_point == 0xa || code_point == 0xd)
+        return true;
+    if(code_point >= 0x20 && code_point <= 0xd7ff)
+        return true;
+    if(code_point >= 0xe000 && code_point <= 0xfffd)
+        return true;
+    if(code_point >= 0x10000 && code_point <= 0x10ffff)
+        return true;
+    return false;
+}
+
+auto decode_utf8(std::string_view sv, std::size_t index, std::size_t length)
+{
+    const auto lead = static_cast<unsigned char>(sv[index]);
+    if(length == 1)
+        return static_cast<unsigned>(lead);
+
+    auto code_point = 0u;
+    if(length == 2) code_point = lead & 0x1fu;
+    else if(length == 3) code_point = lead & 0x0fu;
+    else code_point = lead & 0x07u;
+
+    for(auto offset = std::size_t{1}; offset < length; ++offset)
+    {
+        const auto continuation = static_cast<unsigned char>(sv[index + offset]);
+        code_point = (code_point << 6) | (continuation & 0x3fu);
+    }
+    return code_point;
+}
+
+// Escape text for XML attribute values and element bodies. Invalid UTF-8 and
+// characters outside the XML 1.0 Char production become U+FFFD so the report
+// stays well-formed even when assertion data carries arbitrary bytes.
+auto escape(std::string_view sv)
+{
+    constexpr auto replacement = "\xef\xbf\xbd"sv;
+
+    auto out = std::string{};
+    out.reserve(sv.size() + 16);
+
+    for(std::size_t index = 0; index < sv.size();)
+    {
+        const auto length = utf8_sequence_length(sv, index);
+        if(length == 0)
+        {
+            out += replacement;
+            ++index;
+            continue;
+        }
+
+        const auto code_point = decode_utf8(sv, index, length);
+        if(length == 1)
+        {
+            switch(static_cast<char>(code_point))
+            {
+                case '&':  out += "&amp;";  ++index; continue;
+                case '<':  out += "&lt;";   ++index; continue;
+                case '>':  out += "&gt;";   ++index; continue;
+                case '"':  out += "&quot;"; ++index; continue;
+                case '\'': out += "&apos;"; ++index; continue;
+                default: break;
+            }
+        }
+
+        if(not is_xml10_char(code_point))
+        {
+            out += replacement;
+            index += length;
+            continue;
+        }
+
+        out.append(sv.data() + index, length);
+        index += length;
+    }
+
+    return out;
 }
 
 struct failure_detail
@@ -169,9 +283,9 @@ private:
     void write_element(std::ostream& os, std::string_view tag, const failure_detail& detail) const
     {
         os << "      <" << tag
-           << " message=\"" << ::xml::escape(detail.message) << '"'
-           << " type=\"" << ::xml::escape(detail.type) << "\">"
-           << ::xml::escape(detail.body)
+           << " message=\"" << escape(detail.message) << '"'
+           << " type=\"" << escape(detail.type) << "\">"
+           << escape(detail.body)
            << "</" << tag << ">\n";
     }
 
@@ -229,7 +343,7 @@ private:
         {
             xml_body << "    <properties>\n"
                      << "      <property name=\"tags\" value=\""
-                     << ::xml::escape(run_tags) << "\"/>\n"
+                     << escape(run_tags) << "\"/>\n"
                      << "    </properties>\n";
         }
 
@@ -238,7 +352,7 @@ private:
             xml_body << "    <testcase classname=\"tester\" name=\"no tests matched filter\" time=\"0.000\">\n";
             xml_body << "      <failure message=\"Tag filter matched no tests\""
                      << " type=\"empty_filter\">"
-                     << ::xml::escape("tags="s + run_tags)
+                     << escape("tags="s + run_tags)
                      << "</failure>\n";
             xml_body << "    </testcase>\n";
         }
@@ -246,10 +360,10 @@ private:
         for(const auto& result : data::test_results)
         {
             xml_body << "    <testcase"
-                     << " classname=\"" << ::xml::escape(result.test_set_name) << '"'
-                     << " name=\"" << ::xml::escape(result.test_name) << '"'
+                     << " classname=\"" << escape(result.test_set_name) << '"'
+                     << " name=\"" << escape(result.test_name) << '"'
                      << " time=\"" << seconds_string(result.duration) << '"'
-                     << " file=\"" << ::xml::escape(result.file_name) << '"'
+                     << " file=\"" << escape(result.file_name) << '"'
                      << " line=\"" << result.line << "\"";
 
             const auto* events = by_test.contains(result.test_id)
@@ -290,7 +404,7 @@ private:
             if(not result.output.empty())
             {
                 xml_body << "      <system-out>"
-                         << ::xml::escape(result.output)
+                         << escape(result.output)
                          << "</system-out>\n";
             }
 

@@ -3,7 +3,6 @@
 // See the LICENSE file in the project root for full license text.
 
 #include "details/selftest_spawn.h++"
-#include "details/xml.h++"
 
 import std;
 import tester;
@@ -35,18 +34,31 @@ auto register_tests()
     using tester_selftest::run_test_runner;
     using tester_selftest::read_file_text;
 
-    test_case("test_case [self] xml escape handles markup and controls") = []
+    test_case("test_case [self] junit escapes markup in failure text") = []
     {
-        using ::xml::escape;
+        const auto report = temp_report_path("tester_junit_escape");
+        remove_quietly(report);
 
-        require_eq(escape("plain"), std::string{"plain"});
-        require_eq(escape("a&b"), std::string{"a&amp;b"});
-        require_eq(escape("<tag>"), std::string{"&lt;tag&gt;"});
-        require_eq(escape("\"q\" 's'"), std::string{"&quot;q&quot; &apos;s&apos;"});
-        require_eq(escape("line\nbreak"), std::string{"line\nbreak"});
-        // C0 controls other than tab/LF/CR are not Char in XML 1.0.
-        require_eq(escape(std::string_view{"\x01"}), std::string{"\xef\xbf\xbd"});
-        require_eq(escape(std::string_view{"\xff"}), std::string{"\xef\xbf\xbd"});
+        const auto result = run_test_runner({
+            "--jsonl=failures",
+            "--junit=" + report.string(),
+            "--tags=[.junit-escape-probe]"});
+
+        require_neq(result.exit_code, 0);
+        require_true(std::filesystem::exists(report));
+
+        const auto xml = read_file_text(report);
+        remove_quietly(report);
+
+        // Markup in the exception message must be entity-escaped, not raw tags.
+        require_true(xml.contains("&lt;tag&amp;value&gt;"));
+        require_false(xml.contains("<tag&value>"));
+        require_true(xml.contains("message=\""));
+    };
+
+    test_case("test_case [.junit-escape-probe] markup in exception") = []
+    {
+        throw std::runtime_error{"payload <tag&value> here"};
     };
 
     test_case("test_case [self] junit report writes alongside jsonl") = []
