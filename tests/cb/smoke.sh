@@ -309,6 +309,68 @@ test_source_list() {
   end_case source_list
 }
 
+# list writes compile_commands.json for the active TU set so clangd can see the real argv
+# builders (including -fmodule-file= after update_module_flags). One entry per source: the
+# step that reads that file — --precompile for modular interfaces, -c otherwise.
+test_compile_commands() {
+  should_run compile_commands || return 0
+  begin_case compile_commands
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  printf '%s\n' \
+    'export module counter;' \
+    'export int counted() { return 1; }' > "${work_dir}/counter.c++m"
+  printf '%s\n' \
+    'import counter;' \
+    'int main() { return counted() - 1; }' > "${work_dir}/hello.c++"
+
+  run_cb_list "${work_dir}"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ ! -f "${work_dir}/compile_commands.json" ]]; then
+    fail "list did not write compile_commands.json"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"compile_commands_exists"}'
+  fi
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if python3 - "${work_dir}" <<'PY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+db = json.loads((root / "compile_commands.json").read_text())
+if not isinstance(db, list) or len(db) != 2:
+    raise SystemExit(f"expected 2 entries, got {db!r}")
+by_file = {}
+for entry in db:
+    for key in ("directory", "file", "arguments"):
+        if key not in entry:
+            raise SystemExit(f"missing {key} in {entry!r}")
+    if not isinstance(entry["arguments"], list) or not entry["arguments"]:
+        raise SystemExit(f"arguments must be a non-empty list: {entry!r}")
+    by_file[Path(entry["file"]).name] = entry
+if set(by_file) != {"counter.c++m", "hello.c++"}:
+    raise SystemExit(f"unexpected files: {sorted(by_file)}")
+mod = by_file["counter.c++m"]["arguments"]
+src = by_file["hello.c++"]["arguments"]
+if "-std=c++23" not in mod or "-std=c++23" not in src:
+    raise SystemExit("missing -std=c++23")
+if "--precompile" not in mod:
+    raise SystemExit("modular entry must use --precompile")
+if "-c" not in src:
+    raise SystemExit("non-modular entry must use -c")
+if not any(a.startswith("-fmodule-file=counter=") for a in src):
+    raise SystemExit(f"importer missing -fmodule-file=counter=: {src}")
+print("ok")
+PY
+  then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"compile_commands_shape"}'
+  else
+    fail "compile_commands.json failed shape checks"
+  fi
+  end_case compile_commands
+}
+
 test_compile_failure() {
   should_run compile_failure || return 0
   begin_case compile_failure
@@ -1361,6 +1423,7 @@ main() {
   test_depfile_unusable
   test_strict_arguments
   test_source_list
+  test_compile_commands
   test_compile_failure
   test_compile_warning
   test_link_failure

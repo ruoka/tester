@@ -12,7 +12,8 @@ Use **`--jsonl=failures`**. Parse **stdout only** (one JSON object per line, `sc
 # Framework contract tests (CI gate — preferred while fixing)
 ./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'
 
-# Translation-unit inventory (modules, imports, compile levels)
+# Translation-unit inventory (modules, imports, compile levels);
+# also writes compile_commands.json at the project root for clangd
 ./tools/CB.sh debug list --jsonl=failures
 
 # Test catalogue (ids, tags, depends_on for scoped runs)
@@ -111,7 +112,7 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 |-------|-----|
 | `list_start` | TU inventory start (`config`, `include_tests`, `include_examples`, `source_dir`) |
 | `unit` | Per translation unit (`path`, `module`, `kind`, `imports[]`, `level`, `has_main`, `is_test`, `is_modular`) |
-| `list_summary` | Inventory totals (`units_total`, `main_count`, `test_count`, `max_level`) |
+| `list_summary` | Inventory totals (`units_total`, `main_count`, `test_count`, `max_level`). Side effect of `list`: writes `compile_commands.json` at the project root for clangd |
 | `build_start` / `build_end` | Whole build; compact modes add aggregate compile/link/cache/failure counts; `rebuild_summary` lists compile rebuilds by `kind` plus `top_modules` |
 | `command_start` / `command_end` | Every command in trace; failed commands and successes that printed warnings in failures. `command_end` carries decoded `exit_code` / `wait_status` / `signaled` and `diagnostics` when the child printed anything (or failed) |
 | `profile_changed` | Once per build when object-cache profile mismatches (`reason`, `profile_diff`) |
