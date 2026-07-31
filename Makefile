@@ -38,7 +38,14 @@ endif
 endif
 
 # Project and directory configuration
+# Framework sources live in ./tester/. Prefer that directory when present so a
+# checkout whose basename is not "tester" (e.g. /workspace) still builds; fall
+# back to the checkout basename for the embedded/parent layout that relies on it.
+ifneq ($(wildcard ./tester/.),)
+project = tester
+else
 project = $(lastword $(notdir $(CURDIR)))
+endif
 sourcedir = ./$(project)
 exampledir = ./examples
 toolsdir = ./tools
@@ -267,7 +274,7 @@ tests: all $(test-target)
 
 .PHONY: run_tests
 run_tests: tests
-	$(test-target) $(TEST_TAGS)
+	@$(test-target) $(TEST_TAGS)
 
 # Targets that must run sequentially (not in parallel)
 .NOTPARALLEL: clean mostlyclean $(module_depfile)

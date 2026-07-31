@@ -66,7 +66,7 @@ as done below rather than as recommendations:
 | CI honesty | The redundant `test-examples` job is retired and its one real check — `[.demo]` must still fail — gates inside `build-and-test`; the synthetic `eof` step became a real standalone run; static analysis is labelled advisory with its output uploaded |
 | Platform statement | `README.md` says which platform CI verifies on every push, which one is verified on demand, and that Windows is unsupported |
 | Release practice | [`docs/release-policy.md`](release-policy.md) defines the public surface, the versioning rules and the criteria for a release; [`CHANGELOG.md`](../CHANGELOG.md) records public-surface changes as they land |
-| Second build path | The Makefile is documented as an alternative to CB rather than as legacy, and running it is a release criterion; the dead code its warnings exposed is removed |
+| Second build path | The Makefile is documented as an alternative to CB rather than as legacy; CI gates `make run_tests` with `[self]` (`makefile-build-and-test`); the dead code its warnings exposed is removed |
 | Document accuracy | `CONTRIBUTING.md` rewritten around both build paths and the checks CI gates; `cb.md`'s make targets corrected against the Makefile; `AGENTS.md` now covers the abort that produces no `summary`; the `[acceptor]` example is gone from the runner's `--help`; every cross-document link and heading anchor checked |
 
 ## Verified Signals
@@ -254,13 +254,14 @@ The Makefile is a genuine second build path, not a leftover: `make tests` builds
 library and runner through `clang-scan-deps` into `build-<os>/`, works standalone or
 invoked from a parent `make`, and its runner passes the `[self]` suite 58/58 — verified on
 macOS while writing this. `README.md` had it labelled *legacy*, which was wrong and is
-fixed. Its real limits are that it has no object cache, no build telemetry, and no CI
-coverage, so it is checked by running it — which is now a release criterion, because a
-full rebuild there surfaced two dead templates in the console observer and an unused
-lambda capture in `tester:utils` that incremental CB builds had stopped re-emitting. One
-target is broken rather than merely unverified: `make tools` globs `tools/*.c++`, so it
-fails on macOS at `core_pc.c++`'s `<elf.h>`, and since CB never scans `tools/`, that
-utility has no build path anyone exercises.
+fixed. CI now gates that path on every push (`makefile-build-and-test`); what remains is
+no object cache and no build telemetry. A full Make rebuild earlier surfaced two dead
+templates in the console observer and an unused lambda capture in `tester:utils` that
+incremental CB builds had stopped re-emitting — both removed. CB now surfaces warnings
+from units it compiles (`diagnostics` on successful steps), so Make is no longer the only
+place they show up. One target is broken rather than merely unverified: `make tools`
+globs `tools/*.c++`, so it fails on macOS at `core_pc.c++`'s `<elf.h>`, and since CB
+never scans `tools/`, that utility has no build path anyone exercises.
 
 Checking the documents against the code found more drift than the code had. Every item
 below was verified and then fixed: [`CONTRIBUTING.md`](../CONTRIBUTING.md) told

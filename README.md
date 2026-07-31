@@ -238,7 +238,7 @@ build-darwin/bin/test_runner --tags='scenario.*Happy'
 make run_tests TEST_TAGS='--tags=[self]'         # build and run in one step
 ```
 
-It also works embedded: invoked from a parent `make`, it picks up `../../config/compiler.mk` and the parent's `PREFIX`. What it does not have is CB's object cache, JSONL build telemetry, or CI coverage — the framework's own gate is CB, so a `make` regression is found by running it, which is worth doing before a release.
+It also works embedded: invoked from a parent `make`, it picks up `../../config/compiler.mk` and the parent's `PREFIX`. What it does not have is CB's object cache or JSONL build telemetry. CI gates `make tests` / `make run_tests` with `[self]` on every push (`makefile-build-and-test`); CB remains the primary path and also surfaces compiler warnings from units it compiles.
 
 ## Built-in Builder (CB)
 
@@ -354,7 +354,7 @@ Tester fits module-native projects that want minimal glue and agent-friendly out
 
 ## Requirements
 
-Both platforms run the same checks — the `[self]` suite, the CB and MCP smoke tests, and JSONL schema validation. CI runs them on Linux with Clang 21 on every push; on macOS they are run locally against a locally built LLVM, because no clang available on a hosted macOS runner builds C++23 modules yet. A macOS lane will be added once one does. Windows is not supported. Test steps also emit `--junit=` reports (uploaded as artifacts); gate suites are summarized in the job summary via `test-summary/action`.
+Both platforms run the same checks — the `[self]` suite (via CB and via the Makefile runner), the CB and MCP smoke tests, and JSONL schema validation. CI runs them on Linux with Clang 21 on every push; on macOS they are run locally against a locally built LLVM, because no clang available on a hosted macOS runner builds C++23 modules yet. A macOS lane will be added once one does. Windows is not supported. Test steps also emit `--junit=` reports (uploaded as artifacts); gate suites are summarized in the job summary via `test-summary/action`.
 
 ### Linux
 - Clang 21 (`clang++-21`) — required for CI and dev containers
