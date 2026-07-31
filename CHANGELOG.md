@@ -71,6 +71,23 @@ commit on `main`; there is no supported tag yet.
 - **A tag filter that matches no test fails** instead of reporting an empty success.
 - Assertion operands are guaranteed valid UTF-8 in JSONL — invalid bytes become U+FFFD
   rather than passing through.
+- **`tester::output::observer` takes event objects and no longer answers questions.** The
+  contract changed in five ways, all of them visible only to code that implements an observer;
+  the JSONL wire format and the console output are unchanged.
+  - `run_start`, `run_end` and the summary take DTOs — `run_info`, `run_verdict` plus the
+    `failure_index`, and `run_summary` plus the `failure_index` — instead of seven, six and
+    four positional arguments. The summary virtual is `summary`, matching the event it writes,
+    rather than `statistics`.
+  - `test_catalogue` receives a `catalogue`: the matched tests in registration order and the
+    registered total. Filtering is the runner's decision, so an observer renders the selection
+    instead of walking the registry and re-applying a predicate.
+  - `emit_eof` is `eof`, the only member that was named for the act rather than the event.
+  - `captured_output` and `reset_captured_output` are gone. Buffering test output is a separate
+    `tester::output::output_capture` interface, registered by the observer that does it — the
+    console one — so reading the buffer no longer broadcasts a query to every observer and
+    keeps the first non-empty answer.
+  - The `test_cases` virtual was removed. Nothing reached it: its only caller was an internal
+    forwarder with no callers of its own, and the catalogue goes through `test_catalogue`.
 
 ### Deprecated
 
@@ -102,6 +119,9 @@ commit on `main`; there is no supported tag yet.
 - **Relative depfile headers** resolve before the staleness check.
 - **The MCP bridge** no longer reports a green `build_end` as test success after the runner
   crashed.
+- **The console observer takes a lock** for every event, as the JSONL observer already did. A
+  test that asserts from a thread it started could interleave two reports in the shared buffer,
+  which is both the terminal output and the text a failing test attaches to its result.
 
 ## v1.0.0 — 27 November 2025
 

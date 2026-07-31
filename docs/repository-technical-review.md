@@ -93,9 +93,8 @@ Sizes: framework and its tests ≈ 6,600 lines; CB ≈ 4,500 lines, of which
 
 ### Framework and API
 
-- The public surface is deliberately small: `import tester;` exports the framework
-  partitions while keeping the publisher an internal import
-  ([`tester/tester.c++m`](../tester/tester.c++m)).
+- The public surface is deliberately small: `import tester;` exports seven partitions and
+  keeps the engine internal ([`tester/tester.c++m`](../tester/tester.c++m)).
 - The `require_*` / `check_*` split maps cleanly onto fatal and non-fatal failure
   behavior, and a non-fatal failure still fails the test — returning normally is not
   enough to be counted successful ([`tester/tester-engine.c++m`](../tester/tester-engine.c++m)).

@@ -56,38 +56,62 @@ export struct message_event
     std::uint_least32_t caller_line;
 };
 
+// What a run is, for as long as it lasts: the fields run_start reports and nothing changes
+// afterwards. Passed as one value because seven positional arguments — four of them
+// string_view — are four chances to transpose two of them at the call site.
+export struct run_info
+{
+    std::string_view mode;   // "run" or "list"
+    std::string_view tags;   // the filter as the caller wrote it
+    std::string_view cwd;
+    std::string_view config; // build configuration, empty unless CB set TESTER_CONFIG
+    std::chrono::system_clock::time_point started_at{};
+    std::span<const std::string> argv;
+    std::span<const std::pair<std::string, std::string>> env;
+};
+
+// How a run ended. The failure index stays a separate argument because the summary reports the
+// same one — one description of what failed, two events carrying it.
+export struct run_verdict
+{
+    std::string_view mode;
+    std::string_view tags;
+    bool passed = false;
+    std::chrono::system_clock::time_point started_at{};
+    std::chrono::system_clock::time_point ended_at{};
+};
+
+// The aggregates a run finishes with. The ranking is the runner's, already cut to the length
+// that was asked for, so every sink reports the same tests in the same order.
+export struct run_summary
+{
+    const data::test_statistics& statistics;
+    bool passed = false;
+    std::span<const data::test_result* const> slowest; // empty unless a ranking was requested
+};
+
+// What a list run found: the matched tests in registration order, and the total the filter chose
+// from. Selection is the runner's job, so a sink renders this rather than re-deciding it.
+export struct catalogue
+{
+    std::span<const data::test_case* const> matched;
+    std::size_t registered_total = 0;
+    std::string_view tags_filter;
+};
+
 export class observer
 {
 public:
     virtual ~observer() = default;
 
     virtual void activate() {}
-    virtual void emit_eof() {}
-    virtual std::string_view captured_output() const { return {}; }
-    virtual void reset_captured_output() {}
+    virtual void eof() {}
 
-    virtual void run_start(
-        std::string_view,
-        std::string_view,
-        std::chrono::system_clock::time_point,
-        std::string_view,
-        std::span<const std::string>,
-        std::string_view,
-        std::span<const std::pair<std::string, std::string>>) {}
+    virtual void run_start(const run_info&) {}
+    virtual void run_end(const run_verdict&, const failure_index&) {}
 
-    virtual void run_end(
-        std::string_view,
-        std::string_view,
-        bool,
-        std::chrono::system_clock::time_point,
-        std::chrono::system_clock::time_point,
-        const failure_index&) {}
+    virtual void test_catalogue(const catalogue&) {}
 
-    virtual void test_catalogue(
-        const std::function<bool(const data::test_case&)>&,
-        std::string_view) {}
-
-    virtual void test_cases(const std::function<bool(const data::test_case&)>&) {}
     virtual void test_case(const data::test_case&) {}
     virtual void exception(const data::test_case&, const std::exception&) {}
     virtual void assertion(const assertion_event&) {}
@@ -97,13 +121,25 @@ public:
 
     virtual void test_failures() {}
 
-    virtual void statistics(
-        const data::test_statistics&,
-        bool,
-        std::span<const data::test_result* const>,
-        const failure_index&) {}
+    virtual void summary(const run_summary&, const failure_index&) {}
 };
 
+// The text a test collected while it ran, which is the console observer's buffer — it is the one
+// that writes per-assertion detail, and a failing test reports it. Not an observer method: this
+// is a question asked of one buffer and an instruction to empty it, so broadcasting it to every
+// sink would need a rule for which answer wins.
+export class output_capture
+{
+public:
+    virtual ~output_capture() = default;
+
+    // By value: the buffer goes on changing, and the assertions filling it may come from a
+    // thread the test started.
+    virtual std::string text() const = 0;
+    virtual void reset() = 0;
+};
+
+inline output_capture* g_capture = nullptr;
 inline auto g_observers = std::vector<std::reference_wrapper<observer>>{};
 inline auto g_named_observers = std::vector<std::pair<std::string, std::reference_wrapper<observer>>>{};
 
@@ -130,6 +166,25 @@ export void observe(observer& value)
 export void clear_observers()
 {
     g_observers.clear();
+    g_capture = nullptr;
+}
+
+// Whoever buffers text says so when it is activated. At most one does, and dropping the
+// observers drops it with them.
+export void capture_into(output_capture& value)
+{
+    g_capture = &value;
+}
+
+export std::string captured_text()
+{
+    return g_capture != nullptr ? g_capture->text() : std::string{};
+}
+
+export void reset_captured_text()
+{
+    if(g_capture != nullptr)
+        g_capture->reset();
 }
 
 export bool select_observer(std::string_view name)

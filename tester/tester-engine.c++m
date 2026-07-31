@@ -3,7 +3,7 @@
 // See the LICENSE file in the project root for full license text.
 
 export module tester:engine;
-import :publisher;
+import :observer;
 import :data;
 import :utils;
 import :assertions;
@@ -13,6 +13,8 @@ namespace tester::engine {
 
 using namespace data;
 using namespace std::literals;
+using output::notify;
+using output::observer;
 
 // What a run lends the engine for as long as it lasts. A step executes while the case it belongs
 // to is still running, so the tag filter and the current-test bookkeeping have to be reachable
@@ -265,12 +267,12 @@ void execute_test_case(const run_context& run, test_case& tc)
     auto* const outer_output = current_output;
     auto output = std::string{};
     if(outer_output)
-        *outer_output += publisher::captured_output();
+        *outer_output += output::captured_text();
     current_output = &output;
 
     const auto outer_id = std::string{run.current_test_id()};
 
-    publisher::test_case(tc);
+    notify([&](observer& target){ target.test_case(tc); });
 
     run.set_test_id(tc.test_id);
 
@@ -292,19 +294,19 @@ void execute_test_case(const run_context& run, test_case& tc)
     {
         result.success = false;
         failure_message = ex.what();
-        publisher::exception(tc,ex);
+        notify([&](observer& target){ target.exception(tc, ex); });
     }
     catch(const std::exception& ex)
     {
         result.success = false;
         failure_message = ex.what();
-        publisher::exception(tc,ex);
+        notify([&](observer& target){ target.exception(tc, ex); });
     }
     catch(...)
     {
         result.success = false;
         failure_message = "Unknown exception";
-        publisher::exception(tc,std::runtime_error{"Unknown exception"});
+        notify([&](observer& target){ target.exception(tc, std::runtime_error{"Unknown exception"}); });
     }
     const auto finished = std::chrono::steady_clock::now();
     const auto finished_sys = std::chrono::system_clock::now();
@@ -347,8 +349,8 @@ void execute_test_case(const run_context& run, test_case& tc)
     // The captured output holds the per-assertion detail, which is precisely what
     // a reader needs for a failure. Using the exception message instead meant a
     // check_*-only failure — which throws nothing — reported no detail at all.
-    output += publisher::captured_output();
-    publisher::reset_captured_output();
+    output += output::captured_text();
+    output::reset_captured_text();
     current_output = outer_output;
     if(not failure_message.empty())
         output += failure_message + '\n';

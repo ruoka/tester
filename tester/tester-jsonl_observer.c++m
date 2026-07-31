@@ -230,39 +230,40 @@ export struct observer final : tester::output::observer
             context.set_parent_run_id(parent);
     }
 
-    void emit_eof() override
+    void eof() override
     {
+        auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.jsonl.emit_eof();
     }
 
-    void run_start(std::string_view mode, std::string_view tags, std::chrono::system_clock::time_point started_at, std::string_view cwd, std::span<const std::string> argv, std::string_view config, std::span<const std::pair<std::string, std::string>> env) override
+    void run_start(const run_info& run) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
-        m.json << m.jsonl("run_start", started_at) << [&](std::ostream& os){
-            os << ",\"mode\":\"" << ::jsonl::escape(mode) << "\"";
-            os << ",\"tags\":\"" << ::jsonl::escape(tags) << "\"";
-            os << ",\"cwd\":\"" << ::jsonl::escape(cwd) << "\"";
-            if(output_mode() == jsonl_mode::trace && not argv.empty())
-                write_string_array(os, "argv", argv);
-            if(not config.empty())
-                os << ",\"config\":\"" << ::jsonl::escape(config) << "\"";
-            write_string_map(os, "env", env);
+        m.json << m.jsonl("run_start", run.started_at) << [&](std::ostream& os){
+            os << ",\"mode\":\"" << ::jsonl::escape(run.mode) << "\"";
+            os << ",\"tags\":\"" << ::jsonl::escape(run.tags) << "\"";
+            os << ",\"cwd\":\"" << ::jsonl::escape(run.cwd) << "\"";
+            if(output_mode() == jsonl_mode::trace && not run.argv.empty())
+                write_string_array(os, "argv", run.argv);
+            if(not run.config.empty())
+                os << ",\"config\":\"" << ::jsonl::escape(run.config) << "\"";
+            write_string_map(os, "env", run.env);
         };
     }
 
-    void run_end(std::string_view mode, std::string_view tags, bool passed, std::chrono::system_clock::time_point started, std::chrono::system_clock::time_point ended, const failure_index& failures) override
+    void run_end(const run_verdict& run, const failure_index& failures) override
     {
         if(output_mode() != jsonl_mode::trace)
             return;
 
         auto lock = std::lock_guard<std::mutex>{m.mutex};
-        const auto duration = (started != std::chrono::system_clock::time_point{})
-            ? std::chrono::duration_cast<std::chrono::milliseconds>(ended - started)
+        const auto duration = (run.started_at != std::chrono::system_clock::time_point{})
+            ? std::chrono::duration_cast<std::chrono::milliseconds>(run.ended_at - run.started_at)
             : std::chrono::milliseconds{0};
-        m.json << m.jsonl("run_end", ended) << [&](std::ostream& os){
-            os << ",\"mode\":\"" << ::jsonl::escape(mode) << "\"";
-            os << ",\"tags\":\"" << ::jsonl::escape(tags) << "\"";
-            os << ",\"passed\":" << (passed ? "true" : "false");
+        m.json << m.jsonl("run_end", run.ended_at) << [&](std::ostream& os){
+            os << ",\"mode\":\"" << ::jsonl::escape(run.mode) << "\"";
+            os << ",\"tags\":\"" << ::jsonl::escape(run.tags) << "\"";
+            os << ",\"passed\":" << (run.passed ? "true" : "false");
             os << ",\"duration_ms\":" << duration.count();
             write_failure_index(os, failures);
         };
@@ -276,7 +277,7 @@ export struct observer final : tester::output::observer
         };
     }
 
-    void test_list_summary(int registered_total, int matched_total, std::string_view tags_filter)
+    void test_list_summary(std::size_t registered_total, std::size_t matched_total, std::string_view tags_filter)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("test_list_summary") << [&](std::ostream& os){
@@ -286,26 +287,12 @@ export struct observer final : tester::output::observer
         };
     }
 
-    void test_catalogue(
-        const std::function<bool(const data::test_case&)>& included,
-        std::string_view tags_filter) override
+    void test_catalogue(const catalogue& tests) override
     {
-        auto registered_total = 0;
-        auto matched_total = 0;
-        for(const auto& test : data::test_cases)
-        {
-            ++registered_total;
-            if(included(test))
-                ++matched_total;
-        }
-
-        test_list_start(tags_filter);
-        for(const auto& test : data::test_cases)
-        {
-            if(included(test))
-                registered_test(test);
-        }
-        test_list_summary(registered_total, matched_total, tags_filter);
+        test_list_start(tests.tags_filter);
+        for(const auto* test : tests.matched)
+            registered_test(*test);
+        test_list_summary(tests.registered_total, tests.matched.size(), tests.tags_filter);
     }
 
     void registered_test(const data::test_case& tc)
@@ -451,25 +438,23 @@ export struct observer final : tester::output::observer
         on_exception(tc, ex);
     }
 
-    void summary(const data::test_statistics& s,
-                 bool passed,
-                 std::span<const data::test_result* const> slowest,
-                 const failure_index& failures)
+    void write_summary(const run_summary& run, const failure_index& failures)
     {
+        const auto& s = run.statistics;
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("summary") << [&](std::ostream& os){
             os << ",\"tests_ok\":" << s.successful_tests;
             os << ",\"tests_total\":" << s.total_tests;
             os << ",\"assertions_ok\":" << s.successful_assertions;
             os << ",\"assertions_total\":" << s.total_assertions;
-            os << ",\"passed\":" << (passed ? "true" : "false");
+            os << ",\"passed\":" << (run.passed ? "true" : "false");
             write_failure_index(os, failures);
-            if(output_mode() == jsonl_mode::trace && !slowest.empty())
+            if(output_mode() == jsonl_mode::trace && !run.slowest.empty())
             {
                 os << ",\"slowest\":[";
-                for(std::size_t i = 0; i < slowest.size(); ++i)
+                for(std::size_t i = 0; i < run.slowest.size(); ++i)
                 {
-                    const auto& r = *slowest[i];
+                    const auto& r = *run.slowest[i];
                     if(i) os << ",";
                     os << "{\"id\":\"" << ::jsonl::escape(r.test_id) << "\"";
                     os << ",\"name\":\"" << ::jsonl::escape(r.test_name) << "\"";
@@ -499,20 +484,18 @@ export struct observer final : tester::output::observer
         }
     }
 
-    void statistics(
-        const data::test_statistics& stats,
-        bool passed,
-        std::span<const data::test_result* const> slowest,
-        const failure_index& failures) override
+    void summary(const run_summary& run, const failure_index& failures) override
     {
-        summary(stats, passed, slowest, failures);
+        write_summary(run, failures);
+
+        const auto& stats = run.statistics;
         m.result_os()
             << "RESULT:"
             << " tests_ok=" << stats.successful_tests
             << " tests_total=" << stats.total_tests
             << " assertions_ok=" << stats.successful_assertions
             << " assertions_total=" << stats.total_assertions
-            << " passed=" << (passed ? "true" : "false")
+            << " passed=" << (run.passed ? "true" : "false")
             << '\n';
     }
 };

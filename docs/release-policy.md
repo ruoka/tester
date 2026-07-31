@@ -35,7 +35,7 @@ which is maintained now rather than reconstructed at release time.
 | `tools/CB.sh` environment | `LLVM_PATH`, `CXX`, `CB_INCLUDE_FLAGS`, and the `CB_*` variables a parent repo sets |
 
 Everything else may change in any release without notice: the internals of
-`tester:engine` and `tester:publisher`, the structure of [`tools/cb.c++`](../tools/cb.c++),
+`tester:engine`, the structure of [`tools/cb.c++`](../tools/cb.c++),
 anything under `build-*/cache/` (only CB writes those files, and the documented fix for a
 format change is `cache invalidate`), `tester/details/`, and the hidden `[.tag]` probe
 fixtures the self-tests spawn.

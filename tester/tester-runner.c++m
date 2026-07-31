@@ -3,7 +3,7 @@
 // See the LICENSE file in the project root for full license text.
 
 export module tester:runner;
-import :publisher;
+import :observer;
 import :engine;
 import :data;
 import :utils;
@@ -13,6 +13,14 @@ namespace tester
 {
 using data::test_case;
 using data::test_result;
+using output::notify;
+using output::observer;
+
+// Public configuration API. Both settings are read by events this class emits — the run argv
+// by run_start, the slowest count by the statistics — while the values themselves are stored
+// with the run's other data.
+export void set_slowest(std::size_t n) { data::set_slowest(n); }
+export void set_run_argv(int argc, char** argv) { data::set_run_argv(argc, argv); }
 
 export class runner
 {
@@ -55,11 +63,20 @@ public:
         m_pending_run_end_passed = std::nullopt;
         m_run_end_emitted = false;
         m_current_test_id.clear();
+        data::set_current_test_id(m_current_test_id);
 
-        // Set current test ID for output module
-        publisher::set_current_test_id(m_current_test_id);
-
-        publisher::begin_run(m_run_mode, m_run_tags, m_run_started_unix_ms);
+        const auto cwd = std::filesystem::current_path().string();
+        const auto config = environment_value("TESTER_CONFIG");
+        const auto run_env = collect_run_env();
+        const auto run = output::run_info{
+            .mode = m_run_mode,
+            .tags = m_run_tags,
+            .cwd = cwd,
+            .config = config,
+            .started_at = m_run_started_unix_ms,
+            .argv = data::run_argv(),
+            .env = run_env};
+        notify([&](observer& target){ target.run_start(run); });
     }
 
     void end_run(bool passed)
@@ -68,28 +85,26 @@ public:
             m_run_finished_monotonic = std::chrono::steady_clock::now();
 
         // In "run" mode, defer run_end until after the summary so event order is predictable.
+        // report_summary emits it once the aggregates are out.
         if(m_run_mode == "run")
         {
             m_pending_run_end_passed = passed;
-            // run_end will be emitted by print_test_statistics
             return;
         }
 
-        const auto ended_at = std::chrono::system_clock::now();
-        publisher::end_run(m_run_mode, m_run_tags, passed, m_run_started_unix_ms, ended_at);
-        m_run_end_emitted = true;
+        report_run_end(passed, output::failure_index{});
     }
 
     void set_current_test_id(std::string_view id)
     {
         m_current_test_id.assign(id.begin(), id.end());
-        publisher::set_current_test_id(m_current_test_id);
+        data::set_current_test_id(m_current_test_id);
     }
 
     void clear_current_test_id()
     {
         m_current_test_id.clear();
-        publisher::set_current_test_id("");
+        data::set_current_test_id("");
     }
 
     std::string_view get_current_test_id() const
@@ -97,15 +112,23 @@ public:
         return m_current_test_id;
     }
 
-    auto print_test_cases()
+    // The whole of list mode: the catalogue is the stream, so this closes it.
+    void list_tests()
     {
-        publisher::print_test_catalogue(
-            std::function<bool(const test_case&)>{[this](const test_case& tc){ return this->included(tc); }},
-            m_tags);
-        publisher::emit_output_eof();
+        auto matched = std::vector<const test_case*>{};
+        for(const auto& tc : data::test_cases)
+            if(included(tc))
+                matched.push_back(&tc);
+
+        const auto tests = output::catalogue{
+            .matched = matched,
+            .registered_total = data::test_cases.size(),
+            .tags_filter = m_tags};
+        notify([&](observer& target){ target.test_catalogue(tests); });
+        close_output();
     }
 
-    auto run_tests()
+    void run_tests()
     {
         begin_run("run");
 
@@ -121,22 +144,39 @@ public:
         end_run(all_tests_passed());
     }
 
-    auto print_test_results()
+    void report_results()
     {
-        publisher::print_test_results();
+        notify([](observer& target){ target.test_results(); });
     }
 
-    auto print_test_failures()
+    void report_failures()
     {
-        publisher::print_test_failures();
+        notify([](observer& target){ target.test_failures(); });
     }
 
-    auto print_test_statistics()
+    // Last of the run, so this closes the stream the way list_tests does.
+    void report_summary()
     {
-        publisher::print_test_statistics(
-            m_pending_run_end_passed,
-            m_run_end_emitted,
-            m_run_mode);
+        const auto& stats = data::statistics();
+        const auto passed = data::run_passed(stats);
+        const auto slowest = slowest_results(data::config().slowest);
+        const auto failures = collect_failures();
+
+        const auto run = output::run_summary{
+            .statistics = stats,
+            .passed = passed,
+            .slowest = slowest};
+        notify([&](observer& target){ target.summary(run, failures); });
+
+        // The verdict deferred by end_run, emitted now that the aggregates are out. A run that
+        // reached the summary without one — report_summary called on its own — reports what the
+        // statistics say.
+        if(not m_pending_run_end_passed.has_value())
+            m_pending_run_end_passed = passed;
+        if(not m_run_end_emitted)
+            report_run_end(*m_pending_run_end_passed, failures);
+
+        close_output();
     }
 
     bool all_tests_passed() const
@@ -174,6 +214,84 @@ private:
     std::string m_current_test_id;
     std::optional<bool> m_pending_run_end_passed;
     bool m_run_end_emitted = false;
+
+    // Whichever mode ran, its last event is the end of the stream.
+    void close_output()
+    {
+        notify([](observer& target){ target.eof(); });
+    }
+
+    // One place emits run_end, whichever path decided the verdict, so the latch has one owner.
+    void report_run_end(bool passed, const output::failure_index& failures)
+    {
+        const auto run = output::run_verdict{
+            .mode = m_run_mode,
+            .tags = m_run_tags,
+            .passed = passed,
+            .started_at = m_run_started_unix_ms,
+            .ended_at = std::chrono::system_clock::now()};
+        notify([&](observer& target){ target.run_end(run, failures); });
+        m_run_end_emitted = true;
+    }
+
+    static std::string environment_value(const char* key)
+    {
+        const auto* value = std::getenv(key);
+        return value != nullptr ? std::string{value} : std::string{};
+    }
+
+    // Sandbox switches worth recording with the run: a suite that skipped network tests reports
+    // different totals, and the run_start event is where that is explained.
+    static std::vector<std::pair<std::string, std::string>> collect_run_env()
+    {
+        constexpr auto keys = std::array{"NET_DISABLE_NETWORK_TESTS", "CURSOR_SANDBOX"};
+
+        auto out = std::vector<std::pair<std::string, std::string>>{};
+        for(const auto* key : keys)
+        {
+            if(auto value = environment_value(key); not value.empty())
+                out.emplace_back(key, std::move(value));
+        }
+        return out;
+    }
+
+    // A test counts as failed if it threw or if any of its assertions failed, which is the same
+    // rule the engine uses for tests_ok — so summary.passed cannot disagree with failed_test_ids.
+    static output::failure_index collect_failures()
+    {
+        auto index = output::failure_index{};
+        for(const auto& result : data::test_results)
+        {
+            if(result.success and result.assertions_ok == result.assertions_total)
+                continue;
+            index.failed_test_ids.push_back(result.test_id);
+            if(index.first == nullptr)
+                index.first = &result;
+        }
+        return index;
+    }
+
+    static std::vector<const test_result*> slowest_results(std::size_t count)
+    {
+        if(count == 0)
+            return {};
+
+        auto slowest = std::vector<const test_result*>{};
+        slowest.reserve(data::test_results.size());
+        for(const auto& result : data::test_results)
+            slowest.push_back(&result);
+
+        // Stable, so tests that took the same time are ranked in the order they ran. Every sink
+        // reports this one ranking, and equal durations are the common case at millisecond
+        // resolution — an unstable sort would make the tail of the list arbitrary.
+        std::ranges::stable_sort(slowest, [](const test_result* a, const test_result* b)
+        {
+            return a->duration > b->duration;
+        });
+        if(slowest.size() > count)
+            slowest.resize(count);
+        return slowest;
+    }
 
     bool included(std::string_view test_name, std::span<const std::string> tags) const
     {

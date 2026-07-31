@@ -452,7 +452,7 @@ build-<os>-debug/bin/tools/core_pc /path/to/core
 
 **Testing framework** — global registration (`const auto _ = …`), automatic discovery of `*.test.c++` registrations, tag/regex filtering, `depends_on` ordering, rich assertions with source locations.
 
-**Observers** — `tester:observer` defines the format-neutral event contract, while `tester:publisher` normalizes and publishes run, catalogue, test, assertion, exception, result, and summary events without selecting a destination. `test_runner.c++` is the composition root: it registers observers by name and selects one from the CLI option. Additional observers derive from `tester::output::observer` and use `register_observer()` / `select_observer()`; runner and assertion code do not change.
+**Observers** — `tester:observer` defines the format-neutral event contract and the registry, and each part of the framework publishes its own events through `notify()`: the runner reports the run lifecycle, catalogue and aggregates, the engine reports tests and exceptions, and the assertion matchers build and report assertion events. Nobody selects a destination. `test_runner.c++` is the composition root: it registers observers by name and selects one from the CLI option. Additional observers derive from `tester::output::observer` and use `register_observer()` / `select_observer()`; runner and assertion code do not change.
 
 **CB** — parses module dependencies, topological sort, incremental PCM/object caching, parallel compilation, executable linking with module awareness.
 

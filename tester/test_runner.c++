@@ -252,15 +252,14 @@ int main(int argc, char** argv)
 
         if(list_only)
         {
-            tr.print_test_cases();
+            tr.list_tests();
             return 0;
         }
 
         tr.run_tests();
-        tr.print_test_results();
-        tr.print_test_failures();
-        tr.print_test_statistics();
-        tester::publisher::emit_output_eof();
+        tr.report_results();
+        tr.report_failures();
+        tr.report_summary();
         return tr.all_tests_passed() ? 0 : 1;
     }
     catch(const tester::assertions::assertion_failure& ex)

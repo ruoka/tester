@@ -10,16 +10,3 @@ export import :runner;
 export import :assertions;
 export import :behavior_driven_development;
 export import :observer;
-
-// The following are implementation details that we import but don't export as partitions.
-import :publisher;
-import std;
-
-namespace tester
-{
-    export namespace bdd = behavior_driven_development;
-
-    // Public API for configuration (delegates to the output module)
-    export void set_slowest(std::size_t n) { publisher::set_slowest(n); }
-    export void set_run_argv(int argc, char** argv) { publisher::set_run_argv(argc, argv); }
-}

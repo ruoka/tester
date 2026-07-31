@@ -148,7 +148,7 @@ the next line does.
 - Follow [P1204R0](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2018/p1204r0.html)
   layout: the module tree is `tester/`, tools are in `tools/`, tests live beside sources.
 - A partition is internal unless [`tester/tester.c++m`](tester/tester.c++m) re-exports it —
-  `:engine` and `:publisher` are deliberately not exported. Adding to the exported set is a
+  `:engine` is deliberately not exported. Adding to the exported set is a
   public API change; see [`docs/release-policy.md`](docs/release-policy.md).
 
 ## Submitting Changes
