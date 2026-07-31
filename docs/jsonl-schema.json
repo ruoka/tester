@@ -96,7 +96,7 @@
   ],
   "$defs": {
     "operand": {
-      "description": "An assertion operand. Strings are reported verbatim, never demangled; exception matchers report demangled type names such as std::runtime_error. Values are always valid UTF-8: invalid bytes in test data are replaced with U+FFFD.",
+      "description": "An assertion operand. Strings are reported verbatim, never demangled; exception matchers report demangled type names such as std::runtime_error. Values are always valid UTF-8: invalid bytes in test data are replaced with U+FFFD. A floating-point infinity or NaN arrives as the string \"inf\", \"-inf\" or \"nan\", because JSON has no numeric form for them; every finite number arrives as a number.",
       "type": ["string", "number", "boolean", "null"]
     },
     "process_status": {

@@ -340,7 +340,22 @@ observed_value observe_value(const V& val)
             auto stream = std::ostringstream{};
             stream << val;
             value = stream.str();
-            kind = value_kind::number;
+
+            // An integer is always a JSON number. A floating-point value need not be: JSON
+            // has no way to write an infinity or a NaN, so those go out quoted — "inf",
+            // "-inf", "nan". Bare, they were `"actual":inf`, a line no parser could read,
+            // and an unparseable line on stdout is the one thing the contract with agents
+            // forbids. null would parse and throw away which of the three it was, and
+            // those are the operands a float comparison reports when it fails on identity
+            // rather than on tolerance.
+            const auto has_a_json_number = [&val]
+            {
+                if constexpr (std::is_floating_point_v<T>)
+                    return std::isfinite(val);
+                else
+                    return true;
+            };
+            kind = has_a_json_number() ? value_kind::number : value_kind::text;
         }
     }
     else if constexpr (is_tuple_like_v<T>)

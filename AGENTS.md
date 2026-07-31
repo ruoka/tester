@@ -50,7 +50,7 @@ Use **`--jsonl=failures`**. Parse **stdout only** (one JSON object per line, `sc
  - Read `first_failure` — `file`, `line`, `message`, and usually the failing `matcher` with `actual` / `expected`. Open the source at that location.
  - Read `failed_test_ids` for the full failure set.
 
-`tests_ok` counts only tests whose assertions all passed, including non-fatal `check_*` failures, so `tests_ok == tests_total` never contradicts a non-empty `failed_test_ids`. Assertion operands are always valid UTF-8 (invalid bytes in test data become U+FFFD) and strings are reported verbatim; only exception matchers report type names, and those are demangled (`std::runtime_error`, not `St13runtime_error`).
+`tests_ok` counts only tests whose assertions all passed, including non-fatal `check_*` failures, so `tests_ok == tests_total` never contradicts a non-empty `failed_test_ids`. Assertion operands are always valid UTF-8 (invalid bytes in test data become U+FFFD) and strings are reported verbatim; only exception matchers report type names, and those are demangled (`std::runtime_error`, not `St13runtime_error`). A floating-point infinity or NaN arrives as the string `"inf"` / `"-inf"` / `"nan"` — JSON has no numeric form for them — while every finite number arrives as a number.
 
 3. For detailed diagnosis, inspect `assertion_failed`:
    - `matcher` — e.g. `require_eq`, `check_contains` (not generic `require` / `check`)
