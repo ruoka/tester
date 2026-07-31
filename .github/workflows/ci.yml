@@ -122,14 +122,14 @@ jobs:
           grep '"type":"jsonl_validate_summary"' jsonl_validate.jsonl | tail -1 | grep -q '"passed":true'
 
       # Gate suites only — demos are expected to fail and would muddy the job summary.
-      # Default show=fail hides the table when everything passes; use all so green runs
-      # still surface counts in the job Summary. Also write markdown into the artifact.
+      # Default show=fail leaves only a tiny SVG badge when everything passes (easy to
+      # miss, and the image host can fail to load). show=all writes the test table into
+      # the job Summary on green runs too.
       - name: Publish JUnit test summary
         uses: test-summary/action@v2
         if: always()
         with:
           show: all
-          output: test_summary_${{ matrix.config }}.md
           paths: |
             test_results_self_${{ matrix.config }}.xml
             test_results_${{ matrix.config }}.xml
@@ -146,7 +146,6 @@ jobs:
             test_results_${{ matrix.config }}.xml
             test_results_self_${{ matrix.config }}.xml
             test_results_demos.xml
-            test_summary_${{ matrix.config }}.md
 
   cb-smoke:
     runs-on: ubuntu-latest
