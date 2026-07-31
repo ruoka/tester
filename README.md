@@ -341,7 +341,8 @@ Trace mode emits all test events: `run_start`, `run_end`, `case`, `test`, `messa
 | **JSONL output** | First-class (`--jsonl`) | No | No (XML/JUnit via adapters) |
 | **JUnit XML** | First-class (`--junit=`, with JSONL) | Native `--reporter junit` | gtest XML / adapters |
 | **Test catalogue API** | `test --list --jsonl` | `--list-tests` (text) | GTest filters (text) |
-| **BDD style** | Built-in `scenario`/`given` | Via macros / tags | Via adapters |
+| **BDD style** | Built-in nested `scenario` / `given` / `when` / `then` (eager steps) | Macros (`SCENARIO` / `GIVEN` / …) | Via adapters |
+| **Nested tests** | Yes — `section` in `test_case`; BDD steps nest; nested `test_case`/`scenario` run later | `SECTION` / `SUBCASE` nesting | No section model; fixtures / `TEST_P` instead |
 | **Parallel tests** | In-process `--jobs=N` (default 1); respects `depends_on` | In-process serial; parallel via shards / CTest processes | Process-level (`gtest_parallel`, CTest `-j`) |
 | **Parallel builds** | CB `--jobs=N` (default hardware concurrency) | Bring your own | CMake / Ninja `-j` typical |
 | **Threads in a test** | Allowed; TLS execution context + locked observers | Allowed; reporters need care | Allowed; death tests / fixtures have rules |
