@@ -381,7 +381,9 @@ void reconcile_unattributed_assertions(execution_context& ctx)
 
     const auto missing_total = stats.total_assertions - accounted_total;
     const auto missing_ok = stats.successful_assertions - accounted_ok;
-    if(missing_total == 0)
+    // Passing orphans only inflate assertion totals; they do not hide a failure. Failures
+    // are what leave passed=false with an empty failed_test_ids list.
+    if(missing_total == 0 or missing_ok == missing_total)
         return;
 
     auto result = test_result{
@@ -396,17 +398,12 @@ void reconcile_unattributed_assertions(execution_context& ctx)
         }};
     result.assertions_total = missing_total;
     result.assertions_ok = missing_ok;
-    result.success = missing_ok == missing_total;
-    if(not result.success)
-    {
-        result.output =
-            "A soft assertion ran on a thread without an execution_context while "
-            "--jobs>1, so it could not be attributed to the test that started the thread.\n";
-    }
+    result.success = false;
+    result.output =
+        "A soft assertion ran on a thread without an execution_context while "
+        "--jobs>1, so it could not be attributed to the test that started the thread.\n";
     ctx.results.push_back(std::move(result));
     ++ctx.statistics.total_tests;
-    if(missing_ok == missing_total)
-        ++ctx.statistics.successful_tests;
 }
 
 void run_test_cases_sequential(execution_context& ctx)
