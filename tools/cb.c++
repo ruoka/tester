@@ -1123,7 +1123,11 @@ public:
     }
 
     void succeeded() { ok = true; }
+    // Warnings from a successful step accumulate across a modular unit's two toolchain
+    // invocations. A failing step replaces them: the error is what triage reads first, and
+    // prior warning text must not consume the diagnostics head budget.
     void attach(output::diagnostics said) { detail::append_diagnostics(diag, std::move(said)); }
+    void failed(output::diagnostics said) { diag = std::move(said); }
 
 private:
     output::compile_unit unit;
@@ -1170,6 +1174,7 @@ public:
 
     void succeeded() { ok = true; }
     void attach(output::diagnostics said) { detail::append_diagnostics(diag, std::move(said)); }
+    void failed(output::diagnostics said) { diag = std::move(said); }
 
 private:
     std::string executable_path;
@@ -1185,7 +1190,10 @@ private:
 // the capture file. compile_scope and link_scope both qualify, which is the whole reason one
 // function can run either phase's steps.
 template <typename Scope>
-concept step_scope = requires(Scope& scope, output::diagnostics said) { scope.attach(std::move(said)); };
+concept step_scope = requires(Scope& scope, output::diagnostics said) {
+    scope.attach(std::move(said));
+    scope.failed(std::move(said));
+};
 
 // One test_start, exactly one test_end, with the run's duration in the scope rather than in two
 // locals beside it. Nothing between the events throws today — a failing runner comes back as a
@@ -1647,10 +1655,13 @@ private:
     void run_step(step_scope auto& scope, const string_list& argv, std::string_view capture) const
     {
         const auto result = invoke_shell(argv, capture);
+        if(not result.ok())
+        {
+            scope.failed(result.diag);
+            throw std::runtime_error{command_failure_message(argv, result)};
+        }
         if(not result.diag.empty())
             scope.attach(result.diag);
-        if(not result.ok())
-            throw std::runtime_error{command_failure_message(argv, result)};
     }
 
     static std::string command_failure_message(const string_list& argv, const output::process_result& result)
@@ -1686,12 +1697,20 @@ private:
         return string_list{"-MMD", "-MF", depfile_path(tu)};
     }
 
-    // Per-target capture files: parallel workers must not share one. The two steps of a modular
-    // unit do share theirs — one target, one compile_end — so the diagnostics a consumer is
-    // pointed at sit beside that unit's object. Both name the target rather than a path, so
-    // moving captures into a logs/ tree is an edit here and nowhere else. The argument types
-    // differ because the targets do: the std module compiles without being a scanned unit, so
-    // compile_unit is all it can offer, and it is what both compile steps report with anyway.
+    // Per-target capture files: parallel workers must not share one. A modular unit (and the
+    // std module) runs two toolchain steps that share one compile_end; each step still needs
+    // its own capture — the shell redirect truncates, so reusing the object log would wipe
+    // the precompile warnings that compile_end.diagnostics.path still names. Both name the
+    // artefact rather than a free path, so moving captures into a logs/ tree is an edit here
+    // and nowhere else. The argument type is compile_unit because the std module compiles
+    // without being a scanned unit, and that is what both compile steps report with anyway.
+    std::string diagnostics_path_for_pcm(const output::compile_unit& unit) const
+    {
+        if(unit.pcm.empty())
+            throw std::logic_error{"diagnostics_path_for_pcm: non-modular unit"};
+        return std::string{unit.pcm} + ".log";
+    }
+
     std::string diagnostics_path_for_object(const output::compile_unit& unit) const
     {
         return std::string{unit.object} + ".log";
@@ -2480,7 +2499,7 @@ private:
                               or reason->kind == output::rebuild_kind::object_stale;
         if(not object_only)
         {
-            run_step(compile, build_std_pcm_argv(), diagnostics_path_for_object(unit));
+            run_step(compile, build_std_pcm_argv(), diagnostics_path_for_pcm(unit));
             save_std_module_profile();
         }
         run_step(compile, build_std_o_argv(), diagnostics_path_for_object(unit));
@@ -2499,7 +2518,7 @@ private:
         const auto unit = compile_unit_of(tu);
         auto compile = compile_scope{unit, rebuild};
         if (tu.is_modular) {
-            run_step(compile, compile_pcm_argv(tu), diagnostics_path_for_object(unit));
+            run_step(compile, compile_pcm_argv(tu), diagnostics_path_for_pcm(unit));
             run_step(compile, compile_pcm_object_argv(tu), diagnostics_path_for_object(unit));
         } else {
             run_step(compile, compile_source_object_argv(tu), diagnostics_path_for_object(unit));

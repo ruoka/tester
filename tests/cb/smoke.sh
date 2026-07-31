@@ -361,6 +361,30 @@ test_compile_warning() {
   end_case compile_warning
 }
 
+# A modular unit runs --precompile then compiles the pcm. Those steps must not share one
+# capture file: the second redirect truncates, and compile_end.diagnostics.path would name
+# an empty log while the warning text lived only in the in-memory head.
+test_modular_compile_warning() {
+  should_run modular_compile_warning || return 0
+  begin_case modular_compile_warning
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+  rm -f "${work_dir}/hello.c++"
+
+  printf '%s\n' \
+    'export module warn;' \
+    '#warning "modular_precompile_warning"' \
+    'export int value() { return 0; }' > "${work_dir}/warn.c++m"
+  printf '%s\n' 'import warn;' 'int main() { return value(); }' > "${work_dir}/hello.c++"
+
+  run_cb_build "${work_dir}" --jsonl=trace
+  assert_compile_end "warn.c++m" false not_in_cache true "modular_warning_compile_ok"
+  assert_jsonl_diagnostics_contain compile_end "modular_precompile_warning" \
+    "modular_warning_on_compile_end"
+  assert_jsonl_event_value build_end ok true "modular_warning_build_still_ok"
+  end_case modular_compile_warning
+}
+
 test_link_failure() {
   should_run link_failure || return 0
   begin_case link_failure
@@ -1363,6 +1387,7 @@ main() {
   test_source_list
   test_compile_failure
   test_compile_warning
+  test_modular_compile_warning
   test_link_failure
   test_test_link_failure
   test_link_rebuild_reason

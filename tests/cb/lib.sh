@@ -205,16 +205,18 @@ assert_jsonl_not_contains() {
 
 # Assert that some event of the given type carries diagnostics whose text contains
 # the needle. Checks the parsed value, so it also proves the text survived escaping.
+# Also opens diagnostics.path: a modular unit's second step used to truncate the shared
+# capture, leaving compile_end with text in memory and an empty file at path.
 assert_jsonl_diagnostics_contain() {
   local event_type=$1
   local needle=$2
   local label=${3:-jsonl_diagnostics}
   TESTS_RUN=$((TESTS_RUN + 1))
-  if python3 - "${event_type}" "${needle}" "${LAST_JSONL}" <<'PY'
-import json, sys
-event_type, needle = sys.argv[1], sys.argv[2]
+  if python3 - "${event_type}" "${needle}" "${LAST_WORK_DIR}" "${LAST_JSONL}" <<'PY'
+import json, os, sys
+event_type, needle, work_dir = sys.argv[1], sys.argv[2], sys.argv[3]
 seen = 0
-for line in sys.argv[3].splitlines():
+for line in sys.argv[4].splitlines():
     try:
         event = json.loads(line)
     except json.JSONDecodeError:
@@ -226,8 +228,19 @@ for line in sys.argv[3].splitlines():
         continue
     seen += 1
     if needle in diagnostics.get("text", ""):
-        if not diagnostics.get("path"):
+        path = diagnostics.get("path")
+        if not path:
             print("diagnostics missing path", file=sys.stderr)
+            raise SystemExit(1)
+        full = path if os.path.isabs(path) else os.path.join(work_dir, path)
+        try:
+            body = open(full, "rb").read().decode("utf-8", "replace")
+        except OSError as exc:
+            print(f"diagnostics path unreadable: {full}: {exc}", file=sys.stderr)
+            raise SystemExit(1)
+        if needle not in body:
+            print(f"diagnostics path {full} missing {needle!r} (size {len(body)})",
+                  file=sys.stderr)
             raise SystemExit(1)
         raise SystemExit(0)
 print(f"no {event_type} diagnostics containing {needle!r} ({seen} with diagnostics)",
