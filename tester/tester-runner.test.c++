@@ -189,6 +189,38 @@ auto register_parallel_probe()
 
 const auto _parallel_probe = register_parallel_probe();
 
+// Soft-assert from a child thread under --jobs>1 used to fail the suite with an empty
+// failed_test_ids list (orphan counters on the run context, green worker result).
+auto register_parallel_thread_assert_probe()
+{
+    if(std::getenv("TESTER_PARALLEL_THREAD_ASSERT_PROBE") == nullptr)
+        return 0;
+
+    using tester::basic::test_case;
+    using tester::basic::test_order;
+    using namespace tester::assertions;
+
+    // Two independents so the parallel scheduler actually takes the multi-worker path.
+    test_case("test_case [.parallel-thread-assert-probe] sibling",
+              test_order{.priority = 0, .depends_on = {}, .id = "parallel_thread_sibling"}) = []
+    {
+        require_true(true);
+    };
+
+    test_case("test_case [.parallel-thread-assert-probe] child soft-fail",
+              test_order{.priority = 0, .depends_on = {}, .id = "parallel_thread_soft_fail"}) = []
+    {
+        auto worker = std::jthread{[]
+        {
+            check_eq(1, 2);
+        }};
+    };
+
+    return 0;
+}
+
+const auto _parallel_thread_assert_probe = register_parallel_thread_assert_probe();
+
 } // namespace
 
 auto register_tests()
@@ -430,6 +462,21 @@ auto register_tests()
         tester::set_jobs(1);
         require_eq(tester::data::worker_count(), 1uz);
         tester::set_jobs(previous);
+    };
+
+    test_case("test_case [self][parallel] child-thread soft fail is attributed under --jobs") = []
+    {
+        const auto result = run_test_runner(
+            {"--jsonl=failures", "--jobs=2", "--tags=[.parallel-thread-assert-probe]"},
+            "TESTER_PARALLEL_THREAD_ASSERT_PROBE=1 ");
+
+        require_false(result.signaled);
+        require_eq(result.exit_code, 1);
+        const auto summary = tester_selftest::find_event(result.stdout_text, "summary");
+        require_eq(tester_selftest::field(summary, "passed"), std::string{"false"});
+        // Must not be an opaque assertion-total mismatch with an empty failure list.
+        const auto failed = tester_selftest::field(summary, "failed_test_ids");
+        require_true(failed.contains("<unattributed thread assertion>"));
     };
 
     return 0;
