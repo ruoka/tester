@@ -248,6 +248,55 @@ auto register_tests()
         require_true(result.stdout_text.contains("and_then -> this one still runs"));
     };
 
+    test_case("test_case [self] execution contexts isolate per thread") = []
+    {
+        // Parallel workers each activate their own context on TLS. Two threads with
+        // distinct contexts must not see each other's id or assertion counters.
+        require_true(tester::data::active_execution() != nullptr);
+
+        auto ctx_a = tester::data::execution_context{};
+        auto ctx_b = tester::data::execution_context{};
+        ctx_a.current_test_id = "worker-a";
+        ctx_b.current_test_id = "worker-b";
+        ++ctx_a.statistics.total_assertions;
+
+        auto ready = std::atomic<int>{0};
+        auto id_a = std::string{};
+        auto id_b = std::string{};
+        auto assertions_a = std::size_t{};
+        auto assertions_b = std::size_t{};
+
+        {
+            auto worker_a = std::jthread{[&]
+            {
+                const auto scope = tester::data::execution_scope{ctx_a};
+                ready.fetch_add(1);
+                while(ready.load() < 2)
+                    std::this_thread::yield();
+                id_a = std::string{tester::data::current_test_id()};
+                assertions_a = tester::data::statistics().total_assertions;
+            }};
+            auto worker_b = std::jthread{[&]
+            {
+                const auto scope = tester::data::execution_scope{ctx_b};
+                ready.fetch_add(1);
+                while(ready.load() < 2)
+                    std::this_thread::yield();
+                id_b = std::string{tester::data::current_test_id()};
+                assertions_b = tester::data::statistics().total_assertions;
+            }};
+        }
+
+        require_eq(id_a, std::string{"worker-a"});
+        require_eq(id_b, std::string{"worker-b"});
+        require_eq(assertions_a, 1uz);
+        require_eq(assertions_b, 0uz);
+
+        // Nested scopes restore the runner's context for this test body.
+        require_true(tester::data::active_execution() != nullptr);
+        require_true(tester::data::current_test_id().contains("execution contexts isolate"));
+    };
+
     return 0;
 }
 

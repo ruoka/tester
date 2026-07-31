@@ -299,7 +299,7 @@ private:
         auto errors = std::size_t{0};
         auto suite_time = std::chrono::nanoseconds{0};
 
-        for(const auto& result : data::test_results)
+        for(const auto& result : data::results())
         {
             suite_time += result.duration;
             const auto* events = by_test.contains(result.test_id)
@@ -357,7 +357,7 @@ private:
             xml_body << "    </testcase>\n";
         }
 
-        for(const auto& result : data::test_results)
+        for(const auto& result : data::results())
         {
             xml_body << "    <testcase"
                      << " classname=\"" << escape(result.test_set_name) << '"'

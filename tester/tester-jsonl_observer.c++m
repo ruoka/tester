@@ -474,7 +474,7 @@ export struct observer final : tester::output::observer
         if(output_mode() == jsonl_mode::summary)
             return;
 
-        for(const auto& result : data::test_results)
+        for(const auto& result : data::results())
         {
             if(output_mode() == jsonl_mode::failures && not test_failed(result))
                 continue;

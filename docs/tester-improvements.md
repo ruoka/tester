@@ -105,6 +105,7 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 - ✅ `make_test_case` no longer calls `std::terminate()` when the registering wrapper lives outside `tester::basic` / `tester::behavior_driven_development`; it falls back to the wrapper's unqualified name. Unreachable today (`make_test_case` is not exported and both wrappers match a prefix), so this removed a trap rather than fixing a live defect.
 - 📋 Let `runner` own its tag string, and make the observer instance non-latching.
 - 📋 `--shuffle` / `--seed` / `--repeat` flags, and per-test timeouts.
+- ✅ Run/execution state lives on `data::execution_context` (current id, capture nesting, step counters, results, statistics), activated per thread via `execution_scope`. The registration catalogue stays process-wide; process-wide mutable “active case” globals are gone — the prerequisite for parallel top-level runs.
 
 ---
 
