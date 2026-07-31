@@ -32,6 +32,9 @@ struct test_case : public test_metadata
     int priority = 0;  // Lower numbers run first (default: 0)
     std::vector<std::string> depends_on;  // Test names this test depends on
     std::string id;  // Unique identifier for dependency references
+    // Bracket tags, parsed once from the description at registration. Filtering and the
+    // catalogue read these rather than re-parsing the rendered display name.
+    std::vector<std::string> tags;
 };
 
 auto test_cases = std::list<test_case>{};

@@ -146,27 +146,14 @@ public:
 
     bool included(const test_case& tc) const
     {
-        return included(tc.test_name);
+        return included(tc.test_name, tc.tags);
     }
 
+    // For callers holding only a name — no registered case to read tags from, so they are
+    // parsed here instead. Registration parses the same brackets once and stores the result.
     bool included(std::string_view test_name) const
     {
-        if(m_tags.empty() && has_hidden_tag(test_name))
-            return false;
-
-        if(not is_runnable_test_name(test_name))
-            return true;
-
-        if(m_tags.empty())
-            return true;
-
-        if(m_use_literal_tags)
-            return match_literal_tags(test_name);
-
-        if(m_use_regex)
-            return std::regex_search(test_name.begin(), test_name.end(), m_regex);
-
-        return test_name.contains(m_tags);
+        return included(test_name, output::extract_bracket_tags(test_name));
     }
 
 private:
@@ -188,20 +175,35 @@ private:
     std::optional<bool> m_pending_run_end_passed;
     bool m_run_end_emitted = false;
 
+    bool included(std::string_view test_name, std::span<const std::string> tags) const
+    {
+        if(m_tags.empty() && has_hidden_tag(tags))
+            return false;
+
+        if(not is_runnable_test_name(test_name))
+            return true;
+
+        if(m_tags.empty())
+            return true;
+
+        if(m_use_literal_tags)
+            return match_literal_tags(tags);
+
+        if(m_use_regex)
+            return std::regex_search(test_name.begin(), test_name.end(), m_regex);
+
+        return test_name.contains(m_tags);
+    }
+
     static bool is_runnable_test_name(std::string_view test_name)
     {
         return test_name.starts_with("scenario") or test_name.starts_with("test_case");
     }
 
-    static bool has_hidden_tag(std::string_view test_name)
+    static bool has_hidden_tag(std::span<const std::string> tags)
     {
         // Catch2-style hidden tags: bracket tags starting with '.' (e.g. [.], [.jsonl-probe]).
-        for(const auto& tag : output::extract_bracket_tags(test_name))
-        {
-            if(tag.starts_with("."))
-                return true;
-        }
-        return false;
+        return std::ranges::any_of(tags, [](const auto& tag){ return tag.starts_with('.'); });
     }
 
     static std::vector<std::string> parse_tag_query(std::string_view query)
@@ -225,22 +227,14 @@ private:
         return tags;
     }
 
-    bool match_literal_tags(std::string_view test_name) const
+    bool match_literal_tags(std::span<const std::string> tags) const
     {
         if(m_literal_tags.empty())
             return true;
 
-        auto test_tags = output::extract_bracket_tags(test_name);
-        if(test_tags.empty())
-            return false;
-
-        for(const auto& required : m_literal_tags)
-        {
-            if(not std::ranges::contains(test_tags, required))
-                return false;
-        }
-
-        return true;
+        return std::ranges::all_of(m_literal_tags, [tags](const auto& required){
+            return std::ranges::contains(tags, required);
+        });
     }
 
     bool excluded(const test_case& tc) const

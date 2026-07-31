@@ -5,6 +5,7 @@
 export module tester:engine;
 import :publisher;
 import :data;
+import :utils;
 import :assertions;
 import std;
 
@@ -128,7 +129,8 @@ test_slot make_test_case(std::string_view description, int priority, std::vector
         data::test{},
         priority,
         std::move(depends_on),
-        std::move(assigned_id)
+        std::move(assigned_id),
+        output::extract_bracket_tags(description)
     };
 
     // scenario and test_case are what a run iterates; the rest are steps of whichever case is
@@ -143,14 +145,26 @@ test_slot make_test_case(std::string_view description, int priority, std::vector
     return test_slot{std::move(test_case), *active_run};
 }
 
+// An id defaults to the display name, so prefer it: an explicit one is what depends_on names.
+std::string_view label(const test_case& tc)
+{
+    return tc.id.empty() ? tc.test_name : tc.id;
+}
+
 auto sort_test_cases()
 {
-    // Build a map of test IDs to test cases for dependency resolution
+    // An id is how depends_on names a case, so two cases claiming one id make the edge
+    // ambiguous. The map used to keep whichever registered last and the run still looked
+    // ordered, which is the failure mode worth refusing: the suite ran, but not as written.
     auto id_to_test = std::map<std::string, test_case*, std::less<>>{};
     for(auto& tc : test_cases)
     {
-        if(not tc.id.empty())
-            id_to_test[tc.id] = &tc;
+        if(tc.id.empty())
+            continue;
+        if(id_to_test.contains(tc.id))
+            throw std::runtime_error{"Duplicate test id \"" + tc.id + "\" used by \""
+                + id_to_test.at(tc.id)->test_name + "\" and \"" + tc.test_name + "\""};
+        id_to_test[tc.id] = &tc;
     }
 
     // Calculate dependency levels (tests with no dependencies = level 0, etc.)
@@ -164,17 +178,18 @@ auto sort_test_cases()
         // A re-visit while still resolving ancestors means depends_on formed a cycle.
         // Fail clearly instead of recursing until the stack overflows.
         if(visiting.contains(tc))
-        {
-            const auto label = tc->id.empty() ? tc->test_name : tc->id;
-            throw std::runtime_error{"Cyclic test dependency involving \"" + label + "\""};
-        }
+            throw std::runtime_error{"Cyclic test dependency involving \"" + std::string{label(*tc)} + "\""};
 
         visiting.insert(tc);
         int max_dep_level = -1;
         for(const auto& dep_id : tc->depends_on)
         {
-            if(id_to_test.contains(dep_id))
-                max_dep_level = std::max(max_dep_level, self(id_to_test.at(dep_id), self));
+            // A name nothing registered used to contribute no edge and no diagnostic, so a
+            // typo read as "no ordering constraint" and the run passed on the wrong order.
+            if(not id_to_test.contains(dep_id))
+                throw std::runtime_error{"Unknown test id \"" + dep_id + "\" in depends_on of \""
+                    + std::string{label(*tc)} + "\""};
+            max_dep_level = std::max(max_dep_level, self(id_to_test.at(dep_id), self));
         }
         visiting.erase(tc);
         levels[tc] = max_dep_level + 1;

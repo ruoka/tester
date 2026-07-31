@@ -303,12 +303,12 @@ export struct observer final : tester::output::observer
         for(const auto& test : data::test_cases)
         {
             if(included(test))
-                registered_test(test, output::extract_bracket_tags(test.test_name));
+                registered_test(test);
         }
         test_list_summary(registered_total, matched_total, tags_filter);
     }
 
-    void registered_test(const data::test_case& tc, std::span<const std::string> tags)
+    void registered_test(const data::test_case& tc)
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("registered_test") << [&](std::ostream& os){
@@ -321,7 +321,7 @@ export struct observer final : tester::output::observer
             os << ",\"line\":" << tc.line;
             os << ",\"column\":" << tc.column;
             os << ",\"priority\":" << tc.priority;
-            write_string_array(os, "tags", tags);
+            write_string_array(os, "tags", tc.tags);
             write_string_array(os, "depends_on", tc.depends_on);
         };
     }

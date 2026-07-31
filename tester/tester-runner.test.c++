@@ -51,6 +51,42 @@ auto register_dependency_cycle_probe()
 
 const auto _cycle_probe = register_dependency_cycle_probe();
 
+// Two cases claiming one id, and a case depending on an id nothing registered. Both are
+// refused before the first test runs, so they can only be observed from another process.
+auto register_metadata_probes()
+{
+    if(std::getenv("TESTER_DUPLICATE_ID_PROBE") != nullptr)
+    {
+        using tester::basic::test_case;
+        using tester::basic::test_order;
+
+        test_case("test_case [.duplicate-id-probe] first claimant",
+                  test_order{.priority = 0, .depends_on = {}, .id = "self_duplicate_id"}) = []
+        {
+        };
+
+        test_case("test_case [.duplicate-id-probe] second claimant",
+                  test_order{.priority = 0, .depends_on = {}, .id = "self_duplicate_id"}) = []
+        {
+        };
+    }
+
+    if(std::getenv("TESTER_UNKNOWN_DEPENDENCY_PROBE") != nullptr)
+    {
+        using tester::basic::test_case;
+        using tester::basic::test_order;
+
+        test_case("test_case [.unknown-dependency-probe] depends on a typo",
+                  test_order{.priority = 0, .depends_on = {"self_no_such_id"}, .id = "self_typo_dep"}) = []
+        {
+        };
+    }
+
+    return 0;
+}
+
+const auto _metadata_probes = register_metadata_probes();
+
 // A step that fails cannot be verified in-process: the failure would fail this run. Registered
 // only in the spawned probe so an ordinary run never sees a deliberate failure.
 auto register_failing_step_probe()
@@ -122,6 +158,29 @@ auto register_tests()
         // A dependency cycle must be reported as a failure, not a crash.
         require_false(result.signaled);
         require_eq(result.exit_code, 1);
+    };
+
+    test_case("test_case [self][order] a duplicate test id fails the run") = []
+    {
+        const auto result = run_test_runner(
+            {"--tags=[.duplicate-id-probe]"},
+            "TESTER_DUPLICATE_ID_PROBE=1 ");
+
+        require_false(result.signaled);
+        require_eq(result.exit_code, 1);
+        // The message has to name the id: which two cases collided is the whole diagnosis.
+        require_true(result.stderr_text.contains("Duplicate test id \"self_duplicate_id\""));
+    };
+
+    test_case("test_case [self][order] a depends_on id nothing registered fails the run") = []
+    {
+        const auto result = run_test_runner(
+            {"--tags=[.unknown-dependency-probe]"},
+            "TESTER_UNKNOWN_DEPENDENCY_PROBE=1 ");
+
+        require_false(result.signaled);
+        require_eq(result.exit_code, 1);
+        require_true(result.stderr_text.contains("Unknown test id \"self_no_such_id\""));
     };
 
     test_case("test_case [self] summary records passing run") = []
