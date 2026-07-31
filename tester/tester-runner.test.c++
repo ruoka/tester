@@ -323,9 +323,11 @@ auto register_tests()
             }};
         }
 
+        // Snapshot before this case's own require_* calls bump the counters.
+        const auto after_worker = tester::data::statistics().total_assertions;
         require_false(saw_logic_error.load());
         require_true(completed.load());
-        require_eq(tester::data::statistics().total_assertions, before + 1);
+        require_eq(after_worker, before + 1);
         // Empty id on the child matches pre-#52 thread_local current-test-id behaviour.
         require_eq(child_id, std::string{});
         require_true(tester::data::current_test_id().contains("soft asserts from a spawned"));
