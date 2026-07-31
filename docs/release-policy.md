@@ -76,14 +76,16 @@ it names `check_throws_as<E>(callable)` in the warning.
 A release is cut when all of these hold. There is no schedule — the criteria decide.
 
 1. **CI green on Linux** for both `debug` and `release`: the `[self]` suite, the full
-   standalone suite, the failure-demo gate, JSONL schema validation, CB smoke, and MCP
-   smoke.
+   standalone suite, the failure-demo gate, JSONL schema validation, CB smoke, MCP
+   smoke, and the Makefile lane (`make tests` + `[self]`, warning-free).
 2. **The same suites run by hand on macOS**, against a locally built LLVM, until a
    hosted runner ships a clang that can build C++23 modules and the lane becomes
    automatic.
-3. **`make tests` builds and its runner passes**, warning-free. CI does not exercise the
-   Makefile, so a release is where that path gets checked — and a full rebuild there
-   surfaces warnings an incremental CB build no longer re-emits.
+3. **`make tests` builds and its runner passes**, warning-free. CI gates this on every
+   push (`makefile-build-and-test`); a release re-checks it on a clean tree. CB also
+   surfaces compiler warnings from units it compiles (`diagnostics` on successful
+   `compile_end` / `link_end` in `--jsonl=failures`), so Make is a second path rather
+   than the only place `-Wall` noise is visible.
 4. **[`docs/repository-technical-review.md`](repository-technical-review.md) rates the
    repository at or close to 9 / 10.** This is the deliberate gate: the project stays
    unreleased while its own review can name weaknesses a consumer would inherit. The

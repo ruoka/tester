@@ -147,6 +147,75 @@ jobs:
             test_results_self_${{ matrix.config }}.xml
             test_results_demos.xml
 
+  # Second build path: clang-scan-deps + Makefile into build-<os>/. Gates the same
+  # [self] contract the release policy requires, and fails the job if the full rebuild
+  # emits any compiler warning (make has no object cache, so every unit is compiled).
+  makefile-build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Setup LLVM (shared)
+        uses: ./.github/actions/setup-llvm
+
+      - name: Show make toolchain
+        run: |
+          make --version | head -1
+          clang++-21 --version | head -1
+          clang-scan-deps-21 --version | head -1
+
+      - name: Build with make (warning-free)
+        run: |
+          set -euo pipefail
+          make tests 2>&1 | tee make_build.log
+          if grep -E '(^|[[:space:]])warning:' make_build.log; then
+            echo "✗ make build produced compiler warnings"
+            exit 1
+          fi
+          echo "✓ make tests built warning-free"
+
+      - name: Run self tests (Makefile runner)
+        run: |
+          set -euo pipefail
+          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          runner="./build-${os}/bin/test_runner"
+          if [ ! -x "$runner" ]; then
+            echo "✗ expected runner at $runner"
+            exit 1
+          fi
+          "$runner" --jsonl=failures \
+            --junit=test_results_make_self.xml \
+            --tags='[self]' > test_results_make_self.jsonl
+          passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' test_results_make_self.jsonl)
+          if [ "$passed" != "true" ]; then
+            echo "Makefile self tests failed (summary.passed=$passed)"
+            tail -20 test_results_make_self.jsonl
+            exit 1
+          fi
+          echo "✓ Makefile self tests passed"
+
+      - name: Publish JUnit test summary
+        uses: test-summary/action@v2
+        if: always()
+        with:
+          show: all
+          paths: test_results_make_self.xml
+
+      - name: Upload Makefile test results
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: test-results-makefile
+          path: |
+            make_build.log
+            test_results_make_self.jsonl
+            test_results_make_self.xml
+
   cb-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 10

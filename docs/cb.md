@@ -109,7 +109,7 @@ Honest positioning — each tool has a sweet spot.
 
 ### Make (the alternative in this repo)
 
-The `Makefile` is a supported second path, not a leftover: it orders modules with `clang-scan-deps` (p1689 output parsed by [`scripts/parse_module_deps.py`](../scripts/parse_module_deps.py)), builds the same library and runner, and works standalone or invoked from a parent `make`. What it lacks is CB's object cache, its build telemetry, and CI coverage — so it is verified by running it, which [release-policy.md](release-policy.md) makes a release criterion.
+The `Makefile` is a supported second path, not a leftover: it orders modules with `clang-scan-deps` (p1689 output parsed by [`scripts/parse_module_deps.py`](../scripts/parse_module_deps.py)), builds the same library and runner, and works standalone or invoked from a parent `make`. What it lacks is CB's object cache and build telemetry. CI gates `make tests` plus the `[self]` suite on every push (`makefile-build-and-test`); [release-policy.md](release-policy.md) still requires a clean Make rebuild before a release.
 
 | Target | Purpose |
 |--------|---------|
@@ -123,7 +123,7 @@ The `Makefile` is a supported second path, not a leftover: it orders modules wit
 | `make clean` | The above plus `bin/` and `lib/` |
 | `make dump` | Print every file-scope make variable, for debugging the configuration |
 
-Makefile artifacts use `build-<os>/` (e.g. `build-linux/pcm`, `build-darwin/lib`), where `<os>` is `uname -s` lowercased. Override the layout with `BUILD_DIR` or `PREFIX`. Because a `make` build has no cache to skip work, a full rebuild is also the pass that shows every compiler warning — an incremental CB build reports only the units it recompiled.
+Makefile artifacts use `build-<os>/` (e.g. `build-linux/pcm`, `build-darwin/lib`), where `<os>` is `uname -s` lowercased. Override the layout with `BUILD_DIR` or `PREFIX`. A `make` build has no cache, so every unit is compiled; CB surfaces the same class of warnings on units it compiles (`diagnostics` when clang prints anything, including successful steps in `--jsonl=failures`), and a cold CB build after `clean` / `cache invalidate` recompiles everything too.
 
 When tester is embedded as a submodule, the **parent** Makefile/CB entry point owns paths — submodules typically share the parent's `build-<os>/` tree rather than a separate tester build root.
 

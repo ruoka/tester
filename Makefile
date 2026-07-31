@@ -38,7 +38,14 @@ endif
 endif
 
 # Project and directory configuration
+# Framework sources live in ./tester/. Prefer that directory when present so a
+# checkout whose basename is not "tester" (e.g. /workspace) still builds; fall
+# back to the checkout basename for the embedded/parent layout that relies on it.
+ifneq ($(wildcard ./tester/.),)
+project = tester
+else
 project = $(lastword $(notdir $(CURDIR)))
+endif
 sourcedir = ./$(project)
 exampledir = ./examples
 toolsdir = ./tools

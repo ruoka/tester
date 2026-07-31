@@ -42,8 +42,9 @@ agents read, and [`AGENTS.md`](AGENTS.md) documents the contract.
 ### Build and test with make
 
 The `Makefile` is a supported alternative that uses `clang-scan-deps` for module ordering
-and needs no CB bootstrap. It has no object cache and no build telemetry, and CI does not
-exercise it, so run it when you change module structure or want a second opinion:
+and needs no CB bootstrap. It has no object cache and no build telemetry. CI gates
+`make tests` plus `[self]` on every push; run it locally when you change module structure
+or want a second opinion:
 
 ```bash
 make tests                                     # build-<os>/bin/test_runner
@@ -58,9 +59,9 @@ make clean                                     # the above plus bin/ and lib/
 picks up `core_pc.c++`, which includes `<elf.h>`. CB does not scan `tools/` at all, so that
 utility has no other build path.
 
-A full `make` rebuild compiles everything, which makes it the pass that shows every
-compiler warning — an incremental CB build reports only what it recompiled. Changes should
-be warning-free.
+Keep builds warning-free. CB attaches compiler warnings to successful `compile_end` /
+`link_end` events (`diagnostics` in `--jsonl=failures`); Make has no cache, so a full
+`make` rebuild compiles every unit and the CI Makefile job fails on any `warning:`.
 
 ## What has to pass
 
@@ -69,6 +70,8 @@ Before opening a pull request:
 ```bash
 ./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'   # must report passed: true
 ./tools/CB.sh debug test --jsonl=failures                     # standalone suite
+make clean && make tests                                      # second path; CI gates this too
+./build-$(uname -s | tr '[:upper:]' '[:lower:]')/bin/test_runner --tags='[self]'
 ./tests/cb/smoke.sh                                           # if you touched tools/
 ./tests/mcp/smoke.sh                                          # if you touched tools/cb_mcp.py
 ./tests/jsonl/validate.py --require-schema                    # if you touched any event

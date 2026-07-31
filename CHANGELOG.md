@@ -60,11 +60,17 @@ commit on `main`; there is no supported tag yet.
 - **Test suites**: `[self]` contract tests for the framework, CB behaviour tests
   ([`tests/cb/smoke.sh`](tests/cb/smoke.sh)), MCP checks, and schema validation, all run by
   CI on Linux for `debug` and `release`.
+- **Makefile CI lane** (`makefile-build-and-test`): `make tests` then the Make-built
+  runner with `--tags='[self]'`, failing the job on any compiler `warning:`. The second
+  build path is gated on every push, not only at release time.
 - **`AGENTS.md`** as the automation contract, and hidden `[.tag]` fixtures so intentional
   failure demos stay out of unfiltered runs.
 
 ### Changed
 
+- **Makefile prefers `./tester/` as the source tree** when that directory exists, instead
+  of always deriving the project name from the checkout basename. Checkouts whose
+  directory is not named `tester` (for example `/workspace`) now build without renaming.
 - **Execution state is owned by `execution_context`**, not process-wide mutable globals.
   Current test id, nested capture pointers, step assertion counters, results, and
   statistics live on a per-run / per-worker context activated with `execution_scope`.
