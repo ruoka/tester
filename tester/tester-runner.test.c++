@@ -297,6 +297,42 @@ auto register_tests()
         require_true(tester::data::current_test_id().contains("execution contexts isolate"));
     };
 
+    test_case("test_case [self] soft asserts from a spawned thread use run statistics") = []
+    {
+        // A test may report from a thread it started. Those threads do not inherit TLS, so
+        // statistics() must fall back to the run context — otherwise the soft path throws
+        // logic_error and std::jthread calls std::terminate.
+        const auto before = tester::data::statistics().total_assertions;
+        auto saw_logic_error = std::atomic<bool>{false};
+        auto completed = std::atomic<bool>{false};
+        auto child_id = std::string{"unset"};
+
+        {
+            auto worker = std::jthread{[&]
+            {
+                try
+                {
+                    child_id = std::string{tester::data::current_test_id()};
+                    check_eq(2, 2);
+                    completed.store(true);
+                }
+                catch(const std::logic_error&)
+                {
+                    saw_logic_error.store(true);
+                }
+            }};
+        }
+
+        // Snapshot before this case's own require_* calls bump the counters.
+        const auto after_worker = tester::data::statistics().total_assertions;
+        require_false(saw_logic_error.load());
+        require_true(completed.load());
+        require_eq(after_worker, before + 1);
+        // Empty id on the child matches pre-#52 thread_local current-test-id behaviour.
+        require_eq(child_id, std::string{});
+        require_true(tester::data::current_test_id().contains("soft asserts from a spawned"));
+    };
+
     return 0;
 }
 
