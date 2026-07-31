@@ -46,28 +46,50 @@ class test_slot
 {
 public:
     explicit test_slot(test_case& registered) noexcept
-        : m_registered{&registered}
+        : m_state{registered_case{registered}}
     {}
 
     // A step is only ever made while a run is under way, and is assigned in the same statement,
     // so the run it reports to is the one that was active when it was made.
     test_slot(test_case&& step, const run_context& run) noexcept
-        : m_step{std::move(step)}, m_run{&run}
+        : m_state{nested_case{std::move(step), run}}
     {}
 
     template<typename Body>
     void operator=(Body&& body)
     {
-        auto& target = m_registered ? *m_registered : *m_step;
-        target.run = std::forward<Body>(body);
-        if(not m_registered)
-            execute_test_case(*m_run, target);
+        std::visit([&](auto& state){ state.assign(std::forward<Body>(body)); }, m_state);
     }
 
 private:
-    test_case* m_registered = nullptr;
-    std::optional<test_case> m_step{};
-    const run_context* m_run = nullptr;
+    // Already in the list the run iterates, so the body has to land in that element: holding a
+    // copy here would take the body and leave the runner with the empty case.
+    struct registered_case
+    {
+        std::reference_wrapper<test_case> target;
+
+        template<typename Body>
+        void assign(Body&& body) const
+        {
+            target.get().run = std::forward<Body>(body);
+        }
+    };
+
+    // Never registered, so the slot owns the case — for the length of the statement that runs it.
+    struct nested_case
+    {
+        test_case step;
+        std::reference_wrapper<const run_context> context;
+
+        template<typename Body>
+        void assign(Body&& body)
+        {
+            step.run = std::forward<Body>(body);
+            execute_test_case(context, step);
+        }
+    };
+
+    std::variant<registered_case, nested_case> m_state;
 };
 
 test_slot make_test_case(std::string_view description, int priority, std::vector<std::string> depends_on, std::string id, const std::source_location location1, const std::source_location location2) noexcept
