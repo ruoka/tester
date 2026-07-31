@@ -390,8 +390,8 @@ test_compile_failure() {
   assert_jsonl_contains '"type":"eof"' "failure_jsonl_eof"
   # ok:false alone is not actionable: the compiler's own text must reach stdout.
   assert_jsonl_contains '"diagnostics":{"text":"' "failed_compile_diagnostics"
-  assert_jsonl_diagnostics_contain compile_end "error:" "failed_compile_diagnostics_text"
-  assert_jsonl_diagnostics_contain command_end "error:" "failed_command_diagnostics_text"
+  assert_jsonl_diagnostics_contain "${work_dir}" compile_end "error:" "failed_compile_diagnostics_text"
+  assert_jsonl_diagnostics_contain "${work_dir}" command_end "error:" "failed_command_diagnostics_text"
   # std::system yields a wait status; exit_code must be the child's real code.
   assert_jsonl_event_value command_end exit_code 1 "failed_command_exit_code"
   assert_jsonl_event_value command_end signaled false "failed_command_not_signaled"
@@ -411,16 +411,40 @@ test_compile_warning() {
 
   run_cb_build "${work_dir}" --jsonl=trace
   assert_compile_end "hello.c++" false not_in_cache true "warning_compile_ok"
-  assert_jsonl_diagnostics_contain compile_end "unused" "warning_on_compile_end"
-  assert_jsonl_diagnostics_contain command_end "unused" "warning_on_command_end"
+  assert_jsonl_diagnostics_contain "${work_dir}" compile_end "unused" "warning_on_compile_end"
+  assert_jsonl_diagnostics_contain "${work_dir}" command_end "unused" "warning_on_command_end"
   assert_jsonl_event_value build_end ok true "warning_build_still_ok"
 
   rm -rf "${work_dir}/${BUILD_DIR}"
   run_cb_build "${work_dir}" --jsonl=failures
   assert_compile_end "hello.c++" false not_in_cache true "failures_mode_warning_compile"
-  assert_jsonl_diagnostics_contain compile_end "unused" "failures_mode_warning_text"
+  assert_jsonl_diagnostics_contain "${work_dir}" compile_end "unused" "failures_mode_warning_text"
   assert_jsonl_event_value compile_end ok true "failures_mode_warning_ok"
   end_case compile_warning
+}
+
+# A modular unit runs --precompile then compiles the pcm. Those steps must not share one
+# capture file: the second redirect truncates, and compile_end.diagnostics.path would name
+# an empty log while the warning text lived only in the in-memory head.
+test_modular_compile_warning() {
+  should_run modular_compile_warning || return 0
+  begin_case modular_compile_warning
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+  rm -f "${work_dir}/hello.c++"
+
+  printf '%s\n' \
+    'export module warn;' \
+    '#warning "modular_precompile_warning"' \
+    'export int value() { return 0; }' > "${work_dir}/warn.c++m"
+  printf '%s\n' 'import warn;' 'int main() { return value(); }' > "${work_dir}/hello.c++"
+
+  run_cb_build "${work_dir}" --jsonl=trace
+  assert_compile_end "warn.c++m" false not_in_cache true "modular_warning_compile_ok"
+  assert_jsonl_diagnostics_contain "${work_dir}" compile_end "modular_precompile_warning" \
+    "modular_warning_on_compile_end"
+  assert_jsonl_event_value build_end ok true "modular_warning_build_still_ok"
+  end_case modular_compile_warning
 }
 
 test_link_failure() {
@@ -440,7 +464,7 @@ test_link_failure() {
   fi
   assert_jsonl_event_value link_end ok false "failed_link_end"
   assert_jsonl_event_value build_end ok false "link_failed_build_end"
-  assert_jsonl_diagnostics_contain link_end "missing" "failed_link_diagnostics_text"
+  assert_jsonl_diagnostics_contain "${work_dir}" link_end "missing" "failed_link_diagnostics_text"
   end_case link_failure
 }
 
@@ -1426,6 +1450,7 @@ main() {
   test_compile_commands
   test_compile_failure
   test_compile_warning
+  test_modular_compile_warning
   test_link_failure
   test_test_link_failure
   test_link_rebuild_reason

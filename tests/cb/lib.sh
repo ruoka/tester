@@ -205,16 +205,25 @@ assert_jsonl_not_contains() {
 
 # Assert that some event of the given type carries diagnostics whose text contains
 # the needle. Checks the parsed value, so it also proves the text survived escaping.
+# Also opens diagnostics.path under work_dir: a modular unit's second step used to
+# truncate a shared capture, leaving compile_end with text in memory and an empty
+# file at path. work_dir must be passed explicitly — `work_dir="$(prepare_work_dir)"`
+# runs prepare in a subshell, so LAST_WORK_DIR is not updated in the caller.
 assert_jsonl_diagnostics_contain() {
-  local event_type=$1
-  local needle=$2
-  local label=${3:-jsonl_diagnostics}
+  local work_dir=$1
+  local event_type=$2
+  local needle=$3
+  local label=${4:-jsonl_diagnostics}
   TESTS_RUN=$((TESTS_RUN + 1))
-  if python3 - "${event_type}" "${needle}" "${LAST_JSONL}" <<'PY'
-import json, sys
-event_type, needle = sys.argv[1], sys.argv[2]
+  if [[ -z "${work_dir}" || ! -d "${work_dir}" ]]; then
+    fail "assert_jsonl_diagnostics_contain: work_dir missing or not a directory: ${work_dir}"
+    return 0
+  fi
+  if python3 - "${work_dir}" "${event_type}" "${needle}" "${LAST_JSONL}" <<'PY'
+import json, os, sys
+work_dir, event_type, needle = sys.argv[1], sys.argv[2], sys.argv[3]
 seen = 0
-for line in sys.argv[3].splitlines():
+for line in sys.argv[4].splitlines():
     try:
         event = json.loads(line)
     except json.JSONDecodeError:
@@ -226,8 +235,19 @@ for line in sys.argv[3].splitlines():
         continue
     seen += 1
     if needle in diagnostics.get("text", ""):
-        if not diagnostics.get("path"):
+        path = diagnostics.get("path")
+        if not path:
             print("diagnostics missing path", file=sys.stderr)
+            raise SystemExit(1)
+        full = path if os.path.isabs(path) else os.path.join(work_dir, path)
+        try:
+            body = open(full, "rb").read().decode("utf-8", "replace")
+        except OSError as exc:
+            print(f"diagnostics path unreadable: {full}: {exc}", file=sys.stderr)
+            raise SystemExit(1)
+        if needle not in body:
+            print(f"diagnostics path {full} missing {needle!r} (size {len(body)})",
+                  file=sys.stderr)
             raise SystemExit(1)
         raise SystemExit(0)
 print(f"no {event_type} diagnostics containing {needle!r} ({seen} with diagnostics)",
