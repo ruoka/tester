@@ -62,8 +62,6 @@ public:
         m_run_tags = std::string{m_tags};
         m_pending_run_end_passed = std::nullopt;
         m_run_end_emitted = false;
-        m_current_test_id.clear();
-        data::set_current_test_id(m_current_test_id);
 
         const auto cwd = std::filesystem::current_path().string();
         const auto config = environment_value("TESTER_CONFIG");
@@ -95,23 +93,6 @@ public:
         report_run_end(passed, output::failure_index{});
     }
 
-    void set_current_test_id(std::string_view id)
-    {
-        m_current_test_id.assign(id.begin(), id.end());
-        data::set_current_test_id(m_current_test_id);
-    }
-
-    void clear_current_test_id()
-    {
-        m_current_test_id.clear();
-        data::set_current_test_id("");
-    }
-
-    std::string_view get_current_test_id() const
-    {
-        return m_current_test_id;
-    }
-
     // The whole of list mode: the catalogue is the stream, so this closes it.
     void list_tests()
     {
@@ -130,17 +111,20 @@ public:
 
     void run_tests()
     {
+        // Own the execution context for the whole run + reporting cycle so observers
+        // still see results/statistics after run_test_cases returns.
+        m_execution.emplace();
+        m_execution->excluded = [this](const test_case& tc){ return this->excluded(tc); };
+        m_execution_scope = std::make_unique<data::execution_scope>(*m_execution);
+
         begin_run("run");
 
-        engine::init_statistics(m_run_started_monotonic, m_run_started_unix_ms, m_run_tags);
+        engine::init_statistics(
+            *m_execution, m_run_started_monotonic, m_run_started_unix_ms, m_run_tags);
 
-        engine::run_test_cases(
-            [this](const auto& tc){return this->excluded(tc);},
-            [this](std::string_view id){ this->set_current_test_id(id); },
-            [this]{ this->clear_current_test_id(); },
-            [this]{ return this->get_current_test_id(); });
+        engine::run_test_cases(*m_execution);
 
-        engine::finish_statistics(m_run_finished_monotonic);
+        engine::finish_statistics(*m_execution, m_run_finished_monotonic);
         end_run(all_tests_passed());
     }
 
@@ -176,12 +160,18 @@ public:
         if(not m_run_end_emitted)
             report_run_end(*m_pending_run_end_passed, failures);
 
+        m_last_run_passed = passed;
         close_output();
+        m_execution_scope.reset();
+        m_execution.reset();
     }
 
     bool all_tests_passed() const
     {
-        return data::run_passed(data::statistics());
+        // After report_summary the execution context is gone; remember the verdict.
+        if(m_execution.has_value())
+            return data::run_passed(m_execution->statistics);
+        return m_last_run_passed;
     }
 
     bool included(const test_case& tc) const
@@ -211,7 +201,9 @@ private:
     bool m_run_has_started = false;
     std::string m_run_mode;
     std::string m_run_tags;
-    std::string m_current_test_id;
+    std::optional<data::execution_context> m_execution;
+    std::unique_ptr<data::execution_scope> m_execution_scope;
+    bool m_last_run_passed = false;
     std::optional<bool> m_pending_run_end_passed;
     bool m_run_end_emitted = false;
 
@@ -260,7 +252,7 @@ private:
     static output::failure_index collect_failures()
     {
         auto index = output::failure_index{};
-        for(const auto& result : data::test_results)
+        for(const auto& result : data::results())
         {
             if(result.success and result.assertions_ok == result.assertions_total)
                 continue;
@@ -277,8 +269,8 @@ private:
             return {};
 
         auto slowest = std::vector<const test_result*>{};
-        slowest.reserve(data::test_results.size());
-        for(const auto& result : data::test_results)
+        slowest.reserve(data::results().size());
+        for(const auto& result : data::results())
             slowest.push_back(&result);
 
         // Stable, so tests that took the same time are ranked in the order they ran. Every sink

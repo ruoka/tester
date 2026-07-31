@@ -147,7 +147,7 @@ export struct observer final : tester::output::observer, tester::output::output_
         human_os() << color::text::yellow
                    << "Test results:"
                    << color::reset << '\n';
-        for(auto result : data::test_results)
+        for(auto result : data::results())
             human_os() << result.output;
     }
 
@@ -160,7 +160,7 @@ export struct observer final : tester::output::observer, tester::output::output_
     void print_test_failures()
     {
         auto any_failures = false;
-        for(const auto& result : data::test_results)
+        for(const auto& result : data::results())
             if(not result.success) { any_failures = true; break; }
 
         if(!any_failures)
@@ -175,7 +175,7 @@ export struct observer final : tester::output::observer, tester::output::output_
                    << "Test failures:"
                    << color::reset << '\n';
 
-        for(const auto& result : data::test_results)
+        for(const auto& result : data::results())
             if(not result.success)
                 human_os() << result.output;
     }

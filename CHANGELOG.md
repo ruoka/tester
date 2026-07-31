@@ -59,6 +59,11 @@ commit on `main`; there is no supported tag yet.
 
 ### Changed
 
+- **Execution state is owned by `execution_context`**, not process-wide mutable globals.
+  Current test id, nested capture pointers, step assertion counters, results, and
+  statistics live on a per-run (and eventually per-worker) context activated with
+  `execution_scope`. The registration catalogue remains shared. This is the
+  prerequisite for running top-level tests in parallel.
 - **Nested BDD steps run eagerly**, at the point of assignment inside the parent's frame,
   so `given` / `when` / `then` bodies capturing parent locals by reference are safe. They
   previously ran after the parent returned.

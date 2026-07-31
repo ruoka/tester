@@ -37,6 +37,8 @@ struct test_case : public test_metadata
     std::vector<std::string> tags;
 };
 
+// Registration catalogue only — written at static init (and when a nested scenario /
+// test_case is appended mid-run). Not per-execution state; safe to share.
 auto test_cases = std::list<test_case>{};
 
 export struct test_result : public test_metadata
@@ -50,15 +52,13 @@ export struct test_result : public test_metadata
     std::chrono::system_clock::time_point finished_at{};
 };
 
-auto test_results = std::list<test_result>{};
-
 export struct test_statistics
 {
     std::size_t successful_tests{0};
     std::size_t total_tests{0};
     std::size_t successful_assertions{0};
     std::size_t total_assertions{0};
-    
+
     // Run metadata
     std::chrono::steady_clock::time_point run_started{};
     std::chrono::steady_clock::time_point run_finished{};
@@ -77,21 +77,85 @@ export bool run_passed(const test_statistics& stats)
         and stats.total_assertions == stats.successful_assertions;
 }
 
-export inline test_statistics& statistics()
+// Per-worker / per-run execution state. Everything that used to be a process-wide
+// mutable global for "the case now running" lives here so parallel top-level runs
+// can give each worker its own context without racing.
+export struct execution_context
 {
-    static test_statistics stats{};
-    return stats;
+    std::function<bool(const test_case&)> excluded{};
+    std::string current_test_id{};
+    // Non-null while a case (or step) is collecting console text; nesting means the
+    // case being started is a step of that one.
+    std::string* current_output = nullptr;
+    std::size_t step_assertions_total = 0;
+    std::size_t step_assertions_ok = 0;
+    test_statistics statistics{};
+    std::list<test_result> results{};
+
+    void set_test_id(std::string_view id) { current_test_id = std::string{id}; }
+    void clear_test_id() { current_test_id.clear(); }
+};
+
+// Which execution context this thread reports into. Each parallel worker activates
+// its own; nested scopes restore the previous pointer so a [self] probe can install
+// a temporary context without losing the runner's.
+inline thread_local execution_context* tls_execution = nullptr;
+
+export execution_context* active_execution() noexcept
+{
+    return tls_execution;
 }
 
-// Run-scoped state, alongside the run's other data. The runner writes it, the engine and the
-// assertion matchers read it, and it is per-run rather than per-object — so it lives here
-// instead of being threaded through every call that might eventually need it.
+export class execution_scope
+{
+public:
+    explicit execution_scope(execution_context& context) noexcept
+        : m_previous{tls_execution}
+    {
+        tls_execution = &context;
+    }
+
+    ~execution_scope()
+    {
+        tls_execution = m_previous;
+    }
+
+    execution_scope(const execution_scope&) = delete;
+    execution_scope& operator=(const execution_scope&) = delete;
+
+private:
+    execution_context* m_previous = nullptr;
+};
+
+[[noreturn]] inline void require_active_execution(std::string_view api)
+{
+    throw std::logic_error{std::string{api} + " without an active execution_context"};
+}
+
+export test_statistics& statistics()
+{
+    if(tls_execution == nullptr)
+        require_active_execution("statistics()");
+    return tls_execution->statistics;
+}
+
+export std::list<test_result>& results()
+{
+    if(tls_execution == nullptr)
+        require_active_execution("results()");
+    return tls_execution->results;
+}
+
+export std::string_view current_test_id()
+{
+    if(tls_execution == nullptr)
+        return {};
+    return tls_execution->current_test_id;
+}
+
+// Process-wide configuration written before a run starts (CLI), not per-case state.
 inline output_config g_config{};
 inline std::vector<std::string> g_run_argv{};
-
-// Which test an assertion belongs to. Thread-local because a test body may report from a
-// thread it started, and that assertion still belongs to the test that spawned it.
-inline thread_local std::string g_current_test_id{};
 
 export const output_config& config()
 {
@@ -115,8 +179,5 @@ export void set_run_argv(int argc, char** argv)
     for(int i = 0; i < argc; ++i)
         g_run_argv.emplace_back(argv[i] != nullptr ? argv[i] : "");
 }
-
-export void set_current_test_id(std::string_view test_id) { g_current_test_id = std::string{test_id}; }
-export std::string_view current_test_id() { return std::string_view{g_current_test_id}; }
 
 }

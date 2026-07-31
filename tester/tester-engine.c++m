@@ -16,29 +16,7 @@ using namespace std::literals;
 using output::notify;
 using output::observer;
 
-// What a run lends the engine for as long as it lasts. A step executes while the case it belongs
-// to is still running, so the tag filter and the current-test bookkeeping have to be reachable
-// from there and not only from the loop that started the run.
-struct run_context
-{
-    std::function<bool(const test_case&)> excluded{};
-    std::function<void(std::string_view)> set_test_id{};
-    std::function<void()> clear_test_id{};
-    std::function<std::string_view()> current_test_id{};
-};
-
-// Null outside a run: registration happens at static-initialisation time, before a runner exists.
-inline const run_context* active_run = nullptr;
-
-// Where the case now running collects its console text. Non-null means the case being started is
-// a step of that one, which is all "nested" means once a run is under way.
-inline std::string* current_output = nullptr;
-
-// What a case's steps have consumed, so a case can report the assertions it checked itself.
-inline std::size_t step_assertions_total = 0;
-inline std::size_t step_assertions_ok = 0;
-
-void execute_test_case(const run_context& run, test_case& tc);
+void execute_test_case(execution_context& ctx, test_case& tc);
 
 // The API is `construct("name") = body`, so an assignment is the only place a case can be handed
 // its body — and the only place the two kinds of case part company. A scenario or test_case is
@@ -53,9 +31,9 @@ public:
     {}
 
     // A step is only ever made while a run is under way, and is assigned in the same statement,
-    // so the run it reports to is the one that was active when it was made.
-    test_slot(test_case&& step, const run_context& run) noexcept
-        : m_state{nested_case{std::move(step), run}}
+    // so the context it reports to is the one that was active when it was made.
+    test_slot(test_case&& step, execution_context& context) noexcept
+        : m_state{nested_case{std::move(step), context}}
     {}
 
     template<typename Body>
@@ -82,7 +60,7 @@ private:
     struct nested_case
     {
         test_case step;
-        std::reference_wrapper<const run_context> context;
+        std::reference_wrapper<execution_context> context;
 
         template<typename Body>
         void assign(Body&& body)
@@ -138,13 +116,14 @@ test_slot make_test_case(std::string_view description, int priority, std::vector
     // scenario and test_case are what a run iterates; the rest are steps of whichever case is
     // running. A step written where no case is running has no frame to belong to, so it becomes
     // an ordinary case rather than executing before the run it would report to has begun.
-    if(test_type.contains("scenario") or test_type.contains("test_case") or active_run == nullptr)
+    auto* const execution = active_execution();
+    if(test_type.contains("scenario") or test_type.contains("test_case") or execution == nullptr)
     {
         test_cases.push_back(std::move(test_case));
         return test_slot{test_cases.back()};
     }
 
-    return test_slot{std::move(test_case), *active_run};
+    return test_slot{std::move(test_case), *execution};
 }
 
 // An id defaults to the display name, so prefer it: an explicit one is what depends_on names.
@@ -229,11 +208,12 @@ auto sort_test_cases()
 }
 
 export void init_statistics(
+    execution_context& ctx,
     std::chrono::steady_clock::time_point run_started,
     std::chrono::system_clock::time_point run_started_unix_ms,
     std::string_view run_tags)
 {
-    auto& stats = data::statistics();
+    auto& stats = ctx.statistics;
     stats.run_started = run_started;
     stats.run_started_unix_ms = run_started_unix_ms;
     stats.run_tags = std::string{run_tags};
@@ -241,46 +221,53 @@ export void init_statistics(
     stats.total_tests = 0;
     stats.successful_assertions = 0;
     stats.total_assertions = 0;
+    ctx.results.clear();
+    ctx.step_assertions_total = 0;
+    ctx.step_assertions_ok = 0;
+    ctx.current_output = nullptr;
+    ctx.clear_test_id();
 }
 
-export void finish_statistics(std::chrono::steady_clock::time_point run_finished)
+export void finish_statistics(
+    execution_context& ctx,
+    std::chrono::steady_clock::time_point run_finished)
 {
-    data::statistics().run_finished = run_finished;
+    ctx.statistics.run_finished = run_finished;
 }
 
 // One case, whether the run loop reached it or an enclosing case started it as a step. Steps used
 // to come back here through the loop, which is why this had to be one place rather than two: a
 // step is reported, counted and filtered exactly like the case it belongs to.
-void execute_test_case(const run_context& run, test_case& tc)
+void execute_test_case(execution_context& ctx, test_case& tc)
 {
-    if(run.excluded(tc))
+    if(ctx.excluded and ctx.excluded(tc))
         return;
 
     // Reserved before the body runs, so a case is listed ahead of the steps it starts. The
     // deferred design got that order by inserting each step in front of its parent; running the
     // step where it is written gets it from the call stack, and test_metadata is const, so the
     // fields the run fills are written in place rather than assigned.
-    auto& result = *test_results.insert(test_results.end(), test_result{tc});
+    auto& result = *ctx.results.insert(ctx.results.end(), test_result{tc});
 
     // One capture buffer serves every case, so the enclosing case's text comes off it before this
     // case resets it, and the buffer is handed back empty when this case is done.
-    auto* const outer_output = current_output;
+    auto* const outer_output = ctx.current_output;
     auto output = std::string{};
     if(outer_output)
         *outer_output += output::captured_text();
-    current_output = &output;
+    ctx.current_output = &output;
 
-    const auto outer_id = std::string{run.current_test_id()};
+    const auto outer_id = ctx.current_test_id;
 
     notify([&](observer& target){ target.test_case(tc); });
 
-    run.set_test_id(tc.test_id);
+    ctx.set_test_id(tc.test_id);
 
-    auto& stats = statistics();
+    auto& stats = ctx.statistics;
     const auto assertions_total_before = stats.total_assertions;
     const auto assertions_ok_before = stats.successful_assertions;
-    const auto steps_total_before = step_assertions_total;
-    const auto steps_ok_before = step_assertions_ok;
+    const auto steps_total_before = ctx.step_assertions_total;
+    const auto steps_ok_before = ctx.step_assertions_ok;
 
     const auto started = std::chrono::steady_clock::now();
     const auto started_sys = std::chrono::system_clock::now();
@@ -320,12 +307,12 @@ void execute_test_case(const run_context& run, test_case& tc)
     // Each step adds only its own, never its descendants': every step in the subtree adds its own
     // while this body runs, and those sum to exactly what the immediate steps consumed. Adding
     // the whole subtree instead counted the deeper steps once per level between them.
-    result.assertions_total = assertions_total - (step_assertions_total - steps_total_before);
-    result.assertions_ok = assertions_ok - (step_assertions_ok - steps_ok_before);
+    result.assertions_total = assertions_total - (ctx.step_assertions_total - steps_total_before);
+    result.assertions_ok = assertions_ok - (ctx.step_assertions_ok - steps_ok_before);
     if(outer_output)
     {
-        step_assertions_total += result.assertions_total;
-        step_assertions_ok += result.assertions_ok;
+        ctx.step_assertions_total += result.assertions_total;
+        ctx.step_assertions_ok += result.assertions_ok;
     }
 
     result.duration = std::chrono::duration_cast<std::chrono::nanoseconds>(finished - started);
@@ -342,40 +329,24 @@ void execute_test_case(const run_context& run, test_case& tc)
 
     // Back to the case this one is a step of, so its remaining assertions are attributed to it.
     if(outer_id.empty())
-        run.clear_test_id();
+        ctx.clear_test_id();
     else
-        run.set_test_id(outer_id);
+        ctx.set_test_id(outer_id);
 
     // The captured output holds the per-assertion detail, which is precisely what
     // a reader needs for a failure. Using the exception message instead meant a
     // check_*-only failure — which throws nothing — reported no detail at all.
     output += output::captured_text();
     output::reset_captured_text();
-    current_output = outer_output;
+    ctx.current_output = outer_output;
     if(not failure_message.empty())
         output += failure_message + '\n';
     result.output = std::move(output);
 }
 
-// The callbacks belong to the runner and outlive the run, but a step reaches them through
-// active_run, so the pointer is cleared however the run ends.
-class run_scope
-{
-public:
-    explicit run_scope(const run_context& context) noexcept { active_run = &context; }
-    ~run_scope() { active_run = nullptr; }
-    run_scope(const run_scope&) = delete;
-    run_scope& operator=(const run_scope&) = delete;
-};
-
-export auto run_test_cases(auto filter, auto set_test_id, auto clear_test_id, auto get_test_id)
+export void run_test_cases(execution_context& ctx)
 {
     sort_test_cases();
-
-    const auto context = run_context{filter, set_test_id, clear_test_id, get_test_id};
-    const auto run = run_scope{context};
-    step_assertions_total = 0;
-    step_assertions_ok = 0;
 
     // Erasing the case that just ran is what lets the loop pick up cases registered while it
     // runs: steps never arrive here — they go straight through execute_test_case — but a
@@ -383,7 +354,7 @@ export auto run_test_cases(auto filter, auto set_test_id, auto clear_test_id, au
     while(not test_cases.empty())
     {
         auto tc = test_cases.begin();
-        execute_test_case(context, *tc);
+        execute_test_case(ctx, *tc);
         test_cases.erase(tc);
     }
 }
