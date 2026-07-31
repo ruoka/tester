@@ -397,10 +397,15 @@ auto register_tests()
         const auto after_worker = tester::data::statistics().total_assertions;
         require_false(saw_logic_error.load());
         require_true(completed.load());
-        require_eq(after_worker, before + 1);
         // Empty id on the child matches pre-#52 thread_local current-test-id behaviour.
         require_eq(child_id, std::string{});
         require_true(tester::data::current_test_id().contains("soft asserts from a spawned"));
+        // Under jobs==1 the child updates the same context the parent reads. Parallel
+        // workers leave the run-wide fallback on the runner context (TLS is not
+        // inherited), so the child's check_* may not bump this worker's counters —
+        // the no-throw / completed checks above are the parallel-safe contract.
+        if(tester::data::worker_count() == 1)
+            require_eq(after_worker, before + 1);
     };
 
     test_case("test_case [self][parallel] --jobs runs independents together and keeps depends_on") = []
