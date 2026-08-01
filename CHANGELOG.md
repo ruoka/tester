@@ -40,6 +40,11 @@ tag; cutting a release renames that section.
   could not hold a negative value in any case, so `tester-assertions.test.c++` failed to
   compile. They use `signed char` now — the same promotion and reporting paths, negative on
   every platform.
+- **Parallel `[self]` flake** from mutating `g_config.jobs` in-process. The
+  `worker_count` mapping case called `set_jobs` while other workers still read
+  `worker_count()` (notably the soft-assert-from-spawned-thread counter branch), so
+  CMake Debug runs under `--jobs=$(nproc)` intermittently failed. The mapping is
+  probed in a child process now.
 
 ### Changed
 

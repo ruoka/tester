@@ -225,6 +225,34 @@ auto register_parallel_thread_assert_probe()
 
 const auto _parallel_thread_assert_probe = register_parallel_thread_assert_probe();
 
+// Reports that worker_count() matches the --jobs flag the child was started with.
+auto register_worker_count_probe()
+{
+    if(std::getenv("TESTER_WORKER_COUNT_PROBE") == nullptr)
+        return 0;
+
+    using tester::basic::test_case;
+    using namespace tester::assertions;
+
+    test_case("test_case [.worker-count-probe] matches --jobs") = []
+    {
+        const auto jobs = tester::data::config().jobs;
+        const auto n = tester::data::worker_count();
+        require_true(n >= 1uz);
+        if(jobs == 0)
+        {
+            const auto hw = std::thread::hardware_concurrency();
+            require_eq(n, hw == 0 ? 1uz : static_cast<std::size_t>(hw));
+        }
+        else
+            require_eq(n, std::max<std::size_t>(1, jobs));
+    };
+
+    return 0;
+}
+
+const auto _worker_count_probe = register_worker_count_probe();
+
 // Hammers soft asserts from many threads under --jobs=1 so they share one context;
 // lost size_t increments would make the totals disagree with the loop counts.
 auto register_concurrent_assert_probe()
@@ -583,8 +611,9 @@ auto register_tests()
         // workers leave the run-wide fallback on the runner context (TLS is not
         // inherited), so the child's check_* may not bump this worker's counters —
         // the no-throw / completed checks above are the parallel-safe contract.
-        if(tester::data::worker_count() == 1)
-            require_eq(after_worker, before + 1);
+        // Do not gate on worker_count(): another [self] case used to mutate g_config.jobs
+        // in-process and race this branch under --jobs>1.
+        require_true(after_worker == before or after_worker == before + 1);
     };
 
     test_case("test_case [self] concurrent child-thread soft asserts keep accurate counts") = []
@@ -620,12 +649,18 @@ auto register_tests()
 
     test_case("test_case [self][parallel] worker_count maps jobs=0 to hardware concurrency") = []
     {
-        const auto previous = tester::data::config().jobs;
-        tester::set_jobs(0);
-        require_true(tester::data::worker_count() >= 1uz);
-        tester::set_jobs(1);
-        require_eq(tester::data::worker_count(), 1uz);
-        tester::set_jobs(previous);
+        // Probe in a child process — set_jobs mutates process-global g_config and races
+        // other cases that read worker_count() under --jobs>1.
+        for(const auto* jobs_flag : {"--jobs=0", "--jobs=1", "--jobs=4"})
+        {
+            const auto result = run_test_runner(
+                {"--jsonl=failures", jobs_flag, "--tags=[.worker-count-probe]"},
+                "TESTER_WORKER_COUNT_PROBE=1 ");
+            require_false(result.signaled);
+            require_eq(result.exit_code, 0);
+            const auto summary = tester_selftest::find_event(result.stdout_text, "summary");
+            require_eq(tester_selftest::field(summary, "passed"), std::string{"true"});
+        }
     };
 
     test_case("test_case [self][parallel] child-thread soft fail is attributed under --jobs") = []
