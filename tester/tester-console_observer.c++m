@@ -26,6 +26,8 @@ export struct observer final : tester::output::observer, tester::output::output_
     std::ostream& result;
     bool result_line;
     bool verbose = false;
+    // Set by activate(); once the process sink is live, observer_instance must not emplace.
+    bool activated = false;
 
     // Protects human/result stream writes (catalogue, summary, failures). Capture uses TLS.
     mutable std::mutex mutex{};
@@ -52,6 +54,7 @@ export struct observer final : tester::output::observer, tester::output::output_
 
     void activate() override
     {
+        activated = true;
         capture_into(*this);
     }
 
@@ -276,9 +279,15 @@ export struct observer final : tester::output::observer, tester::output::output_
 
 export inline auto& observer_instance(std::ostream& human, std::ostream& result, bool result_line = false)
 {
-    // Reconfigure on every call — a process that builds more than one sink setup must not
-    // stay stuck with the first streams / flags (function-local static construction latches).
+    // Before activate(), a second call may replace streams/flags (startup sink selection).
+    // After activate(), emplace would destroy a mutex that notify may hold and drop the
+    // capture registration — so only the result_line flag may change on a live sink.
     static auto value = std::optional<observer>{};
+    if(value.has_value() and value->activated)
+    {
+        value->result_line = result_line;
+        return *value;
+    }
     value.emplace(human, result, result_line);
     return *value;
 }

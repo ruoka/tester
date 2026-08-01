@@ -35,7 +35,12 @@ inline auto find_test_runner()
     if(const auto* env = std::getenv("TEST_RUNNER"); env != nullptr && env[0] != '\0')
         return std::filesystem::path{env};
 
+    // Prefer the newest build-*/bin/test_runner. directory_iterator order is
+    // unspecified, and a stale Make tree (build-linux/) next to CB's
+    // build-linux-debug/ would otherwise win and run probes against the wrong binary.
     const auto cwd = std::filesystem::current_path();
+    auto best = std::filesystem::path{};
+    auto best_write = std::filesystem::file_time_type::min();
     for(const auto& entry : std::filesystem::directory_iterator(cwd))
     {
         if(not entry.is_directory())
@@ -46,9 +51,19 @@ inline auto find_test_runner()
             continue;
 
         const auto candidate = entry.path() / "bin" / "test_runner";
-        if(std::filesystem::exists(candidate))
-            return candidate;
+        auto error = std::error_code{};
+        const auto write = std::filesystem::last_write_time(candidate, error);
+        if(error)
+            continue;
+        if(best.empty() or write > best_write)
+        {
+            best = candidate;
+            best_write = write;
+        }
     }
+
+    if(not best.empty())
+        return best;
 
     return cwd / "build-darwin-debug" / "bin" / "test_runner";
 }
