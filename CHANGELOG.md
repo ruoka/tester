@@ -77,10 +77,11 @@ commit on `main`; there is no supported tag yet.
 
 ### Fixed
 
-- **JSONL stays armed across `observer_instance` reconfigure** — mid-run
-  `emplace` reset `jsonl_context::enabled`, so a `[self]` probe that reconfigured
-  the singleton silenced every later event (including `summary`) while still
-  printing `RESULT` on stderr.
+- **Live `observer_instance` sinks are not torn down** — after `activate()`, further
+  calls return the existing JSONL/console singleton instead of `emplace`-rebuilding
+  it. Mid-run emplace reset `jsonl_context::enabled` (silencing `summary`/`eof`) and
+  could destroy a mutex `notify` still held; restoring the flag after emplace was not
+  enough.
 
 ### Changed
 
@@ -93,8 +94,9 @@ commit on `main`; there is no supported tag yet.
   `Content-Length` headers were a mismatch with the published stdio binding.
 - **`runner` owns its tag filter** as a `std::string`, so a temporary or argv view need
   not outlive the runner. Console and JSONL `observer_instance(...)` reconfigure on
-  each call (streams / mode / flags) instead of latching the first construction;
-  JUnit already applied path/state via `configure()`.
+  each call only while the sink is inactive (startup multi-setup); a live sink keeps
+  its streams/mode and only allows updating console `result_line`. JUnit already
+  applied path/state via `configure()`.
 - **Registration kind is explicit on each wrapper** (`suite_case` vs `step`), with a
   role string for display names (`"test_case"`, `"given"`, …). Whether a registration
   is scheduled or nested no longer depends on sniffing `source_location::function_name()`.
