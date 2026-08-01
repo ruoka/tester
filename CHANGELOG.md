@@ -10,9 +10,12 @@ release criteria are met.
 
 ## Unreleased
 
-This section covers everything after `v1.0.0`, which predates the JSONL contract, the
-observer layer, CI, the test suites under `tests/`, and CB's cache model. Consumers pin a
-commit on `main`; there is no supported tag yet.
+### Fixed
+
+- **`[self] observer_instance` under console mode** — the live-sink guard test no longer
+  assumes JSONL was already `activate()`d by `--jsonl`. Parents that run without `--jsonl`
+  (e.g. nested cryptic CI) enable the sink for the assertion and restore afterward, so the
+  case passes in both console and JSONL process modes.
 
 ### Added
 

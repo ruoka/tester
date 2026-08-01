@@ -355,11 +355,16 @@ auto register_tests()
     // A live jsonl sink must survive further observer_instance calls. Emplacing while
     // enabled rebuilt jsonl_context with enabled=false and dropped summary/eof for the
     // rest of the process — every --jsonl [self] run that hit the old reconfigure test.
+    // Construction leaves the sink disabled until activate(); under a console-mode parent
+    // (no --jsonl) simulate a live sink, then restore so later cases stay on console.
     test_case("test_case [self] observer_instance does not disable a live jsonl sink") = []
     {
         using output::jsonl::jsonl_mode;
 
         auto& live = output::jsonl::observer_instance(std::cout, std::clog, jsonl_mode::trace);
+        const auto was_enabled = live.jsonl_enabled();
+        if(not was_enabled)
+            live.set_jsonl_enabled(true);
         require_true(live.jsonl_enabled());
         const auto mode_before = live.output_mode();
 
@@ -378,6 +383,9 @@ auto register_tests()
         require_true(console_again.result_line);
 
         output::console::observer_instance(std::clog, std::clog, false);
+
+        if(not was_enabled)
+            live.set_jsonl_enabled(false);
     };
 
     test_case("test_case [self] jsonl summary survives observer_instance during the run") = []
