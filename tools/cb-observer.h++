@@ -197,7 +197,7 @@ constexpr std::string_view rebuild_hint(rebuild_kind kind)
         case rebuild_kind::object_missing:
             return "Object file missing on disk.";
         case rebuild_kind::object_stale:
-            return "Object file older than cached source timestamp.";
+            return "Object file older than cached source timestamp or its module PCM.";
         case rebuild_kind::own_pcm_missing:
             return "Module PCM missing on disk.";
         case rebuild_kind::own_pcm_stale:
@@ -302,6 +302,8 @@ inline std::string compile_rebuild_message(const compile_unit& unit, const rebui
         case rebuild_kind::object_missing:
             return "Rebuilding " + label + " because object file is missing";
         case rebuild_kind::object_stale:
+            if(not info.module.empty())
+                return "Rebuilding " + label + " because object file is older than PCM " + info.module;
             return "Rebuilding " + label + " because object file is older than the cached source timestamp";
         case rebuild_kind::own_pcm_missing:
             return "Rebuilding " + label + " because its PCM is missing";

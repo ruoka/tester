@@ -2231,13 +2231,19 @@ private:
                 return attributed_to(*interface_reason, interface);
         }
 
-        // For modular units, also check if .pcm file is stale
+        // For modular units, also check if .pcm file is stale. The pcm is the object's
+        // input under two-phase (and the sibling artefact under one-phase): a successful
+        // --precompile followed by a failed/skipped object step leaves a pcm newer than
+        // the .o, and without this check the unit cache-hits while importers rebuild
+        // against the new interface — linking the old implementation into the binary.
         if (tu.is_modular) {
             if (not fs::exists(tu.pcm_path))
                 return pcm_rebuild(output::rebuild_kind::own_pcm_missing, tu);
             auto pcm_timestamp = fs::last_write_time(tu.pcm_path);
             if (pcm_timestamp < tu.last_modified)
                 return pcm_rebuild(output::rebuild_kind::own_pcm_stale, tu);
+            if (object_timestamp < pcm_timestamp)
+                return pcm_rebuild(output::rebuild_kind::object_stale, tu);
         }
 
         // Rebuild when any transitive import PCM is newer than this object file.
@@ -2644,11 +2650,20 @@ private:
     void compile_unit(const translation_unit& tu, const output::rebuild_info& rebuild) {
         const auto unit = compile_unit_of(tu);
         auto compile = compile_scope{unit, rebuild};
+        // object_missing / object_stale reuse the pcm that is already there — same split
+        // build_std_module uses. Re-precompiling would bump the pcm mtime and force every
+        // importer through pcm_stale for no interface change.
+        const auto object_only = rebuild.kind == output::rebuild_kind::object_missing
+                              or rebuild.kind == output::rebuild_kind::object_stale;
         if (tu.is_modular and module_phases == module_compilation::two_phase) {
-            run_step(compile, compile_pcm_argv(tu), diagnostics_path_for_pcm(unit));
+            if(not object_only)
+                run_step(compile, compile_pcm_argv(tu), diagnostics_path_for_pcm(unit));
             run_step(compile, compile_pcm_object_argv(tu), diagnostics_path_for_object(unit));
         } else if (tu.is_modular) {
-            run_step(compile, compile_module_object_argv(tu), diagnostics_path_for_object(unit));
+            if(object_only)
+                run_step(compile, compile_pcm_object_argv(tu), diagnostics_path_for_object(unit));
+            else
+                run_step(compile, compile_module_object_argv(tu), diagnostics_path_for_object(unit));
         } else {
             run_step(compile, compile_source_object_argv(tu), diagnostics_path_for_object(unit));
         }
