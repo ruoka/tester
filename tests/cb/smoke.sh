@@ -1215,6 +1215,35 @@ test_vendored_tester_tests_skipped() {
   end_case vendored_tester_tests_skipped
 }
 
+test_build_output_trees_skipped() {
+  should_run build_output_trees_skipped || return 0
+  begin_case build_output_trees_skipped
+  local work_dir
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
+
+  # CB / Make / CMake all use top-level build-* directories. CMake drops
+  # CMakeCXXCompilerId.cpp there; two configure trees would collide if scanned.
+  mkdir -p "${work_dir}/build-cmake-darwin-debug/CMakeFiles/4.1.2/CompilerIdCXX" \
+           "${work_dir}/build-cmake-darwin-release/CMakeFiles/4.1.2/CompilerIdCXX" \
+           "${work_dir}/build-make-darwin-debug/obj" \
+           "${work_dir}/build-darwin-debug/obj"
+  printf '%s\n' 'int cmake_debug() { return 1; }' \
+    > "${work_dir}/build-cmake-darwin-debug/CMakeFiles/4.1.2/CompilerIdCXX/CMakeCXXCompilerId.cpp"
+  printf '%s\n' 'int cmake_release() { return 2; }' \
+    > "${work_dir}/build-cmake-darwin-release/CMakeFiles/4.1.2/CompilerIdCXX/CMakeCXXCompilerId.cpp"
+  printf '%s\n' 'int make_obj() { return 3; }' > "${work_dir}/build-make-darwin-debug/obj/stale.c++"
+  printf '%s\n' 'int cb_obj() { return 4; }' > "${work_dir}/build-darwin-debug/obj/stale.c++"
+
+  run_cb_list "${work_dir}"
+  assert_jsonl_event_count unit 1 "build_output_single_unit"
+  assert_jsonl_event_value unit path hello.c++ "build_output_root_hello"
+  assert_jsonl_not_contains 'build-cmake-' "build_output_cmake_absent"
+  assert_jsonl_not_contains 'build-make-' "build_output_make_absent"
+  assert_jsonl_not_contains 'build-darwin-' "build_output_cb_absent"
+  end_case build_output_trees_skipped
+}
+
 test_project_test_dir_included() {
   should_run project_test_dir_included || return 0
   begin_case project_test_dir_included
@@ -1677,6 +1706,7 @@ main() {
   test_reserved_std_collision
   test_nested_deps_skipped
   test_vendored_tester_tests_skipped
+  test_build_output_trees_skipped
   test_project_test_dir_included
   test_deps_package_tests_skipped
   test_rebuild_summary

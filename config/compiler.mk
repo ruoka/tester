@@ -68,14 +68,16 @@ export SDKROOT
 # This enables using "import std;" with -fexperimental-library
 override CXXFLAGS := $(COMMON_CXXFLAGS) -nostdinc++ -isystem $(LLVM_PREFIX)/include/c++/v1 -fno-implicit-modules -fno-implicit-module-maps -O3
 
-# Force -L to LLVM's libc++. A shell LDFLAGS that is only -Wl,-rpath,… would
-# otherwise win with ?= and the link would miss trunk symbols that
-# -fexperimental-library needs (__atomic_*_global, bad_variant_access, …).
+# Force -L/-rpath to this LLVM's libc++ / libunwind. A shell LDFLAGS that is
+# only -Wl,-rpath,… would otherwise win with ?= and the link would miss trunk
+# symbols that -fexperimental-library needs, or pick up the SDK unwinder.
+# -stdlib=libc++ already pulls -lc++; name -lc++abi -lunwind like CB does for
+# -lunwind (see docs/clang-modules-macos.md).
 ifneq ($(SDKROOT),)
 override CXXFLAGS += -isysroot $(SDKROOT)
-override LDFLAGS := $(COMMON_LDFLAGS) -isysroot $(SDKROOT) -L$(LLVM_PREFIX)/lib -Wl,-rpath,$(LLVM_PREFIX)/lib -O3
+override LDFLAGS := $(COMMON_LDFLAGS) -isysroot $(SDKROOT) -L$(LLVM_PREFIX)/lib -Wl,-rpath,$(LLVM_PREFIX)/lib -lc++abi -lunwind -O3
 else
-override LDFLAGS := $(COMMON_LDFLAGS) -L$(LLVM_PREFIX)/lib -Wl,-rpath,$(LLVM_PREFIX)/lib -O3
+override LDFLAGS := $(COMMON_LDFLAGS) -L$(LLVM_PREFIX)/lib -Wl,-rpath,$(LLVM_PREFIX)/lib -lc++abi -lunwind -O3
 endif
 
 endif

@@ -15,6 +15,12 @@ tag; cutting a release renames that section.
 - **Build-tree names standardized** so the three paths never collide: CB keeps
   `build-<os>-<config>/`, Make uses `build-make-<os>-<config>/` (default `release`,
   `DEBUG=1` → `debug`), and CMake examples/CI use `build-cmake-<os>-<config>/`.
+- **macOS links name `-lc++abi` / `-lunwind` from `LLVM_PREFIX`** on the Make and
+  CMake paths (CB already passed `-lunwind`); all three now share the same pair so
+  the locally built unwinder is used rather than the SDK's.
+- **CB skips top-level `build-*` trees when scanning** so CMake `CompilerId` sources
+  under `build-cmake-*/` (and stale objects under Make/CB trees) cannot join the
+  module graph or collide across configure directories.
 
 ## [2.1.0] — 2026-08-02
 

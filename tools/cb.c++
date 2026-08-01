@@ -377,6 +377,15 @@ bool is_nested_dependency_path(std::string_view rel_path)
     return is_dir_or_under(after_pkg, deps_dir_name);
 }
 
+// Top-level build-* trees are outputs (CB, Make, CMake), not project sources.
+// CMake's CompilerId .cpp under build-cmake-*/ would otherwise join the scan and
+// collide across configure trees.
+bool is_build_output_path(std::string_view rel_path)
+{
+    const auto first = rel_path.substr(0, rel_path.find('/'));
+    return first.starts_with(build_root_prefix);
+}
+
 bool path_has_test_segment(std::string_view path) {
     // Match path components named exactly "test" or "tests" (not "tester" / "test_exception_bug").
     auto rest = path;
@@ -1463,10 +1472,15 @@ private:
         }
         else if(is_darwin)
         {
+            // -stdlib=libc++ already pulls -lc++; name -lc++abi -lunwind so the
+            // link uses this LLVM's runtimes, not the SDK unwinder (see
+            // docs/clang-modules-macos.md). Same pair as config/compiler.mk and
+            // CMakeLists.txt on Apple.
             link_flags = {
                 "-pthread",
                 "-L" + llvm_prefix + "/lib",
                 "-Wl,-rpath," + llvm_prefix + "/lib",
+                "-lc++abi",
                 "-lunwind",
                 "-Wl,-dead_strip",
             };
@@ -2364,12 +2378,14 @@ private:
 
                 auto rel_path = entry.path().lexically_relative(path).string();
 
-                // Skip nested package checkouts, vendored package test trees, tools/, and .git/.
-                // Do not hard-skip project test/ trees here — determine_is_test marks them as
-                // is_test, and include_tests (debug / --build-tests) decides whether they join.
+                // Skip nested package checkouts, vendored package test trees, build-*
+                // output trees, tools/, and .git/. Do not hard-skip project test/ trees
+                // here — determine_is_test marks them as is_test, and include_tests
+                // (debug / --build-tests) decides whether they join.
                 if (detail::is_nested_dependency_path(rel_path) or
                     detail::is_dependency_package_tests_path(rel_path) or
                     detail::is_tester_package_tests_path(rel_path) or
+                    detail::is_build_output_path(rel_path) or
                     detail::path_under_dir(rel_path, tools_dir_name) or
                     detail::path_under_dir(rel_path, git_dir_name))
                     continue;

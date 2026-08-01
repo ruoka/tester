@@ -57,10 +57,14 @@ endif()
 add_compile_options(-Wall -Wextra -g -fPIC)
 
 if(APPLE)
-  # Link the compiler's own libc++, not the SDK's: -fexperimental-library
-  # references symbols only the former defines. CMake adds this to the
-  # build-tree rpath on its own.
-  link_directories("${LLVM_PREFIX}/lib")
+  # Link this LLVM's libc++ / libunwind, not the SDK's: -fexperimental-library
+  # needs the former, and Apple Silicon exception catching needs the matching
+  # libunwind (see docs/clang-modules-macos.md). -L plus named libs; CMake
+  # adds a single build-tree rpath for the directory it resolves them from.
+  add_link_options("-L${LLVM_PREFIX}/lib")
+  # -stdlib=libc++ already pulls -lc++; name c++abi and unwind so the link
+  # cannot fall back to the SDK unwinder.
+  link_libraries(c++abi unwind)
 else()
   # Same set config/compiler.mk and cb use on Linux; libc++experimental carries
   # the symbols -fexperimental-library refers to.
