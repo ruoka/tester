@@ -441,12 +441,16 @@ export struct observer final : tester::output::observer
     void write_summary(const run_summary& run, const failure_index& failures)
     {
         const auto& s = run.statistics;
+        const auto tests_ok = s.successful_tests.load(std::memory_order_relaxed);
+        const auto tests_total = s.total_tests.load(std::memory_order_relaxed);
+        const auto assertions_ok = s.successful_assertions.load(std::memory_order_relaxed);
+        const auto assertions_total = s.total_assertions.load(std::memory_order_relaxed);
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("summary") << [&](std::ostream& os){
-            os << ",\"tests_ok\":" << s.successful_tests;
-            os << ",\"tests_total\":" << s.total_tests;
-            os << ",\"assertions_ok\":" << s.successful_assertions;
-            os << ",\"assertions_total\":" << s.total_assertions;
+            os << ",\"tests_ok\":" << tests_ok;
+            os << ",\"tests_total\":" << tests_total;
+            os << ",\"assertions_ok\":" << assertions_ok;
+            os << ",\"assertions_total\":" << assertions_total;
             os << ",\"passed\":" << (run.passed ? "true" : "false");
             write_failure_index(os, failures);
             if(output_mode() == jsonl_mode::trace && !run.slowest.empty())
@@ -491,10 +495,10 @@ export struct observer final : tester::output::observer
         const auto& stats = run.statistics;
         m.result_os()
             << "RESULT:"
-            << " tests_ok=" << stats.successful_tests
-            << " tests_total=" << stats.total_tests
-            << " assertions_ok=" << stats.successful_assertions
-            << " assertions_total=" << stats.total_assertions
+            << " tests_ok=" << stats.successful_tests.load(std::memory_order_relaxed)
+            << " tests_total=" << stats.total_tests.load(std::memory_order_relaxed)
+            << " assertions_ok=" << stats.successful_assertions.load(std::memory_order_relaxed)
+            << " assertions_total=" << stats.total_assertions.load(std::memory_order_relaxed)
             << " passed=" << (run.passed ? "true" : "false")
             << '\n';
     }

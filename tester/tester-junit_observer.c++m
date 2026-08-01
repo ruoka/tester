@@ -317,11 +317,12 @@ private:
         }
 
         // A non-empty filter that matches nothing fails the run; give CI UIs a row.
-        const auto empty_filter_failure = not run_tags.empty() and stats.total_tests == 0;
+        const auto tests_total = stats.total_tests.load(std::memory_order_relaxed);
+        const auto empty_filter_failure = not run_tags.empty() and tests_total == 0;
         if(empty_filter_failure)
             ++failures;
 
-        const auto tests_attr = empty_filter_failure ? 1uz : stats.total_tests;
+        const auto tests_attr = empty_filter_failure ? 1uz : tests_total;
         auto xml_body = std::ostringstream{};
         xml_body << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
         xml_body << "<testsuites name=\"tester\""

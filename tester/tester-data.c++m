@@ -56,18 +56,95 @@ export struct test_result : public test_metadata
     std::chrono::system_clock::time_point finished_at{};
 };
 
+// Counters are atomic: a test may soft-assert from a thread it started, and under
+// --jobs>1 those threads share the run-wide fallback context. Plain size_t lost
+// updates there; observers already lock their own buffers.
 export struct test_statistics
 {
-    std::size_t successful_tests{0};
-    std::size_t total_tests{0};
-    std::size_t successful_assertions{0};
-    std::size_t total_assertions{0};
+    std::atomic<std::size_t> successful_tests{0};
+    std::atomic<std::size_t> total_tests{0};
+    std::atomic<std::size_t> successful_assertions{0};
+    std::atomic<std::size_t> total_assertions{0};
 
-    // Run metadata
+    // Run metadata — written from the run thread at start/end only.
     std::chrono::steady_clock::time_point run_started{};
     std::chrono::steady_clock::time_point run_finished{};
     std::chrono::system_clock::time_point run_started_unix_ms{};
     std::string run_tags{};
+
+    test_statistics() = default;
+    test_statistics(const test_statistics&) = delete;
+    test_statistics& operator=(const test_statistics&) = delete;
+
+    test_statistics(test_statistics&& other) noexcept
+        : successful_tests{other.successful_tests.load(std::memory_order_relaxed)}
+        , total_tests{other.total_tests.load(std::memory_order_relaxed)}
+        , successful_assertions{other.successful_assertions.load(std::memory_order_relaxed)}
+        , total_assertions{other.total_assertions.load(std::memory_order_relaxed)}
+        , run_started{other.run_started}
+        , run_finished{other.run_finished}
+        , run_started_unix_ms{other.run_started_unix_ms}
+        , run_tags{std::move(other.run_tags)}
+    {
+    }
+
+    test_statistics& operator=(test_statistics&& other) noexcept
+    {
+        if(this != &other)
+        {
+            successful_tests.store(
+                other.successful_tests.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            total_tests.store(
+                other.total_tests.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            successful_assertions.store(
+                other.successful_assertions.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            total_assertions.store(
+                other.total_assertions.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            run_started = other.run_started;
+            run_finished = other.run_finished;
+            run_started_unix_ms = other.run_started_unix_ms;
+            run_tags = std::move(other.run_tags);
+        }
+        return *this;
+    }
+
+    void reset_counts() noexcept
+    {
+        successful_tests.store(0, std::memory_order_relaxed);
+        total_tests.store(0, std::memory_order_relaxed);
+        successful_assertions.store(0, std::memory_order_relaxed);
+        total_assertions.store(0, std::memory_order_relaxed);
+    }
+
+    void record_assertion(bool ok) noexcept
+    {
+        total_assertions.fetch_add(1, std::memory_order_relaxed);
+        if(ok)
+            successful_assertions.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void begin_assertion() noexcept
+    {
+        total_assertions.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void complete_assertion(bool ok) noexcept
+    {
+        if(ok)
+            successful_assertions.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    void merge_counts_from(test_statistics& other) noexcept
+    {
+        successful_tests.fetch_add(
+            other.successful_tests.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        total_tests.fetch_add(
+            other.total_tests.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        successful_assertions.fetch_add(
+            other.successful_assertions.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        total_assertions.fetch_add(
+            other.total_assertions.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    }
 };
 
 // Shared pass/fail verdict for exit status, summary.passed, and RESULT lines.
@@ -75,10 +152,13 @@ export struct test_statistics
 // runs (e.g. --tags='[typo]') silently pass via 0==0 totals.
 export bool run_passed(const test_statistics& stats)
 {
-    if(not stats.run_tags.empty() and stats.total_tests == 0)
+    if(not stats.run_tags.empty()
+       and stats.total_tests.load(std::memory_order_relaxed) == 0)
         return false;
-    return stats.total_tests == stats.successful_tests
-        and stats.total_assertions == stats.successful_assertions;
+    return stats.total_tests.load(std::memory_order_relaxed)
+            == stats.successful_tests.load(std::memory_order_relaxed)
+        and stats.total_assertions.load(std::memory_order_relaxed)
+            == stats.successful_assertions.load(std::memory_order_relaxed);
 }
 
 // Per-worker / per-run execution state. Everything that used to be a process-wide

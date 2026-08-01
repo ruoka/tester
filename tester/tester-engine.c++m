@@ -220,10 +220,7 @@ export void init_statistics(
     stats.run_started = run_started;
     stats.run_started_unix_ms = run_started_unix_ms;
     stats.run_tags = std::string{run_tags};
-    stats.successful_tests = 0;
-    stats.total_tests = 0;
-    stats.successful_assertions = 0;
-    stats.total_assertions = 0;
+    stats.reset_counts();
     ctx.results.clear();
     ctx.step_assertions_total = 0;
     ctx.step_assertions_ok = 0;
@@ -267,8 +264,8 @@ void execute_test_case(execution_context& ctx, test_case& tc)
     ctx.set_test_id(tc.test_id);
 
     auto& stats = ctx.statistics;
-    const auto assertions_total_before = stats.total_assertions;
-    const auto assertions_ok_before = stats.successful_assertions;
+    const auto assertions_total_before = stats.total_assertions.load(std::memory_order_relaxed);
+    const auto assertions_ok_before = stats.successful_assertions.load(std::memory_order_relaxed);
     const auto steps_total_before = ctx.step_assertions_total;
     const auto steps_ok_before = ctx.step_assertions_ok;
 
@@ -277,7 +274,7 @@ void execute_test_case(execution_context& ctx, test_case& tc)
     auto failure_message = std::string{};
     try
     {
-        ++stats.total_tests;
+        stats.total_tests.fetch_add(1, std::memory_order_relaxed);
         tc.run();
     }
     catch(const assertions::assertion_failure& ex)
@@ -301,8 +298,10 @@ void execute_test_case(execution_context& ctx, test_case& tc)
     const auto finished = std::chrono::steady_clock::now();
     const auto finished_sys = std::chrono::system_clock::now();
 
-    const auto assertions_total = stats.total_assertions - assertions_total_before;
-    const auto assertions_ok = stats.successful_assertions - assertions_ok_before;
+    const auto assertions_total =
+        stats.total_assertions.load(std::memory_order_relaxed) - assertions_total_before;
+    const auto assertions_ok =
+        stats.successful_assertions.load(std::memory_order_relaxed) - assertions_ok_before;
     // A step's assertions are the step's own. Taking off what the steps consumed leaves what this
     // case checked itself, so a scenario still reports its own count and a failing step fails
     // itself rather than everything it is written inside.
@@ -326,7 +325,7 @@ void execute_test_case(execution_context& ctx, test_case& tc)
     // the test successful. Counting it here — rather than right after run() — keeps
     // summary.tests_ok consistent with failed_test_ids.
     if(result.success and result.assertions_ok == result.assertions_total)
-        ++stats.successful_tests;
+        stats.successful_tests.fetch_add(1, std::memory_order_relaxed);
     else
         result.success = false;
 
@@ -349,11 +348,58 @@ void execute_test_case(execution_context& ctx, test_case& tc)
 
 void merge_worker(execution_context& dest, execution_context& worker)
 {
-    dest.statistics.successful_tests += worker.statistics.successful_tests;
-    dest.statistics.total_tests += worker.statistics.total_tests;
-    dest.statistics.successful_assertions += worker.statistics.successful_assertions;
-    dest.statistics.total_assertions += worker.statistics.total_assertions;
+    dest.statistics.merge_counts_from(worker.statistics);
     dest.results.splice(dest.results.end(), worker.results);
+}
+
+// Soft asserts from a test-spawned thread have no worker TLS, so under --jobs>1 they
+// update the run-wide fallback context instead of the worker that owns the case. The
+// worker's test_result stays green while the orphaned counters make run_passed false —
+// empty failed_test_ids. Reify the gap as an explicit failing result for triage.
+void reconcile_unattributed_assertions(execution_context& ctx)
+{
+    auto accounted_total = std::size_t{0};
+    auto accounted_ok = std::size_t{0};
+    for(const auto& result : ctx.results)
+    {
+        accounted_total += result.assertions_total;
+        accounted_ok += result.assertions_ok;
+    }
+
+    auto& stats = ctx.statistics;
+    const auto stats_total = stats.total_assertions.load(std::memory_order_relaxed);
+    const auto stats_ok = stats.successful_assertions.load(std::memory_order_relaxed);
+    if(stats_total == accounted_total and stats_ok == accounted_ok)
+        return;
+
+    if(stats_total < accounted_total or stats_ok < accounted_ok)
+        return;
+
+    const auto missing_total = stats_total - accounted_total;
+    const auto missing_ok = stats_ok - accounted_ok;
+    // Passing orphans only inflate assertion totals; they do not hide a failure. Failures
+    // are what leave passed=false with an empty failed_test_ids list.
+    if(missing_total == 0 or missing_ok == missing_total)
+        return;
+
+    auto result = test_result{
+        test_metadata{
+            .test_set_name = "tester",
+            .test_name = "unattributed thread assertion",
+            .file_name = {},
+            .line = 0,
+            .column = 0,
+            .function_name = {},
+            .test_id = "<unattributed thread assertion>",
+        }};
+    result.assertions_total = missing_total;
+    result.assertions_ok = missing_ok;
+    result.success = false;
+    result.output =
+        "A soft assertion ran on a thread without an execution_context while "
+        "--jobs>1, so it could not be attributed to the test that started the thread.\n";
+    ctx.results.push_back(std::move(result));
+    stats.total_tests.fetch_add(1, std::memory_order_relaxed);
 }
 
 void run_test_cases_sequential(execution_context& ctx)
@@ -377,6 +423,24 @@ void run_test_cases_parallel(execution_context& ctx, std::size_t jobs)
     // on the following wave — the same “append then reach later” contract as the sequential path,
     // without re-running sort_test_cases (which would reject depends_on ids already erased).
     auto completed = std::flat_set<std::string, std::less<>>{};
+
+    // Drop filtered-out cases up front. Leaving them in the catalogue would let them consume
+    // --jobs chunk slots as instant no-ops, so two long independents could land in different
+    // chunks and never overlap — and depends_on edges would wait on ids that never run.
+    {
+        auto lock = std::lock_guard<std::mutex>{test_cases_mutex};
+        for(auto it = test_cases.begin(); it != test_cases.end();)
+        {
+            if(ctx.excluded and ctx.excluded(*it))
+            {
+                if(not it->id.empty())
+                    completed.insert(it->id);
+                it = test_cases.erase(it);
+            }
+            else
+                ++it;
+        }
+    }
 
     while(not test_cases.empty())
     {
@@ -424,32 +488,32 @@ void run_test_cases_parallel(execution_context& ctx, std::size_t jobs)
             }
         }
 
-        auto workers = std::vector<execution_context>(batch.size());
-        auto gate = std::counting_semaphore<>{static_cast<std::ptrdiff_t>(jobs)};
-        auto threads = std::vector<std::jthread>{};
-        threads.reserve(batch.size());
-
-        for(std::size_t i = 0; i < batch.size(); ++i)
+        // Spawn at most `jobs` OS threads at a time. Creating one jthread per ready case
+        // and only acquiring a semaphore inside each still allocates a stack per case —
+        // large independent waves then die with std::system_error before any summary.
+        for(std::size_t offset = 0; offset < batch.size(); offset += jobs)
         {
-            threads.emplace_back([&, i]
+            const auto chunk = std::min(jobs, batch.size() - offset);
+            auto workers = std::vector<execution_context>(chunk);
+            auto threads = std::vector<std::jthread>{};
+            threads.reserve(chunk);
+
+            for(std::size_t i = 0; i < chunk; ++i)
             {
-                gate.acquire();
-                struct slot_guard
+                // Copy indexes by value; workers/batch/ctx by reference for the wave.
+                threads.emplace_back([&, i, offset]
                 {
-                    std::counting_semaphore<>& gate;
-                    ~slot_guard() { gate.release(); }
-                } const hold{gate};
+                    workers[i].excluded = ctx.excluded;
+                    const auto scope = execution_scope{workers[i]};
+                    execute_test_case(workers[i], batch[offset + i]);
+                });
+            }
+            threads.clear(); // join before merge
 
-                workers[i].excluded = ctx.excluded;
-                const auto scope = execution_scope{workers[i]};
-                execute_test_case(workers[i], batch[i]);
-            });
+            // Merge in batch order (registration / catalogue order), not completion order.
+            for(auto& worker : workers)
+                merge_worker(ctx, worker);
         }
-        threads.clear(); // join before merge
-
-        // Merge in batch order (registration / catalogue order), not completion order.
-        for(auto& worker : workers)
-            merge_worker(ctx, worker);
 
         for(const auto& tc : batch)
         {
@@ -457,6 +521,8 @@ void run_test_cases_parallel(execution_context& ctx, std::size_t jobs)
                 completed.insert(tc.id);
         }
     }
+
+    reconcile_unattributed_assertions(ctx);
 }
 
 export void run_test_cases(execution_context& ctx)

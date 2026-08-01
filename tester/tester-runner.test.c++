@@ -19,11 +19,15 @@ auto& dependency_run_counter()
 
 struct recording_observer final : output::observer
 {
-    int assertions = 0;
+    // Under --jobs>1 other workers also notify; count only this case's events.
+    std::string filter_id{};
+    std::atomic<int> assertions{0};
 
-    void assertion(const output::assertion_event&) override
+    void assertion(const output::assertion_event& event) override
     {
-        ++assertions;
+        if(not filter_id.empty() and event.test_id != filter_id)
+            return;
+        assertions.fetch_add(1);
     }
 };
 
@@ -141,7 +145,7 @@ auto register_parallel_probe()
               test_order{.priority = 0, .depends_on = {}, .id = "parallel_indep_a"}) = []
     {
         a_start = std::chrono::steady_clock::now();
-        std::this_thread::sleep_for(std::chrono::milliseconds{80});
+        std::this_thread::sleep_for(std::chrono::milliseconds{120});
         a_end = std::chrono::steady_clock::now();
         times_ready.fetch_add(1);
         require_true(true);
@@ -151,7 +155,7 @@ auto register_parallel_probe()
               test_order{.priority = 0, .depends_on = {}, .id = "parallel_indep_b"}) = []
     {
         b_start = std::chrono::steady_clock::now();
-        std::this_thread::sleep_for(std::chrono::milliseconds{80});
+        std::this_thread::sleep_for(std::chrono::milliseconds{120});
         b_end = std::chrono::steady_clock::now();
         times_ready.fetch_add(1);
         require_true(true);
@@ -188,6 +192,83 @@ auto register_parallel_probe()
 }
 
 const auto _parallel_probe = register_parallel_probe();
+
+// Soft-assert from a child thread under --jobs>1 used to fail the suite with an empty
+// failed_test_ids list (orphan counters on the run context, green worker result).
+auto register_parallel_thread_assert_probe()
+{
+    if(std::getenv("TESTER_PARALLEL_THREAD_ASSERT_PROBE") == nullptr)
+        return 0;
+
+    using tester::basic::test_case;
+    using tester::basic::test_order;
+    using namespace tester::assertions;
+
+    // Two independents so the parallel scheduler actually takes the multi-worker path.
+    test_case("test_case [.parallel-thread-assert-probe] sibling",
+              test_order{.priority = 0, .depends_on = {}, .id = "parallel_thread_sibling"}) = []
+    {
+        require_true(true);
+    };
+
+    test_case("test_case [.parallel-thread-assert-probe] child soft-fail",
+              test_order{.priority = 0, .depends_on = {}, .id = "parallel_thread_soft_fail"}) = []
+    {
+        auto worker = std::jthread{[]
+        {
+            check_eq(1, 2);
+        }};
+    };
+
+    return 0;
+}
+
+const auto _parallel_thread_assert_probe = register_parallel_thread_assert_probe();
+
+// Hammers soft asserts from many threads under --jobs=1 so they share one context;
+// lost size_t increments would make the totals disagree with the loop counts.
+auto register_concurrent_assert_probe()
+{
+    if(std::getenv("TESTER_CONCURRENT_ASSERT_PROBE") == nullptr)
+        return 0;
+
+    using tester::basic::test_case;
+    using namespace tester::assertions;
+
+    test_case("test_case [.concurrent-assert-probe] many child threads") = []
+    {
+        constexpr auto threads = 8uz;
+        constexpr auto per_thread = 200uz;
+        const auto before_total = tester::data::statistics().total_assertions.load(
+            std::memory_order_relaxed);
+        const auto before_ok = tester::data::statistics().successful_assertions.load(
+            std::memory_order_relaxed);
+
+        {
+            auto workers = std::vector<std::jthread>{};
+            workers.reserve(threads);
+            for(std::size_t t = 0; t < threads; ++t)
+            {
+                workers.emplace_back([]
+                {
+                    for(std::size_t i = 0; i < per_thread; ++i)
+                        check_eq(i, i);
+                });
+            }
+        }
+
+        const auto after_total = tester::data::statistics().total_assertions.load(
+            std::memory_order_relaxed);
+        const auto after_ok = tester::data::statistics().successful_assertions.load(
+            std::memory_order_relaxed);
+        require_eq(after_total, before_total + threads * per_thread);
+        require_eq(after_ok, before_ok + threads * per_thread);
+    };
+
+    return 0;
+}
+
+const auto _concurrent_assert_probe = register_concurrent_assert_probe();
 
 } // namespace
 
@@ -262,10 +343,11 @@ auto register_tests()
     test_case("test_case [self] output observers receive assertion events") = []
     {
         auto recorder = recording_observer{};
+        recorder.filter_id = std::string{tester::data::current_test_id()};
         output::observe(recorder);
         check_eq(1, 1);
         output::unobserve(recorder);
-        require_eq(recorder.assertions, 1);
+        require_eq(recorder.assertions.load(), 1);
     };
 
     // A step runs where it is written, so the enclosing frame is still alive: capturing a local
@@ -328,7 +410,7 @@ auto register_tests()
         auto ctx_b = tester::data::execution_context{};
         ctx_a.current_test_id = "worker-a";
         ctx_b.current_test_id = "worker-b";
-        ++ctx_a.statistics.total_assertions;
+        ctx_a.statistics.total_assertions.fetch_add(1, std::memory_order_relaxed);
 
         auto ready = std::atomic<int>{0};
         auto id_a = std::string{};
@@ -344,7 +426,8 @@ auto register_tests()
                 while(ready.load() < 2)
                     std::this_thread::yield();
                 id_a = std::string{tester::data::current_test_id()};
-                assertions_a = tester::data::statistics().total_assertions;
+                assertions_a = tester::data::statistics().total_assertions.load(
+                    std::memory_order_relaxed);
             }};
             auto worker_b = std::jthread{[&]
             {
@@ -353,7 +436,8 @@ auto register_tests()
                 while(ready.load() < 2)
                     std::this_thread::yield();
                 id_b = std::string{tester::data::current_test_id()};
-                assertions_b = tester::data::statistics().total_assertions;
+                assertions_b = tester::data::statistics().total_assertions.load(
+                    std::memory_order_relaxed);
             }};
         }
 
@@ -372,7 +456,8 @@ auto register_tests()
         // A test may report from a thread it started. Those threads do not inherit TLS, so
         // statistics() must fall back to the run context — otherwise the soft path throws
         // logic_error and std::jthread calls std::terminate.
-        const auto before = tester::data::statistics().total_assertions;
+        const auto before = tester::data::statistics().total_assertions.load(
+            std::memory_order_relaxed);
         auto saw_logic_error = std::atomic<bool>{false};
         auto completed = std::atomic<bool>{false};
         auto child_id = std::string{"unset"};
@@ -394,7 +479,8 @@ auto register_tests()
         }
 
         // Snapshot before this case's own require_* calls bump the counters.
-        const auto after_worker = tester::data::statistics().total_assertions;
+        const auto after_worker = tester::data::statistics().total_assertions.load(
+            std::memory_order_relaxed);
         require_false(saw_logic_error.load());
         require_true(completed.load());
         // Empty id on the child matches pre-#52 thread_local current-test-id behaviour.
@@ -406,6 +492,23 @@ auto register_tests()
         // the no-throw / completed checks above are the parallel-safe contract.
         if(tester::data::worker_count() == 1)
             require_eq(after_worker, before + 1);
+    };
+
+    test_case("test_case [self] concurrent child-thread soft asserts keep accurate counts") = []
+    {
+        // Spawn under --jobs=1 so every child shares one execution_context. Under --jobs>1
+        // the same hammer would land on the run-wide fallback instead of this worker.
+        const auto result = run_test_runner(
+            {"--jsonl=failures", "--jobs=1", "--tags=[.concurrent-assert-probe]"},
+            "TESTER_CONCURRENT_ASSERT_PROBE=1 ");
+
+        require_false(result.signaled);
+        require_eq(result.exit_code, 0);
+        const auto summary = tester_selftest::find_event(result.stdout_text, "summary");
+        require_eq(tester_selftest::field(summary, "passed"), std::string{"true"});
+        // 1600 check_eq from the child threads, plus the two require_eq totals checks.
+        require_eq(tester_selftest::field(summary, "assertions_ok"), std::string{"1602"});
+        require_eq(tester_selftest::field(summary, "assertions_total"), std::string{"1602"});
     };
 
     test_case("test_case [self][parallel] --jobs runs independents together and keeps depends_on") = []
@@ -430,6 +533,21 @@ auto register_tests()
         tester::set_jobs(1);
         require_eq(tester::data::worker_count(), 1uz);
         tester::set_jobs(previous);
+    };
+
+    test_case("test_case [self][parallel] child-thread soft fail is attributed under --jobs") = []
+    {
+        const auto result = run_test_runner(
+            {"--jsonl=failures", "--jobs=2", "--tags=[.parallel-thread-assert-probe]"},
+            "TESTER_PARALLEL_THREAD_ASSERT_PROBE=1 ");
+
+        require_false(result.signaled);
+        require_eq(result.exit_code, 1);
+        const auto summary = tester_selftest::find_event(result.stdout_text, "summary");
+        require_eq(tester_selftest::field(summary, "passed"), std::string{"false"});
+        // Must not be an opaque assertion-total mismatch with an empty failure list.
+        const auto failed = tester_selftest::field(summary, "failed_test_ids");
+        require_true(failed.contains("<unattributed thread assertion>"));
     };
 
     return 0;

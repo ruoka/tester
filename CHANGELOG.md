@@ -68,6 +68,13 @@ commit on `main`; there is no supported tag yet.
 
 ### Changed
 
+- **Assertion statistics are atomic**, and parallel `--jobs` accounting is closed:
+  `test_statistics` counters use `std::atomic` with `record_assertion` /
+  `begin_assertion` / `complete_assertion`; soft asserts from many child threads keep
+  accurate totals. Under `--jobs>1`, soft fails that land on the run-wide fallback are
+  reified as `<unattributed thread assertion>` so `failed_test_ids` is usable; parallel
+  waves spawn at most `jobs` threads per chunk and drop filtered-out cases before
+  scheduling; the observer registry is locked around mutate/notify.
 - **`test_runner.c++` is a non-module executable** (`import tester;`) rather than a
   `tester` implementation unit with `main`. The built-in `console_observer`,
   `jsonl_observer`, and `junit_observer` partitions are re-exported from

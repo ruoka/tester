@@ -37,10 +37,10 @@ text on successful compiles, and a CI job that gates the Makefile path.
 
 The remaining weaknesses are still maturity rather than correctness. Classification
 of scheduled case vs nested step still reads the registering function's name; CB is
-still verified mainly from the outside; assertion statistics are not atomic under
-test-spawned threads; there is a release policy and a changelog but no supported tag
-to pin. Tester is a good fit for focused module-native projects and AI-assisted
-development today, but is not a broad replacement for Catch2, doctest, or GoogleTest.
+still verified mainly from the outside; there is a release policy and a changelog but
+no supported tag to pin. Tester is a good fit for focused module-native projects and
+AI-assisted development today, but is not a broad replacement for Catch2, doctest, or
+GoogleTest.
 
 ## What Changed Since the Previous Review
 
@@ -103,10 +103,10 @@ Clang — not the documented Clang 21 Linux configuration that CI exercises:
 
 | Check | Result |
 |-------|--------|
-| `test --tags='\[self\]'` | 67 / 67 tests, 485 / 485 assertions |
-| `test --tags='\[self\]' --jobs=4` | 67 / 67 tests pass (assertion totals can differ under parallel soft-fail accounting — see weaknesses) |
-| `test --tags='\[self\]' --junit=…` | JUnit report with 67 `<testcase>` elements beside JSONL |
-| `test` (standalone, unfiltered) | 155 / 155 tests, 536 / 536 assertions |
+| `test --tags='\[self\]'` | 69 / 69 tests, 494 / 494 assertions |
+| `test --tags='\[self\]' --jobs=4` | 69 / 69 tests pass (assertion totals may be one lower than sequential where a probe skips a jobs==1-only count check) |
+| `test --tags='\[self\]' --junit=…` | JUnit report with 69 `<testcase>` elements beside JSONL |
+| `test` (standalone, unfiltered) | 157 / 157 tests, 545 / 545 assertions |
 | `test --tags='\[.demo\]'` | fails by design (`passed: false`) |
 | `tests/cb/smoke.sh` | 247 checks pass (~61 s; 15 of 44 cases are list-only) |
 | `tests/mcp/smoke.sh` | 9 checks pass |
@@ -227,9 +227,10 @@ proportional to the level's size, and jobs already running continue after a peer
 fails — only unstarted work is skipped. Staleness evaluation recurses through imports
 without a per-build memo; only the transitive-PCM walk keeps a visited set. At this
 repository's scale the cost is invisible (a warm no-op build is half a second for 36
-scanned units), but both are shape-dependent rather than bounded. Draft
-[#56](https://github.com/ruoka/tester/pull/56) proposes tightening the jobs-side bound
-and orphan soft-fail accounting; it is not part of this rating.
+scanned units), but both are shape-dependent rather than bounded. On the test-runner
+side, parallel waves now spawn at most `--jobs` threads per chunk, drop filtered-out
+cases before scheduling, lock the observer registry around mutate/notify, and reify
+orphan soft fails that land on the run-wide fallback under `--jobs>1`.
 
 CB is tested, but only from the outside. [`tests/cb/smoke.sh`](../tests/cb/smoke.sh) is
 thorough — 44 cases, 247 checks, covering cache profiles, every rebuild reason, strict
@@ -264,14 +265,13 @@ already runs `scan_and_order`.
 - Backlog discipline, by contrast, is good:
   [`docs/tester-improvements.md`](tester-improvements.md) tracks roughly a hundred
   implemented items against about sixty proposed ones, grouped by subsystem, and there
-  are no open issues. One draft PR
-  ([#56](https://github.com/ruoka/tester/pull/56)) proposes bounding `--jobs` threads
-  and orphan soft fails; it has not been merged or reviewed as part of this rating.
-- Assertion accounting is still single-writer by convention inside a context:
-  `data::statistics()` counters are plain integers. Parallel workers each have their own
-  `execution_context`, but two threads reporting assertions into the same context can
-  still lose counts, and soft-fail totals under `--jobs>1` are not yet pinned the way
-  the sequential path is. Documented in the backlog; draft #56 touches the orphan case.
+  are no open issues.
+- Assertion accounting uses `std::atomic` counters on `test_statistics`, with
+  `record_assertion` / `begin_assertion` / `complete_assertion` as the update path.
+  Soft asserts from test-spawned threads that share a context keep accurate totals;
+  under `--jobs>1`, orphans on the run-wide fallback become an explicit
+  `<unattributed thread assertion>` failure so triage is never an empty
+  `failed_test_ids` list beside `passed: false`.
 
 ### CI and documentation consistency
 
@@ -442,10 +442,9 @@ the results.
    that *are* the compiler, plus asking a function like `splice_physical_lines`
    directly — that still needs the extraction below. This is still the heaviest
    remaining weight under 9.
-2. Replace per-level thread fan-out with a bounded worker pool, and memoize staleness
-   results for the duration of one build pass. Both are cheap and remove
-   shape-dependent behavior. Draft [#56](https://github.com/ruoka/tester/pull/56) touches
-   the jobs side; it is not part of this rating.
+2. Replace per-level CB compile thread fan-out with a bounded worker pool, and memoize
+   staleness results for the duration of one build pass. (Test-runner `--jobs` chunking
+   and orphan soft-fail attribution are done.)
 3. ~~Rewrite CONTRIBUTING with current artifact paths, both build paths, and which one CI
    gates; fix the `[acceptor]` example.~~ Done, together with the `cb.md`, `README.md`, and
    `AGENTS.md` corrections listed above. What remains is `make tools` on macOS.
@@ -457,10 +456,11 @@ the results.
    `LLVM_CXX` / `CXX` names are looked up with a quoted `sh -c 'command -v …'` through
    `invoke_shell`, and `clang++ --version` writes the stamp the same way. Nothing reaches
    `system()` unquoted.
-6. Make assertion statistics counters atomic (or document single-threaded reporting as
-   a contract) and pin the choice with a `[self]` test — including the parallel soft-fail
-   / orphan case draft #56 is chasing. The observer locks closed the buffer race; the
-   counters are the remaining half.
+6. ~~Make assertion statistics counters atomic and pin the parallel soft-fail /
+   orphan case.~~ Done: counters are `std::atomic`; `[self]` covers concurrent
+   child-thread counts and `<unattributed thread assertion>` under `--jobs>1`;
+   filtered cases no longer consume parallel chunk slots; the observer registry is
+   locked around mutate/notify.
 7. ~~Ship a CI-friendly XML reporter beside JSONL.~~ Done: `--junit=` / `--xunit-xml=`
    with self-tests and Actions job-summary integration. SARIF stays out of scope unless
    static-analysis consumers ask for it.
@@ -484,7 +484,7 @@ the results.
 | 8.3 | 1 August (interim) | Publisher dissolved; observer DTOs; dedicated capture; console lock; runner reporting vocabulary; primary module is re-exports only |
 | **8.5** | 1 August | Interim architecture plus JUnit beside JSONL, parallel `--jobs` / `execution_context`, `compile_commands.json`, warning telemetry, Makefile CI gate, list-only smoke, and `invoke_shell` for the compiler probe |
 
-Re-verified on this tree: 67 self tests with 485 assertions, 155 tests standalone,
+Re-verified on this tree: 69 self tests with 494 assertions (also green under `--jobs=4`),
 917 JSONL events across the nine schema-validation commands. CB smoke is 247 checks
 in ~61 s; MCP smoke remains 9.
 
@@ -504,9 +504,8 @@ Three things still cap it below 9, in order of weight:
    The policy still gates a release on this review approaching 9 / 10, so the score and
    the tag remain a bootstrap pair — neither finishes the other alone.
 3. **Framework edges inside the shipped surface.** The registration classification
-   heuristic, non-atomic statistics under test-spawned threads, and the deliberate
-   absence of fixtures / generators / timeouts are what a careful adopter still weighs.
-   Draft #56 is the near-term jobs/accounting fix; fixtures remain strategic.
+   heuristic and the deliberate absence of fixtures / generators / timeouts are what a
+   careful adopter still weighs. Fixtures remain strategic.
 
 An 8.5 does not require becoming Catch2. It requires that CI and agents can trust the
 results they already get, and that the remaining gaps are ones a consumer chooses to

@@ -771,9 +771,8 @@ namespace tester::assertions
     export template<template <typename> class M, typename A, typename E>
     auto check(M<std::common_type_t<A,E>> match, A&& actual, E&& expected, const std::source_location location = std::source_location::current(), const std::source_location matcher_location = std::source_location::current())
     {
-        ++data::statistics().total_assertions;
         const auto ok = match(decayed(actual),decayed(expected));
-        data::statistics().successful_assertions += ok;
+        data::statistics().record_assertion(ok);
         report_assertion(ok,decayed(actual),decayed(expected),location,matcher_location);
         return ok;
     };
@@ -782,9 +781,8 @@ namespace tester::assertions
     export template<template <typename> class M, typename A, typename E>
     void require(M<std::common_type_t<A,E>> match, A&& actual, E&& expected, const std::source_location location = std::source_location::current(), const std::source_location matcher_location = std::source_location::current())
     {
-        ++data::statistics().total_assertions;
         const auto ok = match(decayed(actual),decayed(expected));
-        data::statistics().successful_assertions += ok;
+        data::statistics().record_assertion(ok);
         report_assertion(ok,decayed(actual),decayed(expected),location,matcher_location);
         if(not ok)
         {
@@ -946,7 +944,7 @@ namespace tester::assertions
         const auto expected = "none"sv;
         try
         {
-            ++data::statistics().total_assertions;
+            data::statistics().begin_assertion();
             t();
         }
         catch(const std::exception& e)
@@ -959,7 +957,7 @@ namespace tester::assertions
             ok = not ok;
             actual = "?"sv;
         }
-        data::statistics().successful_assertions += ok;
+        data::statistics().complete_assertion(ok);
         report_assertion(ok, actual, expected, location, matcher_location, ok ? ""sv : msg_expected_no_exception);
     }
 
@@ -971,7 +969,7 @@ namespace tester::assertions
         const auto expected = "any"sv;
         try
         {
-            ++data::statistics().total_assertions;
+            data::statistics().begin_assertion();
             t();
             ok = not ok;
             actual = "none"sv;
@@ -984,7 +982,7 @@ namespace tester::assertions
         {
             actual = "?"sv;
         }
-        data::statistics().successful_assertions += ok;
+        data::statistics().complete_assertion(ok);
         report_assertion(ok, actual, expected, location, matcher_location, ok ? ""sv : msg_expected_exception);
     }
 
@@ -997,7 +995,7 @@ namespace tester::assertions
         const auto expected = output::demangle_type(typeid(E));
         try
         {
-            ++data::statistics().total_assertions;
+            data::statistics().begin_assertion();
             t();
             ok = not ok;
         }
@@ -1014,7 +1012,7 @@ namespace tester::assertions
         {
             ok = not ok;
         }
-        data::statistics().successful_assertions += ok;
+        data::statistics().complete_assertion(ok);
         report_assertion(ok, actual, expected, location, matcher_location, ok ? ""sv : throws_as_failure_message(actual));
     }
 
@@ -1035,9 +1033,9 @@ namespace tester::assertions
         const auto expected = "none"sv;
         try
         {
-            ++data::statistics().total_assertions;
+            data::statistics().begin_assertion();
             t();
-            ++data::statistics().successful_assertions;
+            data::statistics().complete_assertion(true);
             report_assertion(true,actual,expected,location,matcher_location);
         }
         catch(const std::exception& e)
@@ -1061,7 +1059,7 @@ namespace tester::assertions
         const auto expected = "any"sv;
         try
         {
-            ++data::statistics().total_assertions;
+            data::statistics().begin_assertion();
             t();
             actual = "none"sv;
             report_assertion(false, actual, expected, location, matcher_location, msg_expected_exception);
@@ -1074,13 +1072,13 @@ namespace tester::assertions
         catch(const std::exception& e)
         {
             actual = output::demangle_type(typeid(e));
-            ++data::statistics().successful_assertions;
+            data::statistics().complete_assertion(true);
             report_assertion(true,actual,expected,location,matcher_location);
         }
         catch(...)
         {
             actual = "?"sv;
-            ++data::statistics().successful_assertions;
+            data::statistics().complete_assertion(true);
             report_assertion(true,actual,expected,location,matcher_location);
         }
     }
@@ -1093,7 +1091,7 @@ namespace tester::assertions
         const auto expected = output::demangle_type(typeid(E));
         try
         {
-            ++data::statistics().total_assertions;
+            data::statistics().begin_assertion();
             t();
             actual = "none"sv;
             report_assertion(false, actual, expected, location, matcher_location, msg_expected_exception_type);
@@ -1106,7 +1104,7 @@ namespace tester::assertions
         catch(const E&)
         {
             actual = output::demangle_type(typeid(E));
-            ++data::statistics().successful_assertions;
+            data::statistics().complete_assertion(true);
             report_assertion(true,actual,expected,location,matcher_location);
         }
         catch(const std::exception& e)
@@ -1138,14 +1136,13 @@ namespace tester::assertions
 
     export auto succeed(auto&& msg, const std::source_location location = std::source_location::current())
     {
-        ++data::statistics().total_assertions;
-        ++data::statistics().successful_assertions;
+        data::statistics().record_assertion(true);
         message(true,msg,location);
     }
 
     export auto failed(auto&& msg, const std::source_location location = std::source_location::current())
     {
-        ++data::statistics().total_assertions;
+        data::statistics().record_assertion(false);
         message(false,msg,location);
     }
 
@@ -1225,9 +1222,9 @@ namespace tester::assertions
     export template<is_container A, is_container E>
     auto check_container_eq(const A& actual, const E& expected, const std::source_location location = std::source_location::current())
     {
-        ++data::statistics().total_assertions;
+        data::statistics().begin_assertion();
         const auto [ok, diff_msg] = compare_containers(actual, expected);
-        data::statistics().successful_assertions += ok;
+        data::statistics().complete_assertion(ok);
         
         // Format containers for output
         auto actual_str = format_container(actual);
@@ -1244,9 +1241,9 @@ namespace tester::assertions
     export template<is_container A, is_container E>
     void require_container_eq(const A& actual, const E& expected, const std::source_location location = std::source_location::current())
     {
-        ++data::statistics().total_assertions;
+        data::statistics().begin_assertion();
         const auto [ok, diff_msg] = compare_containers(actual, expected);
-        data::statistics().successful_assertions += ok;
+        data::statistics().complete_assertion(ok);
         
         auto actual_str = format_container(actual);
         auto expected_str = format_container(expected);
@@ -1296,11 +1293,11 @@ namespace tester::assertions
     requires is_string_like<S1> && is_string_like<S2>
     auto check_contains(const S1& haystack, const S2& needle, const std::source_location location = std::source_location::current())
     {
-        ++data::statistics().total_assertions;
+        data::statistics().begin_assertion();
         auto haystack_str = to_std_string(haystack);
         auto needle_str = to_std_string(needle);
         const auto ok = haystack_str.contains(needle_str);
-        data::statistics().successful_assertions += ok;
+        data::statistics().complete_assertion(ok);
         report_assertion(ok, haystack_str, std::string{"contains: "} + needle_str, location);
         return ok;
     }
@@ -1309,11 +1306,11 @@ namespace tester::assertions
     requires is_string_like<S1> && is_string_like<S2>
     void require_contains(const S1& haystack, const S2& needle, const std::source_location location = std::source_location::current())
     {
-        ++data::statistics().total_assertions;
+        data::statistics().begin_assertion();
         auto haystack_str = to_std_string(haystack);
         auto needle_str = to_std_string(needle);
         const auto ok = haystack_str.contains(needle_str);
-        data::statistics().successful_assertions += ok;
+        data::statistics().complete_assertion(ok);
         report_assertion(ok, haystack_str, std::string{"contains: "} + needle_str, location);
         if (!ok) {
             throw assertion_failure{"String does not contain expected substring: " + needle_str};
@@ -1361,11 +1358,11 @@ namespace tester::assertions
     requires is_string_like<S1> && is_string_like<S2>
     auto check_starts_with(const S1& str, const S2& prefix, const std::source_location location = std::source_location::current())
     {
-        ++data::statistics().total_assertions;
+        data::statistics().begin_assertion();
         auto str_val = to_std_string(str);
         auto prefix_val = to_std_string(prefix);
         const auto ok = string_starts_with(str, prefix_val);
-        data::statistics().successful_assertions += ok;
+        data::statistics().complete_assertion(ok);
         report_assertion(ok, str_val, std::string{"starts with: "} + prefix_val, location);
         return ok;
     }
@@ -1374,11 +1371,11 @@ namespace tester::assertions
     requires is_string_like<S1> && is_string_like<S2>
     void require_starts_with(const S1& str, const S2& prefix, const std::source_location location = std::source_location::current())
     {
-        ++data::statistics().total_assertions;
+        data::statistics().begin_assertion();
         auto str_val = to_std_string(str);
         auto prefix_val = to_std_string(prefix);
         const auto ok = string_starts_with(str, prefix_val);
-        data::statistics().successful_assertions += ok;
+        data::statistics().complete_assertion(ok);
         report_assertion(ok, str_val, std::string{"starts with: "} + prefix_val, location);
         if (!ok) {
             throw assertion_failure{"String does not start with expected prefix: " + prefix_val};
@@ -1389,11 +1386,11 @@ namespace tester::assertions
     requires is_string_like<S1> && is_string_like<S2>
     auto check_ends_with(const S1& str, const S2& suffix, const std::source_location location = std::source_location::current())
     {
-        ++data::statistics().total_assertions;
+        data::statistics().begin_assertion();
         auto str_val = to_std_string(str);
         auto suffix_val = to_std_string(suffix);
         const auto ok = string_ends_with(str, suffix_val);
-        data::statistics().successful_assertions += ok;
+        data::statistics().complete_assertion(ok);
         report_assertion(ok, str_val, std::string{"ends with: "} + suffix_val, location);
         return ok;
     }
@@ -1402,11 +1399,11 @@ namespace tester::assertions
     requires is_string_like<S1> && is_string_like<S2>
     void require_ends_with(const S1& str, const S2& suffix, const std::source_location location = std::source_location::current())
     {
-        ++data::statistics().total_assertions;
+        data::statistics().begin_assertion();
         auto str_val = to_std_string(str);
         auto suffix_val = to_std_string(suffix);
         const auto ok = str_val.ends_with(suffix_val);
-        data::statistics().successful_assertions += ok;
+        data::statistics().complete_assertion(ok);
         report_assertion(ok, str_val, std::string{"ends with: "} + suffix_val, location);
         if (!ok) {
             throw assertion_failure{"String does not end with expected suffix: " + suffix_val};
@@ -1416,9 +1413,9 @@ namespace tester::assertions
     // For char overloads (check if string contains a character) - these must come before container template to avoid ambiguity
     export auto check_contains(const std::string& haystack, char needle, const std::source_location location = std::source_location::current())
     {
-        ++data::statistics().total_assertions;
+        data::statistics().begin_assertion();
         const auto ok = haystack.contains(needle);
-        data::statistics().successful_assertions += ok;
+        data::statistics().complete_assertion(ok);
         auto needle_str = std::string(1, needle);
         report_assertion(ok, haystack, std::string{"contains: '"} + needle_str + "'", location);
         return ok;
@@ -1426,9 +1423,9 @@ namespace tester::assertions
 
     export void require_contains(const std::string& haystack, char needle, const std::source_location location = std::source_location::current())
     {
-        ++data::statistics().total_assertions;
+        data::statistics().begin_assertion();
         const auto ok = haystack.contains(needle);
-        data::statistics().successful_assertions += ok;
+        data::statistics().complete_assertion(ok);
         auto needle_str = std::string(1, needle);
         report_assertion(ok, haystack, std::string{"contains: '"} + needle_str + "'", location);
         if (!ok) {
@@ -1446,10 +1443,10 @@ namespace tester::assertions
     requires is_container<C> && (!is_string_like<C>)
     auto check_contains(const C& container, const E& element, const std::source_location location = std::source_location::current())
     {
-        ++data::statistics().total_assertions;
+        data::statistics().begin_assertion();
         const auto ok = std::ranges::any_of(container,
             [&element](const auto& candidate){ return values_equal(candidate, element); });
-        data::statistics().successful_assertions += ok;
+        data::statistics().complete_assertion(ok);
         
         auto container_str = format_container(container);
         report_assertion(ok, container_str,
@@ -1461,10 +1458,10 @@ namespace tester::assertions
     requires is_container<C> && (!is_string_like<C>)
     void require_contains(const C& container, const E& element, const std::source_location location = std::source_location::current())
     {
-        ++data::statistics().total_assertions;
+        data::statistics().begin_assertion();
         const auto ok = std::ranges::any_of(container,
             [&element](const auto& candidate){ return values_equal(candidate, element); });
-        data::statistics().successful_assertions += ok;
+        data::statistics().complete_assertion(ok);
         
         auto container_str = format_container(container);
         report_assertion(ok, container_str,
