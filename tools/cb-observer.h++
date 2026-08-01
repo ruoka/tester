@@ -134,6 +134,7 @@ enum class rebuild_kind
     not_in_cache,
     source_stale,
     header_stale,
+    header_missing,
     depfile_unusable,
     object_missing,
     object_stale,
@@ -156,6 +157,7 @@ constexpr std::string_view rebuild_kind_name(rebuild_kind kind)
         case rebuild_kind::not_in_cache: return "not_in_cache";
         case rebuild_kind::source_stale: return "source_stale";
         case rebuild_kind::header_stale: return "header_stale";
+        case rebuild_kind::header_missing: return "header_missing";
         case rebuild_kind::depfile_unusable: return "depfile_unusable";
         case rebuild_kind::object_missing: return "object_missing";
         case rebuild_kind::object_stale: return "object_stale";
@@ -186,6 +188,8 @@ constexpr std::string_view rebuild_hint(rebuild_kind kind)
             return "Source mtime newer than cached compile timestamp.";
         case rebuild_kind::header_stale:
             return "An included header is newer than this object (from the compiler depfile).";
+        case rebuild_kind::header_missing:
+            return "An included project header from the compiler depfile is missing or unreadable.";
         case rebuild_kind::depfile_unusable:
             return "Compiler depfile missing, unreadable, or malformed; header freshness cannot be verified.";
         case rebuild_kind::object_missing:
@@ -285,6 +289,8 @@ inline std::string compile_rebuild_message(const compile_unit& unit, const rebui
             return "Rebuilding " + label + " because source is newer than the cached object";
         case rebuild_kind::header_stale:
             return "Rebuilding " + label + " because included header " + info.trigger_path + " is newer than its object";
+        case rebuild_kind::header_missing:
+            return "Rebuilding " + label + " because included header " + info.trigger_path + " is missing or unreadable";
         case rebuild_kind::depfile_unusable:
             return "Rebuilding " + label + " because depfile " + info.trigger_path + " cannot be read; its header dependencies are unknown";
         case rebuild_kind::pcm_stale:

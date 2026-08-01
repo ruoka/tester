@@ -42,8 +42,9 @@ commit on `main`; there is no supported tag yet.
 - **CB rebuild telemetry**: every non-cached compile or link reports why, as a short
   `rebuild_reason` and a structured `rebuild` naming the module or triggering path.
 - **`#include` tracking** through compiler depfiles, so editing a header rebuilds what
-  included it (`header_stale`), and an unusable depfile rebuilds rather than guessing
-  (`depfile_unusable`).
+  included it (`header_stale`), a missing or unreadable project header named by the
+  depfile rebuilds (`header_missing`) instead of keeping a silent cache hit, and an
+  unusable depfile rebuilds rather than guessing (`depfile_unusable`).
 - **Cache inspection**: `cache status` reports all four cached artefacts and whether each
   matches the current toolchain profile; `cache invalidate` removes them.
 - **`compile_commands.json` from `list`**: writes a clangd compilation database at the

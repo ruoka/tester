@@ -2080,8 +2080,11 @@ private:
 
             auto error = std::error_code{};
             const auto timestamp = fs::last_write_time(resolved, error);
+            // Missing or unreadable: the depfile still names this header, so a cache hit
+            // would keep shipping an object built against content that is gone. Force a
+            // recompile; clang then reports the include failure if the source still needs it.
             if(error)
-                continue;
+                return output::rebuild_info{.kind = output::rebuild_kind::header_missing, .trigger_path = resolved};
             if(timestamp > object_timestamp)
                 return output::rebuild_info{.kind = output::rebuild_kind::header_stale, .trigger_path = resolved};
         }
