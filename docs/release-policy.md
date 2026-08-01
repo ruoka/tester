@@ -83,6 +83,12 @@ whatever the source compatibility.
 **Product vs dependency.** A consumer's own SemVer (e.g. YarDB) is independent of tester's
 major. Bumping tester MAJOR does not by itself bump the product.
 
+**No bump required.** Self-test-only, docs-only, or CI-only changes that leave the public
+surface above unchanged do **not** require a new SemVer tag. Consumers updating their own
+`*.test.c++` to a newer assertion form (e.g. after a deprecation) likewise do not, by
+themselves, force a consumer product/library tag — see
+[YarDB versioning — When not to bump](https://github.com/ruoka/YarDB/blob/master/docs/versioning.md#when-not-to-bump).
+
 ## Deprecation
 
 A public name that is going away is first marked deprecated, with its replacement named in
