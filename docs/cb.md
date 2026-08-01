@@ -135,7 +135,7 @@ CMake excels at portable project configuration, dependency fetching, install tre
 
 ### CMake + Ninja (the other alternative in this repo)
 
-[`CMakeLists.txt`](../CMakeLists.txt) is the third supported path: CMake's own scanner orders the modules, Ninja runs the build, and the result is the same library and `test_runner`. It exists for two audiences — projects that already build with CMake and would rather not adopt CB, and anyone looking for a worked example of C++23 modules under CMake, since the interesting parts (`FILE_SET CXX_MODULES`, `import std`, a static library plus a runner that must keep its self-registering test objects) are all exercised here rather than sketched.
+[`CMakeLists.txt`](../CMakeLists.txt) is the third supported path: CMake's own scanner orders the modules, Ninja runs the build, and the result is the same library and `test_runner`. It exists for two audiences — projects that already build with CMake and would rather not adopt CB, and anyone looking for a worked example of C++23 modules under CMake, since the interesting parts (`FILE_SET CXX_MODULES`, a `std` module target built from libc++'s own source, a static library plus a runner that must keep its self-registering test objects) are all exercised here rather than sketched.
 
 ```bash
 cmake -S . -B build-cmake -G Ninja -DCMAKE_BUILD_TYPE=Debug
@@ -145,9 +145,9 @@ cmake --build build-cmake --target run_all_tests  # examples included
 
 | Constraint | Why |
 |------------|-----|
-| CMake 4.0 or 4.1 | `import std` is unlocked with `CMAKE_EXPERIMENTAL_CXX_IMPORT_STD`, and the gate UUID is accepted only by the release that minted it |
+| CMake 4.x | One supported line, pinned to 4.1.2 in CI and the dev container; older releases are untested |
 | Ninja generator | Module dependency scanning; Make generators do not do it |
-| No `CXXFLAGS` | CMake detects the standard library without it, so `import std` resolves against libstdc++ and the configure fails. Flags belong in `CMAKE_CXX_FLAGS_INIT` in the file, which also reaches CMake's internal `std` target |
+| `std` built from libc++ source | `${LLVM_PREFIX}/share/libc++/v1/std.cppm` is compiled as an ordinary module target, the way `STD_LLVM_PREFIX` is used in `config/compiler.mk`. CMake can supply `std` itself, but it finds the source via `clang++ -print-file-name=libc++.modules.json`, and apt.llvm.org installs a second copy of that manifest under `/usr/lib/<triple>` whose relative `source-path` only resolves from `${LLVM_PREFIX}/lib` — clang answers with the broken copy and the configure dies on a missing `/lib/share/libc++/v1/std.cppm` |
 | Module set is hand-maintained | The globs pick up files, but the `FILE_SET` wiring is not derived from `import` lines the way CB's graph is |
 
 Like Make, it has no object cache and no build telemetry, and it has no `list`-equivalent inventory. CI gates it warning-free for `Debug` and `Release` with `[self]` and the standalone suite (`cmake-ninja-build-and-test`); the dev container ships the pinned CMake and Ninja.

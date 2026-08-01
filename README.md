@@ -257,12 +257,14 @@ cmake --build build-cmake --target run_tests      # [self] suite
 cmake --build build-cmake --target run_all_tests  # everything, examples included
 ```
 
-It needs **CMake 4.0 or 4.1 and Ninja**: `import std` is unlocked with
-`CMAKE_EXPERIMENTAL_CXX_IMPORT_STD`, whose gate UUID only the CMake release that minted it
-accepts, and module scanning needs the Ninja generator. Build type maps the way
-`config/compiler.mk` does (`Release` optimizes, `Debug` drops to `-O0`); `-DTESTER_STATIC=ON`
-mirrors `STATIC=1`. Do **not** set `CXXFLAGS`: CMake detects the standard library without it
-and then resolves `import std` against libstdc++, which fails the configure.
+It needs **CMake 4.x and Ninja** — CI and the dev container both install 4.1.2, and module
+scanning needs the Ninja generator. `std` is compiled from libc++'s own
+`share/libc++/v1/std.cppm` under `LLVM_PREFIX`, exactly as
+[`config/compiler.mk`](config/compiler.mk) does it, rather than through CMake's own
+`import std` support; that keeps the toolchain assumptions identical across all three build
+paths. Point `-DLLVM_PREFIX=` at your LLVM if it is not `/usr/local/llvm` (macOS) or
+`/usr/lib/llvm-21` (Linux). Build type maps the way `config/compiler.mk` does (`Release`
+optimizes, `Debug` drops to `-O0`); `-DTESTER_STATIC=ON` mirrors `STATIC=1`.
 
 CI gates this path for `Debug` and `Release` on every push (`cmake-ninja-build-and-test`),
 warning-free, with `[self]` and the standalone suite. What it does not have, like make, is
@@ -407,7 +409,7 @@ Tester fits module-native projects that want minimal glue and agent-friendly out
 
 **Minimum toolchain: Clang 21** with libc++ modules (`std.cppm`). Newer Clang is fine and expected — macOS development typically uses a locally built trunk (today Clang 23), while Linux CI and the dev container pin Clang 21. The project does not require that exact version; 21 is the floor CI proves on every push.
 
-Neither alternative build path is needed for CB: the `Makefile` additionally wants `clang-scan-deps` (ships with the toolchain), and `CMakeLists.txt` wants CMake 4.0 or 4.1 with Ninja. The dev container has all three.
+Neither alternative build path is needed for CB: the `Makefile` additionally wants `clang-scan-deps` (ships with the toolchain), and `CMakeLists.txt` wants CMake 4.x with Ninja. The dev container has all three.
 
 Both platforms run the same checks — the `[self]` suite (via CB, via the Makefile runner, and via the CMake + Ninja build), the CB and MCP smoke tests, and JSONL schema validation. CI runs them on Linux with Clang 21 on every push; on macOS they are run locally against a locally built LLVM, because no clang available on a hosted macOS runner builds C++23 modules yet. A macOS lane will be added once one does. Windows is not supported. Test steps also emit `--junit=` reports (uploaded as artifacts); gate suites are summarized in the job summary via `test-summary/action`.
 

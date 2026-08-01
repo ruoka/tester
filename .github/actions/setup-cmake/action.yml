@@ -3,9 +3,9 @@ description: "Install Ninja and a pinned CMake release for the CMakeLists.txt bu
 inputs:
   cmake-version:
     description: >
-      CMake release to install. Pinned rather than taken from the runner image because
-      CMakeLists.txt unlocks `import std` with a UUID only the release that minted it
-      accepts — .devcontainer/Dockerfile pins the same version.
+      CMake release to install. CMakeLists.txt requires CMake 4.x, which the runner image
+      does not ship, and the version is pinned rather than floating so the lane fails on
+      our changes instead of on a new CMake — .devcontainer/Dockerfile pins the same one.
     required: false
     default: "4.1.2"
 

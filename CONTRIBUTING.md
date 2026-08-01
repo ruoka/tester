@@ -12,9 +12,8 @@ a change is submitted, and the conventions the code follows.
   LLVM — see [`docs/clang-modules-macos.md`](docs/clang-modules-macos.md). Windows is not
   supported.
 - **`clang-scan-deps`** (ships with the toolchain) — required only for the Makefile path.
-- **CMake 4.0 or 4.1 and Ninja** — required only for the `CMakeLists.txt` path. The CMake
-  version is narrow because `import std` is unlocked with a gate UUID that only the release
-  which minted it accepts.
+- **CMake 4.x and Ninja** — required only for the `CMakeLists.txt` path. CI and the dev
+  container install 4.1.2; older CMake is not tested.
 - **Python 3** — for the JSONL schema validator and the MCP bridge.
 - **Git.** There are no submodules in this repository; a plain `git clone` is complete.
 

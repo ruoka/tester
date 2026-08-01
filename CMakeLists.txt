@@ -1,4 +1,7 @@
-cmake_minimum_required(VERSION 3.30)
+# FILE_SET CXX_MODULES works from 3.28, but this project supports one CMake line:
+# 4.x, which is what CI and the dev container install (4.1.2) and what macOS
+# development uses. Older releases are not tested and not supported.
+cmake_minimum_required(VERSION 4.0)
 
 # --- Toolchain ---------------------------------------------------------------
 # Same assumption as config/compiler.mk: Clang 21+ with libc++ modules, from a
@@ -16,20 +19,14 @@ if(NOT DEFINED CMAKE_CXX_COMPILER AND NOT DEFINED ENV{CXX}
   set(CMAKE_CXX_COMPILER "${LLVM_PREFIX}/bin/clang++")
 endif()
 
-# --- import std --------------------------------------------------------------
-# Both of these must be set before project() enables CXX, otherwise the
-# __CMAKE::CXX23 target does not exist. The gate UUID is CMake-version specific;
-# this one is CMake 4.0/4.1.
-set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD "d0edc3af-4c50-42ea-a356-e2862fe7a444")
+# --- Language ----------------------------------------------------------------
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_CXX_MODULE_STD ON)
 
-# These have to reach CMake's internal std-module target too, or std.pcm is
-# built with a config the importing TUs reject — and on Linux the whole
-# import-std probe resolves against libstdc++ instead. add_compile_options()
-# runs too late for that target, CMAKE_CXX_FLAGS_INIT does not.
+# The compiler checks project() and find_package() run have to see the same
+# standard library as the build itself, or they configure against libstdc++.
+# add_compile_options() runs too late for those, CMAKE_CXX_FLAGS_INIT does not.
 set(CMAKE_CXX_FLAGS_INIT "-stdlib=libc++ -fexperimental-library")
 if(NOT CMAKE_HOST_APPLE)
   # Debian's clang++-21 does not find libc++-21-dev's headers on its own.
@@ -78,6 +75,31 @@ endif()
 
 find_package(Threads REQUIRED)
 
+# --- std module --------------------------------------------------------------
+# Compiled from libc++'s own source, the way config/compiler.mk (STD_LLVM_PREFIX)
+# and cb do it. CMake can provide `std` itself, but it finds the source through
+# `clang++ -print-file-name=libc++.modules.json`, and apt.llvm.org's libc++-21-dev
+# installs a second copy of that manifest under /usr/lib/<triple> whose relative
+# source-path only resolves from ${LLVM_PREFIX}/lib. Clang answers with that copy,
+# so the build looks for /lib/share/libc++/v1/std.cppm and configure fails. Naming
+# the file keeps both platforms on one path, and off a CMake-version-specific gate.
+set(TESTER_STD_MODULE_DIR "${LLVM_PREFIX}/share/libc++/v1")
+if(NOT EXISTS "${TESTER_STD_MODULE_DIR}/std.cppm")
+  message(FATAL_ERROR
+    "libc++'s std module source is missing: ${TESTER_STD_MODULE_DIR}/std.cppm\n"
+    "Install libc++ for this toolchain, or point -DLLVM_PREFIX at one that ships it.")
+endif()
+
+add_library(std STATIC)
+target_sources(std
+  PUBLIC
+    FILE_SET CXX_MODULES
+    BASE_DIRS ${TESTER_STD_MODULE_DIR}
+    FILES "${TESTER_STD_MODULE_DIR}/std.cppm"
+)
+# std is a reserved module name everywhere except in libc++'s own source.
+target_compile_options(std PRIVATE -Wno-reserved-module-identifier)
+
 # --- Library -----------------------------------------------------------------
 file(GLOB MODULE_INTERFACES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/tester/*.c++m"
@@ -91,7 +113,7 @@ target_sources(tester
     FILES ${MODULE_INTERFACES}
 )
 target_include_directories(tester PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/tester)
-target_link_libraries(tester PUBLIC Threads::Threads)
+target_link_libraries(tester PUBLIC std Threads::Threads)
 
 # --- Test runner -------------------------------------------------------------
 # Tests self-register from static initializers, so their objects go straight

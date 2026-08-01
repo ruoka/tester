@@ -297,8 +297,8 @@ jobs:
       - name: Setup LLVM (shared)
         uses: ./.github/actions/setup-llvm
 
-      # Pinned CMake + Ninja; the devcontainer installs the same versions so the two
-      # environments agree on the import-std gate.
+      # Pinned CMake 4.x + Ninja; the devcontainer installs the same pin so both
+      # environments build this path with one CMake.
       - name: Setup CMake + Ninja (shared)
         uses: ./.github/actions/setup-cmake
 
@@ -308,10 +308,6 @@ jobs:
           ninja --version
           clang++-21 --version | head -1
 
-      # Deliberately no CXXFLAGS: CMake appends it to CMAKE_CXX_FLAGS_INIT for the
-      # build but detects the standard library without it, so setting it makes the
-      # import-std probe resolve against libstdc++ and the configure fail on a
-      # missing libstdc++.modules.json.
       - name: Configure (${{ matrix.config }})
         run: cmake -S . -B build-cmake -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.config }}
 

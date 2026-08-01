@@ -20,10 +20,14 @@ tag; cutting a release renames that section.
   recompiles rather than reusing BMIs the other scheme produced.
 - **CMake + Ninja build path** ([`CMakeLists.txt`](CMakeLists.txt)) — a third way to build the
   same library and `test_runner`, for consumers who already build with CMake and as a worked
-  example of C++23 modules under CMake (`FILE_SET CXX_MODULES` plus `import std`). Targets
-  `run_tests` / `run_all_tests`; `-DTESTER_STATIC=ON` mirrors the Makefile's `STATIC=1` and
-  build types map to the same flags `config/compiler.mk` uses. Requires CMake 4.0 or 4.1 (the
-  `import std` gate UUID is version-specific) and the Ninja generator.
+  example of C++23 modules under CMake (`FILE_SET CXX_MODULES` plus a `std` module target).
+  Targets `run_tests` / `run_all_tests`; `-DTESTER_STATIC=ON` mirrors the Makefile's `STATIC=1`
+  and build types map to the same flags `config/compiler.mk` uses. `std` is compiled from
+  `${LLVM_PREFIX}/share/libc++/v1/std.cppm` exactly as `config/compiler.mk` does it, rather
+  than through CMake's own `import std` support, which resolves the source through a libc++
+  manifest that apt.llvm.org installs twice — the copy clang answers with points at a path
+  that does not exist, so every Ubuntu configure failed. Requires CMake 4.x and the Ninja
+  generator.
 - **CMake CI lane** (`cmake-ninja-build-and-test`): configure and build for `Debug` and
   `Release`, failing on any compiler `warning:`, then `[self]` sequentially and at
   `--jobs=$(nproc)`, the unfiltered standalone suite, and the `run_tests` target. The pinned
