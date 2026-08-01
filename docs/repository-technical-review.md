@@ -2,12 +2,12 @@
 
 **Review scope:** local repository implementation, documentation, CI configuration, and
 public GitHub repository context.
-**Date:** 1 August 2026 (supersedes the earlier 1 August draft at 8.3 and the 31 July
-review at 8.0; that review superseded 29 July at 7.2)
+**Date:** 1 August 2026 (amended same day for the `v2.0.0` cut; supersedes the earlier
+1 August draft at 8.3 and the 31 July review at 8.0; that review superseded 29 July at 7.2)
 **Assessment:** **8.5 / 10** — product surface and CI integration caught up with the
 architecture work: JUnit beside JSONL, parallel top-level runs, clangd
-`compile_commands.json`, and a gated Makefile lane. See [Score](#score) for the ladder
-and what still caps it below 9.
+`compile_commands.json`, a gated Makefile lane, and a supported SemVer tag (`v2.0.0`).
+See [Score](#score) for the ladder and what still caps it below 9.
 
 ## Executive Summary
 
@@ -36,10 +36,11 @@ additive JUnit / xUnit XML (`--junit=`), parallel top-level tests (`--jobs=N` on
 text on successful compiles, and a CI job that gates the Makefile path.
 
 The remaining weaknesses are still maturity rather than correctness. CB is still
-verified mainly from the outside; there is a release policy and a changelog but no
-supported tag to pin. Tester is a good fit for focused module-native projects and
-AI-assisted development today, but is not a broad replacement for Catch2, doctest, or
-GoogleTest.
+verified mainly from the outside. Release practice is now exercised: [`v2.0.0`](https://github.com/ruoka/tester/releases/tag/v2.0.0)
+is the first supported modules-era tag, with [`docs/release-policy.md`](release-policy.md)
+and [`CHANGELOG.md`](../CHANGELOG.md) as the contract. Tester is a good fit for focused
+module-native projects and AI-assisted development today, but is not a broad replacement
+for Catch2, doctest, or GoogleTest.
 
 ## What Changed Since the Previous Review
 
@@ -64,7 +65,7 @@ The high-priority findings were fixed while the 31 July review was open:
 | Tag storage | `test_case::tags` is filled once at registration; the filter, the hidden-tag check and `registered_test` read it instead of re-parsing the name |
 | CI honesty | The redundant `test-examples` job is retired and its one real check — `[.demo]` must still fail — gates inside `build-and-test`; the synthetic `eof` step became a real standalone run; static analysis is labelled advisory with its output uploaded |
 | Platform statement | `README.md` says which platform CI verifies on every push, which one is verified on demand, and that Windows is unsupported |
-| Release practice | [`docs/release-policy.md`](release-policy.md) defines the public surface, the versioning rules and the criteria for a release; [`CHANGELOG.md`](../CHANGELOG.md) records public-surface changes as they land |
+| Release practice | [`docs/release-policy.md`](release-policy.md) defines the public surface and SemVer rules; [`CHANGELOG.md`](../CHANGELOG.md) records changes; supported tag [`v2.0.0`](https://github.com/ruoka/tester/releases/tag/v2.0.0) cut 1 August 2026 |
 | Second build path | The Makefile is documented as an alternative to CB rather than as legacy; CI gates `make run_tests` with `[self]` (`makefile-build-and-test`); the dead code its warnings exposed is removed |
 | Document accuracy | `CONTRIBUTING.md` rewritten around both build paths and the checks CI gates; `cb.md`'s make targets corrected against the Makefile; `AGENTS.md` now covers the abort that produces no `summary`; the `[acceptor]` example is gone from the runner's `--help`; every cross-document link and heading anchor checked |
 
@@ -250,15 +251,14 @@ already runs `scan_and_order`.
   parameterization or generators, matcher combinators, death tests, timeouts, repeats,
   shuffling, sharding, and runtime skip. Filtering, dependency ordering, hidden tags,
   BDD nesting, parallel waves, and JUnit beside JSONL are the substitutes that shipped.
-- Release discipline is now *stated* but not yet *exercised*:
-  [`docs/release-policy.md`](release-policy.md) defines the public surface, the semantic
-  versioning rules (including that raising the minimum compiler is breaking), the
-  deprecation window, and the criteria a release must meet — one of which is this review
-  rating the repository at or close to 9 / 10. [`CHANGELOG.md`](../CHANGELOG.md) carries
-  an `Unreleased` section covering everything after the November 2025 pre-release, so a
-  consumer reads a summary instead of commit subjects. What remains is the artefact:
-  no supported tag, so the pin is still a commit. Deliberate for a project that says so
-  out loud, and stated as such in the README.
+- Release discipline is *stated and exercised*:
+  [`docs/release-policy.md`](release-policy.md) defines the public surface, SemVer rules
+  (raising the minimum compiler is MAJOR), the deprecation window, nested consumer
+  `deps/tester` pin alignment, and cut criteria. [`CHANGELOG.md`](../CHANGELOG.md)
+  records the modules-era surface under `[2.0.0]` (1 August 2026). Consumers can pin
+  [`v2.0.0`](https://github.com/ruoka/tester/releases/tag/v2.0.0) (or a later tag /
+  deliberate commit). Ecosystem rule of record:
+  [YarDB `docs/versioning.md`](https://github.com/ruoka/YarDB/blob/master/docs/versioning.md).
 - Backlog discipline, by contrast, is good:
   [`docs/tester-improvements.md`](tester-improvements.md) tracks roughly a hundred
   implemented items against about sixty proposed ones, grouped by subsystem, and there
@@ -399,10 +399,10 @@ CI UIs; JSONL remains the agent contract.
 ### Production readiness
 
 Credible for a controlled Clang 21 environment and a good candidate for internal or
-embedded use where CB's assumptions are accepted. Not yet broadly production-ready as
-a portable library product, because platform coverage, release discipline, and some
-ecosystem surface (fixtures, generators) remain incomplete — not because CI cannot read
-the results.
+embedded use where CB's assumptions are accepted. A supported tag exists (`v2.0.0`).
+Not yet broadly production-ready as a portable library product, because platform coverage
+and some ecosystem surface (fixtures, generators) remain incomplete — not because CI
+cannot read the results or because there is nothing to pin.
 
 ## Recommendations
 
@@ -447,9 +447,10 @@ the results.
    gates; fix the `[acceptor]` example.~~ Done, together with the `cb.md`, `README.md`, and
    `AGENTS.md` corrections listed above. What remains is `make tools` on macOS.
 4. ~~Publish versioning, compatibility, and changelog practices for submodule
-   consumers.~~ Done: [`docs/release-policy.md`](release-policy.md) and a maintained
-   [`CHANGELOG.md`](../CHANGELOG.md). What is left is the tag itself, which the policy
-   gates on this review — see the note under Score.
+   consumers; cut a supported tag.~~ Done: [`docs/release-policy.md`](release-policy.md),
+   [`CHANGELOG.md`](../CHANGELOG.md), and supported tag
+   [`v2.0.0`](https://github.com/ruoka/tester/releases/tag/v2.0.0) (1 August 2026), with
+   nested consumer pins required to stay aligned (YarDB `docs/versioning.md`).
 5. ~~Route the compiler probe and version stamp through `invoke_shell`.~~ Done: bare
    `LLVM_CXX` / `CXX` names are looked up with a quoted `sh -c 'command -v …'` through
    `invoke_shell`, and `clang++ --version` writes the stamp the same way. Nothing reaches
@@ -488,29 +489,28 @@ in ~61 s; MCP smoke remains 9.
 
 Why +0.5 from 8.0 (and +0.2 past the interim 8.3): the architecture catch-up alone did
 not clear the adopter and CI gaps. JUnit, parallel runs, clangd export, and a gated
-second build path do. That is enough for 8.5; it is not yet a release.
+second build path do. The same-day `v2.0.0` cut closes the “nothing to pin” gap that
+used to sit beside that score; the rating stays 8.5 until CB is more directly testable
+and the remaining framework-surface choices are either shipped or explicitly declined.
 
-Three things still cap it below 9, in order of weight:
+Two things still cap it below 9, in order of weight:
 
 1. **CB is verifiable mainly by compiling.** 29 of 44 smoke cases still invoke a real
    toolchain (the rest are list-only), so the build system's own correctness costs ~61 s
    to confirm and no internal function can be questioned directly. This is the one cap
    that is entirely within reach today.
-2. **No tag to pin.** The compatibility half is answered —
-   [`docs/release-policy.md`](release-policy.md) and [`CHANGELOG.md`](../CHANGELOG.md).
-   What is left cannot be closed by documentation: there is no version to depend on.
-   The policy still gates a release on this review approaching 9 / 10, so the score and
-   the tag remain a bootstrap pair — neither finishes the other alone.
-3. **Framework edges inside the shipped surface.** The deliberate absence of fixtures /
+2. **Framework edges inside the shipped surface.** The deliberate absence of fixtures /
    generators / timeouts is what a careful adopter still weighs. Fixtures remain
    strategic.
+
+~~**No tag to pin.**~~ Closed 1 August 2026: supported [`v2.0.0`](https://github.com/ruoka/tester/releases/tag/v2.0.0)
+under [`docs/release-policy.md`](release-policy.md).
 
 An 8.5 does not require becoming Catch2. It requires that CI and agents can trust the
 results they already get, and that the remaining gaps are ones a consumer chooses to
 live with rather than discovers. A path to ~9 / 10 from here is mostly product maturity:
-CB extractable enough for direct tests, a supported tag under the existing policy, and
-either enough of the missing surface or a clear "won't do" list that adopters are not
-surprised.
+CB extractable enough for direct tests, and either enough of the missing surface or a
+clear "won't do" list that adopters are not surprised.
 
 ## Overall Assessment
 
@@ -521,7 +521,7 @@ CB's publishing discipline and then shipping the integration pieces (JUnit, para
 runs, clangd, Makefile gate) that make that discipline usable outside the repo.
 
 It is still not maturity-equivalent to established general-purpose frameworks, for the
-three reasons above plus the toolchain constraint that Clang 21 and libc++ modules
-impose. The recommended path remains targeted hardening rather than a rewrite —
-preserve the focused modules-first identity, make CB's own tests fast enough to run per
-edit, and cut a supported tag when the policy's bar is met.
+reasons above plus the toolchain constraint that Clang 21 and libc++ modules impose.
+The recommended path remains targeted hardening rather than a rewrite — preserve the
+focused modules-first identity, make CB's own tests fast enough to run per edit, and
+keep cutting SemVer tags under the existing policy as the public surface moves.

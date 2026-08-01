@@ -10,6 +10,12 @@ tag; cutting a release renames that section.
 
 ## Unreleased
 
+### Changed
+
+- **Technical review** — [`docs/repository-technical-review.md`](docs/repository-technical-review.md)
+  amended so the closed “no supported tag” finding reflects [`v2.0.0`](https://github.com/ruoka/tester/releases/tag/v2.0.0);
+  remaining caps under 9 are CB extractability and framework-surface choices.
+
 ## [2.0.0] — 2026-08-01
 
 First **supported** modules-era release. Minimum toolchain: Clang 21+ with libc++ modules
