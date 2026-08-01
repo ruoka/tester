@@ -217,6 +217,9 @@ jobs:
           clang++-21 --version | head -1
           clang-scan-deps-21 --version | head -1
 
+      - name: Make DEBUG pie flags (Linux-only)
+        run: ./tests/make/debug_flags.sh
+
       - name: Build with make (warning-free)
         run: |
           set -euo pipefail

@@ -86,9 +86,17 @@ endif
 # above (a plain := cannot change a variable set with override).
 ifeq ($(DEBUG),1)
 override CXXFLAGS := $(filter-out -O3 -O2 -O1 -O0,$(CXXFLAGS)) -O0
-override CXXFLAGS += -fno-omit-frame-pointer -fno-pie
+override CXXFLAGS += -fno-omit-frame-pointer
 override LDFLAGS := $(filter-out -O3 -O2 -O1 -O0,$(LDFLAGS)) -O0
+# Non-PIE keeps backtrace addresses resolvable on Linux; arm64 macOS rejects both
+# -fno-pie and -no-pie (same gate as CMakeLists.txt). After Darwin LDFLAGS became
+# `override`, a bare DEBUG add applied those flags on macOS and broke `make DEBUG=1`.
+ifeq ($(shell uname -s),Linux)
+override CXXFLAGS += -fno-pie
 override LDFLAGS += -no-pie -rdynamic
+else
+override LDFLAGS += -rdynamic
+endif
 endif
 
 ifeq ($(STATIC),1)
