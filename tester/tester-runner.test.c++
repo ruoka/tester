@@ -352,26 +352,44 @@ auto register_tests()
         require_false(tr.included("test_case [other] rejected by owned filter"));
     };
 
-    test_case("test_case [self] observer_instance reconfigures on each call") = []
+    // A live jsonl sink must survive further observer_instance calls. Emplacing while
+    // enabled rebuilt jsonl_context with enabled=false and dropped summary/eof for the
+    // rest of the process — every --jsonl [self] run that hit the old reconfigure test.
+    test_case("test_case [self] observer_instance does not disable a live jsonl sink") = []
     {
         using output::jsonl::jsonl_mode;
 
-        auto& jsonl = output::jsonl::observer_instance(std::cout, std::clog, jsonl_mode::summary);
-        require_true(jsonl.output_mode() == jsonl_mode::summary);
+        auto& live = output::jsonl::observer_instance(std::cout, std::clog, jsonl_mode::trace);
+        require_true(live.is_enabled());
+        const auto mode_before = live.output_mode();
 
-        auto& again = output::jsonl::observer_instance(std::cout, std::clog, jsonl_mode::trace);
-        require_eq(std::addressof(jsonl), std::addressof(again));
-        require_true(again.output_mode() == jsonl_mode::trace);
+        auto& again = output::jsonl::observer_instance(std::cout, std::clog, jsonl_mode::summary);
+        require_eq(std::addressof(live), std::addressof(again));
+        require_true(again.is_enabled());
+        // Mode sticks while the sink is live — mid-run flips would race parallel workers.
+        require_true(again.output_mode() == mode_before);
 
+        // Console is not the active capture under --jsonl, so inactive reconfigure still
+        // replaces construction-time flags (the startup multi-setup path).
         auto& console = output::console::observer_instance(std::clog, std::clog, false);
         require_false(console.result_line);
         auto& console_again = output::console::observer_instance(std::clog, std::clog, true);
         require_eq(std::addressof(console), std::addressof(console_again));
         require_true(console_again.result_line);
-
-        // Leave the process singletons in a harmless default shape for later in-process use.
-        output::jsonl::observer_instance(std::cout, std::clog, jsonl_mode::failures);
         output::console::observer_instance(std::clog, std::clog, false);
+    };
+
+    test_case("test_case [self] jsonl summary survives observer_instance during the run") = []
+    {
+        const auto result = run_test_runner(
+            {"--jsonl=failures", "--tags=does not disable a live jsonl sink"});
+
+        require_false(result.signaled);
+        require_eq(result.exit_code, 0);
+        const auto summary = tester_selftest::find_event(result.stdout_text, "summary");
+        require_false(summary.empty());
+        require_true(summary.contains("\"passed\":true"));
+        require_false(tester_selftest::find_event(result.stdout_text, "eof").empty());
     };
 
     test_case("test_case [self] output observers receive assertion events") = []
