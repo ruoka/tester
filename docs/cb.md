@@ -40,11 +40,11 @@ The **test runner** is separate: crash **stack traces** in `test_runner.c++` use
 Condensed from the original project pitch — why teams pick CB over wiring CMake + CTest for ruoka-style repos:
 
 - **Pure C++** — build orchestration lives in `cb.c++`; no CMake scripting, Makefile generation, YAML/TOML, or helper languages
-- **Single-file transparency** — the ~2400-line orchestrator remains in one place, with presentation split into focused console/JSONL observers
+- **Single-file transparency** — the ~3,300-line orchestrator remains in one place, with presentation split into focused console/JSONL observers
 - **Zero config** — conventions (`*.c++m`, `import` lines, co-located `*.test.c++`) replace `CMakeLists.txt`
 - **Fast incremental loops** — object timestamp cache, link signature cache, transitive PCM staleness; suited to Docker/CI where rebuild time matters
 - **No extra learning curve** — if you know C++ modules and can read `cb.c++`, you understand the build; no second DSL
-- **Cross-platform** — automatic OS detection (`build-<os>-<config>/`), Linux (Clang 21) and macOS (`/usr/local/llvm`) with per-repo `CB.sh` tuning
+- **Cross-platform** — automatic OS detection (`build-<os>-<config>/`), Linux CI on Clang 21 (minimum) and macOS on a locally built LLVM (often newer) with per-repo `CB.sh` tuning
 - **Self-contained embed** — one file to vendor; parent repos add a thin `CB.sh` config block (`tools/CB.sh.template`)
 - **CI-friendly** — `./tools/CB.sh ci`, GitHub Actions badge, JSONL on stdout for agents; human wrapper logs on stderr
 
@@ -191,9 +191,9 @@ Pass `std.cppm` as the **first** argument when auto-detection fails: `./tools/CB
 
 **Unknown arguments exit `2`.** CB validates its whole argument list, so a typo such as `--tag=` (for `--tags=`) fails with a message instead of silently building or testing something you did not ask for.
 
-**`--jobs=N`** bounds concurrent compile and link processes. Without it CB uses `hardware_concurrency()`; the cap exists because each `clang++` invocation on a module-heavy TU can peak at hundreds of megabytes, so an unbounded fan-out across a wide dependency level can exhaust memory.
+**`--jobs=N`** bounds concurrent compile and link processes. Without it CB uses `hardware_concurrency()`; the cap exists because each `clang++` invocation on a module-heavy TU can peak at hundreds of megabytes, so an unbounded fan-out across a wide dependency level can exhaust memory. When `--jobs=` is set on a `test` invocation, CB also forwards it to `test_runner` (runner default remains `1` = sequential).
 
-CB forwards common `test_runner` flags without `--`: `--tags=`, `--list`, `--jsonl[=summary|failures|trace]`, `--jsonl-output-max-bytes=…`, and `--slowest=…`.
+CB forwards common `test_runner` flags without `--`: `--tags=`, `--list`, `--jsonl[=summary|failures|trace]`, `--jsonl-output-max-bytes=…`, `--slowest=…`, `--jobs=…`, `--junit=<path>`, and `--xunit-xml=<path>`.
 
 Environment variables for **bootstrap** (not test output): `LLVM_PATH`, `CXX`, `CB_INCLUDE_FLAGS`. See [Requirements](../README.md#requirements) in the README. macOS toolchain: [clang-modules-macos.md](clang-modules-macos.md) ([LLVM build docs](https://llvm.org/docs/GettingStarted.html)).
 
@@ -212,7 +212,7 @@ Environment variables for **bootstrap** (not test output): `LLVM_PATH`, `CXX`, `
 | `llvm` | LLVM prefix derived from `std.cppm` |
 | `cxx` | Resolved `clang++` path (`LLVM_CXX` / `CXX` override or `llvm/bin/clang++`) |
 | `cxx_sig` | Compiler binary `size:mtime_ns` (detects toolchain binary swaps) |
-| `clang_ver` | First line of `clang++ --version` (probed once per CB run via `std::system`, written to `cache/compiler-version.txt`, read with `std::ifstream`) |
+| `clang_ver` | First line of `clang++ --version` (probed once per CB run through `invoke_shell`, written to `cache/compiler-version.txt`, read with `std::ifstream`) |
 | `std_cppm` | Canonical path to `std.cppm` with content signature (`path@size:mtime_ns`) |
 | `compile` / `cpp` | Effective compile / per-TU C++ flags (includes `--compile-flags`) |
 
@@ -240,7 +240,7 @@ Prerequisites are filtered to the project tree. Toolchain headers change as a un
 
 **Scanner scope:** the module graph is scanned with regular expressions, so a source that needs a tokenizer to read is out of scope. The known case is [lex.pptoken]'s reversion of phase-2 splices inside a raw-string body: honouring it means deciding whether an `R"(` opens a literal or is text inside a comment, which is lexical state rather than a pattern. A raw string whose body ends a line with `)\` is therefore read as closing one line early and may contribute a phantom edge — the same over-approximation `#ifdef` branches get. A comment or literal that merely mentions `R"(` is harmless, which is the likelier text and the reason the trade goes this way.
 
-**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job) — `profile_header`, `cache_hit`, `link_cache_hit`, `compile_start`, `source_stale`, `header_stale`, `depfile_unusable`, `strict_arguments`, `source_list`, `compile_commands`, `compile_failure`, `link_failure`, `test_link_failure`, `link_rebuild_reason`, `implementation_pcm`, `rebuild_summary`, `test_lifecycle`, `cache_invalidate`, `profile_change`, `cache_status`, `std_module_reported`, `jsonl_modes`, `jsonl_failure_mode`.
+**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job) — 44 cases / 247 checks. Coverage includes `profile_header`, `cache_hit`, `link_cache_hit`, `parallel_main_link`, `compile_start`, `source_stale`, `header_stale`, `depfile_unusable`, `strict_arguments`, `source_list`, `compile_commands`, `compile_failure`, `compile_warning`, `modular_compile_warning`, `link_failure`, `test_link_failure`, `link_rebuild_reason`, `implementation_pcm`, scanner/inventory list-only cases, `rebuild_summary`, `test_lifecycle`, `cache_invalidate`, `profile_change`, `cache_status`, `std_module_reported`, `jsonl_modes`, `jsonl_failure_mode`.
 
 **Optional follow-up:** `cache prune` for disk/orphan cleanup — backlog only; see [tester-improvements.md §4.4](tester-improvements.md#44-cache-maintenance-optional--add-if-operational-issues-appear).
 
@@ -313,7 +313,7 @@ Example `profile_diff` fragment (on `profile_changed` only):
 
 ## Architecture (brief)
 
-**`tools/cb.c++`** (~2400 lines) — parses the module graph, maintains `object_cache_map` and executable link signature cache, schedules parallel compiles, invokes `clang++` with `-fmodule-file=` flags, handles module interfaces and `.impl.c++` units, links executables (including `test_runner` with discovered test objects).
+**`tools/cb.c++`** (~3,300 lines) — parses the module graph, maintains `object_cache_map` and executable link signature cache, schedules parallel compiles, invokes `clang++` with `-fmodule-file=` flags, handles module interfaces and `.impl.c++` units, links executables (including `test_runner` with discovered test objects), and writes `compile_commands.json` from `list`.
 
 **`tools/CB.sh.core`** — bootstraps the `cb` binary, resolves `std.cppm`, handles cross-OS rebuild detection, JSONL-safe logging to stderr, and forwards args to `cb`.
 

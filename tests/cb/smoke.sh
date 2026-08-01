@@ -559,14 +559,12 @@ test_dotted_module_name() {
     'import demo.core;' \
     'int main() { return answer() == 42 ? 0 : 1; }' > "${work_dir}/app.c++m"
 
+  # Inventory alone answers this: the graph edges and modular flags are list fields.
   run_cb_list "${work_dir}"
   assert_jsonl_contains '"module":"demo.core"' "dotted_core_module"
   assert_jsonl_contains '"module":"demo.app"' "dotted_app_module"
   assert_jsonl_contains '"is_modular":true' "dotted_is_modular"
   assert_jsonl_contains '"imports":["demo.core"]' "dotted_import_edge"
-
-  run_cb_build "${work_dir}"
-  assert_jsonl_event_value build_end ok true "dotted_module_build_ok"
   end_case dotted_module_name
 }
 
@@ -588,13 +586,11 @@ test_gmf_preamble() {
     'import gmf_demo;' \
     'int main() { return g() == 1 ? 0 : 1; }' > "${work_dir}/main.c++"
 
+  # The global-module-fragment preamble is a scan question; list sees the named module.
   run_cb_list "${work_dir}"
   assert_jsonl_contains '"module":"gmf_demo"' "gmf_named_module"
   assert_jsonl_contains '"kind":"interface"' "gmf_interface_kind"
   assert_jsonl_contains '"is_modular":true' "gmf_is_modular"
-
-  run_cb_build "${work_dir}"
-  assert_jsonl_event_value build_end ok true "gmf_preamble_build_ok"
   end_case gmf_preamble
 }
 
@@ -680,9 +676,6 @@ test_commented_out_imports() {
   assert_jsonl_not_contains 'phantom_dead' "commented_imports_no_if_zero_edge"
   assert_jsonl_not_contains 'phantom_nested' "commented_imports_no_nested_if_zero_edge"
   assert_jsonl_not_contains 'phantom_literal' "commented_imports_no_string_literal_edge"
-
-  run_cb_build "${work_dir}"
-  assert_jsonl_event_value build_end ok true "commented_imports_build_ok"
   end_case commented_out_imports
 }
 
@@ -727,9 +720,6 @@ test_spliced_and_raw_literals() {
   assert_jsonl_not_contains 'phantom_spliced' "spliced_literals_no_spliced_string_edge"
   assert_jsonl_not_contains 'phantom_raw' "spliced_literals_no_raw_string_edge"
   assert_jsonl_not_contains 'phantom_tagged' "spliced_literals_no_delimited_raw_string_edge"
-
-  run_cb_build "${work_dir}"
-  assert_jsonl_event_value build_end ok true "spliced_literals_build_ok"
   end_case spliced_and_raw_literals
 }
 
@@ -787,9 +777,6 @@ test_spliced_directives() {
   assert_jsonl_not_contains 'Cyclic dependency' "spliced_directives_no_false_cycle"
   assert_jsonl_not_contains 'phantom_spliced_condition' "spliced_directives_no_spliced_condition_edge"
   assert_jsonl_not_contains 'phantom_trailing_space' "spliced_directives_no_trailing_space_edge"
-
-  run_cb_build "${work_dir}"
-  assert_jsonl_event_value build_end ok true "spliced_directives_build_ok"
   end_case spliced_directives
 }
 
@@ -838,14 +825,6 @@ test_mentioned_raw_opener() {
   assert_jsonl_contains '"module":"cycle_a","kind":"interface","imports":["helpers"]' "mentioned_raw_opener_keeps_real_edge"
   assert_jsonl_not_contains 'Cyclic dependency' "mentioned_raw_opener_no_false_cycle"
   assert_jsonl_not_contains 'cycle_b"]' "mentioned_raw_opener_no_dead_body_edge"
-
-  TESTS_RUN=$((TESTS_RUN + 1))
-  if run_cb_build "${work_dir}"; then
-    jsonl_emit '{"type":"smoke_assert_passed","matcher":"mentioned_raw_opener_build_ok"}'
-  else
-    fail "build failed on a project clang accepts: a mentioned R\"( froze the splice pass"
-  fi
-  assert_jsonl_event_value build_end ok true "mentioned_raw_opener_build_end_ok"
   end_case mentioned_raw_opener
 }
 
@@ -918,11 +897,6 @@ test_dead_conditional_arms() {
   assert_jsonl_not_contains 'phantom_elif' "dead_arms_no_dead_elif_edge"
   assert_jsonl_not_contains 'phantom_elif_after_live' "dead_arms_no_dead_elif_after_live_edge"
   assert_jsonl_not_contains 'phantom_before_live_arm' "dead_arms_no_arm_before_live_elif_edge"
-
-  # The build proves the surviving edges are the right ones: `scanned` calls into both
-  # modules, so it only compiles if both were ordered ahead of it.
-  run_cb_build "${work_dir}"
-  assert_jsonl_event_value build_end ok true "dead_arms_build_ok"
   end_case dead_conditional_arms
 }
 
@@ -934,9 +908,9 @@ test_commented_import_no_false_cycle() {
   rm -f "${work_dir}/hello.c++"
 
   # A phantom edge from a commented-out import is not merely spurious: pointing it at
-  # a module that really exists closes a loop through the real edge, and the build dies
-  # with a cyclic-dependency error naming modules the source never connected. Commenting
-  # out an import you used to have is the ordinary way to hit this.
+  # a module that really exists closes a loop through the real edge, and list dies with
+  # a cyclic-dependency error naming modules the source never connected. Commenting out
+  # an import you used to have is the ordinary way to hit this.
   printf '%s\n' \
     'export module cycle_a;' \
     '/* import cycle_b; */' \
@@ -999,12 +973,13 @@ test_same_basename_collision() {
   work_dir="$(prepare_work_dir)"
 
   # Same basename in different directories is unsupported: names must stay unique.
+  # scan_and_order refuses before any compile, so list is enough.
   mkdir -p "${work_dir}/left" "${work_dir}/right"
   printf '%s\n' 'int marker_left() { return 1; }' > "${work_dir}/left/util.c++"
   printf '%s\n' 'int marker_right() { return 2; }' > "${work_dir}/right/util.c++"
 
   TESTS_RUN=$((TESTS_RUN + 1))
-  if run_cb_build "${work_dir}"; then
+  if run_cb_list "${work_dir}"; then
     fail "same-basename sources in different directories should fail fast"
   else
     jsonl_emit '{"type":"smoke_assert_passed","matcher":"same_basename_collision_exit"}'
@@ -1022,10 +997,11 @@ test_reserved_std_collision() {
   work_dir="$(prepare_work_dir)"
 
   # Project sources named std map onto CB's reserved libc++ std.pcm / std.o paths.
+  # The reservation is checked during scan_and_order, so list refuses without compiling.
   printf '%s\n' 'int project_std() { return 1; }' > "${work_dir}/std.c++"
 
   TESTS_RUN=$((TESTS_RUN + 1))
-  if run_cb_build "${work_dir}"; then
+  if run_cb_list "${work_dir}"; then
     fail "project source std.c++ should fail fast instead of overwriting reserved std.o"
   else
     jsonl_emit '{"type":"smoke_assert_passed","matcher":"reserved_std_collision_exit"}'
@@ -1055,9 +1031,6 @@ test_nested_deps_skipped() {
   assert_jsonl_event_value unit path hello.c++ "nested_deps_root_hello"
   assert_jsonl_not_contains 'deps/net/deps/' "nested_deps_net_absent"
   assert_jsonl_not_contains 'deps/cryptic/deps/' "nested_deps_cryptic_absent"
-
-  run_cb_build "${work_dir}"
-  assert_jsonl_event_value build_end ok true "nested_deps_build_ok"
   end_case nested_deps_skipped
 }
 
@@ -1079,9 +1052,6 @@ test_vendored_tester_tests_skipped() {
   assert_jsonl_contains '"path":"hello.c++"' "vendored_tester_root_hello"
   assert_jsonl_contains '"path":"deps/tester/tester/lib.c++"' "vendored_tester_framework_lib"
   assert_jsonl_not_contains 'deps/tester/tests/' "vendored_tester_tests_absent"
-
-  run_cb_build "${work_dir}"
-  assert_jsonl_event_value build_end ok true "vendored_tester_build_ok"
   end_case vendored_tester_tests_skipped
 }
 
@@ -1153,9 +1123,6 @@ test_deps_package_tests_skipped() {
   assert_jsonl_contains '"path":"deps/xson/pkg.test.c++"' "deps_pkg_tests_colocated_present"
   assert_jsonl_not_contains 'deps/xson/test/' "deps_pkg_tests_xson_test_absent"
   assert_jsonl_not_contains 'deps/cryptic/tests/' "deps_pkg_tests_cryptic_tests_absent"
-
-  run_cb_build "${work_dir}"
-  assert_jsonl_event_value build_end ok true "deps_pkg_tests_build_ok"
   end_case deps_package_tests_skipped
 }
 

@@ -1303,27 +1303,35 @@ private:
         for (int i = 0; i < 4 and p.has_parent_path(); ++i) p = p.parent_path();
         llvm_prefix = p.string();
         
-        // Find clang++ compiler binary
-        // This is the C++ compiler we'll use for all compilation and linking
-        auto command_available = [](const std::string& candidate) {
-            if (not candidate.contains('/')) {
-                auto test_cmd = "command -v " + candidate + " >/dev/null 2>&1";
-                return system(test_cmd.c_str()) == 0;
-            }
-            return fs::exists(candidate);
+        // Find clang++. Paths are a filesystem check; bare names need the shell's PATH
+        // lookup. Both go through invoke_shell so nothing reaches system() unquoted.
+        auto command_available = [this](const std::string& candidate) {
+            if(candidate.contains('/'))
+                return fs::exists(candidate);
+
+            fs::create_directories(cache_dir());
+            const auto probe = detail::join_dir(cache_dir(), "command-probe.txt");
+            // `command` is a shell builtin, so the argv is sh -c with the name quoted.
+            return invoke_shell(
+                string_list{"/bin/sh", "-c", "command -v " + detail::shell_quote(candidate)},
+                probe).ok();
         };
-        auto try_env_compiler = [&, this](){
-            for (const auto* env_name : {"LLVM_CXX", "CXX"}) {
-                if (auto value = std::getenv(env_name); value and command_available(value)) {
+        auto try_env_compiler = [&]() {
+            for(const auto* env_name : {"LLVM_CXX", "CXX"})
+            {
+                if(auto value = std::getenv(env_name); value and command_available(value))
+                {
                     llvm_cxx = value;
                     return true;
                 }
             }
             return false;
         };
-        if (not try_env_compiler()) {
+        if(not try_env_compiler())
+        {
             llvm_cxx = llvm_prefix + "/bin/clang++";
-            if (!command_available(llvm_cxx)) {
+            if(not command_available(llvm_cxx))
+            {
                 throw std::runtime_error{
                     "clang++ not found. Expected: " + llvm_cxx + " (set LLVM_CXX to override)."};
             }
@@ -1342,9 +1350,9 @@ private:
 
         fs::create_directories(cache_dir());
 
+        // Same boundary as every compile and link: argv in, stamp file out.
         const auto stamp = compiler_stamp_path();
-        const auto cmd = detail::shell_quote(llvm_cxx) + " --version > " + detail::shell_quote(stamp) + " 2>/dev/null";
-        if(std::system(cmd.c_str()) == 0)
+        if(invoke_shell(string_list{llvm_cxx, "--version"}, stamp).ok())
             clang_version = detail::read_first_line(stamp);
     }
 

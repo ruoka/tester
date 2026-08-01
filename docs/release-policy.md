@@ -26,7 +26,7 @@ which is maintained now rather than reconstructed at release time.
 
 | Surface | Contract |
 |---------|----------|
-| `import tester;` | The partitions re-exported by [`tester/tester.c++m`](../tester/tester.c++m) — `data`, `utils`, `basic`, `runner`, `assertions`, `behavior_driven_development`, `observer` — plus the `tester::bdd` alias, `set_slowest`, and `set_run_argv` |
+| `import tester;` | The partitions re-exported by [`tester/tester.c++m`](../tester/tester.c++m) — `data`, `utils`, `basic`, `runner`, `assertions`, `behavior_driven_development`, `observer`, `console_observer`, `jsonl_observer`, `junit_observer` — plus the `tester::bdd` alias, `set_slowest`, and `set_run_argv` |
 | `test_runner` CLI | The flags in `--help` and under [Running Tests](../README.md#running-tests) |
 | Test JSONL | Event types and fields in [`docs/jsonl-schema.json`](jsonl-schema.json) (`schema: "tester-jsonl"`) |
 | CB CLI | Subcommands and flags documented in [README](../README.md) and [`AGENTS.md`](../AGENTS.md) |
@@ -90,7 +90,7 @@ A release is cut when all of these hold. There is no schedule — the criteria d
    repository at or close to 9 / 10.** This is the deliberate gate: the project stays
    unreleased while its own review can name weaknesses a consumer would inherit. The
    review is re-run against the tree, with its claims verified rather than carried
-   forward. *(Currently 8.0.)*
+   forward. *(Currently 8.5.)*
 5. **No High priority item open** in that review, and nothing above Low left in the
    priority sketch in [`docs/tester-improvements.md`](tester-improvements.md).
 6. **Documentation agrees with the code.** README, `AGENTS.md`, `CONTRIBUTING.md`, and

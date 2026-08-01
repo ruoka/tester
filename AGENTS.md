@@ -11,6 +11,8 @@ Use **`--jsonl=failures`**. Parse **stdout only** (one JSON object per line, `sc
 ```bash
 # Framework contract tests (CI gate — preferred while fixing)
 ./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'
+# Optional: also write JUnit XML (additive; still parse JSONL on stdout for pass/fail)
+# ./tools/CB.sh debug test --jsonl=failures --junit=report.xml --tags='\[self\]'
 
 # Translation-unit inventory (modules, imports, compile levels);
 # also writes compile_commands.json at the project root for clangd
@@ -27,6 +29,8 @@ Use **`--jsonl=failures`**. Parse **stdout only** (one JSON object per line, `sc
 ```
 
 **Tag syntax:** bracket tags must be escaped in shell: `--tags='\[self\]'`. Substring/regex filters also work: `--tags='Test case 3'`.
+
+**Toolchain:** Clang **21 or newer** with libc++ modules. CI and the dev container pin Clang 21 on Linux; macOS development uses a locally built LLVM that is often newer (e.g. trunk / 23). Do not treat “Clang 21” as a fixed required version — it is the minimum.
 
 **Unknown arguments are fatal.** CB exits `2` on an argument it does not recognise, so a typo such as `--tag=` (for `--tags=`) fails loudly instead of silently running the whole suite. Add `--jobs=N` to cap concurrent compile/link processes (default: CPU count); when set, CB also forwards `--jobs=N` to `test_runner` (runner default remains `1` = sequential).
 

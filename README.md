@@ -354,15 +354,17 @@ Tester fits module-native projects that want minimal glue and agent-friendly out
 
 ## Requirements
 
+**Minimum toolchain: Clang 21** with libc++ modules (`std.cppm`). Newer Clang is fine and expected — macOS development typically uses a locally built trunk (today Clang 23), while Linux CI and the dev container pin Clang 21. The project does not require that exact version; 21 is the floor CI proves on every push.
+
 Both platforms run the same checks — the `[self]` suite (via CB and via the Makefile runner), the CB and MCP smoke tests, and JSONL schema validation. CI runs them on Linux with Clang 21 on every push; on macOS they are run locally against a locally built LLVM, because no clang available on a hosted macOS runner builds C++23 modules yet. A macOS lane will be added once one does. Windows is not supported. Test steps also emit `--junit=` reports (uploaded as artifacts); gate suites are summarized in the job summary via `test-summary/action`.
 
 ### Linux
-- Clang 21 (`clang++-21`) — required for CI and dev containers
-- LLVM 21 (`std.cppm` at `/usr/lib/llvm-21/share/libc++/v1/std.cppm`)
-- libc++-21 development libraries
+- Clang **21 or newer** (`clang++-21` in CI and the dev container)
+- Matching LLVM libc++ with `std.cppm` (CI: `/usr/lib/llvm-21/share/libc++/v1/std.cppm`)
+- libc++ development libraries for that toolchain
 
 ### macOS
-- Locally built LLVM/clang at `/usr/local/llvm` — [`docs/clang-modules-macos.md`](docs/clang-modules-macos.md) (based on [LLVM Getting Started](https://llvm.org/docs/GettingStarted.html))
+- Locally built LLVM/clang at `/usr/local/llvm` — [`docs/clang-modules-macos.md`](docs/clang-modules-macos.md) (based on [LLVM Getting Started](https://llvm.org/docs/GettingStarted.html)); typically newer than the Linux CI pin
 - Homebrew `llvm` is unsupported: exception unwinding fails on Apple Silicon ([#92121](https://github.com/llvm/llvm-project/issues/92121), [#168287 comment](https://github.com/llvm/llvm-project/issues/168287#issuecomment-3712718691))
 - Xcode system clang does not fully support C++23 modules
 
@@ -445,7 +447,7 @@ build-<os>-debug/bin/tools/core_pc /path/to/core
 
 **`std.cppm not found`** — install LLVM 21 or set `LLVM_PATH`; or `./tools/CB.sh /path/to/std.cppm debug build`
 
-**Compiler not found** — set `CXX`; use Clang 21+ on Linux, locally built LLVM on macOS
+**Compiler not found** — set `CXX` / `LLVM_CXX`; need Clang 21 or newer with libc++ modules (CI uses 21; macOS usually a newer local build)
 
 **Module dependency errors** — `./tools/CB.sh debug clean && ./tools/CB.sh debug build`; check submodules
 
@@ -461,7 +463,7 @@ build-<os>-debug/bin/tools/core_pc /path/to/core
 
 **Testing framework** — global registration (`const auto _ = …`), automatic discovery of `*.test.c++` registrations, tag/regex filtering, `depends_on` ordering, rich assertions with source locations.
 
-**Observers** — `tester:observer` defines the format-neutral event contract and the registry, and each part of the framework publishes its own events through `notify()`: the runner reports the run lifecycle, catalogue and aggregates, the engine reports tests and exceptions, and the assertion matchers build and report assertion events. Nobody selects a destination. `test_runner.c++` is the composition root: it registers console and JSONL by name and selects one primary sink from the CLI, then may `observe()` additional sinks (JUnit XML via `--junit=`) so machine streams and CI reports run together. Additional observers derive from `tester::output::observer` and use `register_observer()` / `select_observer()` / `observe()`; runner and assertion code do not change.
+**Observers** — `tester:observer` defines the format-neutral event contract and the registry, and each part of the framework publishes its own events through `notify()`: the runner reports the run lifecycle, catalogue and aggregates, the engine reports tests and exceptions, and the assertion matchers build and report assertion events. Nobody selects a destination. `test_runner.c++` is a non-module composition root (`import tester;`) that registers the built-in console and JSONL sinks by name, selects one primary sink from the CLI, then may `observe()` additional sinks (JUnit XML via `--junit=`) so machine streams and CI reports run together. The three built-in observer partitions are re-exported from `tester` for that purpose. Additional observers derive from `tester::output::observer` and use `register_observer()` / `select_observer()` / `observe()`; runner and assertion code do not change.
 
 **CB** — parses module dependencies, topological sort, incremental PCM/object caching, parallel compilation, executable linking with module awareness.
 

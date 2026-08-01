@@ -10,3 +10,6 @@ export import :runner;
 export import :assertions;
 export import :behavior_driven_development;
 export import :observer;
+export import :console_observer;
+export import :jsonl_observer;
+export import :junit_observer;

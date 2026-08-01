@@ -68,6 +68,11 @@ commit on `main`; there is no supported tag yet.
 
 ### Changed
 
+- **`test_runner.c++` is a non-module executable** (`import tester;`) rather than a
+  `tester` implementation unit with `main`. The built-in `console_observer`,
+  `jsonl_observer`, and `junit_observer` partitions are re-exported from
+  `export module tester` so the composition root does not need partition imports
+  (which are only legal inside the module).
 - **Makefile prefers `./tester/` as the source tree** when that directory exists, instead
   of always deriving the project name from the checkout basename. Checkouts whose
   directory is not named `tester` (for example `/workspace`) now build without renaming.

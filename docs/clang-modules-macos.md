@@ -241,4 +241,4 @@ See [Getting Started with the LLVM System](https://llvm.org/docs/GettingStarted.
 
 ## Linux
 
-CI and dev containers use **Clang 21** from apt.llvm.org (`std.cppm` at `/usr/lib/llvm-21/share/libc++/v1/std.cppm`). See `.devcontainer/` and [README Requirements](../README.md#requirements).
+CI and dev containers pin **Clang 21** from apt.llvm.org (`std.cppm` at `/usr/lib/llvm-21/share/libc++/v1/std.cppm`). That is the project's **minimum**, not a required exact version — a newer Clang with libc++ modules is fine (macOS development typically runs a newer local build). See `.devcontainer/` and [README Requirements](../README.md#requirements).

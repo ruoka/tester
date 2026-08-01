@@ -2,20 +2,16 @@
 // SPDX-License-Identifier: MIT
 // See the LICENSE file in the project root for full license text.
 
-module;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wincomplete-umbrella"
 #include <csignal>
 #pragma clang diagnostic pop
 #include <execinfo.h>
 #include <unistd.h>
-module tester;
+
 import std;
-import :console_observer;
-import :jsonl_observer;
-import :junit_observer;
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wmain-attached-to-named-module"
+import tester;
+
 using namespace std::literals;
 
 namespace {
@@ -324,5 +320,3 @@ int main(int argc, char** argv)
         return 1;
     }
 }
-
-#pragma clang diagnostic pop
