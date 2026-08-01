@@ -225,7 +225,7 @@ Cache indexes are written through a checked temporary file and atomically rename
 
 ### Header dependencies
 
-The object cache tracks module imports and source mtimes, neither of which sees a textual `#include`. CB therefore compiles with `-MMD -MF <object>.d` — emitted by the step that actually reads the source (`--precompile` for modular units, `-c` otherwise) — and compares each prerequisite's mtime against the object. A newer header yields `rebuild_reason: "header_stale"` with the header in `rebuild.trigger_path`.
+The object cache tracks module imports and source mtimes, neither of which sees a textual `#include`. CB therefore compiles with `-MMD -MF <object>.d` — emitted by the step that actually reads the source (`--precompile` for modular units, `-c` otherwise) — and compares each prerequisite's mtime against the object. A newer header yields `rebuild_reason: "header_stale"` with the header in `rebuild.trigger_path`. A project header the depfile still names but that is missing or unreadable yields `rebuild_reason: "header_missing"` with that path in `rebuild.trigger_path` — a cache hit would keep shipping an object built against content that is gone.
 
 A depfile that cannot be read — missing, unreadable, or lacking the `target:` prefix — yields `rebuild_reason: "depfile_unusable"` with the `.d` path in `rebuild.trigger_path`. It is the only record of a unit's textual includes, so "no parseable prerequisites" cannot be read as "no headers": that would hold a cache hit while ignoring every header edit until the source itself changed. Since `-MMD` writes a depfile even for a unit that includes nothing, this fires once after an upgrade or a wiped `obj/` and then settles.
 
@@ -243,7 +243,7 @@ Prerequisites are filtered to the project tree. Toolchain headers change as a un
 
 **Scanner scope:** the module graph is scanned with regular expressions, so a source that needs a tokenizer to read is out of scope. The known case is [lex.pptoken]'s reversion of phase-2 splices inside a raw-string body: honouring it means deciding whether an `R"(` opens a literal or is text inside a comment, which is lexical state rather than a pattern. A raw string whose body ends a line with `)\` is therefore read as closing one line early and may contribute a phantom edge — the same over-approximation `#ifdef` branches get. A comment or literal that merely mentions `R"(` is harmless, which is the likelier text and the reason the trade goes this way.
 
-**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job). Coverage includes `profile_header`, `cache_hit`, `link_cache_hit`, `clean_tests`, `parallel_main_link`, `compile_start`, `source_stale`, `header_stale`, `depfile_unusable`, `strict_arguments`, `source_list`, `compile_commands`, `graph_json`, `compile_failure`, `compile_warning`, `modular_compile_warning`, `link_failure`, `test_link_failure`, `link_rebuild_reason`, `implementation_pcm`, scanner/inventory list-only cases, `rebuild_summary`, `test_lifecycle`, `cache_invalidate`, `profile_change`, `cache_status`, `std_module_reported`, `jsonl_modes`, `jsonl_failure_mode`.
+**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job). Coverage includes `profile_header`, `cache_hit`, `link_cache_hit`, `clean_tests`, `parallel_main_link`, `compile_start`, `source_stale`, `header_stale`, `header_missing`, `depfile_unusable`, `strict_arguments`, `source_list`, `compile_commands`, `graph_json`, `compile_failure`, `compile_warning`, `modular_compile_warning`, `link_failure`, `test_link_failure`, `link_rebuild_reason`, `implementation_pcm`, scanner/inventory list-only cases, `rebuild_summary`, `test_lifecycle`, `cache_invalidate`, `profile_change`, `cache_status`, `std_module_reported`, `jsonl_modes`, `jsonl_failure_mode`.
 
 **Optional follow-up:** `cache prune` for disk/orphan cleanup — backlog only; see [tester-improvements.md §4.4](tester-improvements.md#44-cache-maintenance-optional--add-if-operational-issues-appear).
 
@@ -267,6 +267,7 @@ Useful compile/link fields for debugging stale builds:
 - `rebuild_reason: "not_in_cache"` — first compile of this source for the current config (distinct from an edit)
 - `rebuild_reason: "source_stale"` — TU source newer than cached object
 - `rebuild_reason: "header_stale"` — an `#include`d project header is newer than the object; the header is in `rebuild.trigger_path` (see [Header dependencies](#header-dependencies))
+- `rebuild_reason: "header_missing"` — a project header named by the depfile is missing or unreadable; the header is in `rebuild.trigger_path`
 - `rebuild_reason: "depfile_unusable"` — the compiler `.d` is missing, unreadable, or malformed, so header freshness is unknown; the `.d` path is in `rebuild.trigger_path`
 - `rebuild_reason: "pcm_stale"` — imported PCM (including an implementation unit's implicit interface PCM) newer than this object; module and trigger source are in `rebuild`
 

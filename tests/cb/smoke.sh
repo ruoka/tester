@@ -257,6 +257,38 @@ test_header_stale_relative_include() {
   end_case header_stale_relative_include
 }
 
+test_header_missing() {
+  should_run header_missing || return 0
+  begin_case header_missing
+  local work_dir
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
+
+  # Deleting a header the depfile still names used to skip the unstatable
+  # prerequisite and answer with a cache hit — shipping a binary built against
+  # content that no longer exists. Force a rebuild so clang reports the include.
+  printf '%s\n' '#pragma once' 'inline int header_value() { return 1; }' > "${work_dir}/value.h++"
+  printf '%s\n' '#include "value.h++"' 'int main() { return header_value() - 1; }' > "${work_dir}/hello.c++"
+
+  run_cb_build "${work_dir}"
+  run_cb_build "${work_dir}"
+  assert_compile_cache_hits 2 "header_missing_seed_cache_hit"
+
+  rm -f "${work_dir}/value.h++"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if run_cb_build "${work_dir}"; then
+    fail "deleted included header should force a rebuild that fails the compile"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"header_missing_build_fails"}'
+  fi
+  assert_compile_end "hello.c++" false header_missing false "deleted_header_rebuild"
+  assert_jsonl_contains '"rebuild":{"kind":"header_missing"' "deleted_header_rebuild_object"
+  assert_jsonl_contains '"trigger_path":' "deleted_header_trigger_path"
+  assert_rebuild_summary header_missing 1 "" "deleted_header_summary"
+  assert_jsonl_event_value build_end ok false "deleted_header_build_end"
+  end_case header_missing
+}
+
 test_depfile_unusable() {
   should_run depfile_unusable || return 0
   begin_case depfile_unusable
@@ -1562,6 +1594,7 @@ main() {
   test_source_stale
   test_header_stale
   test_header_stale_relative_include
+  test_header_missing
   test_depfile_unusable
   test_strict_arguments
   test_source_list
