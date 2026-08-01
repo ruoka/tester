@@ -1533,6 +1533,38 @@ test_std_module_reported() {
   end_case std_module_reported
 }
 
+test_modular_object_stale() {
+  should_run modular_object_stale || return 0
+  begin_case modular_object_stale
+  local work_dir
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
+  rm -f "${work_dir}/hello.c++"
+
+  # Two-phase writes the BMI before the object. A successful --precompile followed by a
+  # failed/skipped object step leaves pcm newer than .o; without an object_stale check the
+  # modular unit cache-hits while importers rebuild against the new interface and link the
+  # old implementation.
+  printf '%s\n' \
+    'export module skew;' \
+    'export int value() { return 1; }' > "${work_dir}/skew.c++m"
+  printf '%s\n' \
+    'import skew;' \
+    'int main() { return value() == 1 ? 0 : 1; }' > "${work_dir}/main.c++"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "modular_object_stale_seed"
+
+  sleep 1
+  touch "${work_dir}/${BUILD_DIR}/pcm/skew.pcm"
+  run_cb_build "${work_dir}"
+  assert_compile_end "skew.c++m" false object_stale true "modular_own_pcm_newer_rebuilds_object"
+  # Object-only: reuse the pcm that is already there (no --precompile).
+  assert_jsonl_not_contains '"--precompile"' "modular_object_stale_skips_precompile"
+  assert_jsonl_event_value build_end ok true "modular_object_stale_build_ok"
+  end_case modular_object_stale
+}
+
 test_module_phases() {
   should_run module_phases || return 0
   begin_case module_phases
@@ -1686,6 +1718,7 @@ main() {
   test_profile_change
   test_cache_status
   test_std_module_reported
+  test_modular_object_stale
   test_module_phases
   test_jsonl_modes
   test_jsonl_failure_mode

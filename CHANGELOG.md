@@ -32,6 +32,14 @@ tag; cutting a release renames that section.
 
 ### Fixed
 
+- **Project modular units now rebuild when their own PCM is newer than the object.**
+  `needs_recompile` already forced `object_stale` for `std` when `std.o` lagged `std.pcm`,
+  but interface/partition units only checked that the PCM existed and was not older than
+  the source. After a successful two-phase `--precompile` and a failed or skipped object
+  step, the next build cache-hit the stale `.o` while importers rebuilt against the new
+  BMI — linking the old implementation into a binary that reported `ok:true`. The same
+  `object_missing` / `object_stale` path now reuses the PCM (no re-precompile) for project
+  modules too.
 - **`[self]` suite builds where `char` is unsigned** (ARM Linux). The mixed-signedness cases
   spelled their negative character operand `char{-1}`, which is a narrowing error there and
   could not hold a negative value in any case, so `tester-assertions.test.c++` failed to
