@@ -21,6 +21,14 @@ tag; cutting a release renames that section.
   `object_missing` / `object_stale` path now reuses the PCM (no re-precompile) for project
   modules too.
 
+### Fixed
+
+- **Make `DEBUG=1` on macOS no longer passes `-fno-pie` / `-no-pie`.** Turning Darwin
+  `LDFLAGS` into `override` let the DEBUG block finally win on Apple hosts, but it
+  also applied those Linux-only flags; arm64 macOS rejects both (CMake already gated
+  them with `if(NOT APPLE)`). DEBUG still lowers `-O0` and keeps `-rdynamic` on every
+  platform; the PIE pair stays Linux-only.
+
 ### Changed
 
 - **Build-tree names standardized** so the three paths never collide: CB keeps
