@@ -1,11 +1,13 @@
 # syntax=docker/dockerfile:1.7
-FROM debian:bookworm-slim
+# Debian here, Ubuntu in CI, on purpose: the two distros package libc++ differently and
+# the pair is what catches layout assumptions before a release does.
+FROM debian:trixie-slim
 
 # Install Clang 21 + libc++ + tools (required for C++23 modules).
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates gnupg wget && \
     wget -qO - https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-21 main" \
+    echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/trixie/ llvm-toolchain-trixie-21 main" \
         > /etc/apt/sources.list.d/llvm21.list && \
     rm -rf /var/lib/apt/lists/*
 
@@ -15,9 +17,8 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
         clang-21 libc++-21-dev libc++abi-21-dev lld-21 clang-tools-21 lldb-21 && \
     rm -rf /var/lib/apt/lists/*
 
-# Bookworm ships CMake 3.25, and CMakeLists.txt needs 4.x: its `import std` gate is a
-# UUID only the CMake release that minted it accepts. Same pin as the CI lane in
-# .github/actions/setup-cmake.
+# Trixie ships CMake 3.31 and CMakeLists.txt requires 4.x, so take a release straight
+# from Kitware. Same pin as the CI lane in .github/actions/setup-cmake.
 ARG CMAKE_VERSION=4.1.2
 RUN case "$(dpkg --print-architecture)" in \
         amd64) cmake_arch=x86_64 ;; \

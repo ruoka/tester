@@ -31,8 +31,7 @@ tag; cutting a release renames that section.
 - **CMake CI lane** (`cmake-ninja-build-and-test`): configure and build for `Debug` and
   `Release`, failing on any compiler `warning:`, then `[self]` sequentially and at
   `--jobs=$(nproc)`, the unfiltered standalone suite, and the `run_tests` target. The pinned
-  CMake install is shared with the dev container, which now also ships Ninja and `make`, so
-  all three documented build paths run there.
+  CMake install is shared with the dev container.
 
 ### Fixed
 
@@ -44,6 +43,10 @@ tag; cutting a release renames that section.
 
 ### Changed
 
+- **Dev container moved to Debian 13 (trixie)** from bookworm, and it now ships `make`,
+  Ninja and the pinned CMake so all three build paths run there. Debian in the container
+  against Ubuntu in CI stays deliberate — the distros package libc++ differently, and
+  bookworm was the one layout that did not reproduce what CI builds on.
 - **Technical review** — [`docs/repository-technical-review.md`](docs/repository-technical-review.md)
   amended so the closed “no supported tag” finding reflects [`v2.0.0`](https://github.com/ruoka/tester/releases/tag/v2.0.0);
   remaining caps under 9 are CB extractability and framework-surface choices.

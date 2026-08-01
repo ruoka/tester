@@ -316,7 +316,11 @@ Per-project wrappers compile `cb.c++` and invoke it with the right include paths
 
 ### 5.1 Toolchain alignment
 
-- ✅ Dev containers for tester, net, and xson on **Clang 21** / Debian bookworm.
+- ✅ Dev containers for tester, net, and xson on **Clang 21** / Debian trixie. Debian in the
+  container against Ubuntu in CI is deliberate: the two package libc++ differently, and the
+  pair is what surfaces layout assumptions. Bookworm hid one — it installs a single
+  `libc++.modules.json`, while trixie and Ubuntu install a second copy under
+  `/usr/lib/<triple>` that clang answers with first, which is what broke the CMake lane.
 - ✅ Consuming repos (e.g. fixer): `post-create.sh` bootstrap stamp skips rebuild when `HEAD` + submodule pointers are unchanged.
 - ✅ Shared `CB.sh.core` + `CB.sh.template`; per-repo wrappers source the core (diff table in template header).
 - ✅ Align nested `deps/tester` copies when parent repos bump the tester submodule pointer — standing release/bump practice (always done with the pointer update), not an open engineering task.
