@@ -401,8 +401,8 @@ When tester is used as `deps/tester` inside a larger repo:
 - ✅ Cut the first supported release (`v2.0.0`, 1 August 2026): modules-era SemVer tag consumers can pin, with release notes stating minimum compiler and surface. Ongoing cuts follow [`release-policy.md`](release-policy.md).
 - ✅ Cut `v2.1.0` (2 August 2026): `cb --modules=`, CMake + Ninja path + CI lane, `posix_spawn` for CB subprocesses, Debian trixie dev container.
 - ✅ Cut `v2.1.1` (2 August 2026): modular `object_stale` when own PCM is newer than `.o`,
-  Make/CMake build-tree names beside CB, Darwin `-lc++abi`/`-lunwind` from `LLVM_PREFIX`,
-  CB skips top-level `build-*` scans.
+  Make DEBUG PIE flags Linux-only, Make/CMake build-tree names beside CB, Darwin
+  `-lc++abi`/`-lunwind` from `LLVM_PREFIX`, CB skips top-level `build-*` scans.
 
 ---
 

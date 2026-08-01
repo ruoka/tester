@@ -6,9 +6,10 @@ be true before a release is cut.
 ## Current status: v2.1.1
 
 **`v2.1.1`** (2 August 2026) is the current **supported** SemVer release. It fixes CB
-rebuilding project modules when the own PCM is newer than the object, standardizes
-Make/CMake build-tree names beside CB, links macOS against LLVM's `libunwind`, and
-stops CB from scanning top-level `build-*` output trees.
+rebuilding project modules when the own PCM is newer than the object, keeps Make
+`DEBUG=1` off Darwin `-fno-pie`/`-no-pie`, standardizes Make/CMake build-tree names
+beside CB, links macOS against LLVM's `libunwind`, and stops CB from scanning
+top-level `build-*` output trees.
 
 **`v2.1.0`** (2 August 2026) added `cb --modules=`, the CMake + Ninja build path, and
 `posix_spawn` for CB subprocesses. **`v2.0.0`** (1 August 2026) was the first supported
