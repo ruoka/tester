@@ -73,7 +73,7 @@ If `matcher` is `"require"` or `"check"` on a `require_eq` / `check_eq` line, st
 
 1. Find `command_end` with `"ok":false` — use the `argv` array to rerun without shell parsing.
 2. Read `diagnostics.text` on the failed `compile_end` / `link_end` / `command_end`: it holds the compiler or linker output (truncated to 8 KiB, with `diagnostics.path` pointing at the full capture and `truncated` saying whether it was cut). You do not need to rerun the build to see the error. The same field carries warnings when `ok:true` — failures mode still emits those events so `-Wall` noise cannot accumulate invisibly.
-3. `exit_code` is the child's own exit code. `wait_status` is the raw `std::system` value, and `signaled` / `signal` distinguish a crashed toolchain process from one that exited non-zero.
+3. `exit_code` is the child's own exit code. `wait_status` is the raw `waitpid` value, and `signaled` / `signal` distinguish a crashed toolchain process from one that exited non-zero.
 4. In failures mode, inspect failed `compile_end` / `command_end` events and any successful ones that carry `diagnostics` (warnings). Use trace mode when successful per-TU cache/rebuild telemetry is needed.
 5. A failed compiler invocation emits `compile_end` with `ok:false`; CB joins the remaining workers before emitting one failed `build_end` and exiting.
 6. Rebuild: `./tools/CB.sh debug build --jsonl=failures`, then re-run tests.
@@ -156,12 +156,12 @@ Code under `tools/` (CB) and `tester/` must use **ISO C++ and the standard libra
 
 | Area | Rule |
 |------|------|
-| **Subprocesses** | `std::system` only (`<cstdlib>`) until the standard ships a better process API. No `popen`, `fork`, `execve`, or `posix_spawn`. Build a `string_list argv`; **`invoke_shell(argv)`** is the sole `join_argv` → `system()` boundary (compile, link, test_runner). |
+| **Subprocesses** | **`posix_spawn` + `waitpid`** via **`invoke_shell(argv)`** — the sole process boundary (compile, link, test_runner). Still go through `/bin/sh -c` so capture redirects stay shell syntax. Apple's libc serializes `std::system`, which caps parallel compiles on macOS; `posix_spawn` does not. No `popen`, and no ad-hoc `fork` / `execve` outside that helper. |
 | **Child output** | Shell redirect to a stamp/temp file, then `std::ifstream` / `std::getline` (e.g. `cache/compiler-version.txt`, `details/selftest_spawn.h++`). |
 | **External toolchain** | CB invokes installed `clang++` / `lld` as external programs; that is not a deviation — the constraint applies to **our** source, not which compiler you install. |
 | **Stack traces (exception)** | `test_runner.c++` uses `<execinfo.h>` (`backtrace`, `backtrace_symbols_fd`) on `SIGSEGV` / `SIGABRT`. glibc / macOS only — not portable ISO C++. No standard equivalent today. |
 
-Do not add new POSIX-only paths when a `std::system` + file-read pattern or pure stdlib code suffices.
+Do not add new POSIX-only paths when an `invoke_shell` + file-read pattern or pure stdlib code suffices.
 
 **Associative containers** — use `contains` / `at`, not `find(...) != end()`:
 
@@ -234,7 +234,7 @@ return profile
 
 Do **not** add defensive parsers or legacy upgrade paths for on-disk formats that **only CB writes**; fresh builds use `clean` / `cache invalidate`. Trust the writer contract; invalidate the whole cache on header mismatch instead of skipping bad segments.
 
-**Subprocess I/O** — see [Implementation policy](#implementation-policy-standard-c-only) above. All toolchain commands go through `invoke_shell(argv)`; probes/self-tests use stamp/temp file + `std::ifstream`. Test env uses POSIX `setenv` (copies values) before `invoke_shell` for `TESTER_CONFIG` / `TESTER_PARENT_RUN_ID` — not shell env prefixes. Never `popen` / `fork` / `exec`.
+**Subprocess I/O** — see [Implementation policy](#implementation-policy-standard-c-only) above. All toolchain commands go through `invoke_shell(argv)` (`posix_spawn` of `/bin/sh -c`); probes/self-tests use stamp/temp file + `std::ifstream`. Test env uses POSIX `setenv` (copies values) before `invoke_shell` for `TESTER_CONFIG` / `TESTER_PARENT_RUN_ID` — not shell env prefixes. Never `popen` or ad-hoc `fork` / `execve`.
 
 **CB flag argv** — store toolchain flags as `string_list` (`compile_flags`, `link_flags`, `cpp_flags`, `module_flags`); argv builders extend lists with `append_range` (literal groups as `string_list{…}`). Parse external flag **text** only at boundaries (`cb::detail::parse_external_flag_text` in `main` for `--compile-flags` / `--link-flags`; same helper when diffing serialized profile `compile`/`cpp` fields). Serialize lists to the object-cache profile with `detail::flags_profile_string` (`views::join_with(' ')` + `ranges::to<std::string>`). Parse with `collapse_whitespace` then `views::split(' ')` + `filter` non-empty + `ranges::to<string_list>` — symmetric with the writer; not full POSIX shell word-splitting (C++26 `split_when` would cover predicate delimiters without the collapse step).
 

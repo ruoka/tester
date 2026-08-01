@@ -43,6 +43,10 @@ tag; cutting a release renames that section.
 
 ### Changed
 
+- **CB subprocesses use `posix_spawn`** instead of `std::system`. Apple's libc serializes
+  `std::system`, which caps parallel compiles on macOS; `invoke_shell` still runs
+  `/bin/sh -c` so capture redirects are unchanged. The implementation policy in
+  `AGENTS.md` / `docs/cb.md` follows.
 - **Dev container moved to Debian 13 (trixie)** from bookworm, and it now ships `make`,
   Ninja and the pinned CMake so all three build paths run there. Debian in the container
   against Ubuntu in CI stays deliberate — the distros package libc++ differently, and

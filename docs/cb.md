@@ -26,9 +26,9 @@ On first run, **`CB.sh.core` bootstraps CB itself** — it compiles `tools/cb.c+
 
 `tools/cb.c++` and `tools/cb-*.h++` use **ISO C++23 and the standard library** — not POSIX APIs in the build path.
 
-- **Subprocesses:** `std::system` only (until the standard provides something better). No `popen`, `fork`, `execve`, or `posix_spawn`. Build a `string_list argv`; `invoke_shell(argv)` is the sole `join_argv` → `system()` boundary (compile, link, `test_runner`).
+- **Subprocesses:** `posix_spawn` + `waitpid` through `invoke_shell(argv)` (still `/bin/sh -c` so capture redirects stay shell syntax). Apple's libc serializes `std::system`, which caps parallel compiles on macOS; `posix_spawn` does not. No `popen`, and no ad-hoc `fork` / `execve` outside that helper.
 - **Probes / capture:** redirect child stdout to a file (`compiler-version.txt`, self-test temp files), read with `std::ifstream`.
-- **Invoked toolchain:** `clang++` and `lld` are external programs; calling them via `std::system` is expected.
+- **Invoked toolchain:** `clang++` and `lld` are external programs; calling them via `invoke_shell` is expected.
 - **Algorithms:** prefer `std::views::join_with`, `std::ranges::to`, `std::views::split`, `std::ranges::set_difference`, etc. over index loops and one-off helpers — see [AGENTS.md — C++ style](../AGENTS.md).
 
 The **test runner** is separate: crash **stack traces** in `test_runner.c++` use `<execinfo.h>` (`backtrace`, `backtrace_symbols_fd`) — POSIX/glibc/macOS only, not ISO C++. That is the deliberate exception; see [AGENTS.md — Implementation policy](../AGENTS.md#implementation-policy-standard-c-only).
@@ -327,7 +327,7 @@ A failed compile or link is not just `ok: false`. The command's stdout and stder
 
 `text` is capped at 8 KiB with `truncated` recording whether it was cut; `path` always points at the full capture. A consumer restricted to stdout no longer has to rerun the build to find out what broke. The human (non-JSONL) path is unchanged: the diagnostic is still printed to stderr.
 
-`command_end` and `test_end` also report a decoded process status. `std::system` returns a wait status — 256 for a child that exited 1, 11 for one killed by `SIGSEGV` — so CB decodes it once at the shell boundary into `exit_code`, `signaled` and `signal`, keeping the raw value as `wait_status`. A test runner killed by a signal is reported as a crash rather than as an assertion failure.
+`command_end` and `test_end` also report a decoded process status. `waitpid` returns a wait status — 256 for a child that exited 1, 11 for one killed by `SIGSEGV` — so CB decodes it once at the shell boundary into `exit_code`, `signaled` and `signal`, keeping the raw value as `wait_status`. A test runner killed by a signal is reported as a crash rather than as an assertion failure.
 
 Example `profile_diff` fragment (on `profile_changed` only):
 

@@ -194,7 +194,7 @@ views over hand-rolled loops: `contains` over `find(...) != end()`, `views::join
 index loops with delimiter checks, `views::split` over ad-hoc parsers.
 [`AGENTS.md`](AGENTS.md#c-style-tools-and-tester) has the full policy with examples,
 including the rule that `tools/` and `tester/` use ISO C++ rather than POSIX APIs, with the
-documented exceptions (`std::system` for subprocesses, `<execinfo.h>` for crash traces).
+documented exceptions (`posix_spawn` for subprocesses, `<execinfo.h>` for crash traces).
 
 **Comments** explain intent, trade-offs, and constraints the code cannot state — not what
 the next line does.

@@ -18,6 +18,10 @@
 #include <optional>
 #include <array>
 #include <cstdlib>
+#include <cstring>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <thread>
 #include <mutex>
 #include <chrono>
@@ -39,6 +43,9 @@
 #include "cb-console_observer.h++"
 
 namespace fs = std::filesystem;
+
+// Process environment for posix_spawn; declared here so it is not looked up as cb::environ.
+extern char** environ;
 
 namespace cb {
 
@@ -504,16 +511,17 @@ std::optional<string_list> parse_depfile(const std::string& path)
     return prerequisites;
 }
 
-// std::system yields a wait status: a child exiting 1 reports 256, and a child killed
-// by SIGSEGV reports 11. Reporting the raw value as exit_code made command_end and
-// test_end.exit_code disagree with what the child actually returned.
+// waitpid yields a wait status; decode once so command_end / test_end report the
+// child's own exit_code (or signal) instead of the packed wait value (256 for exit 1).
 inline output::process_status decode_wait_status(int status)
 {
-    if(status < 0) // the shell itself could not be started
+    if(status < 0) // spawn or waitpid itself failed
         return {.exit_code = status, .wait_status = status};
-    if((status & 0x7f) != 0 and (status & 0x7f) != 0x7f)
-        return {.exit_code = -1, .wait_status = status, .signaled = true, .signal = status & 0x7f};
-    return {.exit_code = (status >> 8) & 0xff, .wait_status = status};
+    if(WIFSIGNALED(status))
+        return {.exit_code = -1, .wait_status = status, .signaled = true, .signal = WTERMSIG(status)};
+    if(WIFEXITED(status))
+        return {.exit_code = WEXITSTATUS(status), .wait_status = status};
+    return {.exit_code = -1, .wait_status = status};
 }
 
 // Compiler output can run to megabytes on a template error; only the head is worth
@@ -1325,7 +1333,7 @@ private:
         llvm_prefix = p.string();
         
         // Find clang++. Paths are a filesystem check; bare names need the shell's PATH
-        // lookup. Both go through invoke_shell so nothing reaches system() unquoted.
+        // lookup. Both go through invoke_shell so nothing reaches the shell unquoted.
         auto command_available = [this](const std::string& candidate) {
             if(candidate.contains('/'))
                 return fs::exists(candidate);
@@ -1658,7 +1666,28 @@ private:
         output::notify(&output::observer::command_start, cmd_str, argv);
 
         const auto started = std::chrono::steady_clock::now();
-        const auto raw = system(shell_line.c_str());
+        // Apple's libc serializes std::system; posix_spawn does not. Still go through
+        // /bin/sh -c so capture_path's `> … 2>&1` redirect keeps working.
+        auto raw = -1;
+        auto spawn_error = std::string{};
+        auto pid = pid_t{};
+        char* const sh_argv[] = {
+            const_cast<char*>("/bin/sh"),
+            const_cast<char*>("-c"),
+            const_cast<char*>(shell_line.c_str()),
+            nullptr,
+        };
+        if(const auto spawn_rc = posix_spawn(&pid, "/bin/sh", nullptr, nullptr, sh_argv, environ);
+           spawn_rc == 0)
+        {
+            auto status = 0;
+            if(waitpid(pid, &status, 0) >= 0)
+                raw = status;
+            else
+                spawn_error = "waitpid failed: " + std::string{std::strerror(errno)};
+        }
+        else
+            spawn_error = "posix_spawn failed: " + std::string{std::strerror(spawn_rc)};
         const auto finished = std::chrono::steady_clock::now();
 
         auto result = output::process_result{.status = detail::decode_wait_status(raw)};
@@ -1671,6 +1700,9 @@ private:
             if(not result.ok() or not diag.head.empty())
                 result.diag = std::move(diag);
         }
+        // Spawn/wait failures never produce a capture file; surface strerror on the wire.
+        if(not spawn_error.empty() and result.diag.head.empty())
+            result.diag.head = std::move(spawn_error);
 
         output::notify(&output::observer::command_end, cmd_str, argv, result,
                        output::interval{started, finished});

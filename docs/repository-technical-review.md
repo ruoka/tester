@@ -169,9 +169,10 @@ self-tests ≈ 6,900. CB's [`tools/cb.c++`](../tools/cb.c++) is 3,334 lines.
 - Rebuild decisions are structured rather than textual: every non-hit compile carries
   a `rebuild_kind` plus the module or path that triggered it, and the human sentence
   is composed in the observer ([`tools/cb-observer.h++`](../tools/cb-observer.h++)).
-- All toolchain execution funnels through one `std::system` boundary, and failing
-  commands carry captured diagnostics with the full log path, so a failure can be
-  triaged without rerunning the build. Successful warning output uses the same path.
+- All toolchain execution funnels through one `invoke_shell` boundary (`posix_spawn`
+  of `/bin/sh -c`; Apple's libc serializes `std::system`), and failing commands carry
+  captured diagnostics with the full log path, so a failure can be triaged without
+  rerunning the build. Successful warning output uses the same path.
 - JSONL carries actionable source locations, matcher identity, expected/actual values,
   failed test IDs, and build diagnostics. The schema plus validator make this a usable
   automation contract ([`docs/jsonl-schema.json`](jsonl-schema.json),
@@ -454,7 +455,7 @@ cannot read the results or because there is nothing to pin.
 5. ~~Route the compiler probe and version stamp through `invoke_shell`.~~ Done: bare
    `LLVM_CXX` / `CXX` names are looked up with a quoted `sh -c 'command -v …'` through
    `invoke_shell`, and `clang++ --version` writes the stamp the same way. Nothing reaches
-   `system()` unquoted.
+   the shell unquoted.
 6. ~~Make assertion statistics counters atomic and pin the parallel soft-fail /
    orphan case.~~ Done: counters are `std::atomic`; `[self]` covers concurrent
    child-thread counts and `<unattributed thread assertion>` under `--jobs>1`;
