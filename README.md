@@ -435,7 +435,7 @@ Test runner output is configured via CLI options, not environment variables.
 
 ## Versioning & Releases
 
-**Current release: [`v2.0.0`](https://github.com/ruoka/tester/releases/tag/v2.0.0)** — first supported modules-era SemVer tag (Clang 21 + libc++ modules, JSONL, CB). The November 2025 `v1.0.0` GitHub pre-release is historical and unsupported.
+**Current release: [`v2.1.0`](https://github.com/ruoka/tester/releases/tag/v2.1.0)** — Clang 21 + libc++ modules, JSONL, CB (`--modules=`, `posix_spawn`), CMake + Ninja build path. Prior supported tag: [`v2.0.0`](https://github.com/ruoka/tester/releases/tag/v2.0.0). The November 2025 `v1.0.0` GitHub pre-release is historical and unsupported.
 
 Pin a tag or an explicit commit as a submodule. Between tags, `main` is CI-gated but carries no compatibility promise. Prefer aligning **every** nested `deps/tester` in a parent tree to the same SHA (see [YarDB versioning](https://github.com/ruoka/YarDB/blob/master/docs/versioning.md)).
 

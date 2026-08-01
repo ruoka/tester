@@ -399,6 +399,7 @@ When tester is used as `deps/tester` inside a larger repo:
 - ✅ What a consumer can rely on is written down: [release-policy.md](release-policy.md) names the public surface (the re-exported partitions, both CLIs, the JSONL schema, the `CB_*` bootstrap variables) against the parts that may change in any release (engine internals, `cb.c++` structure, everything under `build-*/cache/`, `tester/details/`, the hidden probe fixtures), and states the versioning rules — additive JSONL fields are MINOR because consumers must ignore what they do not know, raising the minimum compiler is breaking whatever the source compatibility, and a deprecated name survives at least one MINOR. Supported line starts at `v2.0.0`; nested consumer `deps/tester` pins must stay aligned.
 - ✅ [CHANGELOG.md](../CHANGELOG.md) records public-surface changes as they land; `Unreleased` accumulates until the next tag. The `v2.0.0` section covers the modules-era surface shipped from the November 2025 pre-release through the first supported cut (JSONL, observers, CB telemetry, BDD-at-assignment, parallel `--jobs`, and related fixes).
 - ✅ Cut the first supported release (`v2.0.0`, 1 August 2026): modules-era SemVer tag consumers can pin, with release notes stating minimum compiler and surface. Ongoing cuts follow [`release-policy.md`](release-policy.md).
+- ✅ Cut `v2.1.0` (2 August 2026): `cb --modules=`, CMake + Ninja path + CI lane, `posix_spawn` for CB subprocesses, Debian trixie dev container.
 
 ---
 

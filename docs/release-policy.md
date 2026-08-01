@@ -3,20 +3,21 @@
 What counts as public, how versions are numbered, what breaks a consumer, and what has to
 be true before a release is cut.
 
-## Current status: v2.0.0
+## Current status: v2.1.0
 
-**`v2.0.0`** (1 August 2026) is the first **supported** SemVer release of the modules-era
-surface (Clang 21 + libc++ modules, JSONL, CB telemetry).
+**`v2.1.0`** (2 August 2026) is the current **supported** SemVer release. It adds
+`cb --modules=`, the CMake + Ninja build path, and switches CB subprocesses to
+`posix_spawn` so parallel compiles are not serialized on macOS.
 
-The `v1.0.0` tag (27 November 2025) is a GitHub *pre-release* that predates the JSONL
-contract, CB's cache model, and the current assertion semantics; it is kept for history and
-is **not supported**.
+**`v2.0.0`** (1 August 2026) was the first supported modules-era release (Clang 21 +
+libc++ modules, JSONL, CB telemetry). The `v1.0.0` tag (27 November 2025) is a GitHub
+*pre-release* that predates that surface; it is kept for history and is **not supported**.
 
 Parents should pin a release tag or an explicit commit:
 
 ```bash
 git submodule add https://github.com/ruoka/tester deps/tester
-git -C deps/tester checkout v2.0.0   # or a later tag / deliberate commit
+git -C deps/tester checkout v2.1.0   # or a later tag / deliberate commit
 ```
 
 How a parent `tools/CB.sh` finds that checkout (`deps/tester` vs sibling `../tester` vs
