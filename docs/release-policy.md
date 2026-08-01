@@ -17,6 +17,12 @@ git submodule add https://github.com/ruoka/tester deps/tester
 git -C deps/tester checkout <commit>   # pin deliberately; nothing auto-tracks main
 ```
 
+How a parent `tools/CB.sh` finds that checkout (`deps/tester` vs sibling `../tester` vs
+`CB_FETCH_DEPS=1`) is in [README — Embedding & tester resolution](../README.md#embedding--tester-resolution).
+If the parent also vendors packages that carry their own `deps/tester`, bump those nested
+submodule pointers for fixes and docs — do not copy README/`docs/` from a newer pin into
+the nested tree.
+
 `main` is expected to be green — every push runs the framework contract tests, the CB and
 MCP smoke suites, and JSONL schema validation — but it carries no compatibility promise
 between commits. What changed is in [`CHANGELOG.md`](../CHANGELOG.md) under `Unreleased`,

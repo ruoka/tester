@@ -435,6 +435,8 @@ struct observer final : cb::output::observer
             os << ",\"executable_path\":\"" << escape(executable_path) << "\"";
             os << ",\"ok\":" << (step.ok ? "true" : "false");
             os << ",\"cache_hit\":" << (step.cache_hit ? "true" : "false");
+            if(not step.signature.empty())
+                os << ",\"signature\":\"" << escape(step.signature) << "\"";
             if(not step.cache_hit and not step.rebuild.empty())
             {
                 os << ",\"rebuild_reason\":\"" << escape(rebuild_kind_name(step.rebuild.kind)) << "\"";

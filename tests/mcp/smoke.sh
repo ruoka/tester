@@ -92,26 +92,19 @@ def ok(cond: bool, label: str, detail: str = "") -> None:
 
 
 def frame(obj: dict) -> bytes:
-    data = json.dumps(obj).encode()
-    return f"Content-Length: {len(data)}\r\n\r\n".encode() + data
+    # Spec-compliant MCP stdio: newline-delimited JSON-RPC (not Content-Length).
+    return json.dumps(obj, separators=(",", ":")).encode() + b"\n"
 
 
 def read_one(buf):
-    length = None
     while True:
-        line = b""
-        while not line.endswith(b"\n"):
-            ch = buf.read(1)
-            if not ch:
-                return None
-            line += ch
-        if line in (b"\r\n", b"\n"):
-            break
-        if line.lower().startswith(b"content-length:"):
-            length = int(line.split(b":", 1)[1])
-    if length is None:
-        return None
-    return json.loads(buf.read(length))
+        line = buf.readline()
+        if not line:
+            return None
+        text = line.decode("utf-8").strip()
+        if not text:
+            continue
+        return json.loads(text)
 
 
 proc = subprocess.Popen(

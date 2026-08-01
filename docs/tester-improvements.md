@@ -215,17 +215,17 @@ Design rationale and comparison with CMake, Make, and other build tools: [`docs/
 - ✅ Emit `graph.json` from `list` — convenience dump of the same inventory `list --jsonl` streams as `unit` / `list_summary` (`imports[]`, `level`, kind, flags). Schema `cb-graph` version 1 at the project root (gitignored). Not a link graph; mains are still `has_main` on units.
 - ✅ Emit `compile_commands.json` from `list` — one entry per scanned source using the existing argv builders (`--precompile` for modular interfaces/partitions, `-c` otherwise), after `update_module_flags` so `-fmodule-file=` is present. Written at the project root (gitignored). Full CMake export stays out of scope.
 - 📋 Richer diagnostics on module dependency cycles (today: stderr throw listing SCC members, not cycle edges / structured JSONL). PCM missing/stale already rides on `compile_end.rebuild`; unresolved `import` with no providing unit still surfaces as a clang failure rather than a CB preflight.
-- ✅ Module / source suffixes already include Clang’s usual set: `.c++m`, `.cppm`, `.c++`, `.cpp`, plus `.test.*` and `.impl.c++` (see `supported_suffixes` in `tools/cb.c++`). Still open only if wanted: other ecosystems (MSVC `.ixx`, GCC `.ccm`) or a configurable suffix list.
+- ✅ Module / source suffixes match the Clang set this project targets: `.c++m`, `.cppm`, `.c++`, `.cpp`, plus `.test.*` and `.impl.c++` (`supported_suffixes` in `tools/cb.c++`). MSVC `.ixx` / GCC `.ccm` and a configurable suffix list are out of scope — Windows is unsupported and CB is Clang-only.
 - ✅ Import scanning ignores non-code text. Comments, string literals and `#if 0` bodies are stripped from the preamble before the module regexes run, so a commented-out `import` no longer becomes a graph edge. Previously such an edge could close a loop through a real one and abort a valid build with `Cyclic dependency detected` — commenting out an import you used to have was enough to trigger it. Scanning stays regex-based and therefore compiler-independent (no `clang-scan-deps`), which matters for planned GCC support: one alternation covers comments and literals, and `#if` depth is counted because balanced delimiters are not a regular language. Genuine `#ifdef` branches remain over-approximated by design. Costs ~2 ms per translation unit, all of it `std::regex` overhead rather than the pattern.
 - ✅ The scanner splices continued lines before it reads anything, as translation phase 2 does. The cleaner had learned to follow a splice through a string literal and a `//` comment, but a splice can appear anywhere, and the directive filter still read physical lines: `#if \\` on its own line was an unrecognised directive rather than a dead region, so its body stayed live and could point a phantom edge at a module that exists, closing a loop through the real edge and aborting a valid project with `Cyclic dependency detected`. The other direction is worse and was not in the report: `import \\` / `helpers;` is a real edge the scanner did not see at all, and a missing edge builds in the wrong order instead of failing loudly. `splice_physical_lines` now runs first and deletes a backslash, the horizontal whitespace C++23 allows after it, and the newline — so the cleaner and the directive filter see what the compiler sees. Doing phase 2 once let the `//` and quoted-literal branches go back to stopping at the newline, and the scan came out no slower than before (`list` on this repo: 129 ms against a 138 ms baseline, min of twelve). It is one `regex_replace` over the preamble, raw-string bodies included — see the scope decision below.
 - ✅ The splice pass stays a pattern, and a raw-string body that needs a tokenizer is out of scope. [lex.pptoken] reverts phase-2 splices inside a raw string before the closer is identified, and honouring it was tried twice. Copying the body verbatim once an `R"(` appeared treated a **mention** of `R"(` as an opener — in a `//` comment, a block comment, or an ordinary literal — and an unclosed mention froze every later splice to the end of the file: the dead `#if \` body came back as a phantom edge and a real `import \` stayed split, which is both of the bugs the splice pass was added to fix, arriving from the other side. Gating the reversion on lexical state fixed that and cost a five-state walk over every character, plus a second description of comments and literals that had to agree with the cleaning regex about where each one ends. That is a tokenizer, and this scanner is regex-based by design, so the reversion is gone: a raw string whose body ends a line with `)\` is read as closing one line early and may contribute a phantom edge, the same over-approximation `#ifdef` branches already get, and a mention of `R"(` in a comment or literal — much likelier text — is inert. `smoke.sh` pins the mention rather than the reversion.
 - ✅ Every spelling of the dead-branch idiom is elided, not just the bare `#if 0`. Three spellings leaked: parentheses hid the constant (`#if (0)`, `#if ((false))`); a short-circuited operand (`#if 0 && OLD_FEATURE`) failed the full-line directive match, so the line was not recognised as a directive at all — its body stayed live *and* the matching `#endif` left the depth off by one, which could suppress a later real region; and every `#elif` reopened the region regardless of its condition, reviving the second arm of `#if 0 / #elif 0`. A condition is now judged dead after whitespace and grouping parentheses are dropped, when it reads as `0`, `false`, or short-circuits from either (`0 && anything`), and a dead `#elif` arm is elided even after a live one. `!0` and `0 || X` stay live: over-approximating costs a spurious edge, guessing wrong drops a real one. A `[self]` smoke case pins all nine phantom spellings, and two live imports in taken arms of the same conditionals pin the other half of the contract.
 - ✅ One atomic cache writer instead of three. `save_object_cache`, `save_executable_cache` and `save_std_module_profile` each spelled out the same temp-file / write / close-check / rename / remove-on-error sequence — 87 lines for three callers whose only real differences are what they write and what the file is called in the message. `write_cache_file(path, what, writer)` owns the sequence, so all three fail identically and a fourth cache cannot be added with a subtly different failure mode; the executable cache's "empty means delete" branch turned out to be `remove_if_exists`, which already existed.
-- 📋 Fold the three operand formatters into one. `value_to_display_string` and `observe_value` in `tester:utils` and `format_value` in the console observer carry the same branch list, and the character fix above had to be applied in each — the second and third copies were found only because a `[self]` test and then the console output disagreed with the first. The console copy exists because the traits it needs are internal to `tester:utils`.
-- 📋 Make the CB smoke harness give up its work directories when a case fails. `begin_case` / `end_case` clean up on the happy path, so a failed case or an aborted run is the leak — and each one holds a full build tree. 860 of them had collected in `$TMPDIR` and filled the disk, after which every run died at the first case with exit 1 and no message, since the harness reports assertion failures but not a build that could not write. Keeping the tree on failure is worth having; abandoning it silently is not.
-- 📋 Reduce the preamble cleaning window. The cleaner processes up to `max_lines` (1000) per file while the deepest real declaration in this repo sits at line 18. A fixed cap is unsafe — a global module fragment may carry hundreds of `#include` lines before `export module` — so this needs proper end-of-fragment detection.
-- 📋 Extract `translation_unit` / source scanning, the cache layer, and CLI parsing out of `cb.c++`. The single-file property is already gone; what remains is one very large file.
-- 📋 Use `std::from_chars` in `parse_usize`; consider content hashing instead of mtime in the object cache.
+- ✅ Two operand formatters instead of three — console delegates to `value_to_display_string`; `observe_value` stays separate for JSONL `value` / `kind` (see §1.7). The old “fold three formatters” bullet was stale.
+- ✅ CB smoke harness no longer leaks work trees. `work_dir="$(prepare_work_dir)"` ran in a subshell, so `LAST_WORK_DIR` never stuck in the parent and every case left a full build tree in `$TMPDIR` (hundreds observed; disk fill made later runs die with exit 1 and no useful message). Callers now run `prepare_work_dir` then `work_dir="${LAST_WORK_DIR}"` in the same shell (Bash 3.2 has no namerefs). Successful cases still clean up; a failed case keeps its tree and logs the path; the EXIT trap removes everything on success or prints the preserved path on failure.
+- 📋 Reduce the preamble cleaning window when a real project needs it. The cleaner still caps at `max_lines` (1000) while this repo’s deepest declaration sits near line 18; a huge global-module-fragment preamble could miss imports. Prefer end-of-fragment detection over raising a fixed cap. Low urgency here.
+- 📋 Extract `translation_unit` / source scanning, the cache layer, and CLI parsing out of `cb.c++` when editing pain justifies it. Maintainability only — no user-visible change.
+- 📋 Optional polish: `std::from_chars` for remaining CLI integer parses (`test_runner` still has `parse_usize`); content hashing instead of mtime in the object cache only if false cache hits show up in practice. CB already uses `from_chars` for `--jobs=`.
 
 ### 4.2 Test integration
 
@@ -319,7 +319,7 @@ Per-project wrappers compile `cb.c++` and invoke it with the right include paths
 - ✅ Dev containers for tester, net, and xson on **Clang 21** / Debian bookworm.
 - ✅ Consuming repos (e.g. fixer): `post-create.sh` bootstrap stamp skips rebuild when `HEAD` + submodule pointers are unchanged.
 - ✅ Shared `CB.sh.core` + `CB.sh.template`; per-repo wrappers source the core (diff table in template header).
-- 📋 Align nested `deps/tester` copies when parent repos bump the tester submodule pointer.
+- ✅ Align nested `deps/tester` copies when parent repos bump the tester submodule pointer — standing release/bump practice (always done with the pointer update), not an open engineering task.
 
 ### 5.2 Robustness
 
@@ -327,15 +327,15 @@ Per-project wrappers compile `cb.c++` and invoke it with the right include paths
 - ✅ Bootstrap watches `tester/details/*.h++` as well as `tools/*.h++`: `cb-jsonl_observer.h++` includes the shared JSONL header from outside `tools/`, so editing it previously rebuilt nothing.
 - ✅ JSONL-safe wrapper logging (`cb_log` → stderr when `--jsonl[=summary|failures|trace]`).
 - ✅ `NET_DISABLE_NETWORK_TESTS` sandbox hook only enabled in net wrapper (`CB_SANDBOX_DISABLE_NETWORK_TESTS=1`).
-- 📋 Remove the hardcoded `--branch grok` from `CB.sh.core`.
+- ✅ `CB.sh.core` fetch clone uses `${CB_TESTER_BRANCH:-main}` instead of the leftover `--branch grok`.
 
 ### 5.3 Sandbox & CI
 
 - ✅ `CURSOR_SANDBOX` can auto-set `NET_DISABLE_NETWORK_TESTS` in network-heavy projects.
 - 📋 `make tools` only works on Linux: it globs `tools/*.c++`, and `core_pc.c++` includes `<elf.h>`. CB does not scan `tools/`, so that utility has no other build path and nothing notices it rot. Either guard the source for non-Linux, move it out of the default glob, or drop it.
 - ✅ Makefile CI lane (`makefile-build-and-test` in `.github/workflows/ci.yml`): `make tests` (fail on any compiler `warning:`), then `make run_tests` with `--tags=[self]`. CB also surfaces warnings from units it compiles (`diagnostics` on successful `compile_end` / `link_end` / `command_end` in failures mode), so Make is no longer the only place `-Wall` noise is visible — it remains the full-rebuild cross-check beside CB.
-- 📋 Document sandbox behaviour in CONTRIBUTING.
-- 📋 JSONL-first `ci` example in README: `./tools/CB.sh ci --jsonl`.
+- ✅ Document sandbox behaviour in CONTRIBUTING (`CB_SANDBOX_DISABLE_NETWORK_TESTS`, `CURSOR_SANDBOX`, `NET_DISABLE_NETWORK_TESTS`, `run_start.env`).
+- ✅ JSONL-first `ci` example in README / Quick Start / canonical commands: `./tools/CB.sh ci --jsonl=failures`.
 - ✅ Every CI step that reads as a check is one, and the job that could not check anything is gone. `test-examples` was `continue-on-error`, ran the suite through `|| true`, and then looked for a `result` event the framework stopped emitting — three independent reasons it could not fail, on the job whose entire purpose was asserting that the failure demos still fail. Repairing it turned out to be the wrong fix: `tools/CB.sh` sets `CB_INCLUDE_EXAMPLES_MODE=always`, so a standalone `./tools/CB.sh debug test` already includes `examples/`, and the job was installing LLVM and rebuilding the same 36 units to run the same tests as `build-and-test`. It is retired, and its one unique check is a step there: selecting `[.demo]` must exit non-zero *and* report `passed: false`, with the command as the `if` condition since the non-zero exit is the expected outcome. `build-and-test` also stopped writing a synthetic `{"type":"eof"}` line for the JSONL validation step to inspect — a check of a file CI had just written itself, justified by a comment claiming all tests live in `examples/` and fail — and runs the whole suite instead, which is 146 passing tests and a real stream. Static analysis stays advisory, now by decision: the job is named `static-analysis (advisory)`, says why in a comment (neither tool is given the module graph, so a module interface reports diagnostics no fix can remove), and uploads its output as an artifact so the findings can be read rather than being discarded to `/dev/null`.
 
 ---
@@ -344,13 +344,13 @@ Per-project wrappers compile `cb.c++` and invoke it with the right include paths
 
 ### 6.1 Toolchain version
 
-- ✅ README and CONTRIBUTING: Clang 21 on Linux.
-- 📋 Keep LLVM version in sync across tester and consuming-project READMEs on every toolchain bump.
-- 📋 Note that nested `deps/tester` copies inside other repos lag until their submodule pointer updates.
+- ✅ README and CONTRIBUTING: Clang 21 on Linux (floor; macOS often newer local trunk).
+- ✅ Keep LLVM version in sync across tester and consuming-project READMEs on every toolchain bump — standing bump practice (same class as aligning nested `deps/tester` pointers), not an open engineering task in this repo.
+- ✅ Nested `deps/tester` copies lag until the submodule pointer updates — already stated under §8 and in the release/bump practice notes.
 
 ### 6.2 CLI reference
 
-- 📋 Single table: which flags CB forwards without `--` vs which require `--`.
+- ✅ Which flags CB forwards without `--` is documented in [docs/cb.md](cb.md) (forwarded `test_runner` flags list) and §3.7 / §4.2 here — use `--` only for uncommon runner flags.
 - ✅ JSONL event schema reference — [docs/jsonl-schema.json](jsonl-schema.json) (JSON Schema 2020-12, per-`type` required fields and value constraints), enforced against live streams by [tests/jsonl/validate.py](../tests/jsonl/validate.py) in CI.
 - ✅ macOS `/usr/local/llvm` setup guide — [clang-modules-macos.md](clang-modules-macos.md) ([LLVM Getting Started](https://llvm.org/docs/GettingStarted.html); [#92121](https://github.com/llvm/llvm-project/issues/92121), [#168287](https://github.com/llvm/llvm-project/issues/168287#issuecomment-3712718691)).
 
@@ -358,8 +358,8 @@ Per-project wrappers compile `cb.c++` and invoke it with the right include paths
 
 - ✅ `AGENTS.md` at repo root (canonical JSONL commands, triage workflow, event reference for agents/CI).
 - ✅ MCP stdio bridge `tools/cb_mcp.py` + `.cursor/mcp.json` for CB agent tools (`cb_list` / `cb_build` / `cb_test` / …); smoke `./tests/mcp/smoke.sh`.
-- 📋 Verify the MCP bridge against a spec-compliant client, and switch to newline-delimited stdio framing if that confirms a mismatch. The smoke test currently mirrors the bridge's own framing rather than exercising the wire format independently.
-- 📋 JSONL assertion event table in README (see §3.1).
+- ✅ MCP stdio framing matches the spec: newline-delimited JSON-RPC (verified against [MCP stdio transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports); the bridge had been using LSP `Content-Length`). `cb_mcp.py` and `tests/mcp/smoke.sh` both speak NDJSON now, so the smoke client is independent of a private framing dialect.
+- ✅ JSONL assertion event table in README (§3.1 / [Assertion events](../README.md#assertion-events)): `assertion_failed` / `assertion_passed`, fields, matcher naming, and event ordering.
 
 ---
 
@@ -373,13 +373,13 @@ Per-project wrappers compile `cb.c++` and invoke it with the right include paths
 ### 7.2 macOS
 
 - 🔶 Requires custom LLVM at `/usr/local/llvm` (documented; high friction for new contributors).
-- 📋 Document minimum LLVM version and `flat_map` / module support matrix.
-- 📋 Optional Homebrew LLVM path detection (explicitly unsupported today; document why).
+- ✅ Minimum toolchain documented: Clang **21+** with libc++ modules (`std.cppm`) — README Requirements, CONTRIBUTING, AGENTS.md, and [clang-modules-macos.md](clang-modules-macos.md) (Linux CI pin vs newer macOS trunk). C++23 library pieces the code uses (`flat_map`, modules, …) ride on that floor; no separate version matrix beyond “21 or newer.”
+- ✅ Homebrew LLVM is explicitly unsupported on macOS, with why (exception unwinding on Apple Silicon) in README and the full [Why not Homebrew LLVM?](clang-modules-macos.md#why-not-homebrew-llvm) section — no path auto-detection; source build at `/usr/local/llvm` is the supported path.
 
 ### 7.3 Cross-platform cache
 
-- 📋 Surface cache stamp / signature in `CB.sh list` or JSONL when link is skipped.
-- 📋 `CB.sh clean` flag to invalidate only test objects without full rebuild.
+- ✅ Surface cache stamp / signature on JSONL `link_end` (including skipped links with `cache_hit:true`).
+- ✅ `CB.sh clean --tests` invalidates only test objects / `test_runner` without a full rebuild.
 
 ---
 
@@ -389,8 +389,8 @@ When tester is used as `deps/tester` inside a larger repo:
 
 - ✅ CB resolves sibling `../tester` or local `deps/tester`.
 - ✅ Parent repos should bump the submodule pointer after tester fixes (e.g. JSONL capture cleanup, `first_failure`); nested `deps/*/tester` copies lag until each submodule updates.
-- 📋 Document resolution order in README (sibling vs nested vs `CB_FETCH_DEPS=1`).
-- 📋 Avoid duplicating stale tester docs inside nested `deps/tester` trees — bump the submodule pointer instead.
+- ✅ Resolution order documented in [README — Embedding & tester resolution](../README.md#embedding--tester-resolution): `CB_TESTER_ROOT` → `deps/tester` → sibling `../tester` → in-tree `cb.c++` → optional `CB_FETCH_DEPS=1` clone (also cross-linked from [cb.md](cb.md#embedded-depstester-in-a-parent-repo)).
+- ✅ Nested `deps/*/deps/tester` trees stay submodule checkouts — bump the pointer for newer docs/behaviour; do not duplicate or patch docs inside the nested tree (same README section + cb.md).
 - ✅ What a consumer can rely on is written down: [release-policy.md](release-policy.md) names the public surface (the re-exported partitions, both CLIs, the JSONL schema, the `CB_*` bootstrap variables) against the parts that may change in any release (engine internals, `cb.c++` structure, everything under `build-*/cache/`, `tester/details/`, the hidden probe fixtures), and states the versioning rules — additive JSONL fields are MINOR because consumers must ignore what they do not know, raising the minimum compiler is breaking whatever the source compatibility, and a deprecated name survives at least one MINOR. It also fixes the bar: no release until this repository's own review rates it at or close to 9 / 10, which makes "pre-release" a stated position rather than an omission.
 - ✅ [CHANGELOG.md](../CHANGELOG.md) records public-surface changes as they land, with an `Unreleased` section covering everything after the November 2025 pre-release — JSONL and its schema, the observer model, CB's telemetry and cache inspection, BDD steps that run at assignment, strict ordering metadata, the mixed-signedness comparison fixes, and the scanner fixes. Cutting a release renames the section; it is not reconstructed from the git log afterwards.
 - 📋 Cut the first release once the policy's criteria are met: a tag consumers can pin instead of a commit, and release notes leading with breaking changes and the minimum compiler.

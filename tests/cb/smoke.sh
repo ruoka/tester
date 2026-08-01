@@ -45,7 +45,8 @@ test_profile_header() {
   should_run profile_header || return 0
   begin_case profile_header
   local work_dir cache_file
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   run_cb_build "${work_dir}"
   cache_file="$(object_cache_path "${work_dir}")"
@@ -64,7 +65,8 @@ test_cache_hit() {
   should_run cache_hit || return 0
   begin_case cache_hit
   local work_dir first_jsonl
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   run_cb_build "${work_dir}"
   first_jsonl="${LAST_JSONL}"
@@ -80,22 +82,62 @@ test_link_cache_hit() {
   should_run link_cache_hit || return 0
   begin_case link_cache_hit
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   run_cb_build "${work_dir}"
   assert_jsonl_contains '"type":"link_end"' "link_end_event"
   assert_jsonl_contains '"cache_hit":false' "first_link"
+  assert_jsonl_contains '"signature":"' "first_link_signature"
 
   run_cb_build "${work_dir}"
   assert_link_cache_hits 1 "second_build_link_cache_hit"
+  assert_link_end "/hello" true "" true "skipped_link_cache_hit"
+  assert_jsonl_contains '"signature":"' "skipped_link_signature"
   end_case link_cache_hit
+}
+
+test_clean_tests() {
+  should_run clean_tests || return 0
+  begin_case clean_tests
+  local work_dir
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
+
+  printf '%s\n' 'int smoke_test_marker = 1;' > "${work_dir}/smoke.test.c++"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "clean_tests_seed_build"
+
+  local test_obj="${work_dir}/${BUILD_DIR}/obj/smoke.test.o"
+  local hello_obj="${work_dir}/${BUILD_DIR}/obj/hello.o"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ -f "${test_obj}" && -f "${hello_obj}" ]]; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"clean_tests_seed_objects"}'
+  else
+    fail "expected ${test_obj} and ${hello_obj} after seed build"
+  fi
+
+  run_cb_clean "${work_dir}" --tests
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ ! -f "${test_obj}" && -f "${hello_obj}" ]]; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"clean_tests_removed_only_test_obj"}'
+  else
+    fail "clean --tests should remove ${test_obj} and keep ${hello_obj}"
+  fi
+
+  run_cb_build "${work_dir}"
+  assert_compile_end "smoke.test.c++" false not_in_cache true "clean_tests_recompiles_test"
+  assert_compile_end "hello.c++" true "" true "clean_tests_keeps_hello_cache_hit"
+  end_case clean_tests
 }
 
 test_parallel_main_link() {
   should_run parallel_main_link || return 0
   begin_case parallel_main_link
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   # Two mains exercise parallel link_executables workers; decisions must be
   # snapshotted before any thread mutates the in-memory link cache.
@@ -123,7 +165,8 @@ test_compile_start() {
   should_run compile_start || return 0
   begin_case compile_start
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   run_cb_build "${work_dir}"
   assert_jsonl_contains '"type":"compile_start"' "compile_start_event"
@@ -140,7 +183,8 @@ test_source_stale() {
   should_run source_stale || return 0
   begin_case source_stale
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   run_cb_build "${work_dir}"
   run_cb_build "${work_dir}"
@@ -159,7 +203,8 @@ test_header_stale() {
   should_run header_stale || return 0
   begin_case header_stale
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   # A textual #include is invisible to the module graph; only the compiler depfile
   # records it. Without -MMD tracking this edit rebuilt nothing.
@@ -186,7 +231,8 @@ test_header_stale_relative_include() {
   should_run header_stale_relative_include || return 0
   begin_case header_stale_relative_include
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   # Documented `-I include/path` is relative. Clang -MMD then records
   # `include/value.h++` rather than an absolute path; filtering that spelling
@@ -215,7 +261,8 @@ test_depfile_unusable() {
   should_run depfile_unusable || return 0
   begin_case depfile_unusable
   local work_dir depfile
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   # The depfile is the only record of a unit's textual includes, so an unreadable one
   # cannot be read as "this unit includes no headers". It was, and the header edit below
@@ -264,7 +311,8 @@ test_strict_arguments() {
   should_run strict_arguments || return 0
   begin_case strict_arguments
   local work_dir status output
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   # CB used to fall off the end of its argument chain, so a mistyped flag was
   # silently ignored and the run reported success for something never requested.
@@ -305,7 +353,8 @@ test_source_list() {
   should_run source_list || return 0
   begin_case source_list
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   run_cb_list "${work_dir}"
   assert_jsonl_event_count list_start 1 "single_list_start"
@@ -327,7 +376,8 @@ test_compile_commands() {
   should_run compile_commands || return 0
   begin_case compile_commands
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   printf '%s\n' \
     'export module counter;' \
@@ -388,7 +438,8 @@ test_graph_json() {
   should_run graph_json || return 0
   begin_case graph_json
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   printf '%s\n' \
     'export module counter;' \
@@ -442,7 +493,8 @@ test_compile_failure() {
   should_run compile_failure || return 0
   begin_case compile_failure
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   printf '%s\n' 'int broken( {' > "${work_dir}/broken.c++"
   TESTS_RUN=$((TESTS_RUN + 1))
@@ -472,7 +524,8 @@ test_compile_warning() {
   should_run compile_warning || return 0
   begin_case compile_warning
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   printf '%s\n' 'int main() { int unused = 1; return 0; }' > "${work_dir}/hello.c++"
 
@@ -497,7 +550,8 @@ test_modular_compile_warning() {
   should_run modular_compile_warning || return 0
   begin_case modular_compile_warning
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
   rm -f "${work_dir}/hello.c++"
 
   printf '%s\n' \
@@ -518,7 +572,8 @@ test_link_failure() {
   should_run link_failure || return 0
   begin_case link_failure
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   printf '%s\n' \
     'int missing();' \
@@ -539,7 +594,8 @@ test_test_link_failure() {
   should_run test_link_failure || return 0
   begin_case test_link_failure
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   printf '%s\n' \
     'int missing();' \
@@ -559,7 +615,8 @@ test_link_rebuild_reason() {
   should_run link_rebuild_reason || return 0
   begin_case link_rebuild_reason
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   run_cb_build "${work_dir}"
   assert_link_end "/hello" false missing_executable true "first_link_missing_executable"
@@ -579,7 +636,8 @@ test_implementation_pcm() {
   should_run implementation_pcm || return 0
   begin_case implementation_pcm
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   printf '%s\n' \
     'export module sample;' \
@@ -604,7 +662,8 @@ test_dotted_module_name() {
   should_run dotted_module_name || return 0
   begin_case dotted_module_name
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
   rm -f "${work_dir}/hello.c++"
 
   printf '%s\n' \
@@ -628,7 +687,8 @@ test_gmf_preamble() {
   should_run gmf_preamble || return 0
   begin_case gmf_preamble
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
   rm -f "${work_dir}/hello.c++"
 
   printf '%s\n' \
@@ -654,7 +714,8 @@ test_import_trailing_comment() {
   should_run import_trailing_comment || return 0
   begin_case import_trailing_comment
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
   rm -f "${work_dir}/hello.c++"
 
   # Trailing // comments that mention preamble-ending keywords (class/struct/...)
@@ -695,7 +756,8 @@ test_commented_out_imports() {
   should_run commented_out_imports || return 0
   begin_case commented_out_imports
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
   rm -f "${work_dir}/hello.c++"
 
   # The scanner matched module regexes against raw lines, so text that is not code
@@ -739,7 +801,8 @@ test_spliced_and_raw_literals() {
   should_run spliced_and_raw_literals || return 0
   begin_case spliced_and_raw_literals
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
   rm -f "${work_dir}/hello.c++"
 
   # Three constructs reach past the end of their line, and the cleaner stopped at the
@@ -783,7 +846,8 @@ test_spliced_directives() {
   should_run spliced_directives || return 0
   begin_case spliced_directives
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
   rm -f "${work_dir}/hello.c++"
 
   # Phase 2 joins a continued line before the compiler recognises anything on it, and the
@@ -840,7 +904,8 @@ test_mentioned_raw_opener() {
   should_run mentioned_raw_opener || return 0
   begin_case mentioned_raw_opener
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
   rm -f "${work_dir}/hello.c++"
 
   # An `R"(` in a comment or a literal is text, not a raw-string opener. Deciding otherwise is
@@ -888,7 +953,8 @@ test_dead_conditional_arms() {
   should_run dead_conditional_arms || return 0
   begin_case dead_conditional_arms
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
   rm -f "${work_dir}/hello.c++"
 
   # `#if 0` has more spellings than the bare constant, and the scanner recognised only
@@ -960,7 +1026,8 @@ test_commented_import_no_false_cycle() {
   should_run commented_import_no_false_cycle || return 0
   begin_case commented_import_no_false_cycle
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
   rm -f "${work_dir}/hello.c++"
 
   # A phantom edge from a commented-out import is not merely spurious: pointing it at
@@ -989,7 +1056,8 @@ test_module_safe_name() {
   should_run module_safe_name || return 0
   begin_case module_safe_name
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
   rm -f "${work_dir}/hello.c++"
 
   # Partition demo:part and flat module demo_part must keep distinct artifacts.
@@ -1026,7 +1094,8 @@ test_same_basename_collision() {
   should_run same_basename_collision || return 0
   begin_case same_basename_collision
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   # Same basename in different directories is unsupported: names must stay unique.
   # scan_and_order refuses before any compile, so list is enough.
@@ -1050,7 +1119,8 @@ test_reserved_std_collision() {
   should_run reserved_std_collision || return 0
   begin_case reserved_std_collision
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   # Project sources named std map onto CB's reserved libc++ std.pcm / std.o paths.
   # The reservation is checked during scan_and_order, so list refuses without compiling.
@@ -1073,7 +1143,8 @@ test_nested_deps_skipped() {
   should_run nested_deps_skipped || return 0
   begin_case nested_deps_skipped
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   # Nested package checkouts (deps/<pkg>/deps/...) must not join the parent scan,
   # or vendored tester smoke fixtures collide across packages.
@@ -1094,7 +1165,8 @@ test_vendored_tester_tests_skipped() {
   should_run vendored_tester_tests_skipped || return 0
   begin_case vendored_tester_tests_skipped
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   # First-level deps/tester/tests fixtures are still under tester/, so is_test stays
   # false; skipping only nested deps/*/deps is not enough for parent repos.
@@ -1115,7 +1187,8 @@ test_project_test_dir_included() {
   should_run project_test_dir_included || return 0
   begin_case project_test_dir_included
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   # Conventional project test/ trees must join debug scans (include_tests=true).
   # A hard-skip of test/ previously dropped them before is_test/include_tests ran.
@@ -1159,7 +1232,8 @@ test_deps_package_tests_skipped() {
   should_run deps_package_tests_skipped || return 0
   begin_case deps_package_tests_skipped
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   # Project test/ must still join, but first-level deps/<pkg>/test and
   # deps/<pkg>/tests belong to the vendored package and must not.
@@ -1186,7 +1260,8 @@ test_rebuild_summary() {
   should_run rebuild_summary || return 0
   begin_case rebuild_summary
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   printf '%s\n' \
     'export module sample;' \
@@ -1214,7 +1289,8 @@ test_test_lifecycle() {
   should_run test_lifecycle || return 0
   begin_case test_lifecycle
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   printf '%s\n' \
     'import std;' \
@@ -1236,7 +1312,8 @@ test_test_runner_exact_name() {
   should_run test_runner_exact_name || return 0
   begin_case test_runner_exact_name
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
   rm -f "${work_dir}/hello.c++"
 
   # Seed a fresh bin/test_runner that passes.
@@ -1278,7 +1355,8 @@ test_cache_invalidate() {
   should_run cache_invalidate || return 0
   begin_case cache_invalidate
   local work_dir cache_file
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   run_cb_build "${work_dir}"
   run_cb_build "${work_dir}"
@@ -1305,7 +1383,8 @@ test_profile_change() {
   should_run profile_change || return 0
   begin_case profile_change
   local work_dir first_jsonl std_pcm std_profile before_pcm_mtime after_pcm_mtime
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
   std_pcm="${work_dir}/${BUILD_DIR}/pcm/std.pcm"
   std_profile="${work_dir}/${BUILD_DIR}/cache/std-module-profile.txt"
 
@@ -1374,7 +1453,8 @@ test_cache_status() {
   should_run cache_status || return 0
   begin_case cache_status
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   run_cb_build "${work_dir}"
   run_cb_cache_status "${work_dir}"
@@ -1399,7 +1479,8 @@ test_std_module_reported() {
   should_run std_module_reported || return 0
   begin_case std_module_reported
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   # The std module is a modular unit CB compiles like any other; it is only absent from the
   # scan. It used to build through execute_system_command, so the two most expensive steps of
@@ -1424,7 +1505,8 @@ test_jsonl_modes() {
   should_run jsonl_modes || return 0
   begin_case jsonl_modes
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
 
   run_cb_build "${work_dir}" --jsonl=failures
   assert_jsonl_event_count build_start 1 "failures_build_start"
@@ -1446,7 +1528,8 @@ test_jsonl_failure_mode() {
   should_run jsonl_failure_mode || return 0
   begin_case jsonl_failure_mode
   local work_dir
-  work_dir="$(prepare_work_dir)"
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
   printf '%s\n' 'int broken( {' > "${work_dir}/broken.c++"
 
   TESTS_RUN=$((TESTS_RUN + 1))
@@ -1465,7 +1548,7 @@ test_jsonl_failure_mode() {
 
 main() {
   require_cb
-  trap cleanup_work_dir EXIT
+  trap cleanup_on_exit EXIT
 
   jsonl_emit '{"type":"smoke_start","schema":"cb-smoke","version":1}'
   log "cb smoke tests (cb=${CB_BIN}, build_dir=${BUILD_DIR})"
@@ -1473,6 +1556,7 @@ main() {
   test_profile_header
   test_cache_hit
   test_link_cache_hit
+  test_clean_tests
   test_parallel_main_link
   test_compile_start
   test_source_stale

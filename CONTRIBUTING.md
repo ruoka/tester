@@ -39,6 +39,30 @@ is at `build-<os>-<config>/bin/test_runner` — for example `build-darwin-debug/
 Add `--jsonl=failures` to any command for machine-readable output; that is what CI and
 agents read, and [`AGENTS.md`](AGENTS.md) documents the contract.
 
+For a clean rebuild-and-run entry point (what many CI jobs want):
+
+```bash
+./tools/CB.sh ci --jsonl=failures   # clean + test; JSONL on stdout
+```
+
+### Sandbox environment (Cursor / network-heavy consumers)
+
+`tools/CB.sh.core` can skip network tests when a Cursor sandbox is active. The hook is
+**opt-in per wrapper** via `CB_SANDBOX_DISABLE_NETWORK_TESTS`:
+
+| Setting | This repo (`tester`) | Typical `net` consumer |
+|---------|----------------------|-------------------------|
+| `CB_SANDBOX_DISABLE_NETWORK_TESTS` | `0` (off) | `1` (on) |
+
+When the hook is on **and** `CURSOR_SANDBOX` is set **and** `NET_DISABLE_NETWORK_TESTS`
+is not already set in the environment, the wrapper exports `NET_DISABLE_NETWORK_TESTS=1`.
+An explicit `NET_DISABLE_NETWORK_TESTS=0` (or any set value) is left alone.
+
+This standalone tester tree does not enable the hook — it has no network suite. Parent
+repos that do (see `tools/CB.sh.template`) turn it on so sandboxed CI/agent runs do not
+hang on live network tests. When either variable is set, `run_start.env` in JSONL records
+it so a skipped network suite is explainable from the stream.
+
 ### Build and test with make
 
 The `Makefile` is a supported alternative that uses `clang-scan-deps` for module ordering
@@ -171,6 +195,7 @@ If the change touches the public surface — exported names, either CLI, or the 
 | Using the framework | [`README.md`](README.md) |
 | JSONL contract, agent workflow | [`AGENTS.md`](AGENTS.md), [`docs/jsonl-schema.json`](docs/jsonl-schema.json) |
 | CB design, cache model, targets | [`docs/cb.md`](docs/cb.md) |
+| Sandbox / `NET_DISABLE_NETWORK_TESTS` | [Sandbox environment](#sandbox-environment-cursor--network-heavy-consumers) above; wrapper table in [`tools/CB.sh.template`](tools/CB.sh.template) |
 | Versioning and release criteria | [`docs/release-policy.md`](docs/release-policy.md) |
 | Known gaps and planned work | [`docs/tester-improvements.md`](docs/tester-improvements.md) |
 | macOS toolchain setup | [`docs/clang-modules-macos.md`](docs/clang-modules-macos.md) |

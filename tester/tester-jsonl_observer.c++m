@@ -220,6 +220,16 @@ export struct observer final : tester::output::observer
         return m.mode;
     }
 
+    bool jsonl_enabled() const
+    {
+        return m.jsonl.is_enabled();
+    }
+
+    void set_jsonl_enabled(bool enabled)
+    {
+        m.set_jsonl_enabled(enabled);
+    }
+
     void activate() override
     {
         m.set_jsonl_enabled(true);
@@ -508,8 +518,13 @@ export inline auto& observer_instance(std::ostream& json, std::ostream& result, 
 {
     // Reconfigure on every call — a process that builds more than one sink setup must not
     // stay stuck with the first streams / mode (function-local static construction latches).
+    // Preserve jsonl enabled across emplace: a mid-run reconfigure (e.g. a [self] probe)
+    // must not silence the rest of the stream after activate() already armed it.
     static auto value = std::optional<observer>{};
+    const auto keep_enabled = value.has_value() and value->jsonl_enabled();
     value.emplace(json, result, mode, output_max_bytes);
+    if(keep_enabled)
+        value->set_jsonl_enabled(true);
     return *value;
 }
 

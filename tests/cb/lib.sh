@@ -22,6 +22,8 @@ STD_CPPM="${STD_CPPM:-${LLVM_PATH:-}}"
 JSONL_MODE=0
 LAST_JSONL=""
 LAST_WORK_DIR=""
+KEEP_FAILED_WORK_DIR=""
+CASE_FAILED=0
 FAILURES=0
 TESTS_RUN=0
 START_MS=0
@@ -37,6 +39,7 @@ log() {
 
 fail() {
   FAILURES=$((FAILURES + 1))
+  CASE_FAILED=1
   log "FAIL: $*"
   if [[ -n "${LAST_JSONL}" ]]; then
     log "--- cb jsonl (last run, last 40 lines) ---"
@@ -81,13 +84,18 @@ require_cb() {
   fi
 }
 
+# Sets LAST_WORK_DIR in this shell. Callers copy it afterwards:
+#   prepare_work_dir
+#   work_dir="${LAST_WORK_DIR}"
+# Do not use command substitution (`work_dir="$(prepare_work_dir)"`) — that runs in
+# a subshell, so LAST_WORK_DIR never sticks in the parent and every case leaks a tree.
+# (Bash 3.2 on macOS has no namerefs, so the path is returned via this global.)
 prepare_work_dir() {
   local dir
   dir="$(mktemp -d "${TMPDIR:-/tmp}/cb_smoke.XXXXXX")"
   cp "${CB_FIXTURE_SRC}" "${dir}/hello.c++"
   LAST_WORK_DIR="${dir}"
   rm -rf "${dir}/${BUILD_DIR}"
-  printf '%s' "${dir}"
 }
 
 cleanup_work_dir() {
@@ -97,6 +105,30 @@ cleanup_work_dir() {
   fi
 }
 
+discard_kept_work_dir() {
+  if [[ -n "${KEEP_FAILED_WORK_DIR}" && -d "${KEEP_FAILED_WORK_DIR}" ]]; then
+    rm -rf "${KEEP_FAILED_WORK_DIR}"
+  fi
+  KEEP_FAILED_WORK_DIR=""
+}
+
+# EXIT trap: successful runs remove everything; a failed run leaves the last kept
+# tree and prints its path so a filled $TMPDIR is never a silent mystery.
+cleanup_on_exit() {
+  if [[ "${FAILURES}" -gt 0 || "${CASE_FAILED}" -ne 0 ]]; then
+    if [[ -n "${LAST_WORK_DIR}" && -d "${LAST_WORK_DIR}" ]]; then
+      log "preserved work dir: ${LAST_WORK_DIR}"
+      LAST_WORK_DIR=""
+    fi
+    if [[ -n "${KEEP_FAILED_WORK_DIR}" && -d "${KEEP_FAILED_WORK_DIR}" ]]; then
+      log "preserved failed work dir: ${KEEP_FAILED_WORK_DIR}"
+    fi
+    return 0
+  fi
+  cleanup_work_dir
+  discard_kept_work_dir
+}
+
 run_cb_build() {
   local work_dir=$1
   shift
@@ -104,6 +136,17 @@ run_cb_build() {
   LAST_JSONL="$(
     cd "${work_dir}"
     "${CB_BIN}" "${STD_CPPM}" debug build --jsonl=trace "$@" 2>/dev/null
+  )" || status=$?
+  return "${status}"
+}
+
+run_cb_clean() {
+  local work_dir=$1
+  shift
+  local status=0
+  LAST_JSONL="$(
+    cd "${work_dir}"
+    "${CB_BIN}" "${STD_CPPM}" debug clean --jsonl=failures "$@" 2>/dev/null
   )" || status=$?
   return "${status}"
 }
@@ -207,8 +250,7 @@ assert_jsonl_not_contains() {
 # the needle. Checks the parsed value, so it also proves the text survived escaping.
 # Also opens diagnostics.path under work_dir: a modular unit's second step used to
 # truncate a shared capture, leaving compile_end with text in memory and an empty
-# file at path. work_dir must be passed explicitly — `work_dir="$(prepare_work_dir)"`
-# runs prepare in a subshell, so LAST_WORK_DIR is not updated in the caller.
+# file at path. Pass the directory from prepare_work_dir explicitly.
 assert_jsonl_diagnostics_contain() {
   local work_dir=$1
   local event_type=$2
@@ -597,10 +639,18 @@ begin_case() {
   log "=== case: ${name} ==="
   jsonl_emit "{\"type\":\"smoke_case_start\",\"name\":\"${name}\"}"
   cleanup_work_dir
+  CASE_FAILED=0
 }
 
 end_case() {
   local name=$1
-  cleanup_work_dir
+  if [[ "${CASE_FAILED}" -ne 0 && -n "${LAST_WORK_DIR}" && -d "${LAST_WORK_DIR}" ]]; then
+    discard_kept_work_dir
+    log "keeping work dir for failed case ${name}: ${LAST_WORK_DIR}"
+    KEEP_FAILED_WORK_DIR="${LAST_WORK_DIR}"
+    LAST_WORK_DIR=""
+  else
+    cleanup_work_dir
+  fi
   jsonl_emit "{\"type\":\"smoke_case_end\",\"name\":\"${name}\"}"
 }

@@ -15,8 +15,9 @@ Environment:
   CB_MCP_DEFAULT_TAGS     Default --tags for cb_test (default: [self])
   CB_MCP_TIMEOUT_SEC      Subprocess timeout seconds (default: 600)
 
-Wire: JSON-RPC 2.0 with LSP-style Content-Length framing on stdin/stdout.
-Log only on stderr — never print to stdout (corrupts MCP framing).
+Wire: JSON-RPC 2.0 over stdio with newline-delimited messages (MCP transport spec:
+one JSON object per line, no Content-Length headers). Log only on stderr — never
+print to stdout (corrupts the stream).
 """
 
 from __future__ import annotations
@@ -355,28 +356,22 @@ TOOLS: dict[str, tuple[dict[str, Any], Callable[[dict[str, Any]], dict[str, Any]
 
 
 def _read_message() -> dict[str, Any] | None:
-    headers: dict[str, str] = {}
+    # MCP stdio: one JSON-RPC message per newline-terminated line (no Content-Length).
     while True:
         line = sys.stdin.buffer.readline()
         if not line:
             return None
-        if line in (b"\r\n", b"\n"):
-            break
-        key, _, value = line.decode("utf-8").partition(":")
-        headers[key.strip().lower()] = value.strip()
-    length = int(headers.get("content-length", "0"))
-    if length <= 0:
-        return None
-    body = sys.stdin.buffer.read(length)
-    if len(body) < length:
-        return None
-    return json.loads(body.decode("utf-8"))
+        text = line.decode("utf-8").strip()
+        if not text:
+            continue
+        return json.loads(text)
 
 
 def _write_message(message: dict[str, Any]) -> None:
-    data = json.dumps(message, ensure_ascii=False).encode("utf-8")
-    sys.stdout.buffer.write(f"Content-Length: {len(data)}\r\n\r\n".encode("ascii"))
-    sys.stdout.buffer.write(data)
+    data = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if b"\n" in data:
+        raise ValueError("MCP stdio messages must not contain embedded newlines")
+    sys.stdout.buffer.write(data + b"\n")
     sys.stdout.buffer.flush()
 
 

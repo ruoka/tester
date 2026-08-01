@@ -46,6 +46,12 @@ commit on `main`; there is no supported tag yet.
   (`depfile_unusable`).
 - **Cache inspection**: `cache status` reports all four cached artefacts and whether each
   matches the current toolchain profile; `cache invalidate` removes them.
+- **`link_end.signature`**: the link input stamp on every JSONL `link_end`, including
+  skipped links (`cache_hit: true`), so agents can see the cache key without reading
+  `executable-cache.txt`.
+- **`clean --tests`**: removes only test TU objects / PCMs and `test_runner`, pruning
+  matching object- and executable-cache entries, so the next build rebuilds tests
+  without a full cold rebuild.
 - **`compile_commands.json` from `list`**: writes a clangd compilation database at the
   project root for the active TU set, using the same compile argv builders as a build.
 - **`graph.json` from `list`**: writes the module/import inventory (`cb-graph` v1) at the
@@ -69,8 +75,22 @@ commit on `main`; there is no supported tag yet.
 - **`AGENTS.md`** as the automation contract, and hidden `[.tag]` fixtures so intentional
   failure demos stay out of unfiltered runs.
 
+### Fixed
+
+- **JSONL stays armed across `observer_instance` reconfigure** — mid-run
+  `emplace` reset `jsonl_context::enabled`, so a `[self]` probe that reconfigured
+  the singleton silenced every later event (including `summary`) while still
+  printing `RESULT` on stderr.
+
 ### Changed
 
+- **README documents tester resolution for embedded consumers** — `CB_TESTER_ROOT` →
+  `deps/tester` → sibling `../tester` → in-tree `cb.c++` → optional `CB_FETCH_DEPS=1`,
+  plus the rule that nested `deps/*/deps/tester` trees are updated by bumping the
+  submodule pointer rather than copying docs into the checkout.
+- **MCP stdio framing is newline-delimited JSON-RPC** per the MCP transport spec
+  (`tools/cb_mcp.py` and `tests/mcp/smoke.sh`). The previous LSP-style
+  `Content-Length` headers were a mismatch with the published stdio binding.
 - **`runner` owns its tag filter** as a `std::string`, so a temporary or argv view need
   not outlive the runner. Console and JSONL `observer_instance(...)` reconfigure on
   each call (streams / mode / flags) instead of latching the first construction;

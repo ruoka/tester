@@ -1146,14 +1146,14 @@ private:
 class link_scope
 {
 public:
-    link_scope(std::string_view executable, const output::rebuild_info& reason)
-        : executable_path{executable}, rebuild{reason}
+    link_scope(std::string_view executable, const output::rebuild_info& reason, std::string sig)
+        : executable_path{executable}, rebuild{reason}, signature{std::move(sig)}
     {}
 
     // An up-to-date executable: nothing ran, so no reason and no duration, and there is no step
-    // that could fail. Constructing one reports the hit.
-    explicit link_scope(std::string_view executable)
-        : link_scope{executable, output::rebuild_info{}}
+    // that could fail. Constructing one reports the hit — with the signature that made it a hit.
+    link_scope(std::string_view executable, std::string sig)
+        : link_scope{executable, output::rebuild_info{}, std::move(sig)}
     {
         hit = true;
         ok = true;
@@ -1171,7 +1171,8 @@ public:
                                            .cache_hit = hit,
                                            .timing = {started, finished},
                                            .rebuild = rebuild,
-                                           .diag = diag});
+                                           .diag = diag,
+                                           .signature = signature});
     }
 
     void succeeded() { ok = true; }
@@ -1182,6 +1183,7 @@ private:
     std::string executable_path;
     output::rebuild_info rebuild;
     output::diagnostics diag{};
+    std::string signature{};
     std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
     bool ok = false;
     bool hit = false;
@@ -2596,9 +2598,10 @@ private:
 
     void link_executable(const translation_unit& tu,
                          const string_list& shared_objects,
-                         const output::rebuild_info& rebuild) {
+                         const output::rebuild_info& rebuild,
+                         std::string signature) {
         if (not tu.has_main) return;
-        auto link = link_scope{tu.executable_path, rebuild};
+        auto link = link_scope{tu.executable_path, rebuild, std::move(signature)};
         run_step(link,
                  link_executable_argv(tu, shared_objects),
                  diagnostics_path_for_executable(tu));
@@ -2639,7 +2642,7 @@ private:
         {
             if(decision.reason)
                 continue;
-            const auto hit = link_scope{decision.tu->executable_path};
+            const auto hit = link_scope{decision.tu->executable_path, decision.signature};
         }
 
         run_in_parallel(decisions | std::views::filter([](const link_decision& decision) {
@@ -2647,7 +2650,7 @@ private:
                         job_limit(),
                         [&](const link_decision& decision) {
                             const auto& tu = *decision.tu;
-                            link_executable(tu, shared_objects, *decision.reason);
+                            link_executable(tu, shared_objects, *decision.reason, decision.signature);
                             auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
                             link_cache[tu.executable_path] = decision.signature;
                         });
@@ -2682,9 +2685,10 @@ private:
     }
 
     void link_test_runner_executable(const translation_unit& runner,
-                                     const output::rebuild_info& rebuild)
+                                     const output::rebuild_info& rebuild,
+                                     std::string signature)
     {
-        auto link = link_scope{runner.executable_path, rebuild};
+        auto link = link_scope{runner.executable_path, rebuild, std::move(signature)};
         run_step(link,
                  link_test_runner_argv(runner),
                  diagnostics_path_for_executable(runner));
@@ -2715,11 +2719,11 @@ private:
         const auto reason = needs_relinking(runner.executable_path, signature, link_cache);
         if(not reason)
         {
-            const auto hit = link_scope{runner.executable_path};
+            const auto hit = link_scope{runner.executable_path, signature};
             return;
         }
 
-        link_test_runner_executable(runner, *reason);
+        link_test_runner_executable(runner, *reason, signature);
         output::notify(&output::observer::success, "test_runner linked with test objects");
         {
             auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
@@ -2782,6 +2786,93 @@ public:
         } else {
             output::notify(&output::observer::info, "Nothing to clean for "s + dir);
         }
+    }
+
+    // Drop only test TU artefacts and the test_runner binary — leave library/app objects so the
+    // next build recompiles tests without a full cold rebuild. Scans with include_tests on so
+    // release configs still see *.test.c++ even when a normal release build would not.
+    void clean_tests() {
+        include_tests = true;
+        if(not fs::exists(object_dir()) and not fs::exists(binary_dir()))
+        {
+            output::notify(&output::observer::info,
+                           "Nothing to clean for test objects under "s + build_root());
+            return;
+        }
+
+        scan_and_order();
+
+        // Object-cache keys are source paths (full_path), not .o paths.
+        auto dropped_sources = std::flat_set<std::string, std::less<>>{};
+        auto removed = 0;
+
+        const auto try_remove = [&](const std::string& path) {
+            if(remove_if_exists(path))
+                ++removed;
+        };
+
+        for(const auto& tu : units_in_topological_order)
+        {
+            const auto is_runner = tu.has_main and tu.base_name == test_runner_name;
+            if(not tu.is_test and not is_runner)
+                continue;
+
+            dropped_sources.insert(tu.full_path);
+            if(not tu.object_path.empty())
+            {
+                try_remove(tu.object_path);
+                try_remove(depfile_path(tu));
+                try_remove(tu.object_path + ".log");
+            }
+            if(tu.is_modular and not tu.pcm_path.empty())
+            {
+                try_remove(tu.pcm_path);
+                try_remove(tu.pcm_path + ".log");
+            }
+            if(is_runner and not tu.executable_path.empty())
+            {
+                try_remove(tu.executable_path);
+                try_remove(tu.executable_path + ".link.log");
+            }
+        }
+
+        if(not dropped_sources.empty() and fs::exists(object_cache_path()))
+        {
+            auto cache = load_object_cache();
+            if(not cache.profile_change)
+            {
+                auto erased = false;
+                for(const auto& path : dropped_sources)
+                {
+                    if(cache.entries.contains(path))
+                    {
+                        cache.entries.erase(path);
+                        erased = true;
+                    }
+                }
+                if(erased)
+                    save_object_cache(cache.entries);
+            }
+        }
+
+        if(fs::exists(executable_cache_path()))
+        {
+            auto link_cache = load_executable_cache();
+            const auto runner_exe = detail::join_dir(binary_dir(), test_runner_name);
+            if(link_cache.contains(runner_exe))
+            {
+                link_cache.erase(runner_exe);
+                save_executable_cache(link_cache);
+            }
+        }
+
+        if(removed == 0)
+            output::notify(&output::observer::info,
+                           "No test objects to remove under "s + build_root());
+        else
+            output::notify(&output::observer::success,
+                           "Removed " + std::to_string(removed) + " test artifact(s) under "s
+                               + build_root());
     }
 
     void cache_status() const
@@ -3043,7 +3134,7 @@ bool is_cb_token(std::string_view arg)
     return arg == "release" || arg == "debug" || arg == "ci" || arg == "clean"
         || arg == "build" || arg == "list" || arg == "test" || arg == "cache" || arg == "status" || arg == "invalidate" || arg == "static"
         || arg == "help" || arg == "-h" || arg == "--help"
-        || arg == "--include-examples" || arg == "--build-tests"
+        || arg == "--include-examples" || arg == "--build-tests" || arg == "--tests"
         || arg == "-I" || arg == "--include" || arg == "--link-flags"
         || arg == "--compile-flags" || arg == "--extra-compile-flags"
         || arg == "--jsonl" || arg.starts_with("--jsonl=")
@@ -3104,6 +3195,7 @@ int main(int argc, char* argv[])
         auto config = cb::build_system::build_config::debug;  // default to debug
         auto do_clean = false, do_list = false, do_build = false, do_run_tests = false;
         auto do_cache_status = false, do_cache_invalidate = false;
+        auto clean_tests_only = false;
         auto test_filter = std::string{};
         auto test_runner_args = std::vector<std::string>{};
         auto static_linking = false;
@@ -3198,6 +3290,8 @@ int main(int argc, char* argv[])
                 include_examples = true;
             } else if (argument == "--build-tests") {
                 build_tests = true;
+            } else if (argument == "--tests") {
+                clean_tests_only = true;
             } else if (argument.starts_with("--jobs=")) {
                 const auto text = argument.substr(std::string_view{"--jobs="}.size());
                 auto value = 0;
@@ -3244,6 +3338,7 @@ int main(int argc, char* argv[])
                           << "  debug            Build in debug mode (with debug symbols, includes tests)\n"
                           << "  build            Build the project (default if no action specified)\n"
                           << "  clean            Remove build directories\n"
+                          << "  clean --tests    Remove only test objects and test_runner (keep app/lib)\n"
                           << "  ci               Clean and run tests (shortcut for: clean test)\n"
                           << "  list             List all translation units; write compile_commands.json and graph.json\n"
                           << "  cache status     Inspect object-cache profile and entry counts\n"
@@ -3268,6 +3363,7 @@ int main(int argc, char* argv[])
                           << "  " << argv[0] << " -I include/path debug build\n"
                           << "  " << argv[0] << " -I path1 -I path2 debug build\n"
                           << "  " << argv[0] << " clean build\n"
+                          << "  " << argv[0] << " clean --tests\n"
                           << "  " << argv[0] << " ci\n"
                           << "  " << argv[0] << " test\n"
                           << "  " << argv[0] << " test --tags=[module]\n"
@@ -3318,7 +3414,18 @@ int main(int argc, char* argv[])
             build_system.cache_invalidate();
             return 0;
         }
-        if (do_clean) build_system.clean();
+        if(clean_tests_only and not do_clean)
+        {
+            cb::output::notify(&cb::output::observer::error, "--tests requires clean");
+            return 2;
+        }
+        if(do_clean)
+        {
+            if(clean_tests_only)
+                build_system.clean_tests();
+            else
+                build_system.clean();
+        }
         if (do_build) {
             if (build_tests) {
                 // --build-tests: build tests but don't run them (useful for CI)

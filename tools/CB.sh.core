@@ -72,7 +72,9 @@ if [[ -z "${CB_CB_SOURCE:-}" ]]; then
   elif [[ "${CB_FETCH_DEPS:-0}" == "1" ]]; then
     mkdir -p "$CB_PROJECT_ROOT/deps"
     cb_log "tester dependency missing; cloning into '$CB_PROJECT_ROOT/deps/tester'..."
-    git clone --depth 1 --branch grok "https://github.com/ruoka/tester.git" "$CB_PROJECT_ROOT/deps/tester"
+    # Default branch of ruoka/tester (override with CB_TESTER_BRANCH if needed).
+    git clone --depth 1 --branch "${CB_TESTER_BRANCH:-main}" \
+      "https://github.com/ruoka/tester.git" "$CB_PROJECT_ROOT/deps/tester"
     CB_TESTER_ROOT="$(cd "$CB_PROJECT_ROOT/deps/tester" && pwd)"
     CB_CB_SOURCE="$CB_TESTER_ROOT/tools/cb.c++"
   else

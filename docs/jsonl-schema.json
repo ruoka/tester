@@ -313,6 +313,10 @@
         "executable_path": { "type": "string" },
         "ok": { "type": "boolean" },
         "cache_hit": { "type": "boolean" },
+        "signature": {
+          "type": "string",
+          "description": "Link input stamp (object mtimes + flag sets). Present on both relinks and skipped links (cache_hit:true), so agents can see why a link was skipped without reading the executable cache file."
+        },
         "rebuild_reason": { "type": "string" },
         "rebuild": { "$ref": "#/$defs/rebuild" },
         "diagnostics": { "$ref": "#/$defs/diagnostics" },

@@ -60,7 +60,7 @@ Most test frameworks assume headers, macros, and a separate build system. Tester
 - **Machine-readable output** — JSONL on stdout for agents, dashboards, and CI triage
 - **Built-in builder** — CB resolves module dependencies, caches incrementally, and compiles in parallel
 
-Tester embeds as a git submodule (`deps/tester`) in larger projects. For a public multi-module consumer using tester and CB, see [YarDB](https://github.com/ruoka/YarDB). Framework contract tests live in `tester/*.test.c++` under the `[self]` tag. The `examples/` directory holds demos; assertion-failure showcases use the hidden tag `[.demo]` (excluded from default runs — use `--tags=[.demo]` to execute them).
+Tester embeds as a git submodule (`deps/tester`) in larger projects — see [Embedding & tester resolution](#embedding--tester-resolution) for how `CB.sh` finds it. For a public multi-module consumer using tester and CB, see [YarDB](https://github.com/ruoka/YarDB). Framework contract tests live in `tester/*.test.c++` under the `[self]` tag. The `examples/` directory holds demos; assertion-failure showcases use the hidden tag `[.demo]` (excluded from default runs — use `--tags=[.demo]` to execute them).
 
 ## Quick Start
 
@@ -70,6 +70,9 @@ cd tester
 
 # Framework contract tests (CI gate)
 ./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'
+
+# Clean rebuild + full suite (JSONL on stdout — good CI entry point)
+./tools/CB.sh ci --jsonl=failures
 
 # Build
 ./tools/CB.sh debug build
@@ -249,16 +252,36 @@ Tester ships with **CB** (`tools/cb.c++`), a module-aware build system in a sing
 ./tools/CB.sh release build        # optimized; tests off by default
 ./tools/CB.sh release build --build-tests   # compile tests without running
 ./tools/CB.sh debug test
+./tools/CB.sh ci --jsonl=failures  # clean + test; JSONL-first CI entry point
 ./tools/CB.sh debug list           # human TU inventory; writes compile_commands.json + graph.json
 ./tools/CB.sh debug list --jsonl=failures   # machine-readable inventory (+ those files)
 ./tools/CB.sh debug clean
+./tools/CB.sh debug clean --tests     # drop test objects + test_runner only
 ./tools/CB.sh debug cache status      # inspect object-cache profile
 ./tools/CB.sh debug cache invalidate  # drop cache indexes only (lighter than clean)
 ./tools/CB.sh debug --include-examples build
 ./tools/CB.sh --help
 ```
 
+`ci` is a shortcut for clean-then-test under the default `debug` config. Prefer
+`--jsonl=failures` (or `--jsonl=summary`) so agents and CI parse stdout; wrapper logs stay
+on stderr.
+
 Artifacts land in `build-<os>-<config>/` (`pcm/`, `obj/`, `bin/`, `cache/`). Object-cache profile format and invalidation: [`docs/cb.md` — Object cache profile](docs/cb.md#object-cache-profile). When embedded as a submodule, examples are excluded from default builds; standalone `./tools/CB.sh debug test` includes them. Use `--include-examples` to build demos explicitly.
+
+### Embedding & tester resolution
+
+Parent repos do not rebuild this tree's `tools/CB.sh` — they keep a thin `tools/CB.sh` that sources [`tools/CB.sh.core`](tools/CB.sh.core) and sets include paths (see [`tools/CB.sh.template`](tools/CB.sh.template)). `CB.sh.core` resolves **where `cb.c++` comes from** in this order:
+
+1. **`CB_TESTER_ROOT`** — if already set and `$CB_TESTER_ROOT/tools` exists (explicit override).
+2. **`$CB_PROJECT_ROOT/deps/tester`** — the usual git submodule checkout.
+3. **`$CB_PROJECT_ROOT/../tester`** — a sibling clone (handy for local multi-repo worktrees).
+4. **Standalone / in-tree** — `$CB_TOOLS_DIR/cb.c++` (this repository's own wrapper).
+5. **`CB_FETCH_DEPS=1`** — only if nothing above was found: shallow-clone `ruoka/tester` into `deps/tester` (branch `CB_TESTER_BRANCH`, default `main`). Without the flag, missing tester is a hard error with the paths that were checked.
+
+`CB_AUTO_SUBMODULES` (optional) can `git submodule update --init` listed paths before a build; it does not change the resolution order above.
+
+**Nested `deps/*/deps/tester` copies** (e.g. `deps/xson/deps/tester`) are for that child package when *it* builds alone. The parent's `CB.sh` uses only the first-level `deps/tester` (or sibling / `CB_TESTER_ROOT`). Do **not** copy or rewrite tester docs inside those nested trees to “fix” a lagging pin — the nested tree is a submodule checkout; bump its pointer (and the parent's `deps/tester`) to the commit that has the docs and behaviour you want. More layout notes: [`docs/cb.md` — Embedded](docs/cb.md#embedded-depstester-in-a-parent-repo).
 
 **Not using CB?** The `Makefile` builds the same library and runner with `clang-scan-deps` — see [Makefile runner](#makefile-runner-alternative-to-cb) above and the target table in [`docs/cb.md`](docs/cb.md#make-the-alternative-in-this-repo).
 
@@ -277,6 +300,7 @@ Every line is valid UTF-8 and valid JSON regardless of what the test data contai
 ```bash
 ./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'  # agent/debug loop
 ./tools/CB.sh debug test --jsonl=summary --tags='\[self\]'   # CI aggregate
+./tools/CB.sh ci --jsonl=failures                            # clean + full suite (JSONL-first CI)
 ./tools/CB.sh debug test --list --jsonl=failures             # test catalogue
 ./tools/CB.sh debug build --jsonl=trace                       # full compile telemetry
 ./tools/CB.sh debug list --jsonl=failures                     # TU inventory + compile_commands.json + graph.json

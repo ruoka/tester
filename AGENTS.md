@@ -126,7 +126,7 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 | `cache_invalidate_end` | `cache invalidate` subcommand — one flag per file `cache_status` reports (`object_cache_removed`, `executable_cache_removed`, `compiler_stamp_removed`, `std_module_profile_removed`) |
 | `compile_start` | Per TU in trace mode; on rebuild includes `rebuild_reason`, structured `rebuild`, and `message` |
 | `compile_end` | Per TU in trace; failed compilations and successes with warnings in failures; on `cache_hit:false` includes short `rebuild_reason` + `rebuild` (`kind`, optional `module` / `trigger_path` / `hint` / …); `diagnostics` carries compiler output on failure and on success when clang printed warnings. Module `std` reports here too — `std.pcm` / `std.o` are one unit CB compiles, not in the scan |
-| `link_end` | Per executable in trace; failed links and successes with warnings in failures; relinks include `rebuild_reason` / `rebuild`; `diagnostics` carries linker output on failure and on success when the linker printed warnings |
+| `link_end` | Per executable in trace; failed links and successes with warnings in failures; relinks include `rebuild_reason` / `rebuild`; skipped and completed links carry `signature` (link input stamp); `diagnostics` carries linker output on failure and on success when the linker printed warnings |
 | `cb_error` | CB fatal/diagnostic |
 
 **`list` vs build:** `list` is the module/source graph — each `unit` carries `imports[]`, `level`, and naming from the scanned suffixes; the same inventory is also written as `graph.json` at the project root. A dependency cycle aborts `list` and `build` with a thrown message on stderr (`Cyclic dependency detected between units: …`), not a structured inventory event. Missing or stale PCMs are build-only: read `compile_end.rebuild` (`own_pcm_missing`, `pcm_stale`, `dependency_pcm_stale`, …), not `list`.
@@ -243,6 +243,7 @@ Do **not** add defensive parsers or legacy upgrade paths for on-disk formats tha
 ## MCP bridge (Cursor / IDEs)
 
 Stdio MCP server wrapping the canonical CB commands above: [`tools/cb_mcp.py`](tools/cb_mcp.py).
+Wire format is MCP stdio: newline-delimited JSON-RPC on stdin/stdout (not LSP `Content-Length`).
 
 Cursor config: [`.cursor/mcp.json`](.cursor/mcp.json) (`tester-cb`).
 

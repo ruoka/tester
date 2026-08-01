@@ -343,6 +343,7 @@ struct step_result
     interval timing{};
     rebuild_info rebuild{}; // why the step ran; empty on a cache hit
     diagnostics diag{};     // toolchain output; empty when the step was silent
+    std::string signature{}; // link input stamp; set on link_end (including cache hits)
 };
 
 // Every file CB keeps under cache/, in one value. The four are not interchangeable — only two

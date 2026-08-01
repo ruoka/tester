@@ -10,7 +10,7 @@ This document explains **what CB is for**, **when to use it**, and **how it comp
 
 CB is optimized for **pure C++23 module projects** that follow ruoka layout conventions:
 
-- **Discovery** — scans `*.c++m`, `*.c++`, `*.impl.c++`, and `*.test.c++` under configured include roots
+- **Discovery** — scans `*.c++m`, `*.cppm`, `*.c++`, `*.cpp`, `*.impl.c++`, `*.test.c++`, and `*.test.c++m` under configured include roots (`supported_suffixes` in `cb.c++`)
 - **Module graph** — scans source preambles for `import` / `export module` and builds a dependency graph (no `clang-scan-deps` in `cb.c++`, which keeps scanning compiler-independent). Continued lines are spliced first, as translation phase 2 does — one substitution over the whole preamble, raw-string bodies included — and then comments, string literals and `#if 0` bodies are stripped before matching, so a commented-out `import` does not become a graph edge and a `#if \` / `0` region is as dead here as it is to the compiler; genuine `#ifdef` branches are over-approximated (every branch contributes an edge) because resolving them would require a preprocessor
 - **Topological compile order** — compiles module interfaces and partitions before importers; emits PCM files under `build-<os>-<config>/pcm/`
 - **Incremental caching** — skips recompilation when source timestamps and transitive PCM dependencies are unchanged (`cache_hit`, `rebuild_reason` in JSONL); compile cache invalidated when the **toolchain profile** changes (flags, compiler path, `std.cppm`, …); link step skipped when object signature unchanged
@@ -67,7 +67,7 @@ ruoka projects use this model — [YarDB](https://github.com/ruoka/YarDB) is the
 
 - OS and compiler detection (with cross-OS binary rebuild in `CB.sh.core`)
 - `std.cppm` resolution from the LLVM install (overridable via `LLVM_PATH` or as the first CLI argument: `./tools/CB.sh /path/to/std.cppm debug build`)
-- Module interface **and** implementation units (`.c++m`, `.impl.c++`)
+- Module interface **and** implementation units (`.c++m` / `.cppm`, `.impl.c++`)
 - Examples inclusion policy (`CB_INCLUDE_EXAMPLES_MODE`: `always` in standalone tester, `never` in most parent repos, examples still run on standalone `test`)
 
 ---
@@ -166,7 +166,7 @@ Parent projects provide their own `tools/CB.sh`. Clone [YarDB](https://github.co
 
 Tester is a **dependency**, not the build entry point. The parent's wrapper owns include paths, link flags, and submodule auto-init.
 
-**Nested copies:** some repos embed tester twice (e.g. `deps/tester` and `deps/xson/deps/tester`). Submodule pointers can lag; bump the parent pointer after tester fixes. See [tester-improvements.md §8](tester-improvements.md#8-submodule--monorepo-consumption).
+**Nested copies:** some repos embed tester twice (e.g. `deps/tester` and `deps/xson/deps/tester`). The parent's bootstrap resolves only first-level `deps/tester`, a sibling `../tester`, `CB_TESTER_ROOT`, or `CB_FETCH_DEPS=1` — order and variables are in [README — Embedding & tester resolution](../README.md#embedding--tester-resolution). Nested trees lag until their own submodule pointer moves; bump that pointer (do not paste newer docs or patches into the nested checkout). See also [tester-improvements.md §8](tester-improvements.md#8-submodule--monorepo-consumption).
 
 ---
 
@@ -184,6 +184,7 @@ Tester is a **dependency**, not the build entry point. The parent's wrapper owns
 ./tools/CB.sh debug build --jobs=4                 # cap concurrent compiles/links
 ./tools/CB.sh ci --jsonl=summary                    # aggregate CI entry point
 ./tools/CB.sh debug clean
+./tools/CB.sh debug clean --tests   # drop test objects + test_runner only
 ./tools/CB.sh --help
 ```
 
@@ -236,11 +237,13 @@ Prerequisites are filtered to the project tree. Toolchain headers change as a un
 
 **Invalidate indexes:** `./tools/CB.sh debug cache invalidate` removes all four files `cache status` reports — lighter than `clean`; artifacts in `obj/` / `pcm/` remain. JSONL: `cache_invalidate_end`, one flag per file. Removing `std-module-profile.txt` is what makes the next build rebuild `std.pcm`.
 
+**Clean test artefacts only:** `./tools/CB.sh debug clean --tests` removes test TU objects/PCMs and `bin/test_runner`, and drops their object-/executable-cache entries. App and library objects stay, so the next build recompiles tests without a full cold rebuild.
+
 **Std module:** `std.pcm` and `std.o` compile through the same reporting path as project units — one `compile_start` / `compile_end` pair for module `std`, with a `rebuild_reason` and a `cache_hit`, counted in `compile_total` and `rebuild_summary`. Their reasons are the ones a modular unit uses: `own_pcm_missing`, `profile_change`, `own_pcm_stale` rebuild the pcm and then the object; `object_missing` and `object_stale` reuse the pcm that is already there. A failure attaches the compiler's own output as `diagnostics`, as any other compile does.
 
 **Scanner scope:** the module graph is scanned with regular expressions, so a source that needs a tokenizer to read is out of scope. The known case is [lex.pptoken]'s reversion of phase-2 splices inside a raw-string body: honouring it means deciding whether an `R"(` opens a literal or is text inside a comment, which is lexical state rather than a pattern. A raw string whose body ends a line with `)\` is therefore read as closing one line early and may contribute a phantom edge — the same over-approximation `#ifdef` branches get. A comment or literal that merely mentions `R"(` is harmless, which is the likelier text and the reason the trade goes this way.
 
-**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job). Coverage includes `profile_header`, `cache_hit`, `link_cache_hit`, `parallel_main_link`, `compile_start`, `source_stale`, `header_stale`, `depfile_unusable`, `strict_arguments`, `source_list`, `compile_commands`, `graph_json`, `compile_failure`, `compile_warning`, `modular_compile_warning`, `link_failure`, `test_link_failure`, `link_rebuild_reason`, `implementation_pcm`, scanner/inventory list-only cases, `rebuild_summary`, `test_lifecycle`, `cache_invalidate`, `profile_change`, `cache_status`, `std_module_reported`, `jsonl_modes`, `jsonl_failure_mode`.
+**Smoke tests:** `./tests/cb/smoke.sh` (also in CI `cb-smoke` job). Coverage includes `profile_header`, `cache_hit`, `link_cache_hit`, `clean_tests`, `parallel_main_link`, `compile_start`, `source_stale`, `header_stale`, `depfile_unusable`, `strict_arguments`, `source_list`, `compile_commands`, `graph_json`, `compile_failure`, `compile_warning`, `modular_compile_warning`, `link_failure`, `test_link_failure`, `link_rebuild_reason`, `implementation_pcm`, scanner/inventory list-only cases, `rebuild_summary`, `test_lifecycle`, `cache_invalidate`, `profile_change`, `cache_status`, `std_module_reported`, `jsonl_modes`, `jsonl_failure_mode`.
 
 **Optional follow-up:** `cache prune` for disk/orphan cleanup — backlog only; see [tester-improvements.md §4.4](tester-improvements.md#44-cache-maintenance-optional--add-if-operational-issues-appear).
 
@@ -260,7 +263,7 @@ Useful compile/link fields for debugging stale builds:
 - `build_end.rebuild_summary` — per-kind compile rebuild counts plus `top_modules` (modules most often cited by PCM reasons). Present in every JSONL mode when any TU rebuilt.
 - `profile_changed` — emitted **once** when the profile header mismatches (`reason: "profile_change"`, optional `profile_diff`). Scalars use `{"old":"…","new":"…"}`; `compile` / `cpp` use `{"added":[…],"removed":[…]}` (sorted token diff via `std::ranges::set_difference` on shell words).
 - `cache_hit: false` + `rebuild_reason: "profile_change"` on each recompiled TU — correlate with the single `profile_changed` event (`rebuild.see_event: "profile_changed"`); do not expect `profile_diff` on each `compile_end`.
-- `link_end` — per executable after link or skip (`executable_path`, `cache_hit`, `ok`, `duration_ms`). Skipped links emit `cache_hit: true` with `duration_ms: 0`. Relinks add `rebuild_reason` / `rebuild` (`missing_executable`, `not_in_cache`, `object_changed`, `link_flags_changed`, …).
+- `link_end` — per executable after link or skip (`executable_path`, `cache_hit`, `ok`, `duration_ms`, `signature`). Skipped links emit `cache_hit: true` with `duration_ms: 0` and the same `signature` that made the link a hit. Relinks add `rebuild_reason` / `rebuild` (`missing_executable`, `not_in_cache`, `object_changed`, `link_flags_changed`, …).
 - `rebuild_reason: "not_in_cache"` — first compile of this source for the current config (distinct from an edit)
 - `rebuild_reason: "source_stale"` — TU source newer than cached object
 - `rebuild_reason: "header_stale"` — an `#include`d project header is newer than the object; the header is in `rebuild.trigger_path` (see [Header dependencies](#header-dependencies))
