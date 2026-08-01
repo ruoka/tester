@@ -68,27 +68,29 @@ export SDKROOT
 # This enables using "import std;" with -fexperimental-library
 override CXXFLAGS := $(COMMON_CXXFLAGS) -nostdinc++ -isystem $(LLVM_PREFIX)/include/c++/v1 -fno-implicit-modules -fno-implicit-module-maps -O3
 
-# Add SDK and library paths
-# Use LLVM's libc++ library directory with rpath for runtime linking
+# Force -L to LLVM's libc++. A shell LDFLAGS that is only -Wl,-rpath,… would
+# otherwise win with ?= and the link would miss trunk symbols that
+# -fexperimental-library needs (__atomic_*_global, bad_variant_access, …).
 ifneq ($(SDKROOT),)
-CXXFLAGS += -isysroot $(SDKROOT)
-LDFLAGS ?= $(COMMON_LDFLAGS) -isysroot $(SDKROOT) -L$(LLVM_PREFIX)/lib -Wl,-rpath,$(LLVM_PREFIX)/lib -O3
+override CXXFLAGS += -isysroot $(SDKROOT)
+override LDFLAGS := $(COMMON_LDFLAGS) -isysroot $(SDKROOT) -L$(LLVM_PREFIX)/lib -Wl,-rpath,$(LLVM_PREFIX)/lib -O3
 else
-LDFLAGS ?= $(COMMON_LDFLAGS) -L$(LLVM_PREFIX)/lib -Wl,-rpath,$(LLVM_PREFIX)/lib -O3
+override LDFLAGS := $(COMMON_LDFLAGS) -L$(LLVM_PREFIX)/lib -Wl,-rpath,$(LLVM_PREFIX)/lib -O3
 endif
 
 endif
 
-# Debug override
+# Debug override — override so this wins over the Darwin override CXXFLAGS/LDFLAGS
+# above (a plain := cannot change a variable set with override).
 ifeq ($(DEBUG),1)
-CXXFLAGS := $(filter-out -O3 -O2 -O1 -O0,$(CXXFLAGS)) -O0
-CXXFLAGS += -fno-omit-frame-pointer -fno-pie
-LDFLAGS := $(filter-out -O3 -O2 -O1 -O0,$(LDFLAGS)) -O0
-LDFLAGS += -no-pie -rdynamic
+override CXXFLAGS := $(filter-out -O3 -O2 -O1 -O0,$(CXXFLAGS)) -O0
+override CXXFLAGS += -fno-omit-frame-pointer -fno-pie
+override LDFLAGS := $(filter-out -O3 -O2 -O1 -O0,$(LDFLAGS)) -O0
+override LDFLAGS += -no-pie -rdynamic
 endif
 
 ifeq ($(STATIC),1)
-LDFLAGS += -static -lc++ -lc++abi -lunwind -ldl -pthread
+override LDFLAGS += -static -lc++ -lc++abi -lunwind -ldl -pthread
 endif
 
 export CC

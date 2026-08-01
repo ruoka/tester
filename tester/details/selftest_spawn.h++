@@ -35,9 +35,9 @@ inline auto find_test_runner()
     if(const auto* env = std::getenv("TEST_RUNNER"); env != nullptr && env[0] != '\0')
         return std::filesystem::path{env};
 
-    // Prefer the newest build-*/bin/test_runner. directory_iterator order is
-    // unspecified, and a stale Make tree (build-linux/) next to CB's
-    // build-linux-debug/ would otherwise win and run probes against the wrong binary.
+    // Prefer the newest build-*/bin/test_runner (CB: build-<os>-<config>/,
+    // Make: build-make-<os>-<config>/). directory_iterator order is unspecified,
+    // and a stale Make tree next to a newer CB tree would otherwise win.
     const auto cwd = std::filesystem::current_path();
     auto best = std::filesystem::path{};
     auto best_write = std::filesystem::file_time_type::min();

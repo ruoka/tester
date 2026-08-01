@@ -88,7 +88,8 @@ const suffix_list object_stem_suffixes = {
     cpp_suffix
 };
 
-// Build tree layout under `build-<os>-{debug|release}/`
+// CB build tree: `build-<os>-{debug|release}/`. Alternatives advertise themselves:
+// Make → `build-make-<os>-<config>/`, CMake → `build-cmake-<os>-<config>/`.
 constexpr auto build_root_prefix = "build-"sv;
 constexpr auto debug_build_suffix = "-debug"sv;
 constexpr auto release_build_suffix = "-release"sv;

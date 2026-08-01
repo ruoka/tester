@@ -194,9 +194,10 @@ jobs:
             test_results_self_par_${{ matrix.config }}.xml
             test_results_demos.xml
 
-  # Second build path: clang-scan-deps + Makefile into build-<os>/. Gates the same
-  # [self] contract the release policy requires, and fails the job if the full rebuild
-  # emits any compiler warning (make has no object cache, so every unit is compiled).
+  # Second build path: clang-scan-deps + Makefile into build-make-<os>-<config>/.
+  # Gates the same [self] contract the release policy requires, and fails the job if
+  # the full rebuild emits any compiler warning (make has no object cache, so every
+  # unit is compiled).
   makefile-build-and-test:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -308,13 +309,20 @@ jobs:
           ninja --version
           clang++-21 --version | head -1
 
+      # build-cmake-<os>-<config>/ — CB keeps build-<os>-<config>/, Make uses
+      # build-make-<os>-<config>/. Config is lowercased to match those trees.
       - name: Configure (${{ matrix.config }})
-        run: cmake -S . -B build-cmake -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.config }}
+        run: |
+          set -euo pipefail
+          cfg=$(printf '%s' '${{ matrix.config }}' | tr '[:upper:]' '[:lower:]')
+          echo "CMAKE_BUILD_DIR=build-cmake-linux-${cfg}" >> "$GITHUB_ENV"
+          cmake -S . -B "build-cmake-linux-${cfg}" -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.config }}
 
       - name: Build (${{ matrix.config }}, warning-free)
         run: |
           set -euo pipefail
-          cmake --build build-cmake 2>&1 | tee "cmake_build_${{ matrix.config }}.log"
+          cmake --build "${CMAKE_BUILD_DIR}" 2>&1 | tee "cmake_build_${{ matrix.config }}.log"
           if grep -E '(^|[[:space:]])warning:' "cmake_build_${{ matrix.config }}.log"; then
             echo "✗ CMake build produced compiler warnings"
             exit 1
@@ -323,9 +331,9 @@ jobs:
 
       # TEST_RUNNER is what the custom targets set: the self tests re-spawn the
       # runner and otherwise look for <cwd>/build-*/bin/test_runner, which a CMake
-      # tree does not have.
+      # tree does not have (runner sits at the build-dir root).
       - name: Run self tests sequential (${{ matrix.config }})
-        working-directory: build-cmake
+        working-directory: ${{ env.CMAKE_BUILD_DIR }}
         run: |
           set -euo pipefail
           out="${GITHUB_WORKSPACE}/test_results_cmake_self_seq_${{ matrix.config }}"
@@ -340,7 +348,7 @@ jobs:
           echo "✓ CMake self tests passed (jobs=1)"
 
       - name: Run self tests parallel (${{ matrix.config }})
-        working-directory: build-cmake
+        working-directory: ${{ env.CMAKE_BUILD_DIR }}
         run: |
           set -euo pipefail
           jobs="$(nproc)"
@@ -358,7 +366,7 @@ jobs:
       # The CMake runner links examples/ in unconditionally, so this covers them too;
       # their failure demos carry hidden [.demo] tags and stay out of an unfiltered run.
       - name: Run standalone suite (${{ matrix.config }})
-        working-directory: build-cmake
+        working-directory: ${{ env.CMAKE_BUILD_DIR }}
         run: |
           set -euo pipefail
           jobs="$(nproc)"
@@ -380,7 +388,7 @@ jobs:
         if: matrix.config == 'Debug'
         run: |
           set -euo pipefail
-          cmake --build build-cmake --target run_tests > cmake_run_tests.log
+          cmake --build "${CMAKE_BUILD_DIR}" --target run_tests > cmake_run_tests.log
           summary=$(grep '"type":"summary"' cmake_run_tests.log | tail -1 || true)
           if ! printf '%s' "$summary" | jq -e '.passed == true' > /dev/null; then
             echo "✗ run_tests target reported a failure"

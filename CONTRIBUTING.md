@@ -73,15 +73,16 @@ and needs no CB bootstrap. It has no object cache and no build telemetry. CI gat
 or want a second opinion:
 
 ```bash
-make tests                                     # build-<os>/bin/test_runner
+make tests                                     # build-make-<os>-release/bin/test_runner
+make DEBUG=1 tests                             # build-make-<os>-debug/…
 make run_tests TEST_TAGS='--tags=[self]'       # build and run
 make run_examples                              # build and run examples/
-make module                                    # modules + build-<os>/lib/libtester.a
+make module                                    # modules + lib/libtester.a under the same tree
 make mostlyclean                               # drop obj/ and pcm/, std.pcm included
 make clean                                     # the above plus bin/ and lib/
 ```
 
-`make tools` builds `tools/*.c++` into `build-<os>/bin/tools/`, but only on Linux: the glob
+`make tools` builds `tools/*.c++` into `build-make-<os>-<config>/bin/tools/`, but only on Linux: the glob
 picks up `core_pc.c++`, which includes `<elf.h>`. CB does not scan `tools/` at all, so that
 utility has no other build path.
 
@@ -98,10 +99,10 @@ plus `import std`) into a CMake project. Run it when you change the module set, 
 file sets there are maintained by hand rather than discovered:
 
 ```bash
-cmake -S . -B build-cmake -G Ninja -DCMAKE_BUILD_TYPE=Debug
-cmake --build build-cmake                         # build-cmake/test_runner
-cmake --build build-cmake --target run_tests      # [self]
-cmake --build build-cmake --target run_all_tests  # everything, examples included
+cmake -S . -B build-cmake-darwin-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-cmake-darwin-debug                         # …/test_runner
+cmake --build build-cmake-darwin-debug --target run_tests      # [self]
+cmake --build build-cmake-darwin-debug --target run_all_tests  # everything, examples included
 ```
 
 `-DTESTER_STATIC=ON` mirrors the Makefile's `STATIC=1`, and the build type maps to the same
@@ -127,7 +128,7 @@ Before opening a pull request:
 ./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'   # must report passed: true
 ./tools/CB.sh debug test --jsonl=failures                     # standalone suite
 make clean && make run_tests TEST_TAGS='--tags=[self]'        # second path; CI gates this too
-cmake --build build-cmake --target run_tests                  # third path; if you changed the module set
+cmake --build build-cmake-darwin-debug --target run_tests     # third path; if you changed the module set
 ./tests/cb/smoke.sh                                           # if you touched tools/
 ./tests/mcp/smoke.sh                                          # if you touched tools/cb_mcp.py
 ./tests/jsonl/validate.py --require-schema                    # if you touched any event

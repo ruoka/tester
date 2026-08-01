@@ -230,14 +230,15 @@ The runner prints human-readable results on stderr (stdout in human mode), retur
 ### Makefile runner (alternative to CB)
 
 CB is not required. The bundled `Makefile` builds the same library and runner with
-`clang-scan-deps` for module ordering, into `build-<os>/` — useful if your project already
-builds with make, or as a second opinion when a CB result looks wrong:
+`clang-scan-deps` for module ordering, into `build-make-<os>-<config>/` — useful if your
+project already builds with make, or as a second opinion when a CB result looks wrong.
+Default config is `release` (`-O3`); `DEBUG=1` selects `debug`:
 
 ```bash
-make tests                                       # build-<os>/bin/test_runner
-build-darwin/bin/test_runner --tags='[self]'      # build-linux on Linux
-build-darwin/bin/test_runner --list
-build-darwin/bin/test_runner --tags='scenario.*Happy'
+make tests                                       # build-make-<os>-release/bin/test_runner
+build-make-darwin-release/bin/test_runner --tags='[self]'   # …-linux-… on Linux
+build-make-darwin-release/bin/test_runner --list
+make DEBUG=1 tests                               # build-make-<os>-debug/…
 make run_tests TEST_TAGS='--tags=[self]'         # build and run in one step
 ```
 
@@ -251,11 +252,14 @@ adopting CB or make. It is also the worked example to copy from if you are wirin
 modules into your own `CMakeLists.txt`:
 
 ```bash
-cmake -S . -B build-cmake -G Ninja -DCMAKE_BUILD_TYPE=Debug
-cmake --build build-cmake                     # build-cmake/test_runner
-cmake --build build-cmake --target run_tests      # [self] suite
-cmake --build build-cmake --target run_all_tests  # everything, examples included
+cmake -S . -B build-cmake-darwin-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-cmake-darwin-debug                     # …/test_runner at the tree root
+cmake --build build-cmake-darwin-debug --target run_tests      # [self] suite
+cmake --build build-cmake-darwin-debug --target run_all_tests  # everything, examples included
 ```
+
+Build trees are named `build-cmake-<os>-<config>/` so they sit beside CB's
+`build-<os>-<config>/` and Make's `build-make-<os>-<config>/` without colliding.
 
 It needs **CMake 4.x and Ninja** — CI and the dev container both install 4.1.2, and module
 scanning needs the Ninja generator. `std` is compiled from libc++'s own

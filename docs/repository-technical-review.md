@@ -114,7 +114,7 @@ Clang — not the documented Clang 21 Linux configuration that CI exercises:
 | `tests/jsonl/validate.py` | 9 commands, 917 events schema-validated |
 | Warm no-op build | sub-second, 36 scanned units plus `std` |
 | Cold build after `clean` | ~16–19 s for the same set |
-| `make tests` then `--tags='[self]'` | builds into `build-darwin/`, warning-free on the Makefile path |
+| `make tests` then `--tags='[self]'` | builds into `build-make-darwin-release/`, warning-free on the Makefile path |
 | `list` | writes `compile_commands.json` (36 entries on this tree) |
 
 Sizes: framework modules and runner (excluding `*.test.c++*`) ≈ 4,900 lines; with
@@ -305,7 +305,7 @@ One gap remains, and it is blocked rather than open:
    unsupported.
 
 The Makefile is a genuine second build path, not a leftover: `make tests` builds the
-library and runner through `clang-scan-deps` into `build-<os>/`, works standalone or
+library and runner through `clang-scan-deps` into `build-make-<os>-<config>/`, works standalone or
 invoked from a parent `make`, and CI gates that path on every push
 (`makefile-build-and-test`). What remains is no object cache and no build telemetry. CB
 now surfaces warnings from units it compiles (`diagnostics` on successful steps), so Make

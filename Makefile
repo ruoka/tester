@@ -23,9 +23,15 @@
 # MAKELEVEL  > 0 → invoked by parent make
 STANDALONE := $(if $(filter 0,$(MAKELEVEL)),yes,no)
 
-# OS-specific build directory (same logic as main project)
+# Standalone layout: build-make-<os>-<config>/ — CB keeps build-<os>-<config>/,
+# CMake uses build-cmake-<os>-<config>/. Config follows DEBUG=1 from compiler.mk.
 lowercase_os := $(if $(OS),$(shell echo $(OS) | tr '[:upper:]' '[:lower:]'),unknown)
-BUILD_DIR ?= build-$(lowercase_os)
+ifeq ($(DEBUG),1)
+make_config := debug
+else
+make_config := release
+endif
+BUILD_DIR ?= build-make-$(lowercase_os)-$(make_config)
 export BUILD_DIR
 
 # Default PREFIX based on context

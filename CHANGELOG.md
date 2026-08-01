@@ -8,6 +8,14 @@ Internal refactoring is not listed — roughly half the commits since `v1.0.0` r
 Versions follow the rules in the release policy. `Unreleased` accumulates until the next
 tag; cutting a release renames that section.
 
+## Unreleased
+
+### Changed
+
+- **Build-tree names standardized** so the three paths never collide: CB keeps
+  `build-<os>-<config>/`, Make uses `build-make-<os>-<config>/` (default `release`,
+  `DEBUG=1` → `debug`), and CMake examples/CI use `build-cmake-<os>-<config>/`.
+
 ## [2.1.0] — 2026-08-02
 
 ### Added

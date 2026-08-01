@@ -42,7 +42,7 @@ is in [`CHANGELOG.md`](../CHANGELOG.md).
 | Test JSONL | Event types and fields in [`docs/jsonl-schema.json`](jsonl-schema.json) (`schema: "tester-jsonl"`) |
 | CB CLI | Subcommands and flags documented in [README](../README.md) and [`AGENTS.md`](../AGENTS.md) |
 | CB JSONL | The build-phase events in the same schema file |
-| `Makefile` | The alternative to CB for projects that build with make: the `module`, `tests`, `run_tests`, `examples`, and `clean` targets, the `build-<os>/{pcm,obj,lib,bin}` layout, and the `CXX` / `CXXFLAGS` / `PREFIX` / `TEST_TAGS` variables it reads from `config/compiler.mk` or a parent's |
+| `Makefile` | The alternative to CB for projects that build with make: the `module`, `tests`, `run_tests`, `examples`, and `clean` targets, the `build-make-<os>-<config>/{pcm,obj,lib,bin}` layout, and the `CXX` / `CXXFLAGS` / `PREFIX` / `TEST_TAGS` variables it reads from `config/compiler.mk` or a parent's |
 | `tools/CB.sh` environment | `LLVM_PATH`, `CXX`, `CB_INCLUDE_FLAGS`, and the `CB_*` variables a parent repo sets |
 
 Everything else may change in any release without notice: the internals of

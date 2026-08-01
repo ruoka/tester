@@ -123,9 +123,17 @@ The `Makefile` is a supported second path, not a leftover: it orders modules wit
 | `make clean` | The above plus `bin/` and `lib/` |
 | `make dump` | Print every file-scope make variable, for debugging the configuration |
 
-Makefile artifacts use `build-<os>/` (e.g. `build-linux/pcm`, `build-darwin/lib`), where `<os>` is `uname -s` lowercased. Override the layout with `BUILD_DIR` or `PREFIX`. A `make` build has no cache, so every unit is compiled; CB surfaces the same class of warnings on units it compiles (`diagnostics` when clang prints anything, including successful steps in `--jsonl=failures`), and a cold CB build after `clean` / `cache invalidate` recompiles everything too.
+**Build-tree names** (so the three paths never collide):
 
-When tester is embedded as a submodule, the **parent** Makefile/CB entry point owns paths — submodules typically share the parent's `build-<os>/` tree rather than a separate tester build root.
+| Path | Directory |
+|------|-----------|
+| CB (primary) | `build-<os>-<config>/` — e.g. `build-darwin-debug` |
+| Make | `build-make-<os>-<config>/` — default `release`; `DEBUG=1` → `debug` |
+| CMake | `build-cmake-<os>-<config>/` — e.g. `build-cmake-linux-release` |
+
+`<os>` is `uname -s` lowercased. Override Make with `BUILD_DIR` or `PREFIX`. A `make` build has no cache, so every unit is compiled; CB surfaces the same class of warnings on units it compiles (`diagnostics` when clang prints anything, including successful steps in `--jsonl=failures`), and a cold CB build after `clean` / `cache invalidate` recompiles everything too.
+
+When tester is embedded as a submodule, the **parent** Makefile/CB entry point owns paths — submodules typically share the parent's build tree rather than a separate tester build root.
 
 ### CMake
 
@@ -138,9 +146,9 @@ CMake excels at portable project configuration, dependency fetching, install tre
 [`CMakeLists.txt`](../CMakeLists.txt) is the third supported path: CMake's own scanner orders the modules, Ninja runs the build, and the result is the same library and `test_runner`. It exists for two audiences — projects that already build with CMake and would rather not adopt CB, and anyone looking for a worked example of C++23 modules under CMake, since the interesting parts (`FILE_SET CXX_MODULES`, a `std` module target built from libc++'s own source, a static library plus a runner that must keep its self-registering test objects) are all exercised here rather than sketched.
 
 ```bash
-cmake -S . -B build-cmake -G Ninja -DCMAKE_BUILD_TYPE=Debug
-cmake --build build-cmake --target run_tests      # [self]
-cmake --build build-cmake --target run_all_tests  # examples included
+cmake -S . -B build-cmake-darwin-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-cmake-darwin-debug --target run_tests      # [self]
+cmake --build build-cmake-darwin-debug --target run_all_tests  # examples included
 ```
 
 | Constraint | Why |
