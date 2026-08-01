@@ -8,13 +8,26 @@ Internal refactoring is not listed — roughly half the commits since `v1.0.0` r
 Versions follow the rules in the release policy. `Unreleased` accumulates until the next
 tag; cutting a release renames that section.
 
-## Unreleased
+## [2.1.1] — 2026-08-02
+
+### Fixed
+
+- **Project modular units now rebuild when their own PCM is newer than the object.**
+  `needs_recompile` already forced `object_stale` for `std` when `std.o` lagged `std.pcm`,
+  but interface/partition units only checked that the PCM existed and was not older than
+  the source. After a successful two-phase `--precompile` and a failed or skipped object
+  step, the next build cache-hit the stale `.o` while importers rebuilt against the new
+  BMI — linking the old implementation into a binary that reported `ok:true`. The same
+  `object_missing` / `object_stale` path now reuses the PCM (no re-precompile) for project
+  modules too.
 
 ### Changed
 
 - **Build-tree names standardized** so the three paths never collide: CB keeps
   `build-<os>-<config>/`, Make uses `build-make-<os>-<config>/` (default `release`,
   `DEBUG=1` → `debug`), and CMake examples/CI use `build-cmake-<os>-<config>/`.
+  Scripts that hard-coded Make's old `build-<os>/` default should switch to the new
+  layout or set `BUILD_DIR`.
 - **macOS links name `-lc++abi` / `-lunwind` from `LLVM_PREFIX`** on the Make and
   CMake paths (CB already passed `-lunwind`); all three now share the same pair so
   the locally built unwinder is used rather than the SDK's.
@@ -49,14 +62,6 @@ tag; cutting a release renames that section.
 
 ### Fixed
 
-- **Project modular units now rebuild when their own PCM is newer than the object.**
-  `needs_recompile` already forced `object_stale` for `std` when `std.o` lagged `std.pcm`,
-  but interface/partition units only checked that the PCM existed and was not older than
-  the source. After a successful two-phase `--precompile` and a failed or skipped object
-  step, the next build cache-hit the stale `.o` while importers rebuilt against the new
-  BMI — linking the old implementation into a binary that reported `ok:true`. The same
-  `object_missing` / `object_stale` path now reuses the PCM (no re-precompile) for project
-  modules too.
 - **`[self]` suite builds where `char` is unsigned** (ARM Linux). The mixed-signedness cases
   spelled their negative character operand `char{-1}`, which is a narrowing error there and
   could not hold a negative value in any case, so `tester-assertions.test.c++` failed to

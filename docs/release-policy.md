@@ -3,21 +3,23 @@
 What counts as public, how versions are numbered, what breaks a consumer, and what has to
 be true before a release is cut.
 
-## Current status: v2.1.0
+## Current status: v2.1.1
 
-**`v2.1.0`** (2 August 2026) is the current **supported** SemVer release. It adds
-`cb --modules=`, the CMake + Ninja build path, and switches CB subprocesses to
-`posix_spawn` so parallel compiles are not serialized on macOS.
+**`v2.1.1`** (2 August 2026) is the current **supported** SemVer release. It fixes CB
+rebuilding project modules when the own PCM is newer than the object, standardizes
+Make/CMake build-tree names beside CB, links macOS against LLVM's `libunwind`, and
+stops CB from scanning top-level `build-*` output trees.
 
-**`v2.0.0`** (1 August 2026) was the first supported modules-era release (Clang 21 +
-libc++ modules, JSONL, CB telemetry). The `v1.0.0` tag (27 November 2025) is a GitHub
-*pre-release* that predates that surface; it is kept for history and is **not supported**.
+**`v2.1.0`** (2 August 2026) added `cb --modules=`, the CMake + Ninja build path, and
+`posix_spawn` for CB subprocesses. **`v2.0.0`** (1 August 2026) was the first supported
+modules-era release. The `v1.0.0` tag (27 November 2025) is a GitHub *pre-release* that
+predates that surface; it is kept for history and is **not supported**.
 
 Parents should pin a release tag or an explicit commit:
 
 ```bash
 git submodule add https://github.com/ruoka/tester deps/tester
-git -C deps/tester checkout v2.1.0   # or a later tag / deliberate commit
+git -C deps/tester checkout v2.1.1   # or a later tag / deliberate commit
 ```
 
 How a parent `tools/CB.sh` finds that checkout (`deps/tester` vs sibling `../tester` vs
