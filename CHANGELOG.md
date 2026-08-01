@@ -39,6 +39,9 @@ tag; cutting a release renames that section.
 - **CB skips top-level `build-*` trees when scanning** so CMake `CompilerId` sources
   under `build-cmake-*/` (and stale objects under Make/CB trees) cannot join the
   module graph or collide across configure directories.
+- **All three CI build lanes matrix `debug` and `release`** (same lowercase spelling;
+  CMake maps those to `CMAKE_BUILD_TYPE=Debug|Release`). The Makefile lane now covers
+  both configs, so `DEBUG=1` / default `-O3` both stay warning-free with `[self]`.
 
 ## [2.1.0] — 2026-08-02
 

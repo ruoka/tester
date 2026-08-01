@@ -195,12 +195,17 @@ jobs:
             test_results_demos.xml
 
   # Second build path: clang-scan-deps + Makefile into build-make-<os>-<config>/.
-  # Gates the same [self] contract the release policy requires, and fails the job if
-  # the full rebuild emits any compiler warning (make has no object cache, so every
-  # unit is compiled).
+  # Matrix config spelling matches CB and CMake (debug|release): release is the Make
+  # default, debug is DEBUG=1. Gates the same [self] contract the release policy
+  # requires, and fails the job if the full rebuild emits any compiler warning
+  # (make has no object cache, so every unit is compiled).
   makefile-build-and-test:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+
+    strategy:
+      matrix:
+        config: [debug, release]
 
     steps:
       - uses: actions/checkout@v5
@@ -217,46 +222,64 @@ jobs:
           clang++-21 --version | head -1
           clang-scan-deps-21 --version | head -1
 
+      # DEBUG=1 selects build-make-<os>-debug/ and -O0; omit it for release (-O3).
+      - name: Make args (${{ matrix.config }})
+        run: |
+          set -euo pipefail
+          if [ '${{ matrix.config }}' = debug ]; then
+            echo "MAKE_DEBUG=DEBUG=1" >> "$GITHUB_ENV"
+          else
+            echo "MAKE_DEBUG=" >> "$GITHUB_ENV"
+          fi
+
       - name: Make DEBUG pie flags (Linux-only)
+        if: matrix.config == 'debug'
         run: ./tests/make/debug_flags.sh
 
-      - name: Build with make (warning-free)
+      - name: Build with make (${{ matrix.config }}, warning-free)
         run: |
           set -euo pipefail
-          make tests 2>&1 | tee make_build.log
-          if grep -E '(^|[[:space:]])warning:' make_build.log; then
-            echo "✗ make build produced compiler warnings"
+          # shellcheck disable=SC2086
+          make ${MAKE_DEBUG} tests 2>&1 | tee "make_build_${{ matrix.config }}.log"
+          if grep -E '(^|[[:space:]])warning:' "make_build_${{ matrix.config }}.log"; then
+            echo "✗ make ${{ matrix.config }} build produced compiler warnings"
             exit 1
           fi
-          echo "✓ make tests built warning-free"
+          echo "✓ make tests (${{ matrix.config }}) built warning-free"
 
-      - name: Run self tests sequential (make run_tests)
+      - name: Run self tests sequential (${{ matrix.config }})
         run: |
           set -euo pipefail
-          make run_tests TEST_TAGS="--jsonl=failures --jobs=1 --junit=test_results_make_self_seq.xml --tags=[self]" \
-            > test_results_make_self_seq.jsonl
-          passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' test_results_make_self_seq.jsonl)
+          out="${GITHUB_WORKSPACE}/test_results_make_self_seq_${{ matrix.config }}"
+          # shellcheck disable=SC2086
+          make ${MAKE_DEBUG} run_tests \
+            TEST_TAGS="--jsonl=failures --jobs=1 --junit=${out}.xml --tags=[self]" \
+            > "${out}.jsonl"
+          passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' "${out}.jsonl")
           if [ "$passed" != "true" ]; then
-            echo "Makefile self tests (jobs=1) failed (summary.passed=$passed)"
-            tail -20 test_results_make_self_seq.jsonl
+            echo "Makefile ${{ matrix.config }} self tests (jobs=1) failed (summary.passed=$passed)"
+            tail -20 "${out}.jsonl"
             exit 1
           fi
-          echo "✓ Makefile self tests passed (jobs=1)"
+          echo "✓ Makefile ${{ matrix.config }} self tests passed (jobs=1)"
 
-      - name: Run self tests parallel (make run_tests)
+      - name: Run self tests parallel (${{ matrix.config }})
         run: |
           set -euo pipefail
           jobs="$(nproc)"
-          echo "Running make [self] tests with --jobs=${jobs}"
-          make run_tests TEST_TAGS="--jsonl=failures --jobs=${jobs} --junit=test_results_make_self_par.xml --tags=[self]" \
-            > test_results_make_self_par.jsonl
-          passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' test_results_make_self_par.jsonl)
+          out="${GITHUB_WORKSPACE}/test_results_make_self_par_${{ matrix.config }}"
+          echo "Running make ${{ matrix.config }} [self] tests with --jobs=${jobs}"
+          # shellcheck disable=SC2086
+          make ${MAKE_DEBUG} run_tests \
+            TEST_TAGS="--jsonl=failures --jobs=${jobs} --junit=${out}.xml --tags=[self]" \
+            > "${out}.jsonl"
+          passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' "${out}.jsonl")
           if [ "$passed" != "true" ]; then
-            echo "Makefile self tests (jobs=${jobs}) failed (summary.passed=$passed)"
-            tail -20 test_results_make_self_par.jsonl
+            echo "Makefile ${{ matrix.config }} self tests (jobs=${jobs}) failed (summary.passed=$passed)"
+            tail -20 "${out}.jsonl"
             exit 1
           fi
-          echo "✓ Makefile self tests passed (jobs=${jobs})"
+          echo "✓ Makefile ${{ matrix.config }} self tests passed (jobs=${jobs})"
 
       - name: Publish JUnit test summary
         uses: test-summary/action@v2
@@ -264,20 +287,20 @@ jobs:
         with:
           show: all
           paths: |
-            test_results_make_self_seq.xml
-            test_results_make_self_par.xml
+            test_results_make_self_seq_${{ matrix.config }}.xml
+            test_results_make_self_par_${{ matrix.config }}.xml
 
       - name: Upload Makefile test results
         uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: test-results-makefile
+          name: test-results-makefile-${{ matrix.config }}
           path: |
-            make_build.log
-            test_results_make_self_seq.jsonl
-            test_results_make_self_par.jsonl
-            test_results_make_self_seq.xml
-            test_results_make_self_par.xml
+            make_build_${{ matrix.config }}.log
+            test_results_make_self_seq_${{ matrix.config }}.jsonl
+            test_results_make_self_par_${{ matrix.config }}.jsonl
+            test_results_make_self_seq_${{ matrix.config }}.xml
+            test_results_make_self_par_${{ matrix.config }}.xml
 
   # Third build path: CMakeLists.txt driving CMake's own module scanner and Ninja.
   # It gates the same [self] contract as the other two, so wiring only this build
@@ -290,7 +313,9 @@ jobs:
 
     strategy:
       matrix:
-        config: [Debug, Release]
+        # Same spelling as build-and-test / makefile-build-and-test (debug|release).
+        # CMAKE_BUILD_TYPE still wants Debug/Release — mapped at configure time.
+        config: [debug, release]
 
     steps:
       - uses: actions/checkout@v5
@@ -312,15 +337,19 @@ jobs:
           ninja --version
           clang++-21 --version | head -1
 
-      # build-cmake-<os>-<config>/ — CB keeps build-<os>-<config>/, Make uses
-      # build-make-<os>-<config>/. Config is lowercased to match those trees.
+      # build-cmake-<os>-<config>/ — same lowercase config token as CB and Make.
       - name: Configure (${{ matrix.config }})
         run: |
           set -euo pipefail
-          cfg=$(printf '%s' '${{ matrix.config }}' | tr '[:upper:]' '[:lower:]')
+          cfg='${{ matrix.config }}'
+          case "$cfg" in
+            debug) cmake_type=Debug ;;
+            release) cmake_type=Release ;;
+            *) echo "unknown matrix.config=$cfg" >&2; exit 1 ;;
+          esac
           echo "CMAKE_BUILD_DIR=build-cmake-linux-${cfg}" >> "$GITHUB_ENV"
           cmake -S . -B "build-cmake-linux-${cfg}" -G Ninja \
-            -DCMAKE_BUILD_TYPE=${{ matrix.config }}
+            -DCMAKE_BUILD_TYPE="${cmake_type}"
 
       - name: Build (${{ matrix.config }}, warning-free)
         run: |
@@ -388,7 +417,7 @@ jobs:
       # progress lines on the same stdout as the JSONL, so the summary is picked out
       # instead of the whole stream being parsed.
       - name: Run run_tests convenience target
-        if: matrix.config == 'Debug'
+        if: matrix.config == 'debug'
         run: |
           set -euo pipefail
           cmake --build "${CMAKE_BUILD_DIR}" --target run_tests > cmake_run_tests.log

@@ -98,8 +98,8 @@ A release is cut when all of these hold. There is no schedule — the criteria d
 1. **CI green on Linux** for both `debug` and `release`: the `[self]` suite under both
    `--jobs=1` and `--jobs=$(nproc)`, the full standalone suite under both job modes, the
    failure-demo gate, JSONL schema validation, CB smoke, MCP smoke, the Makefile lane
-   (`make tests` + `[self]`, warning-free), and the CMake + Ninja lane (`Debug` and
-   `Release`, warning-free, `[self]` plus the standalone suite).
+   (`debug` and `release`: `make tests` + `[self]`, warning-free), and the CMake + Ninja
+   lane (`debug` and `release`, warning-free, `[self]` plus the standalone suite).
 2. **The same suites run by hand on macOS**, against a locally built LLVM, until a
    hosted runner ships a clang that can build C++23 modules and the lane becomes
    automatic.

@@ -109,7 +109,7 @@ Honest positioning — each tool has a sweet spot.
 
 ### Make (an alternative in this repo)
 
-The `Makefile` is a supported second path, not a leftover: it orders modules with `clang-scan-deps` (p1689 output parsed by [`scripts/parse_module_deps.py`](../scripts/parse_module_deps.py)), builds the same library and runner, and works standalone or invoked from a parent `make`. What it lacks is CB's object cache and build telemetry. CI gates `make tests` / `make run_tests` with `[self]` on every push (`makefile-build-and-test`); [release-policy.md](release-policy.md) still requires a clean Make rebuild before a release.
+The `Makefile` is a supported second path, not a leftover: it orders modules with `clang-scan-deps` (p1689 output parsed by [`scripts/parse_module_deps.py`](../scripts/parse_module_deps.py)), builds the same library and runner, and works standalone or invoked from a parent `make`. What it lacks is CB's object cache and build telemetry. CI gates `make tests` / `make run_tests` with `[self]` for both `debug` (`DEBUG=1`) and `release` on every push (`makefile-build-and-test`); [release-policy.md](release-policy.md) still requires a clean Make rebuild before a release.
 
 | Target | Purpose |
 |--------|---------|
