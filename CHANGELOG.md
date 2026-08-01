@@ -17,6 +17,11 @@ release criteria are met.
   (e.g. nested cryptic CI) enable the sink for the assertion and restore afterward, so the
   case passes in both console and JSONL process modes.
 
+### Changed
+
+- **CI runs `[self]` and the standalone suite under both `--jobs=1` and `--jobs=$(nproc)`**
+  (CB and Makefile paths), so sequential and parallel runner modes stay gated.
+
 ### Added
 
 - **Parallel top-level tests** via `test_runner --jobs=N` (default `1` = sequential;

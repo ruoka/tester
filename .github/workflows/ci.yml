@@ -50,36 +50,70 @@ jobs:
       - name: Build tests (${{ matrix.config }})
         run: ./tools/CB.sh ${{ matrix.config }} build --build-tests
 
-      - name: Run self tests (${{ matrix.config }})
+      # Consumers run with --jobs=nproc; tester must prove both sequential and parallel
+      # runner modes stay green (default remains jobs=1 unless --jobs= is set).
+      - name: Run self tests sequential (${{ matrix.config }})
         run: |
-          ./tools/CB.sh ${{ matrix.config }} test --jsonl=failures \
-            --junit="test_results_self_${{ matrix.config }}.xml" \
-            --tags='\[self\]' > "test_results_self_${{ matrix.config }}.jsonl"
-          if command -v jq >/dev/null 2>&1; then
-            passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' "test_results_self_${{ matrix.config }}.jsonl")
-            if [ "$passed" != "true" ]; then
-              echo "Self tests failed (summary.passed=$passed)"
-              tail -20 "test_results_self_${{ matrix.config }}.jsonl"
-              exit 1
-            fi
-            echo "✓ Self tests passed"
+          set -euo pipefail
+          ./tools/CB.sh ${{ matrix.config }} test --jsonl=failures --jobs=1 \
+            --junit="test_results_self_seq_${{ matrix.config }}.xml" \
+            --tags='\[self\]' > "test_results_self_seq_${{ matrix.config }}.jsonl"
+          passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' "test_results_self_seq_${{ matrix.config }}.jsonl")
+          if [ "$passed" != "true" ]; then
+            echo "Self tests (jobs=1) failed (summary.passed=$passed)"
+            tail -20 "test_results_self_seq_${{ matrix.config }}.jsonl"
+            exit 1
           fi
+          echo "✓ Self tests passed (jobs=1)"
+
+      - name: Run self tests parallel (${{ matrix.config }})
+        run: |
+          set -euo pipefail
+          jobs="$(nproc)"
+          echo "Running [self] tests with --jobs=${jobs}"
+          ./tools/CB.sh ${{ matrix.config }} test --jsonl=failures --jobs="${jobs}" \
+            --junit="test_results_self_par_${{ matrix.config }}.xml" \
+            --tags='\[self\]' > "test_results_self_par_${{ matrix.config }}.jsonl"
+          passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' "test_results_self_par_${{ matrix.config }}.jsonl")
+          if [ "$passed" != "true" ]; then
+            echo "Self tests (jobs=${jobs}) failed (summary.passed=$passed)"
+            tail -20 "test_results_self_par_${{ matrix.config }}.jsonl"
+            exit 1
+          fi
+          echo "✓ Self tests passed (jobs=${jobs})"
 
       # The whole suite, not only the [self] subset. tools/CB.sh sets
       # CB_INCLUDE_EXAMPLES_MODE=always, so this covers examples/ too: their failure demos
       # carry hidden [.demo] tags, which is why an unfiltered run is expected to pass.
-      - name: Run standalone suite (${{ matrix.config }})
+      - name: Run standalone suite sequential (${{ matrix.config }})
         run: |
-          ./tools/CB.sh ${{ matrix.config }} test --jsonl=failures \
-            --junit="test_results_${{ matrix.config }}.xml" \
-            > "test_results_${{ matrix.config }}.jsonl"
-          passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' "test_results_${{ matrix.config }}.jsonl")
+          set -euo pipefail
+          ./tools/CB.sh ${{ matrix.config }} test --jsonl=failures --jobs=1 \
+            --junit="test_results_seq_${{ matrix.config }}.xml" \
+            > "test_results_seq_${{ matrix.config }}.jsonl"
+          passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' "test_results_seq_${{ matrix.config }}.jsonl")
           if [ "$passed" != "true" ]; then
-            echo "Standalone suite failed (summary.passed=$passed)"
-            tail -20 "test_results_${{ matrix.config }}.jsonl"
+            echo "Standalone suite (jobs=1) failed (summary.passed=$passed)"
+            tail -20 "test_results_seq_${{ matrix.config }}.jsonl"
             exit 1
           fi
-          echo "✓ Standalone suite passed"
+          echo "✓ Standalone suite passed (jobs=1)"
+
+      - name: Run standalone suite parallel (${{ matrix.config }})
+        run: |
+          set -euo pipefail
+          jobs="$(nproc)"
+          echo "Running standalone suite with --jobs=${jobs}"
+          ./tools/CB.sh ${{ matrix.config }} test --jsonl=failures --jobs="${jobs}" \
+            --junit="test_results_par_${{ matrix.config }}.xml" \
+            > "test_results_par_${{ matrix.config }}.jsonl"
+          passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' "test_results_par_${{ matrix.config }}.jsonl")
+          if [ "$passed" != "true" ]; then
+            echo "Standalone suite (jobs=${jobs}) failed (summary.passed=$passed)"
+            tail -20 "test_results_par_${{ matrix.config }}.jsonl"
+            exit 1
+          fi
+          echo "✓ Standalone suite passed (jobs=${jobs})"
 
       # The demos exist to show what a failure looks like, so a passing run means they
       # stopped demonstrating anything. Non-zero exit is the expected outcome, which is
@@ -102,13 +136,20 @@ jobs:
 
       - name: Validate JSONL output
         run: |
-          echo "JSONL lines: $(wc -l < "test_results_${{ matrix.config }}.jsonl")"
-          if ! tail -1 "test_results_${{ matrix.config }}.jsonl" | jq -e '.type == "eof"' >/dev/null; then
-            echo "✗ EOF marker missing — the stream was truncated"
-            tail -5 "test_results_${{ matrix.config }}.jsonl"
-            exit 1
-          fi
-          echo "✓ EOF marker found"
+          set -euo pipefail
+          for f in \
+            "test_results_self_seq_${{ matrix.config }}.jsonl" \
+            "test_results_self_par_${{ matrix.config }}.jsonl" \
+            "test_results_seq_${{ matrix.config }}.jsonl" \
+            "test_results_par_${{ matrix.config }}.jsonl"; do
+            echo "JSONL lines ($f): $(wc -l < "$f")"
+            if ! tail -1 "$f" | jq -e '.type == "eof"' >/dev/null; then
+              echo "✗ EOF marker missing in $f — the stream was truncated"
+              tail -5 "$f"
+              exit 1
+            fi
+          done
+          echo "✓ EOF marker found in sequential and parallel JSONL streams"
 
       # Structural jq checks above cannot catch a line that is unparseable, or one
       # missing a field agents depend on. This validates every line of the canonical
@@ -131,8 +172,10 @@ jobs:
         with:
           show: all
           paths: |
-            test_results_self_${{ matrix.config }}.xml
-            test_results_${{ matrix.config }}.xml
+            test_results_self_seq_${{ matrix.config }}.xml
+            test_results_self_par_${{ matrix.config }}.xml
+            test_results_seq_${{ matrix.config }}.xml
+            test_results_par_${{ matrix.config }}.xml
 
       - name: Upload test results
         uses: actions/upload-artifact@v6
@@ -140,11 +183,15 @@ jobs:
         with:
           name: test-results-${{ matrix.config }}
           path: |
-            test_results_${{ matrix.config }}.jsonl
-            test_results_self_${{ matrix.config }}.jsonl
+            test_results_seq_${{ matrix.config }}.jsonl
+            test_results_par_${{ matrix.config }}.jsonl
+            test_results_self_seq_${{ matrix.config }}.jsonl
+            test_results_self_par_${{ matrix.config }}.jsonl
             test_results_demos.jsonl
-            test_results_${{ matrix.config }}.xml
-            test_results_self_${{ matrix.config }}.xml
+            test_results_seq_${{ matrix.config }}.xml
+            test_results_par_${{ matrix.config }}.xml
+            test_results_self_seq_${{ matrix.config }}.xml
+            test_results_self_par_${{ matrix.config }}.xml
             test_results_demos.xml
 
   # Second build path: clang-scan-deps + Makefile into build-<os>/. Gates the same
@@ -179,25 +226,42 @@ jobs:
           fi
           echo "✓ make tests built warning-free"
 
-      - name: Run self tests (make run_tests)
+      - name: Run self tests sequential (make run_tests)
         run: |
           set -euo pipefail
-          make run_tests TEST_TAGS="--jsonl=failures --junit=test_results_make_self.xml --tags=[self]" \
-            > test_results_make_self.jsonl
-          passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' test_results_make_self.jsonl)
+          make run_tests TEST_TAGS="--jsonl=failures --jobs=1 --junit=test_results_make_self_seq.xml --tags=[self]" \
+            > test_results_make_self_seq.jsonl
+          passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' test_results_make_self_seq.jsonl)
           if [ "$passed" != "true" ]; then
-            echo "Makefile self tests failed (summary.passed=$passed)"
-            tail -20 test_results_make_self.jsonl
+            echo "Makefile self tests (jobs=1) failed (summary.passed=$passed)"
+            tail -20 test_results_make_self_seq.jsonl
             exit 1
           fi
-          echo "✓ Makefile self tests passed"
+          echo "✓ Makefile self tests passed (jobs=1)"
+
+      - name: Run self tests parallel (make run_tests)
+        run: |
+          set -euo pipefail
+          jobs="$(nproc)"
+          echo "Running make [self] tests with --jobs=${jobs}"
+          make run_tests TEST_TAGS="--jsonl=failures --jobs=${jobs} --junit=test_results_make_self_par.xml --tags=[self]" \
+            > test_results_make_self_par.jsonl
+          passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' test_results_make_self_par.jsonl)
+          if [ "$passed" != "true" ]; then
+            echo "Makefile self tests (jobs=${jobs}) failed (summary.passed=$passed)"
+            tail -20 test_results_make_self_par.jsonl
+            exit 1
+          fi
+          echo "✓ Makefile self tests passed (jobs=${jobs})"
 
       - name: Publish JUnit test summary
         uses: test-summary/action@v2
         if: always()
         with:
           show: all
-          paths: test_results_make_self.xml
+          paths: |
+            test_results_make_self_seq.xml
+            test_results_make_self_par.xml
 
       - name: Upload Makefile test results
         uses: actions/upload-artifact@v6
@@ -206,8 +270,10 @@ jobs:
           name: test-results-makefile
           path: |
             make_build.log
-            test_results_make_self.jsonl
-            test_results_make_self.xml
+            test_results_make_self_seq.jsonl
+            test_results_make_self_par.jsonl
+            test_results_make_self_seq.xml
+            test_results_make_self_par.xml
 
   cb-smoke:
     runs-on: ubuntu-latest
