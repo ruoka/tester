@@ -9,6 +9,10 @@ KEY="$(git rev-parse HEAD)"
 echo "=== Toolchain ==="
 clang++-21 -v
 /usr/lib/llvm-21/bin/clang-scan-deps --version
+# The two alternative build paths: make (clang-scan-deps ordering) and CMake + Ninja.
+make --version | head -1
+cmake --version | head -1
+ninja --version
 
 if [[ -f /usr/lib/llvm-21/share/libc++/v1/std.cppm ]]; then
     echo "std.cppm: /usr/lib/llvm-21/share/libc++/v1/std.cppm"

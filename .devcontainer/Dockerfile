@@ -11,9 +11,26 @@ RUN apt-get update && \
 
 RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
     apt-get install -y --no-install-recommends \
-        git file jq \
+        git file jq make ninja-build \
         clang-21 libc++-21-dev libc++abi-21-dev lld-21 clang-tools-21 lldb-21 && \
     rm -rf /var/lib/apt/lists/*
+
+# Bookworm ships CMake 3.25, and CMakeLists.txt needs 4.x: its `import std` gate is a
+# UUID only the CMake release that minted it accepts. Same pin as the CI lane in
+# .github/actions/setup-cmake.
+ARG CMAKE_VERSION=4.1.2
+RUN case "$(dpkg --print-architecture)" in \
+        amd64) cmake_arch=x86_64 ;; \
+        arm64) cmake_arch=aarch64 ;; \
+        *) echo "no CMake build for $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac && \
+    wget -qO /tmp/cmake.tar.gz \
+        "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-${cmake_arch}.tar.gz" && \
+    mkdir -p /opt/cmake && \
+    tar -xzf /tmp/cmake.tar.gz -C /opt/cmake --strip-components=1 && \
+    rm /tmp/cmake.tar.gz && \
+    ln -s /opt/cmake/bin/cmake /usr/local/bin/cmake && \
+    ln -s /opt/cmake/bin/ctest /usr/local/bin/ctest
 
 RUN update-alternatives --install /usr/bin/clang clang /usr/bin/clang-21 100 && \
     update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-21 100 && \

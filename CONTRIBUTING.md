@@ -12,11 +12,14 @@ a change is submitted, and the conventions the code follows.
   LLVM — see [`docs/clang-modules-macos.md`](docs/clang-modules-macos.md). Windows is not
   supported.
 - **`clang-scan-deps`** (ships with the toolchain) — required only for the Makefile path.
+- **CMake 4.0 or 4.1 and Ninja** — required only for the `CMakeLists.txt` path. The CMake
+  version is narrow because `import std` is unlocked with a gate UUID that only the release
+  which minted it accepts.
 - **Python 3** — for the JSONL schema validator and the MCP bridge.
 - **Git.** There are no submodules in this repository; a plain `git clone` is complete.
 
-The repository includes a devcontainer with the Linux toolchain: open it in VS Code and
-choose "Reopen in Container".
+The repository includes a devcontainer with the Linux toolchain and all three build paths
+(CB, make, CMake + Ninja): open it in VS Code and choose "Reopen in Container".
 
 ### Build and test with CB (what CI gates)
 
@@ -85,7 +88,37 @@ utility has no other build path.
 
 Keep builds warning-free. CB attaches compiler warnings to successful `compile_end` /
 `link_end` events (`diagnostics` in `--jsonl=failures`); Make has no cache, so a full
-`make` rebuild compiles every unit and the CI Makefile job fails on any `warning:`.
+`make` rebuild compiles every unit and the CI Makefile job fails on any `warning:`. The
+CMake lane below is gated the same way.
+
+### Build and test with CMake + Ninja
+
+[`CMakeLists.txt`](CMakeLists.txt) is the third supported path, for consumers who already
+build with CMake and as the worked example of wiring C++23 modules (`FILE_SET CXX_MODULES`
+plus `import std`) into a CMake project. Run it when you change the module set, since the
+file sets there are maintained by hand rather than discovered:
+
+```bash
+cmake -S . -B build-cmake -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-cmake                         # build-cmake/test_runner
+cmake --build build-cmake --target run_tests      # [self]
+cmake --build build-cmake --target run_all_tests  # everything, examples included
+```
+
+`-DTESTER_STATIC=ON` mirrors the Makefile's `STATIC=1`, and the build type maps to the same
+flags `config/compiler.mk` uses. The generator has to be Ninja — module scanning needs it —
+and adding compiler flags is the one rough edge:
+
+| Attempt | Result |
+|---------|--------|
+| `CXXFLAGS=…` | Configure fails. CMake detects the standard library *without* it, so `import std` resolves against libstdc++ and stops on a missing `libstdc++.modules.json` |
+| `-DCMAKE_CXX_FLAGS=…` | Replaces `CMAKE_CXX_FLAGS_INIT`, dropping `-stdlib=libc++`; same failure |
+| `-DCMAKE_CXX_FLAGS_INIT=…` | Silently ignored — the file sets that variable unconditionally |
+
+Edit `CMAKE_CXX_FLAGS_INIT` in `CMakeLists.txt` instead. It is the only place that also
+reaches CMake's internal `std` target, and a flag that changes the language configuration
+(`-fsigned-char`, say) has to reach it or the compile fails on `std.pcm` being built with a
+mismatched configuration.
 
 ## What has to pass
 
@@ -95,6 +128,7 @@ Before opening a pull request:
 ./tools/CB.sh debug test --jsonl=failures --tags='\[self\]'   # must report passed: true
 ./tools/CB.sh debug test --jsonl=failures                     # standalone suite
 make clean && make run_tests TEST_TAGS='--tags=[self]'        # second path; CI gates this too
+cmake --build build-cmake --target run_tests                  # third path; if you changed the module set
 ./tests/cb/smoke.sh                                           # if you touched tools/
 ./tests/mcp/smoke.sh                                          # if you touched tools/cb_mcp.py
 ./tests/jsonl/validate.py --require-schema                    # if you touched any event

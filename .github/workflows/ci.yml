@@ -275,6 +275,148 @@ jobs:
             test_results_make_self_seq.xml
             test_results_make_self_par.xml
 
+  # Third build path: CMakeLists.txt driving CMake's own module scanner and Ninja.
+  # It gates the same [self] contract as the other two, so wiring only this build
+  # depends on — the CXX_MODULES file sets and the import-std setup — cannot rot
+  # unnoticed. Warning-free is a gate here for the same reason it is under make:
+  # a cold CI tree compiles every unit, so nothing hides behind an object cache.
+  cmake-ninja-build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      matrix:
+        config: [Debug, Release]
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Setup LLVM (shared)
+        uses: ./.github/actions/setup-llvm
+
+      # Pinned CMake + Ninja; the devcontainer installs the same versions so the two
+      # environments agree on the import-std gate.
+      - name: Setup CMake + Ninja (shared)
+        uses: ./.github/actions/setup-cmake
+
+      - name: Show CMake toolchain
+        run: |
+          cmake --version | head -1
+          ninja --version
+          clang++-21 --version | head -1
+
+      # Deliberately no CXXFLAGS: CMake appends it to CMAKE_CXX_FLAGS_INIT for the
+      # build but detects the standard library without it, so setting it makes the
+      # import-std probe resolve against libstdc++ and the configure fail on a
+      # missing libstdc++.modules.json.
+      - name: Configure (${{ matrix.config }})
+        run: cmake -S . -B build-cmake -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.config }}
+
+      - name: Build (${{ matrix.config }}, warning-free)
+        run: |
+          set -euo pipefail
+          cmake --build build-cmake 2>&1 | tee "cmake_build_${{ matrix.config }}.log"
+          if grep -E '(^|[[:space:]])warning:' "cmake_build_${{ matrix.config }}.log"; then
+            echo "✗ CMake build produced compiler warnings"
+            exit 1
+          fi
+          echo "✓ CMake + Ninja build is warning-free"
+
+      # TEST_RUNNER is what the custom targets set: the self tests re-spawn the
+      # runner and otherwise look for <cwd>/build-*/bin/test_runner, which a CMake
+      # tree does not have.
+      - name: Run self tests sequential (${{ matrix.config }})
+        working-directory: build-cmake
+        run: |
+          set -euo pipefail
+          out="${GITHUB_WORKSPACE}/test_results_cmake_self_seq_${{ matrix.config }}"
+          TEST_RUNNER="${PWD}/test_runner" ./test_runner --jsonl=failures --jobs=1 \
+            --junit="${out}.xml" --tags='\[self\]' > "${out}.jsonl"
+          passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' "${out}.jsonl")
+          if [ "$passed" != "true" ]; then
+            echo "CMake self tests (jobs=1) failed (summary.passed=$passed)"
+            tail -20 "${out}.jsonl"
+            exit 1
+          fi
+          echo "✓ CMake self tests passed (jobs=1)"
+
+      - name: Run self tests parallel (${{ matrix.config }})
+        working-directory: build-cmake
+        run: |
+          set -euo pipefail
+          jobs="$(nproc)"
+          out="${GITHUB_WORKSPACE}/test_results_cmake_self_par_${{ matrix.config }}"
+          TEST_RUNNER="${PWD}/test_runner" ./test_runner --jsonl=failures --jobs="${jobs}" \
+            --junit="${out}.xml" --tags='\[self\]' > "${out}.jsonl"
+          passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' "${out}.jsonl")
+          if [ "$passed" != "true" ]; then
+            echo "CMake self tests (jobs=${jobs}) failed (summary.passed=$passed)"
+            tail -20 "${out}.jsonl"
+            exit 1
+          fi
+          echo "✓ CMake self tests passed (jobs=${jobs})"
+
+      # The CMake runner links examples/ in unconditionally, so this covers them too;
+      # their failure demos carry hidden [.demo] tags and stay out of an unfiltered run.
+      - name: Run standalone suite (${{ matrix.config }})
+        working-directory: build-cmake
+        run: |
+          set -euo pipefail
+          jobs="$(nproc)"
+          out="${GITHUB_WORKSPACE}/test_results_cmake_all_${{ matrix.config }}"
+          TEST_RUNNER="${PWD}/test_runner" ./test_runner --jsonl=failures --jobs="${jobs}" \
+            --junit="${out}.xml" > "${out}.jsonl"
+          passed=$(jq -rs '[.[] | select(.type=="summary" or .type=="run_end")] | last | .passed' "${out}.jsonl")
+          if [ "$passed" != "true" ]; then
+            echo "CMake standalone suite failed (summary.passed=$passed)"
+            tail -20 "${out}.jsonl"
+            exit 1
+          fi
+          echo "✓ CMake standalone suite passed (jobs=${jobs})"
+
+      # The entry point CMakeLists.txt documents for developers. Ninja prints its own
+      # progress lines on the same stdout as the JSONL, so the summary is picked out
+      # instead of the whole stream being parsed.
+      - name: Run run_tests convenience target
+        if: matrix.config == 'Debug'
+        run: |
+          set -euo pipefail
+          cmake --build build-cmake --target run_tests > cmake_run_tests.log
+          summary=$(grep '"type":"summary"' cmake_run_tests.log | tail -1 || true)
+          if ! printf '%s' "$summary" | jq -e '.passed == true' > /dev/null; then
+            echo "✗ run_tests target reported a failure"
+            echo "$summary"
+            exit 1
+          fi
+          echo "✓ run_tests target passes"
+
+      - name: Publish JUnit test summary
+        uses: test-summary/action@v2
+        if: always()
+        with:
+          show: all
+          paths: |
+            test_results_cmake_self_seq_${{ matrix.config }}.xml
+            test_results_cmake_self_par_${{ matrix.config }}.xml
+            test_results_cmake_all_${{ matrix.config }}.xml
+
+      - name: Upload CMake test results
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: test-results-cmake-${{ matrix.config }}
+          path: |
+            cmake_build_${{ matrix.config }}.log
+            test_results_cmake_self_seq_${{ matrix.config }}.jsonl
+            test_results_cmake_self_par_${{ matrix.config }}.jsonl
+            test_results_cmake_all_${{ matrix.config }}.jsonl
+            test_results_cmake_self_seq_${{ matrix.config }}.xml
+            test_results_cmake_self_par_${{ matrix.config }}.xml
+            test_results_cmake_all_${{ matrix.config }}.xml
+
   cb-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 10

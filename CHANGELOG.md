@@ -18,6 +18,25 @@ tag; cutting a release renames that section.
   source is parsed once and Clang 22+ writes reduced BMIs by default. The mode is an
   object-cache profile field (`module_phases`), so switching it reports `profile_change` and
   recompiles rather than reusing BMIs the other scheme produced.
+- **CMake + Ninja build path** ([`CMakeLists.txt`](CMakeLists.txt)) — a third way to build the
+  same library and `test_runner`, for consumers who already build with CMake and as a worked
+  example of C++23 modules under CMake (`FILE_SET CXX_MODULES` plus `import std`). Targets
+  `run_tests` / `run_all_tests`; `-DTESTER_STATIC=ON` mirrors the Makefile's `STATIC=1` and
+  build types map to the same flags `config/compiler.mk` uses. Requires CMake 4.0 or 4.1 (the
+  `import std` gate UUID is version-specific) and the Ninja generator.
+- **CMake CI lane** (`cmake-ninja-build-and-test`): configure and build for `Debug` and
+  `Release`, failing on any compiler `warning:`, then `[self]` sequentially and at
+  `--jobs=$(nproc)`, the unfiltered standalone suite, and the `run_tests` target. The pinned
+  CMake install is shared with the dev container, which now also ships Ninja and `make`, so
+  all three documented build paths run there.
+
+### Fixed
+
+- **`[self]` suite builds where `char` is unsigned** (ARM Linux). The mixed-signedness cases
+  spelled their negative character operand `char{-1}`, which is a narrowing error there and
+  could not hold a negative value in any case, so `tester-assertions.test.c++` failed to
+  compile. They use `signed char` now — the same promotion and reporting paths, negative on
+  every platform.
 
 ### Changed
 

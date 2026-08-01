@@ -1,0 +1,37 @@
+name: "setup-cmake"
+description: "Install Ninja and a pinned CMake release for the CMakeLists.txt build path."
+inputs:
+  cmake-version:
+    description: >
+      CMake release to install. Pinned rather than taken from the runner image because
+      CMakeLists.txt unlocks `import std` with a UUID only the release that minted it
+      accepts — .devcontainer/Dockerfile pins the same version.
+    required: false
+    default: "4.1.2"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install Ninja
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update -y
+        sudo apt-get install -y ninja-build
+
+    - name: Install CMake ${{ inputs.cmake-version }}
+      shell: bash
+      env:
+        CMAKE_VERSION: ${{ inputs.cmake-version }}
+      run: |
+        set -euo pipefail
+        case "$(uname -m)" in
+          x86_64) cmake_arch=x86_64 ;;
+          aarch64|arm64) cmake_arch=aarch64 ;;
+          *) echo "no CMake build for $(uname -m)"; exit 1 ;;
+        esac
+        curl -fsSL -o /tmp/cmake.tar.gz \
+          "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-${cmake_arch}.tar.gz"
+        sudo mkdir -p /opt/cmake
+        sudo tar -xzf /tmp/cmake.tar.gz -C /opt/cmake --strip-components=1
+        echo "/opt/cmake/bin" >> "$GITHUB_PATH"

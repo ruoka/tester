@@ -93,16 +93,18 @@ A release is cut when all of these hold. There is no schedule — the criteria d
 
 1. **CI green on Linux** for both `debug` and `release`: the `[self]` suite under both
    `--jobs=1` and `--jobs=$(nproc)`, the full standalone suite under both job modes, the
-   failure-demo gate, JSONL schema validation, CB smoke, MCP smoke, and the Makefile lane
-   (`make tests` + `[self]`, warning-free).
+   failure-demo gate, JSONL schema validation, CB smoke, MCP smoke, the Makefile lane
+   (`make tests` + `[self]`, warning-free), and the CMake + Ninja lane (`Debug` and
+   `Release`, warning-free, `[self]` plus the standalone suite).
 2. **The same suites run by hand on macOS**, against a locally built LLVM, until a
    hosted runner ships a clang that can build C++23 modules and the lane becomes
    automatic.
-3. **`make tests` builds and its runner passes**, warning-free. CI gates this on every
-   push (`makefile-build-and-test`); a release re-checks it on a clean tree. CB also
-   surfaces compiler warnings from units it compiles (`diagnostics` on successful
-   `compile_end` / `link_end` in `--jsonl=failures`), so Make is a second path rather
-   than the only place `-Wall` noise is visible.
+3. **Both alternative build paths build and their runners pass**, warning-free: `make tests`
+   and a fresh `cmake -G Ninja` configure plus build. CI gates them on every push
+   (`makefile-build-and-test`, `cmake-ninja-build-and-test`); a release re-checks them on a
+   clean tree. CB also surfaces compiler warnings from units it compiles (`diagnostics` on
+   successful `compile_end` / `link_end` in `--jsonl=failures`), so neither is the only
+   place `-Wall` noise is visible.
 4. **[`docs/repository-technical-review.md`](repository-technical-review.md) rates the
    repository at or close to 9 / 10**, or an explicit release note accepts the current
    score with named residual risks. The review is re-run against the tree, with its claims

@@ -247,9 +247,12 @@ auto register_tests()
         check_lt(1u, -1);            // 1 is not less than -1
 
         // The same conversion, through operand types that cannot be handed to std::cmp_*
-        // as written and were therefore left out of it.
-        check_eq(char{-1}, 4294967295u);
-        check_gt(char{-1}, 0u);
+        // as written and were therefore left out of it. `signed char` rather than `char`
+        // because char's signedness is implementation-defined — it is unsigned on ARM
+        // Linux, where char{-1} does not compile and no char is negative. Both are
+        // character types, so the operand takes the same promotion and reporting paths.
+        check_eq(static_cast<signed char>(-1), 4294967295u);
+        check_gt(static_cast<signed char>(-1), 0u);
         check_eq(legacy_flag::minus_one, 4294967295u);
         check_eq('a', 98u);          // a printable character, reported by value as 97
     };
@@ -281,8 +284,8 @@ auto register_tests()
         require_eq('a', 'a');
         require_true(true);
         require_eq(static_cast<unsigned char>(1), 1);
-        require_neq(char{-1}, 4294967295u);
-        require_lt(char{-1}, 0u);
+        require_neq(static_cast<signed char>(-1), 4294967295u);
+        require_lt(static_cast<signed char>(-1), 0u);
         require_eq('a', 97u);
         require_eq(true, 1u);
         require_neq(true, 2u);
@@ -323,7 +326,7 @@ auto register_tests()
         require_eq(field(failure(result.stdout_text, 0), "expected"), std::string{"4294967295"});
 
         // A char operand is reported by value, in a field the schema calls a number.
-        // Streamed as itself it put a bare `a` there for 'a', and for char{-1} a stray
+        // Streamed as itself it put a bare `a` there for 'a', and for a negative char a stray
         // 0xff byte that is not even valid UTF-8, leaving a line no parser could read —
         // and stdout is the whole contract with agents. The last three probe failures are
         // the two char ones and the enumeration.

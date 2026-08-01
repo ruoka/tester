@@ -243,6 +243,31 @@ make run_tests TEST_TAGS='--tags=[self]'         # build and run in one step
 
 It also works embedded: invoked from a parent `make`, it picks up `../../config/compiler.mk` and the parent's `PREFIX`. What it does not have is CB's object cache or JSONL build telemetry. CI gates `make tests` / `make run_tests` with `[self]` on every push (`makefile-build-and-test`); CB remains the primary path and also surfaces compiler warnings from units it compiles.
 
+### CMake + Ninja build (alternative to CB)
+
+The bundled [`CMakeLists.txt`](CMakeLists.txt) builds the same library and runner through
+CMake's own module scanner, so a project that already uses CMake can consume tester without
+adopting CB or make. It is also the worked example to copy from if you are wiring C++23
+modules into your own `CMakeLists.txt`:
+
+```bash
+cmake -S . -B build-cmake -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-cmake                     # build-cmake/test_runner
+cmake --build build-cmake --target run_tests      # [self] suite
+cmake --build build-cmake --target run_all_tests  # everything, examples included
+```
+
+It needs **CMake 4.0 or 4.1 and Ninja**: `import std` is unlocked with
+`CMAKE_EXPERIMENTAL_CXX_IMPORT_STD`, whose gate UUID only the CMake release that minted it
+accepts, and module scanning needs the Ninja generator. Build type maps the way
+`config/compiler.mk` does (`Release` optimizes, `Debug` drops to `-O0`); `-DTESTER_STATIC=ON`
+mirrors `STATIC=1`. Do **not** set `CXXFLAGS`: CMake detects the standard library without it
+and then resolves `import std` against libstdc++, which fails the configure.
+
+CI gates this path for `Debug` and `Release` on every push (`cmake-ninja-build-and-test`),
+warning-free, with `[self]` and the standalone suite. What it does not have, like make, is
+CB's object cache or JSONL build telemetry.
+
 ## Built-in Builder (CB)
 
 Tester ships with **CB** (`tools/cb.c++`), a module-aware build system in a single file. CB discovers translation units, topologically sorts module imports, compiles in parallel, and caches object files incrementally. **CB is the default path for standalone clones**; parent repos embed tester under `deps/tester` and build through their own `tools/CB.sh` wrapper — [YarDB](https://github.com/ruoka/YarDB) is the public reference layout. For design rationale and comparison with CMake, Make, and other tools, see [`docs/cb.md`](docs/cb.md). Implementation uses **standard C++ only** (`std::system` for subprocesses); crash stack traces in `test_runner` are the POSIX `<execinfo.h>` exception — see [AGENTS.md — Implementation policy](AGENTS.md#implementation-policy-standard-c-only).
@@ -283,7 +308,7 @@ Parent repos do not rebuild this tree's `tools/CB.sh` — they keep a thin `tool
 
 **Nested `deps/*/deps/tester` copies** (e.g. `deps/xson/deps/tester`) are for that child package when *it* builds alone. The parent's `CB.sh` uses only the first-level `deps/tester` (or sibling / `CB_TESTER_ROOT`). Do **not** copy or rewrite tester docs inside those nested trees to “fix” a lagging pin — the nested tree is a submodule checkout; bump its pointer (and the parent's `deps/tester`) to the commit that has the docs and behaviour you want. More layout notes: [`docs/cb.md` — Embedded](docs/cb.md#embedded-depstester-in-a-parent-repo).
 
-**Not using CB?** The `Makefile` builds the same library and runner with `clang-scan-deps` — see [Makefile runner](#makefile-runner-alternative-to-cb) above and the target table in [`docs/cb.md`](docs/cb.md#make-the-alternative-in-this-repo).
+**Not using CB?** Two alternatives build the same library and runner: the `Makefile` with `clang-scan-deps` ([Makefile runner](#makefile-runner-alternative-to-cb), target table in [`docs/cb.md`](docs/cb.md#make-an-alternative-in-this-repo)) and `CMakeLists.txt` with the Ninja generator ([CMake + Ninja build](#cmake--ninja-build-alternative-to-cb)). CI gates both.
 
 ## JSONL & Automation
 
@@ -364,7 +389,7 @@ Trace mode emits all test events: `run_start`, `run_end`, `case`, `test`, `messa
 | **C++23 modules** | Native (`import tester`) | Header / macro based | Header / macro based |
 | **Module internals** | Native — `*.test.c++` as `module foo;` sees non-exported names | Not native; friends, test-only exports, or headers | Same workarounds (public API / `friend` / test builds) |
 | **Macros** | None | Many (`TEST_CASE`, `SECTION`, `REQUIRE`, `SCENARIO`, …) | Many (`TEST`, `TEST_F`, `EXPECT_*`, `ASSERT_*`, …) |
-| **Build system** | CB included; Makefile optional | Bring your own | CMake typical |
+| **Build system** | CB included; Makefile and `CMakeLists.txt` optional | Bring your own | CMake typical |
 | **Compile time** | Modules avoid per-TU header reparse; PCM / `std` module cost on cold builds | Header-heavy (Catch2 often costly; doctest lighter) | Header includes per TU; usually moderate |
 | **JSONL output** | First-class (`--jsonl`) | No | No (XML/JUnit via adapters) |
 | **JUnit XML** | First-class (`--junit=`, with JSONL) | Native `--reporter junit` | gtest XML / adapters |
@@ -382,7 +407,9 @@ Tester fits module-native projects that want minimal glue and agent-friendly out
 
 **Minimum toolchain: Clang 21** with libc++ modules (`std.cppm`). Newer Clang is fine and expected — macOS development typically uses a locally built trunk (today Clang 23), while Linux CI and the dev container pin Clang 21. The project does not require that exact version; 21 is the floor CI proves on every push.
 
-Both platforms run the same checks — the `[self]` suite (via CB and via the Makefile runner), the CB and MCP smoke tests, and JSONL schema validation. CI runs them on Linux with Clang 21 on every push; on macOS they are run locally against a locally built LLVM, because no clang available on a hosted macOS runner builds C++23 modules yet. A macOS lane will be added once one does. Windows is not supported. Test steps also emit `--junit=` reports (uploaded as artifacts); gate suites are summarized in the job summary via `test-summary/action`.
+Neither alternative build path is needed for CB: the `Makefile` additionally wants `clang-scan-deps` (ships with the toolchain), and `CMakeLists.txt` wants CMake 4.0 or 4.1 with Ninja. The dev container has all three.
+
+Both platforms run the same checks — the `[self]` suite (via CB, via the Makefile runner, and via the CMake + Ninja build), the CB and MCP smoke tests, and JSONL schema validation. CI runs them on Linux with Clang 21 on every push; on macOS they are run locally against a locally built LLVM, because no clang available on a hosted macOS runner builds C++23 modules yet. A macOS lane will be added once one does. Windows is not supported. Test steps also emit `--junit=` reports (uploaded as artifacts); gate suites are summarized in the job summary via `test-summary/action`.
 
 ### Linux
 - Clang **21 or newer** (`clang++-21` in CI and the dev container)
@@ -425,6 +452,8 @@ tester/
 ├── docs/                # Design notes and improvement backlog
 ├── AGENTS.md            # JSONL agent guide
 ├── config/              # Compiler configuration (Makefile support)
+├── Makefile             # Alternative build path (clang-scan-deps ordering)
+├── CMakeLists.txt       # Alternative build path (CMake + Ninja, C++23 modules example)
 └── build-*/             # Generated artifacts (gitignored)
 ```
 

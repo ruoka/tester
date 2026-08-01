@@ -86,7 +86,7 @@ CB is **not** trying to replace CMake, Bazel, or Meson for general-purpose build
 | Complex conditional target graphs | No CMake-style generator expressions |
 | Mature ecosystem integrations (CTest, sanitizers as first-class configs) | `asan` / `coverage` configs are backlog items |
 
-For a large existing CMake codebase, migrating to CB is usually not worth it. For a **new module-native C++23 library** in the ruoka style, CB removes a layer of tooling.
+For a large existing CMake codebase, migrating to CB is usually not worth it — consume tester from the bundled [`CMakeLists.txt`](../CMakeLists.txt) instead (see [CMake + Ninja](#cmake--ninja-the-other-alternative-in-this-repo) below). For a **new module-native C++23 library** in the ruoka style, CB removes a layer of tooling.
 
 ---
 
@@ -107,7 +107,7 @@ Honest positioning — each tool has a sweet spot.
 | **Read/modify entire build logic** | ~single file (`cb.c++`) | Scattered CMake + scripts | Makefiles + rules | Build graph file | Starlark + rules |
 | **Ecosystem & maturity** | Young, focused | Very mature | Mature, low-level | Mature backend | Mature at scale |
 
-### Make (the alternative in this repo)
+### Make (an alternative in this repo)
 
 The `Makefile` is a supported second path, not a leftover: it orders modules with `clang-scan-deps` (p1689 output parsed by [`scripts/parse_module_deps.py`](../scripts/parse_module_deps.py)), builds the same library and runner, and works standalone or invoked from a parent `make`. What it lacks is CB's object cache and build telemetry. CI gates `make tests` / `make run_tests` with `[self]` on every push (`makefile-build-and-test`); [release-policy.md](release-policy.md) still requires a clean Make rebuild before a release.
 
@@ -131,11 +131,30 @@ When tester is embedded as a submodule, the **parent** Makefile/CB entry point o
 
 CMake excels at portable project configuration, dependency fetching, install trees, and IDE integration. CB deliberately avoids a second configuration language: discovery and conventions replace `CMakeLists.txt`. The trade-off is less flexibility outside the ruoka module layout.
 
-`list` writes `compile_commands.json` at the project root for clangd (one entry per scanned source, using the same argv builders as a real compile) and `graph.json` (schema `cb-graph`) with the same unit inventory JSONL streams as `unit` / `list_summary`. Both are gitignored; regenerate with `./tools/CB.sh debug list` after the TU set or flags change. Full CMake export stays out of scope.
+`list` writes `compile_commands.json` at the project root for clangd (one entry per scanned source, using the same argv builders as a real compile) and `graph.json` (schema `cb-graph`) with the same unit inventory JSONL streams as `unit` / `list_summary`. Both are gitignored; regenerate with `./tools/CB.sh debug list` after the TU set or flags change. Full CMake export (targets, presets, install/export sets) stays out of scope.
+
+### CMake + Ninja (the other alternative in this repo)
+
+[`CMakeLists.txt`](../CMakeLists.txt) is the third supported path: CMake's own scanner orders the modules, Ninja runs the build, and the result is the same library and `test_runner`. It exists for two audiences — projects that already build with CMake and would rather not adopt CB, and anyone looking for a worked example of C++23 modules under CMake, since the interesting parts (`FILE_SET CXX_MODULES`, `import std`, a static library plus a runner that must keep its self-registering test objects) are all exercised here rather than sketched.
+
+```bash
+cmake -S . -B build-cmake -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-cmake --target run_tests      # [self]
+cmake --build build-cmake --target run_all_tests  # examples included
+```
+
+| Constraint | Why |
+|------------|-----|
+| CMake 4.0 or 4.1 | `import std` is unlocked with `CMAKE_EXPERIMENTAL_CXX_IMPORT_STD`, and the gate UUID is accepted only by the release that minted it |
+| Ninja generator | Module dependency scanning; Make generators do not do it |
+| No `CXXFLAGS` | CMake detects the standard library without it, so `import std` resolves against libstdc++ and the configure fails. Flags belong in `CMAKE_CXX_FLAGS_INIT` in the file, which also reaches CMake's internal `std` target |
+| Module set is hand-maintained | The globs pick up files, but the `FILE_SET` wiring is not derived from `import` lines the way CB's graph is |
+
+Like Make, it has no object cache and no build telemetry, and it has no `list`-equivalent inventory. CI gates it warning-free for `Debug` and `Release` with `[self]` and the standalone suite (`cmake-ninja-build-and-test`); the dev container ships the pinned CMake and Ninja.
 
 ### Ninja / Meson / Bazel
 
-- **Ninja** — a fast backend, not a project descriptor. CB invokes the compiler directly; there is no separate "generate then ninja" step.
+- **Ninja** — a fast backend, not a project descriptor. CB invokes the compiler directly; there is no separate "generate then ninja" step. The bundled `CMakeLists.txt` above is where Ninja does get used, as CMake's backend.
 - **Meson** — similar role to CMake with a different DSL; same trade-offs for module-native zero-config repos.
 - **Bazel** — strong for hermetic multi-language monorepos at scale; heavy for a single-file test framework submodule.
 
@@ -369,8 +388,9 @@ CB uses C++23 range pipelines instead of hand-written accumulation loops where t
 ## See also
 
 - [README — Built-in Builder](../README.md#built-in-builder-cb) — quick start and commands
-- [README — Makefile runner](../README.md#makefile-runner-alternative-to-cb) — the non-CB path
-- [CONTRIBUTING.md](../CONTRIBUTING.md) — both build paths and the checks a change has to pass
+- [README — Makefile runner](../README.md#makefile-runner-alternative-to-cb) — a non-CB path
+- [README — CMake + Ninja build](../README.md#cmake--ninja-build-alternative-to-cb) — the other one
+- [CONTRIBUTING.md](../CONTRIBUTING.md) — all three build paths and the checks a change has to pass
 - [YarDB](https://github.com/ruoka/YarDB) — public reference project (`deps/tester` + parent `tools/CB.sh`)
 - [AGENTS.md](../AGENTS.md) — JSONL events, triage, correlation
 - [tester-improvements.md §4–§5](tester-improvements.md#4-c-builder-cbc) — CB backlog and bootstrap scripts
