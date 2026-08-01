@@ -406,9 +406,11 @@ Test runner output is configured via CLI options, not environment variables.
 
 ## Versioning & Releases
 
-Tester is **pre-release**: there is no supported tag yet, and the `v1.0.0` pre-release from November 2025 predates most of what this README documents. Consume `main` as a submodule pinned to a commit you choose — every push is verified by CI, but no compatibility is promised between commits. [`CHANGELOG.md`](CHANGELOG.md) tracks what changed under `Unreleased`.
+**Current release: [`v2.0.0`](https://github.com/ruoka/tester/releases/tag/v2.0.0)** — first supported modules-era SemVer tag (Clang 21 + libc++ modules, JSONL, CB). The November 2025 `v1.0.0` GitHub pre-release is historical and unsupported.
 
-[`docs/release-policy.md`](docs/release-policy.md) states what counts as public API, how versions will be numbered, what breaks a consumer, and the criteria a release has to meet. The first release waits until the repository's own [technical review](docs/repository-technical-review.md) rates it at or close to 9 / 10.
+Pin a tag or an explicit commit as a submodule. Between tags, `main` is CI-gated but carries no compatibility promise. Prefer aligning **every** nested `deps/tester` in a parent tree to the same SHA (see [YarDB versioning](https://github.com/ruoka/YarDB/blob/master/docs/versioning.md)).
+
+[`docs/release-policy.md`](docs/release-policy.md) states what counts as public API, how versions are numbered, what breaks a consumer, and the criteria a release has to meet. [`CHANGELOG.md`](CHANGELOG.md) records public-surface changes.
 
 ## Repository Layout
 

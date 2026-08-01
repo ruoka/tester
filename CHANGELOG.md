@@ -5,10 +5,15 @@ the exported `tester` API, the `test_runner` and CB command lines, and the JSONL
 Internal refactoring is not listed — roughly half the commits since `v1.0.0` reorganize
 `tools/cb.c++` and the observer layer without changing behaviour, and the git log covers them.
 
-Versions follow the rules in the release policy. `Unreleased` accumulates until the policy's
-release criteria are met.
+Versions follow the rules in the release policy. `Unreleased` accumulates until the next
+tag; cutting a release renames that section.
 
 ## Unreleased
+
+## [2.0.0] — 2026-08-01
+
+First **supported** modules-era release. Minimum toolchain: Clang 21+ with libc++ modules
+(`std.cppm`). Prior `v1.0.0` remains an unsupported GitHub pre-release.
 
 ### Fixed
 
@@ -210,5 +215,5 @@ release criteria are met.
 
 A GitHub **pre-release**, kept for history and unsupported. It predates everything above,
 including the JSONL contract, the observer layer, and CI. No changelog was maintained at
-the time and none is reconstructed here; read the git log if you need its state. The
-version number will not be reused — the first supported release takes a new one.
+the time and none is reconstructed here; read the git log if you need its state. Superseded
+by supported `[2.0.0]`.
