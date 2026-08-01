@@ -432,6 +432,8 @@ private:
 
 export inline auto& observer_instance()
 {
+    // Path and per-run buffers are applied via configure() each time the sink is installed;
+    // the singleton itself has no construction-time latch.
     static auto value = observer{};
     return value;
 }

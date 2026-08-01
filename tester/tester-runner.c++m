@@ -28,7 +28,7 @@ export class runner
 public:
 
     runner(std::string_view tags = "")
-        : m_tags{tags}, m_run_mode{}, m_run_tags{}
+        : m_tags{tags}, m_run_mode{}
     {
         if(not m_tags.empty())
         {
@@ -39,15 +39,15 @@ public:
             }
             else
             {
-            try
-            {
-                m_regex = std::regex{m_tags.begin(), m_tags.end()};
-                m_use_regex = true;
-            }
-            catch(const std::regex_error&)
-            {
-                // Invalid regex, fall back to substring matching
-                m_use_regex = false;
+                try
+                {
+                    m_regex = std::regex{m_tags.begin(), m_tags.end()};
+                    m_use_regex = true;
+                }
+                catch(const std::regex_error&)
+                {
+                    // Invalid regex, fall back to substring matching
+                    m_use_regex = false;
                 }
             }
         }
@@ -60,7 +60,6 @@ public:
         m_run_started_monotonic = std::chrono::steady_clock::now();
         m_run_finished_monotonic = std::chrono::steady_clock::time_point{};
         m_run_mode = std::string{mode};
-        m_run_tags = std::string{m_tags};
         m_pending_run_end_passed = std::nullopt;
         m_run_end_emitted = false;
 
@@ -69,7 +68,7 @@ public:
         const auto run_env = collect_run_env();
         const auto run = output::run_info{
             .mode = m_run_mode,
-            .tags = m_run_tags,
+            .tags = m_tags,
             .cwd = cwd,
             .config = config,
             .started_at = m_run_started_unix_ms,
@@ -121,7 +120,7 @@ public:
         begin_run("run");
 
         engine::init_statistics(
-            *m_execution, m_run_started_monotonic, m_run_started_unix_ms, m_run_tags);
+            *m_execution, m_run_started_monotonic, m_run_started_unix_ms, m_tags);
 
         engine::run_test_cases(*m_execution);
 
@@ -189,7 +188,8 @@ public:
 
 private:
 
-    std::string_view m_tags;
+    // Owned copy — callers may pass a temporary or argv that does not outlive the runner.
+    std::string m_tags;
     std::regex m_regex;
     bool m_use_regex = false;
     bool m_use_literal_tags = false;
@@ -201,7 +201,6 @@ private:
     std::chrono::steady_clock::time_point m_run_finished_monotonic{};
     bool m_run_has_started = false;
     std::string m_run_mode;
-    std::string m_run_tags;
     std::optional<data::execution_context> m_execution;
     std::unique_ptr<data::execution_scope> m_execution_scope;
     bool m_last_run_passed = false;
@@ -219,7 +218,7 @@ private:
     {
         const auto run = output::run_verdict{
             .mode = m_run_mode,
-            .tags = m_run_tags,
+            .tags = m_tags,
             .passed = passed,
             .started_at = m_run_started_unix_ms,
             .ended_at = std::chrono::system_clock::now()};

@@ -35,10 +35,9 @@ additive JUnit / xUnit XML (`--junit=`), parallel top-level tests (`--jobs=N` on
 `execution_context` workers), `compile_commands.json` from `list` for clangd, warning
 text on successful compiles, and a CI job that gates the Makefile path.
 
-The remaining weaknesses are still maturity rather than correctness. Classification
-of scheduled case vs nested step still reads the registering function's name; CB is
-still verified mainly from the outside; there is a release policy and a changelog but
-no supported tag to pin. Tester is a good fit for focused module-native projects and
+The remaining weaknesses are still maturity rather than correctness. CB is still
+verified mainly from the outside; there is a release policy and a changelog but no
+supported tag to pin. Tester is a good fit for focused module-native projects and
 AI-assisted development today, but is not a broad replacement for Catch2, doctest, or
 GoogleTest.
 
@@ -91,6 +90,7 @@ re-verified on this tree (`43a55fc` on `main`, plus local list-only smoke and
 | Makefile CI gate | `makefile-build-and-test` runs `[self]` on every push (#57) |
 | Smoke list-only | Fifteen scanner/inventory cases stop at `list` instead of compiling a fixture |
 | Shell boundary | Compiler probe and `--version` stamp go through `invoke_shell` |
+| Registration kind | Wrappers pass `suite_case` / `step` plus a role string; no `function_name()` sniffing |
 
 Wire format and console output for the gated suites stayed byte-identical across the
 publisher refactor (timestamps and `--slowest` timing noise aside). JUnit is a second
@@ -103,10 +103,10 @@ Clang — not the documented Clang 21 Linux configuration that CI exercises:
 
 | Check | Result |
 |-------|--------|
-| `test --tags='\[self\]'` | 69 / 69 tests, 494 / 494 assertions |
-| `test --tags='\[self\]' --jobs=4` | 69 / 69 tests pass (assertion totals may be one lower than sequential where a probe skips a jobs==1-only count check) |
-| `test --tags='\[self\]' --junit=…` | JUnit report with 69 `<testcase>` elements beside JSONL |
-| `test` (standalone, unfiltered) | 157 / 157 tests, 545 / 545 assertions |
+| `test --tags='\[self\]'` | 74 / 74 tests, 499 / 499 assertions |
+| `test --tags='\[self\]' --jobs=4` | 74 / 74 tests pass (assertion totals may be one lower than sequential where a probe skips a jobs==1-only count check) |
+| `test --tags='\[self\]' --junit=…` | JUnit report with 74 `<testcase>` elements beside JSONL |
+| `test` (standalone, unfiltered) | includes examples; green when demos stay `[.demo]`-hidden |
 | `test --tags='\[.demo\]'` | fails by design (`passed: false`) |
 | `tests/cb/smoke.sh` | 247 checks pass (~61 s; 15 of 44 cases are list-only) |
 | `tests/mcp/smoke.sh` | 9 checks pass |
@@ -199,16 +199,13 @@ than re-parsing the rendered display name. A description containing brackets is 
 read as carrying tags — that is the authoring convention, not a parsing accident — and
 moving tags into `test_order` remains open.
 
-What is left is the classification heuristic:
-
-- Whether a registration becomes a scheduled case or a nested step is decided by
-  searching the registering function's name for `scenario` or `test_case`. Two
-  consequences follow: a `test_case` written inside a running case is promoted to a
-  top-level case reached later by the run loop, and a BDD step written where no run is
-  active degrades to an ordinary case instead of being rejected.
-- `test_order` is accepted only by `scenario` and `test_case`, so priority and
-  dependencies never apply to steps. That is defensible, but it is a rule readers must
-  infer from overload sets.
+Registration kind is explicit on each wrapper (`suite_case` vs `step`): `test_case` /
+`scenario` schedule for the run loop; `section` / `given` / `when` / `then` / `and_*`
+run as steps of the active case. Display role strings are supplied by the wrappers, so
+classification no longer sniffs `source_location::function_name()`. A step written
+where no run is active still degrades to a scheduled case — the long-standing
+compat behaviour, not a name heuristic. `test_order` remains only on `scenario` and
+`test_case` (overload sets), so priority and dependencies never apply to steps.
 
 ### CB scanner and scale boundaries
 
@@ -422,9 +419,10 @@ the results.
    `examples/`, so the job duplicated `build-and-test`. Its one real check — the `[.demo]`
    selection must fail — is now a gating step there, and static analysis is advisory by
    decision, named as such, with its output uploaded.
-4. Reconsider the classification heuristic, which is the last piece of the registration
-   story that reads the wrong input: a case's kind is decided from the registering
-   function's name, so a step written outside a run silently becomes a case.
+4. ~~Reconsider the classification heuristic.~~ Done: each wrapper passes an explicit
+   `registration_kind` and role string; sniffing `function_name()` for
+   `scenario` / `test_case` is gone. Public API unchanged. Steps with no active run
+   still degrade to scheduled cases for compatibility with existing suites.
 5. ~~Say which platforms are verified and how.~~ Done: [`README.md`](../README.md) now
    states that both platforms run the same suites, that Linux runs them on every push
    while macOS runs them on demand, and that Windows is unsupported. A hosted macOS lane
@@ -484,7 +482,7 @@ the results.
 | 8.3 | 1 August (interim) | Publisher dissolved; observer DTOs; dedicated capture; console lock; runner reporting vocabulary; primary module is re-exports only |
 | **8.5** | 1 August | Interim architecture plus JUnit beside JSONL, parallel `--jobs` / `execution_context`, `compile_commands.json`, warning telemetry, Makefile CI gate, list-only smoke, and `invoke_shell` for the compiler probe |
 
-Re-verified on this tree: 69 self tests with 494 assertions (also green under `--jobs=4`),
+Re-verified on this tree: 74 self tests with 499 assertions (also green under `--jobs=4`),
 917 JSONL events across the nine schema-validation commands. CB smoke is 247 checks
 in ~61 s; MCP smoke remains 9.
 
@@ -503,16 +501,16 @@ Three things still cap it below 9, in order of weight:
    What is left cannot be closed by documentation: there is no version to depend on.
    The policy still gates a release on this review approaching 9 / 10, so the score and
    the tag remain a bootstrap pair — neither finishes the other alone.
-3. **Framework edges inside the shipped surface.** The registration classification
-   heuristic and the deliberate absence of fixtures / generators / timeouts are what a
-   careful adopter still weighs. Fixtures remain strategic.
+3. **Framework edges inside the shipped surface.** The deliberate absence of fixtures /
+   generators / timeouts is what a careful adopter still weighs. Fixtures remain
+   strategic.
 
 An 8.5 does not require becoming Catch2. It requires that CI and agents can trust the
 results they already get, and that the remaining gaps are ones a consumer chooses to
 live with rather than discovers. A path to ~9 / 10 from here is mostly product maturity:
-CB extractable enough for direct tests, a supported tag under the existing policy, the
-classification heuristic replaced by an explicit kind, and either enough of the missing
-surface or a clear "won't do" list that adopters are not surprised.
+CB extractable enough for direct tests, a supported tag under the existing policy, and
+either enough of the missing surface or a clear "won't do" list that adopters are not
+surprised.
 
 ## Overall Assessment
 
@@ -526,5 +524,4 @@ It is still not maturity-equivalent to established general-purpose frameworks, f
 three reasons above plus the toolchain constraint that Clang 21 and libc++ modules
 impose. The recommended path remains targeted hardening rather than a rewrite —
 preserve the focused modules-first identity, make CB's own tests fast enough to run per
-edit, cut a supported tag when the policy's bar is met, and remove the last places where
-the framework infers what the author meant instead of being told.
+edit, and cut a supported tag when the policy's bar is met.

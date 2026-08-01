@@ -15,7 +15,7 @@ Use **`--jsonl=failures`**. Parse **stdout only** (one JSON object per line, `sc
 # ./tools/CB.sh debug test --jsonl=failures --junit=report.xml --tags='\[self\]'
 
 # Translation-unit inventory (modules, imports, compile levels);
-# also writes compile_commands.json at the project root for clangd
+# also writes compile_commands.json (clangd) and graph.json (module/import graph) at the project root
 ./tools/CB.sh debug list --jsonl=failures
 
 # Test catalogue (ids, tags, depends_on for scoped runs)
@@ -110,13 +110,15 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 | `exception` | Uncaught exceptions (`exception_type`, `message`, `file`, `line`) |
 | `eof` | End of JSONL stream |
 
+**Event ordering (run mode):** `assertion_failed` / `assertion_passed` (and `exception`) stream **during** each case as it executes — after that case’s `case` event when the mode emits `case`. The per-case `test` rollups are **not** interleaved with those assertions; they are emitted in one batch at finalize time (`report_results`, after every selected case has finished), then `summary`, then `run_end` (trace), then `eof`. Do not assume a `test` line appears immediately after that case’s last assertion.
+
 ### Build phase (CB)
 
 | Event | Use |
 |-------|-----|
 | `list_start` | TU inventory start (`config`, `include_tests`, `include_examples`, `source_dir`) |
 | `unit` | Per translation unit (`path`, `module`, `kind`, `imports[]`, `level`, `has_main`, `is_test`, `is_modular`) |
-| `list_summary` | Inventory totals (`units_total`, `main_count`, `test_count`, `max_level`). Side effect of `list`: writes `compile_commands.json` at the project root for clangd |
+| `list_summary` | Inventory totals (`units_total`, `main_count`, `test_count`, `max_level`). Side effect of `list`: writes `compile_commands.json` (clangd) and `graph.json` (same unit graph as the `unit` events) at the project root |
 | `build_start` / `build_end` | Whole build; compact modes add aggregate compile/link/cache/failure counts; `rebuild_summary` lists compile rebuilds by `kind` plus `top_modules` |
 | `command_start` / `command_end` | Every command in trace; failed commands and successes that printed warnings in failures. `command_end` carries decoded `exit_code` / `wait_status` / `signaled` and `diagnostics` when the child printed anything (or failed) |
 | `profile_changed` | Once per build when object-cache profile mismatches (`reason`, `profile_diff`) |
@@ -126,6 +128,8 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 | `compile_end` | Per TU in trace; failed compilations and successes with warnings in failures; on `cache_hit:false` includes short `rebuild_reason` + `rebuild` (`kind`, optional `module` / `trigger_path` / `hint` / …); `diagnostics` carries compiler output on failure and on success when clang printed warnings. Module `std` reports here too — `std.pcm` / `std.o` are one unit CB compiles, not in the scan |
 | `link_end` | Per executable in trace; failed links and successes with warnings in failures; relinks include `rebuild_reason` / `rebuild`; `diagnostics` carries linker output on failure and on success when the linker printed warnings |
 | `cb_error` | CB fatal/diagnostic |
+
+**`list` vs build:** `list` is the module/source graph — each `unit` carries `imports[]`, `level`, and naming from the scanned suffixes; the same inventory is also written as `graph.json` at the project root. A dependency cycle aborts `list` and `build` with a thrown message on stderr (`Cyclic dependency detected between units: …`), not a structured inventory event. Missing or stale PCMs are build-only: read `compile_end.rebuild` (`own_pcm_missing`, `pcm_stale`, `dependency_pcm_stale`, …), not `list`.
 
 **Compile `rebuild_reason` kinds:** `not_in_cache` (first seen), `source_stale` (edited), `header_stale` (an `#include`d header in the project tree is newer than the object, resolved from the compiler depfile — the header is in `rebuild.trigger_path`), `depfile_unusable` (the compiler `.d` is missing, unreadable or malformed, so header freshness is unknown — the `.d` path is in `rebuild.trigger_path`), `object_missing`, `object_stale`, `own_pcm_missing`, `own_pcm_stale`, `pcm_stale`, `dependency_pcm_stale`, `profile_change` (see `profile_changed`; `rebuild.see_event` is `"profile_changed"`). Module name is in `rebuild.module`, not encoded in the reason string.
 

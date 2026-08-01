@@ -249,8 +249,8 @@ Tester ships with **CB** (`tools/cb.c++`), a module-aware build system in a sing
 ./tools/CB.sh release build        # optimized; tests off by default
 ./tools/CB.sh release build --build-tests   # compile tests without running
 ./tools/CB.sh debug test
-./tools/CB.sh debug list           # human TU inventory; writes compile_commands.json
-./tools/CB.sh debug list --jsonl=failures   # machine-readable inventory (+ compile_commands.json)
+./tools/CB.sh debug list           # human TU inventory; writes compile_commands.json + graph.json
+./tools/CB.sh debug list --jsonl=failures   # machine-readable inventory (+ those files)
 ./tools/CB.sh debug clean
 ./tools/CB.sh debug cache status      # inspect object-cache profile
 ./tools/CB.sh debug cache invalidate  # drop cache indexes only (lighter than clean)
@@ -279,7 +279,7 @@ Every line is valid UTF-8 and valid JSON regardless of what the test data contai
 ./tools/CB.sh debug test --jsonl=summary --tags='\[self\]'   # CI aggregate
 ./tools/CB.sh debug test --list --jsonl=failures             # test catalogue
 ./tools/CB.sh debug build --jsonl=trace                       # full compile telemetry
-./tools/CB.sh debug list --jsonl=failures                     # TU inventory + compile_commands.json
+./tools/CB.sh debug list --jsonl=failures                     # TU inventory + compile_commands.json + graph.json
 ```
 
 **Unified JSONL modes:**
@@ -308,6 +308,8 @@ Escape bracket tags in shell: `--tags='\[self\]'`.
 Fields: `test_id`, `matcher`, `actual`, `expected`, `file`, `line`, `column`, optional `message`.
 
 `matcher` is the public wrapper name (e.g. `require_eq`), not the generic `check`/`require` hub. If you see `"matcher":"require"` on a `require_eq` line, rebuild test objects — template matchers are instantiated in `*.test.c++` translation units.
+
+**Event ordering:** assertion events (`assertion_failed` / `assertion_passed`) and `exception` stream **during** execution as each case runs (after that case’s `case` event when the mode emits `case`). Per-case `test` records are batched at finalize time — after every selected case has finished — then `summary`, then `run_end` (trace), then `eof`. A `test` line is not emitted immediately after that case’s last assertion.
 
 Trace mode emits all test events: `run_start`, `run_end`, `case`, `test`, `message`, `exception`, `summary`, and `eof`. Failures mode suppresses passing cases/tests and duplicate `run_end`; summary mode emits only lifecycle and aggregate events.
 

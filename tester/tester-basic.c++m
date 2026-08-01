@@ -9,6 +9,7 @@ import std;
 namespace tester::basic
 {
     using engine::make_test_case;
+    using engine::registration_kind;
 
     export struct test_order
     {
@@ -20,18 +21,18 @@ namespace tester::basic
     export auto test_case(std::string_view test_name, const std::source_location location1 = std::source_location::current()) noexcept
     {
         const auto location2 = std::source_location::current();
-        return make_test_case(test_name, 0, {}, {}, location1, location2);
+        return make_test_case(test_name, "test_case", registration_kind::suite_case, 0, {}, {}, location1, location2);
     }
 
     export auto test_case(std::string_view test_name, const test_order& order, const std::source_location location1 = std::source_location::current()) noexcept
     {
         const auto location2 = std::source_location::current();
-        return make_test_case(test_name, order.priority, order.depends_on, order.id, location1, location2);
+        return make_test_case(test_name, "test_case", registration_kind::suite_case, order.priority, order.depends_on, order.id, location1, location2);
     }
 
     export auto section(std::string_view test_name, const std::source_location location1 = std::source_location::current()) noexcept
     {
         const auto location2 = std::source_location::current();
-        return make_test_case(test_name, 0, {}, {}, location1, location2);
+        return make_test_case(test_name, "section", registration_kind::step, 0, {}, {}, location1, location2);
     }
 }

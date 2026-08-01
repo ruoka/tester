@@ -96,6 +96,7 @@ constexpr auto compiler_version_filename = "compiler-version.txt"sv;
 constexpr auto std_pcm_filename = "std.pcm"sv;
 constexpr auto std_obj_filename = "std.o"sv;
 constexpr auto compile_commands_filename = "compile_commands.json"sv;
+constexpr auto graph_filename = "graph.json"sv;
 constexpr auto std_module_name = "std"sv;
 constexpr auto pcm_extension = ".pcm"sv;
 constexpr auto object_extension = ".o"sv;
@@ -2960,6 +2961,52 @@ public:
                            + " entries)");
     }
 
+    // Convenience dump of the same graph `list --jsonl` streams as `unit` events — for tools
+    // that want one file rather than a JSONL parse. Same fields as the inventory projection.
+    void write_graph_json(const output::source_inventory& inventory) const
+    {
+        const auto path = detail::join_dir(source_dir, graph_filename);
+        write_cache_file(path, "module dependency graph", [&](std::ostream& file) {
+            file << "{\n";
+            file << "  \"schema\": \"cb-graph\",\n";
+            file << "  \"version\": 1,\n";
+            file << "  \"config\": \"" << output::jsonl::escape(inventory.config) << "\",\n";
+            file << "  \"source_dir\": \"" << output::jsonl::escape(inventory.source_dir) << "\",\n";
+            file << "  \"include_tests\": " << (inventory.include_tests ? "true" : "false") << ",\n";
+            file << "  \"include_examples\": " << (inventory.include_examples ? "true" : "false") << ",\n";
+            file << "  \"units\": [\n";
+            auto first = true;
+            for(const auto& unit : inventory.units)
+            {
+                if(not first)
+                    file << ",\n";
+                first = false;
+                file << "    {\n";
+                file << "      \"unit\": \"" << output::jsonl::escape(unit.unit) << "\",\n";
+                file << "      \"path\": \"" << output::jsonl::escape(unit.path) << "\",\n";
+                if(not unit.module.empty())
+                    file << "      \"module\": \"" << output::jsonl::escape(unit.module) << "\",\n";
+                file << "      \"kind\": \"" << output::jsonl::escape(unit.kind) << "\",\n";
+                file << "      \"imports\": [" << output::jsonl::join_json_strings(unit.imports) << "],\n";
+                if(unit.level >= 0)
+                    file << "      \"level\": " << unit.level << ",\n";
+                file << "      \"has_main\": " << (unit.has_main ? "true" : "false") << ",\n";
+                file << "      \"is_test\": " << (unit.is_test ? "true" : "false") << ",\n";
+                file << "      \"is_modular\": " << (unit.is_modular ? "true" : "false") << "\n";
+                file << "    }";
+            }
+            file << "\n  ],\n";
+            file << "  \"units_total\": " << inventory.units.size() << ",\n";
+            file << "  \"main_count\": " << inventory.main_count << ",\n";
+            file << "  \"test_count\": " << inventory.test_count << ",\n";
+            file << "  \"max_level\": " << inventory.max_level << "\n";
+            file << "}\n";
+        });
+        output::notify(&output::observer::info,
+                       "Wrote "s + path + " (" + std::to_string(inventory.units.size())
+                           + " units)");
+    }
+
     void list_sources() {
         scan_and_order();
         // Same as build: per-module -fmodule-file= flags are only known after the scan.
@@ -2982,6 +3029,7 @@ public:
             if(tu.dependency_level >= 0)
                 inventory.max_level = std::max(inventory.max_level, tu.dependency_level);
         }
+        write_graph_json(inventory);
         output::notify(&output::observer::source_list, inventory);
     }
 };
@@ -3197,7 +3245,7 @@ int main(int argc, char* argv[])
                           << "  build            Build the project (default if no action specified)\n"
                           << "  clean            Remove build directories\n"
                           << "  ci               Clean and run tests (shortcut for: clean test)\n"
-                          << "  list             List all translation units; write compile_commands.json for clangd\n"
+                          << "  list             List all translation units; write compile_commands.json and graph.json\n"
                           << "  cache status     Inspect object-cache profile and entry counts\n"
                           << "  cache invalidate Remove object/link cache indexes (lighter than clean)\n"
                           << "  test [filter]  Build and run tests (optional substring filter)\n"

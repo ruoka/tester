@@ -382,6 +382,62 @@ PY
   end_case compile_commands
 }
 
+# list also writes graph.json — the same inventory as unit / list_summary JSONL, one file for
+# tools that do not want to parse the stream.
+test_graph_json() {
+  should_run graph_json || return 0
+  begin_case graph_json
+  local work_dir
+  work_dir="$(prepare_work_dir)"
+
+  printf '%s\n' \
+    'export module counter;' \
+    'export int counted() { return 1; }' > "${work_dir}/counter.c++m"
+  printf '%s\n' \
+    'import counter;' \
+    'int main() { return counted() - 1; }' > "${work_dir}/hello.c++"
+
+  run_cb_list "${work_dir}"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ ! -f "${work_dir}/graph.json" ]]; then
+    fail "list did not write graph.json"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"graph_json_exists"}'
+  fi
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if python3 - "${work_dir}" <<'PY'
+import json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+g = json.loads((root / "graph.json").read_text())
+if g.get("schema") != "cb-graph" or g.get("version") != 1:
+    raise SystemExit(f"bad schema/version: {g!r}")
+if not isinstance(g.get("units"), list) or len(g["units"]) != 2:
+    raise SystemExit(f"expected 2 units, got {g.get('units')!r}")
+if g.get("units_total") != 2 or g.get("main_count") != 1:
+    raise SystemExit(f"bad totals: {g!r}")
+by_path = {u["path"]: u for u in g["units"]}
+if set(by_path) != {"counter.c++m", "hello.c++"}:
+    raise SystemExit(f"unexpected paths: {sorted(by_path)}")
+mod = by_path["counter.c++m"]
+src = by_path["hello.c++"]
+if mod.get("module") != "counter" or not mod.get("is_modular"):
+    raise SystemExit(f"bad modular unit: {mod!r}")
+if "counter" not in src.get("imports", []):
+    raise SystemExit(f"importer missing counter import: {src!r}")
+if src.get("level", -1) < mod.get("level", -1):
+    raise SystemExit(f"topo levels wrong: mod={mod.get('level')} src={src.get('level')}")
+print("ok")
+PY
+  then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"graph_json_shape"}'
+  else
+    fail "graph.json failed shape checks"
+  fi
+  end_case graph_json
+}
+
 test_compile_failure() {
   should_run compile_failure || return 0
   begin_case compile_failure
@@ -1426,6 +1482,7 @@ main() {
   test_strict_arguments
   test_source_list
   test_compile_commands
+  test_graph_json
   test_compile_failure
   test_compile_warning
   test_modular_compile_warning

@@ -48,6 +48,9 @@ commit on `main`; there is no supported tag yet.
   matches the current toolchain profile; `cache invalidate` removes them.
 - **`compile_commands.json` from `list`**: writes a clangd compilation database at the
   project root for the active TU set, using the same compile argv builders as a build.
+- **`graph.json` from `list`**: writes the module/import inventory (`cb-graph` v1) at the
+  project root — the same fields as JSONL `unit` / `list_summary`, for tools that prefer
+  one file over parsing the stream.
 - **Modular compile capture files**: `--precompile` and pcm→object use distinct `.pcm.log`
   / `.o.log` paths so `diagnostics.path` still names a file that contains the warning text.
 - **`--jobs=N`** to bound concurrent compile and link processes.
@@ -68,6 +71,15 @@ commit on `main`; there is no supported tag yet.
 
 ### Changed
 
+- **`runner` owns its tag filter** as a `std::string`, so a temporary or argv view need
+  not outlive the runner. Console and JSONL `observer_instance(...)` reconfigure on
+  each call (streams / mode / flags) instead of latching the first construction;
+  JUnit already applied path/state via `configure()`.
+- **Registration kind is explicit on each wrapper** (`suite_case` vs `step`), with a
+  role string for display names (`"test_case"`, `"given"`, …). Whether a registration
+  is scheduled or nested no longer depends on sniffing `source_location::function_name()`.
+  The public `test_case` / `scenario` / `section` / BDD entry points are unchanged; a
+  step written with no active run still becomes a scheduled case (compatibility).
 - **Assertion statistics are atomic**, and parallel `--jobs` accounting is closed:
   `test_statistics` counters use `std::atomic` with `record_assertion` /
   `begin_assertion` / `complete_assertion`; soft asserts from many child threads keep

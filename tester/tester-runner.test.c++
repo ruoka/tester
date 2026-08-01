@@ -276,6 +276,7 @@ auto register_tests()
 {
     using tester::basic::test_case;
     using tester::basic::test_order;
+    using tester::basic::section;
     // Named one at a time: both APIs export a test_order, so importing either wholesale would
     // make the one used above ambiguous.
     using tester::behavior_driven_development::given;
@@ -340,6 +341,39 @@ auto register_tests()
         require_eq(0, 0);
     };
 
+    test_case("test_case [self] runner owns its tag filter string") = []
+    {
+        // Prove the filter is copied: destroy the source before any matching.
+        auto filter = std::make_unique<std::string>("[self]");
+        auto tr = tester::runner{*filter};
+        filter.reset();
+
+        require_true(tr.included("test_case [self] kept by owned filter"));
+        require_false(tr.included("test_case [other] rejected by owned filter"));
+    };
+
+    test_case("test_case [self] observer_instance reconfigures on each call") = []
+    {
+        using output::jsonl::jsonl_mode;
+
+        auto& jsonl = output::jsonl::observer_instance(std::cout, std::clog, jsonl_mode::summary);
+        require_true(jsonl.output_mode() == jsonl_mode::summary);
+
+        auto& again = output::jsonl::observer_instance(std::cout, std::clog, jsonl_mode::trace);
+        require_eq(std::addressof(jsonl), std::addressof(again));
+        require_true(again.output_mode() == jsonl_mode::trace);
+
+        auto& console = output::console::observer_instance(std::clog, std::clog, false);
+        require_false(console.result_line);
+        auto& console_again = output::console::observer_instance(std::clog, std::clog, true);
+        require_eq(std::addressof(console), std::addressof(console_again));
+        require_true(console_again.result_line);
+
+        // Leave the process singletons in a harmless default shape for later in-process use.
+        output::jsonl::observer_instance(std::cout, std::clog, jsonl_mode::failures);
+        output::console::observer_instance(std::clog, std::clog, false);
+    };
+
     test_case("test_case [self] output observers receive assertion events") = []
     {
         auto recorder = recording_observer{};
@@ -376,6 +410,38 @@ auto register_tests()
         };
 
         require_eq(reached, std::vector<std::string>{"given", "when", "then"});
+    };
+
+    // Kind comes from the wrapper, not from demangled names or the description text. A step
+    // whose description mentions "test_case" / "scenario" must still run inline.
+    test_case("test_case [self] registration kind ignores description text") = []
+    {
+        auto ran = false;
+        given("mentions test_case and scenario only in the description") = [&]
+        {
+            ran = true;
+            require_true(true);
+        };
+        section("also a step even if the name says test_case") = [&]
+        {
+            require_true(ran);
+        };
+        require_true(ran);
+    };
+
+    // Nested suite_case wrappers schedule for the run loop; they are not steps. If this
+    // were a step, the body would run at assignment and nested_ran would already be true.
+    // The flag is static so a deferred suite_case body does not touch a dead stack local.
+    test_case("test_case [self] nested test_case stays a scheduled case") = []
+    {
+        static auto nested_ran = false;
+        nested_ran = false;
+        test_case("test_case [self] nested suite_case body") = []
+        {
+            nested_ran = true;
+            require_true(true);
+        };
+        require_false(nested_ran);
     };
 
     test_case("test_case [self] a failing step fails itself and not the case it is written in") = []

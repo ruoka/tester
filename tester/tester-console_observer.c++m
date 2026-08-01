@@ -276,8 +276,11 @@ export struct observer final : tester::output::observer, tester::output::output_
 
 export inline auto& observer_instance(std::ostream& human, std::ostream& result, bool result_line = false)
 {
-    static auto value = observer{human, result, result_line};
-    return value;
+    // Reconfigure on every call — a process that builds more than one sink setup must not
+    // stay stuck with the first streams / flags (function-local static construction latches).
+    static auto value = std::optional<observer>{};
+    value.emplace(human, result, result_line);
+    return *value;
 }
 
 } // namespace tester::output::console

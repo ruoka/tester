@@ -73,36 +73,23 @@ private:
     std::variant<registered_case, nested_case> m_state;
 };
 
-test_slot make_test_case(std::string_view description, int priority, std::vector<std::string> depends_on, std::string id, const std::source_location location1, const std::source_location location2) noexcept
+// suite_case: scheduled by the run loop (test_case / scenario).
+// step: runs inside the active case (section / given / when / then / …).
+enum class registration_kind { suite_case, step };
+
+// `role` is the public wrapper name used in display ids ("test_case", "given", …).
+// Kind comes from that wrapper — not from sniffing source_location::function_name().
+test_slot make_test_case(
+    std::string_view description,
+    std::string_view role,
+    registration_kind kind,
+    int priority,
+    std::vector<std::string> depends_on,
+    std::string id,
+    const std::source_location location1,
+    const std::source_location location2) noexcept
 {
-    auto test_type = std::string_view{location2.function_name()};
-
-    auto drop_prefix = [&](std::string_view marker)
-    {
-        if(auto pos = test_type.find(marker); pos != std::string_view::npos)
-        {
-            test_type.remove_prefix(pos + marker.size());
-            return true;
-        }
-        return false;
-    };
-
-    // Strip the qualification of the registering wrapper, leaving the bare name
-    // (test_case, section, scenario, given, when, then) for the display name.
-    // Registration only ever comes from tester::basic or
-    // tester::behavior_driven_development; a wrapper added elsewhere degrades to its
-    // own unqualified name rather than aborting the process.
-    if(not drop_prefix("behavior_driven_development::") and not drop_prefix("basic::"))
-    {
-        const auto paren = test_type.find('(');
-        if(const auto pos = test_type.rfind("::", paren); pos != std::string_view::npos)
-            test_type.remove_prefix(pos + 2);
-    }
-
-    if(const auto paren = test_type.find('('); paren != std::string_view::npos)
-        test_type.remove_suffix(test_type.length() - paren);
-
-    auto test_name = std::string{test_type} + " -> "s + std::string{description};
+    auto test_name = std::string{role} + " -> "s + std::string{description};
     auto assigned_id = id.empty() ? test_name : std::move(id);
     auto test_case = data::test_case{
         {location1.function_name(),test_name,location1.file_name(),location1.line(),location1.column(),location2.function_name(), assigned_id},
@@ -113,11 +100,12 @@ test_slot make_test_case(std::string_view description, int priority, std::vector
         output::extract_bracket_tags(description)
     };
 
-    // scenario and test_case are what a run iterates; the rest are steps of whichever case is
-    // running. A step written where no case is running has no frame to belong to, so it becomes
-    // an ordinary case rather than executing before the run it would report to has begun.
+    // suite_case is what a run iterates. A step belongs to the active case; if none is
+    // running it has no frame, so it degrades to a scheduled case — same as before the
+    // kind was explicit, so existing suites that register steps at namespace scope keep
+    // working.
     auto* const execution = active_execution();
-    if(test_type.contains("scenario") or test_type.contains("test_case") or execution == nullptr)
+    if(kind == registration_kind::suite_case or execution == nullptr)
     {
         // Parallel workers may append nested scenarios mid-run; the scheduler drains
         // the catalogue between waves, so the push has to be atomic with reading .back().
