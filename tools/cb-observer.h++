@@ -35,6 +35,7 @@ struct object_cache_profile_diff
     std::optional<profile_scalar_change> format;
     std::optional<profile_scalar_change> config;
     std::optional<profile_scalar_change> static_link;
+    std::optional<profile_scalar_change> module_phases;
     std::optional<profile_scalar_change> llvm;
     std::optional<profile_scalar_change> cxx;
     std::optional<profile_scalar_change> cxx_sig;
@@ -45,8 +46,8 @@ struct object_cache_profile_diff
 
     bool empty() const
     {
-        return not format and not config and not static_link and not llvm
-            and not cxx and not cxx_sig and not clang_ver and not std_cppm
+        return not format and not config and not static_link and not module_phases
+            and not llvm and not cxx and not cxx_sig and not clang_ver and not std_cppm
             and not compile and not cpp;
     }
 };
@@ -57,6 +58,7 @@ void for_each_profile_scalar(Diff& diff, Callback&& callback)
     callback("format", diff.format);
     callback("config", diff.config);
     callback("static_link", diff.static_link);
+    callback("module_phases", diff.module_phases);
     callback("llvm", diff.llvm);
     callback("cxx", diff.cxx);
     callback("cxx_sig", diff.cxx_sig);

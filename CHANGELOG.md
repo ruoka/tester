@@ -10,6 +10,15 @@ tag; cutting a release renames that section.
 
 ## Unreleased
 
+### Added
+
+- **`cb --modules=<two-phase|one-phase>`** selects how modular units (including `std.cppm`)
+  are compiled. The default `two-phase` is the existing `--precompile` to `.pcm` followed by
+  `.pcm` to `.o`. `one-phase` emits both from a single `-c -fmodule-output=<pcm>` step, so the
+  source is parsed once and Clang 22+ writes reduced BMIs by default. The mode is an
+  object-cache profile field (`module_phases`), so switching it reports `profile_change` and
+  recompiles rather than reusing BMIs the other scheme produced.
+
 ### Changed
 
 - **Technical review** — [`docs/repository-technical-review.md`](docs/repository-technical-review.md)

@@ -1245,6 +1245,13 @@ class build_system {
 public:
     enum class build_config { debug, release };
 
+    // How a modular interface becomes a .pcm and a .o. two_phase runs `--precompile` and then
+    // compiles the BMI; one_phase asks for both artefacts from one `-c -fmodule-output=` read of
+    // the source. Two-phase only pays off when the BMI is published to dependents while the .o
+    // still compiles — CB's scheduler waits for both steps, so one_phase saves the second parse
+    // and (Clang 22+) gets reduced BMIs by default.
+    enum class module_compilation { two_phase, one_phase };
+
 private:
 
     std::string source_dir;
@@ -1265,6 +1272,7 @@ private:
     const bool static_link;
     bool include_tests = false;
     bool include_examples = false;
+    module_compilation module_phases = module_compilation::two_phase;
     int max_jobs = 0;
     string_list extra_compile_flag_tokens;
     string_list extra_link_flag_tokens;
@@ -1274,6 +1282,16 @@ private:
         {
             case build_config::debug: return "debug";
             case build_config::release: return "release";
+        }
+        std::unreachable();
+    }
+
+    std::string_view module_phases_name() const
+    {
+        switch(module_phases)
+        {
+            case module_compilation::two_phase: return "two-phase";
+            case module_compilation::one_phase: return "one-phase";
         }
         std::unreachable();
     }
@@ -1758,6 +1776,22 @@ private:
         return argv;
     }
 
+    // One-phase: one read of the source emits the object and, via -fmodule-output, the BMI its
+    // importers consume. The BMI lands at the same pcm_path two-phase writes, so -fmodule-file=
+    // flags, staleness checks and clean are unchanged.
+    string_list compile_module_object_argv(const translation_unit& tu) const
+    {
+        auto argv = base_compile_argv();
+        argv.append_range(module_flags);
+        argv.append_range(depfile_argv(tu));
+        argv.push_back("-fmodule-output=" + tu.pcm_path);
+        argv.push_back(tu.full_path);
+        argv.push_back("-c");
+        argv.push_back("-o");
+        argv.push_back(tu.object_path);
+        return argv;
+    }
+
     string_list compile_source_object_argv(const translation_unit& tu) const
     {
         auto argv = base_compile_argv();
@@ -1774,7 +1808,9 @@ private:
         return argv;
     }
 
-    string_list build_std_pcm_argv() const
+    // Everything up to and including std.cppm: the project's compile flags with libc++'s own
+    // include setup. Both module-compilation schemes read the source with exactly these.
+    string_list std_module_source_argv() const
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
@@ -1788,9 +1824,26 @@ private:
         argv.push_back("-fno-implicit-module-maps");
         argv.push_back("-Wno-reserved-module-identifier");
         argv.push_back(std_module_source);
+        return argv;
+    }
+
+    string_list build_std_pcm_argv() const
+    {
+        auto argv = std_module_source_argv();
         argv.push_back("--precompile");
         argv.push_back("-o");
         argv.push_back(std_pcm_path());
+        return argv;
+    }
+
+    // One-phase std: the single most expensive parse in a cold build, done once instead of twice.
+    string_list build_std_module_object_argv() const
+    {
+        auto argv = std_module_source_argv();
+        argv.push_back("-fmodule-output=" + std_pcm_path());
+        argv.push_back("-c");
+        argv.push_back("-o");
+        argv.push_back(std_obj_path());
         return argv;
     }
 
@@ -1908,6 +1961,7 @@ private:
         detail::append_profile_field(profile, "format", detail::object_cache_format);
         detail::append_profile_field(profile, "config", config_name());
         detail::append_profile_field(profile, "static_link", static_link ? "1" : "0");
+        detail::append_profile_field(profile, "module_phases", module_phases_name());
         detail::append_profile_field(profile, "llvm", llvm_prefix);
         detail::append_profile_field(profile, "cxx", llvm_cxx);
         detail::append_profile_field(profile, "cxx_sig", cxx_sig);
@@ -2508,6 +2562,15 @@ private:
         }
 
         auto compile = compile_scope{unit, *reason};
+        if(module_phases == module_compilation::one_phase)
+        {
+            // One step emits both artefacts, so there is no object-only shortcut to take: a
+            // missing std.o re-reads std.cppm. Rare, and the cold build is a whole parse cheaper.
+            run_step(compile, build_std_module_object_argv(), diagnostics_path_for_object(unit));
+            save_std_module_profile();
+            compile.succeeded();
+            return;
+        }
         // The pcm is the object's input, so every reason that reaches it rebuilds both; the two
         // object-only reasons reuse the pcm that is already there.
         const auto object_only = reason->kind == output::rebuild_kind::object_missing
@@ -2532,9 +2595,11 @@ private:
     void compile_unit(const translation_unit& tu, const output::rebuild_info& rebuild) {
         const auto unit = compile_unit_of(tu);
         auto compile = compile_scope{unit, rebuild};
-        if (tu.is_modular) {
+        if (tu.is_modular and module_phases == module_compilation::two_phase) {
             run_step(compile, compile_pcm_argv(tu), diagnostics_path_for_pcm(unit));
             run_step(compile, compile_pcm_object_argv(tu), diagnostics_path_for_object(unit));
+        } else if (tu.is_modular) {
+            run_step(compile, compile_module_object_argv(tu), diagnostics_path_for_object(unit));
         } else {
             run_step(compile, compile_source_object_argv(tu), diagnostics_path_for_object(unit));
         }
@@ -2960,6 +3025,12 @@ public:
         include_tests = value;
     }
 
+    // Recorded in the object-cache profile, so flipping it rebuilds every modular unit rather
+    // than mixing BMIs the two schemes do not produce identically.
+    void set_module_phases(module_compilation value) {
+        module_phases = value;
+    }
+
     // 0 requests the hardware default.
     void set_max_jobs(int value) {
         max_jobs = value;
@@ -3018,12 +3089,14 @@ public:
     }
 
     // The compilation-database entry for a source is the argv that reads that source —
-    // --precompile for modular interfaces/partitions, -c for everything else. The second
-    // modular step (pcm → .o) is omitted: it has no distinct source path for clangd.
+    // --precompile for two-phase modular interfaces/partitions, -c for everything else. The
+    // second two-phase step (pcm → .o) is omitted: it has no distinct source path for clangd.
     string_list compile_argv_for_database(const translation_unit& tu) const
     {
         if(tu.is_modular)
-            return compile_pcm_argv(tu);
+            return module_phases == module_compilation::two_phase
+                ? compile_pcm_argv(tu)
+                : compile_module_object_argv(tu);
         return compile_source_object_argv(tu);
     }
 
@@ -3141,7 +3214,8 @@ bool is_cb_token(std::string_view arg)
         || arg == "-I" || arg == "--include" || arg == "--link-flags"
         || arg == "--compile-flags" || arg == "--extra-compile-flags"
         || arg == "--jsonl" || arg.starts_with("--jsonl=")
-        || arg.starts_with("--jobs=");
+        || arg.starts_with("--jobs=")
+        || arg.starts_with("--modules=");
 }
 
 bool is_test_runner_token(std::string_view arg)
@@ -3208,6 +3282,7 @@ int main(int argc, char* argv[])
         auto extra_compile_flags = cb::string_list{};
         auto extra_link_flags = cb::string_list{};
         auto max_jobs = 0; // 0 = derive from hardware_concurrency
+        auto module_phases = cb::build_system::module_compilation::two_phase;
         // When the user passes --jobs=N, also forward it to test_runner. Default compile
         // parallelism must not flip the runner off its sequential default (jobs=1).
         auto jobs_explicit = false;
@@ -3306,6 +3381,17 @@ int main(int argc, char* argv[])
                 }
                 max_jobs = value;
                 jobs_explicit = true;
+            } else if (argument.starts_with("--modules=")) {
+                const auto text = argument.substr(std::string_view{"--modules="}.size());
+                if (text == "two-phase") {
+                    module_phases = cb::build_system::module_compilation::two_phase;
+                } else if (text == "one-phase") {
+                    module_phases = cb::build_system::module_compilation::one_phase;
+                } else {
+                    cb::output::notify(&cb::output::observer::error,
+                        "--modules expects one-phase or two-phase, got: "s + std::string{text});
+                    return 2;
+                }
             } else if (do_run_tests && is_test_runner_token(argument)) {
                 // Forward recognized test_runner flags (e.g. --tags=, --list, --result).
                 // (--jsonl is handled above; CB injects the mode into test_runner later if needed.)
@@ -3355,6 +3441,9 @@ int main(int argc, char* argv[])
                           << "  --junit=<path>   Also write a JUnit/xUnit XML report (additive with --jsonl)\n"
                           << "  --jobs=N         Cap concurrent compile/link; also forward to test_runner\n"
                           << "                   (compile default: CPU count; test_runner default: 1)\n"
+                          << "  --modules=<two-phase|one-phase>  How modular units compile (default: two-phase)\n"
+                          << "                   two-phase: --precompile to .pcm, then .pcm to .o\n"
+                          << "                   one-phase: one -c -fmodule-output= step for both\n"
                           << "  -I, --include    Add include directory (can be specified multiple times)\n"
                           << "  --link-flags     Add extra linker flags (e.g., --link-flags \"-lcrypto\")\n"
                           << "  --compile-flags  Add extra compiler flags\n"
@@ -3407,6 +3496,7 @@ int main(int argc, char* argv[])
 
         auto build_system = cb::build_system{config, include_flags, {}, ".", stdcppm, static_linking, include_examples, extra_compile_flags, extra_link_flags};
         build_system.set_max_jobs(max_jobs);
+        build_system.set_module_phases(module_phases);
 
         if (do_list) build_system.list_sources();
         if (do_cache_status) {

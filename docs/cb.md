@@ -182,6 +182,7 @@ Tester is a **dependency**, not the build entry point. The parent's wrapper owns
 ./tools/CB.sh debug list --jsonl=failures         # translation-unit inventory
 ./tools/CB.sh debug build --jsonl=trace            # full compile telemetry
 ./tools/CB.sh debug build --jobs=4                 # cap concurrent compiles/links
+./tools/CB.sh debug build --modules=one-phase      # one clang++ step per modular unit
 ./tools/CB.sh ci --jsonl=summary                    # aggregate CI entry point
 ./tools/CB.sh debug clean
 ./tools/CB.sh debug clean --tests   # drop test objects + test_runner only
@@ -191,6 +192,10 @@ Tester is a **dependency**, not the build entry point. The parent's wrapper owns
 Pass `std.cppm` as the **first** argument when auto-detection fails: `./tools/CB.sh /path/to/std.cppm debug build`. A `.cppm` path that does not exist is an error, not a silently ignored argument.
 
 **Unknown arguments exit `2`.** CB validates its whole argument list, so a typo such as `--tag=` (for `--tags=`) fails with a message instead of silently building or testing something you did not ask for.
+
+**`--modules=<two-phase|one-phase>`** picks how a modular interface, partition, or `std.cppm` becomes a `.pcm` and a `.o`. Default `two-phase` runs `clang++ --precompile` and then compiles the resulting BMI. `one-phase` asks for both from a single `-c -fmodule-output=<pcm>` read of the source: the source is parsed once instead of twice, and Clang 22+ writes a [reduced BMI](https://clang.llvm.org/docs/StandardCPlusPlusModules.html#reduced-bmi) by default (on this tree, project BMIs dropped from 38 MB to 29 MB and a cold build from 19.2 s to 17.7 s). Two-phase only repays the second parse when the BMI is published to dependents while the object still compiles; CB's scheduler waits for both steps of a unit before starting its dependents, so it does not currently collect that.
+
+The mode is a profile field, so switching it recompiles every unit rather than mixing BMIs the two schemes do not produce identically. Everything else is unchanged: the BMI lands at the same path, `-fmodule-file=` wiring, staleness reasons, and `clean` do not care which command wrote it.
 
 **`--jobs=N`** bounds concurrent compile and link processes. Without it CB uses `hardware_concurrency()`; the cap exists because each `clang++` invocation on a module-heavy TU can peak at hundreds of megabytes, so an unbounded fan-out across a wide dependency level can exhaust memory. When `--jobs=` is set on a `test` invocation, CB also forwards it to `test_runner` (runner default remains `1` = sequential).
 
@@ -210,6 +215,7 @@ Environment variables for **bootstrap** (not test output): `LLVM_PATH`, `CXX`, `
 |-------|---------|
 | `config` | `debug` or `release` |
 | `static_link` | `0` / `1` |
+| `module_phases` | `two-phase` / `one-phase` (see `--modules=`) |
 | `llvm` | LLVM prefix derived from `std.cppm` |
 | `cxx` | Resolved `clang++` path (`LLVM_CXX` / `CXX` override or `llvm/bin/clang++`) |
 | `cxx_sig` | Compiler binary `size:mtime_ns` (detects toolchain binary swaps) |
@@ -225,7 +231,7 @@ Cache indexes are written through a checked temporary file and atomically rename
 
 ### Header dependencies
 
-The object cache tracks module imports and source mtimes, neither of which sees a textual `#include`. CB therefore compiles with `-MMD -MF <object>.d` — emitted by the step that actually reads the source (`--precompile` for modular units, `-c` otherwise) — and compares each prerequisite's mtime against the object. A newer header yields `rebuild_reason: "header_stale"` with the header in `rebuild.trigger_path`. A project header the depfile still names but that is missing or unreadable yields `rebuild_reason: "header_missing"` with that path in `rebuild.trigger_path` — a cache hit would keep shipping an object built against content that is gone.
+The object cache tracks module imports and source mtimes, neither of which sees a textual `#include`. CB therefore compiles with `-MMD -MF <object>.d` — emitted by the step that actually reads the source (`--precompile` for two-phase modular units, `-c` otherwise) — and compares each prerequisite's mtime against the object. A newer header yields `rebuild_reason: "header_stale"` with the header in `rebuild.trigger_path`. A project header the depfile still names but that is missing or unreadable yields `rebuild_reason: "header_missing"` with that path in `rebuild.trigger_path` — a cache hit would keep shipping an object built against content that is gone.
 
 A depfile that cannot be read — missing, unreadable, or lacking the `target:` prefix — yields `rebuild_reason: "depfile_unusable"` with the `.d` path in `rebuild.trigger_path`. It is the only record of a unit's textual includes, so "no parseable prerequisites" cannot be read as "no headers": that would hold a cache hit while ignoring every header edit until the source itself changed. Since `-MMD` writes a depfile even for a unit that includes nothing, this fires once after an upgrade or a wiped `obj/` and then settles.
 

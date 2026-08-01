@@ -1533,6 +1533,62 @@ test_std_module_reported() {
   end_case std_module_reported
 }
 
+test_module_phases() {
+  should_run module_phases || return 0
+  begin_case module_phases
+  local work_dir cache_file
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
+  rm -f "${work_dir}/hello.c++"
+
+  printf '%s\n' \
+    'export module phases;' \
+    'export int phased() { return 7; }' > "${work_dir}/phases.c++m"
+  printf '%s\n' \
+    'import phases;' \
+    'int main() { return phased() == 7 ? 0 : 1; }' > "${work_dir}/main.c++"
+
+  # Default is two-phase: --precompile writes the BMI, a second step turns it into the object.
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "two_phase_build"
+  assert_jsonl_contains '"--precompile"' "two_phase_precompiles"
+  assert_jsonl_not_contains '-fmodule-output=' "two_phase_no_module_output"
+  assert_file_exists "${work_dir}/${BUILD_DIR}/pcm/phases.pcm" "two_phase_pcm"
+  cache_file="$(object_cache_path "${work_dir}")"
+  assert_profile_contains "${cache_file}" $'\tmodule_phases=two-phase' "two_phase_profile"
+
+  # Switching schemes is a profile change: the BMIs differ, so no object may survive it.
+  run_cb_build "${work_dir}" --modules=one-phase
+  assert_jsonl_event_value build_end ok true "one_phase_build"
+  assert_jsonl_contains '"module_phases":{"old":"two-phase","new":"one-phase"}' "one_phase_profile_diff"
+  assert_compile_end "phases.c++m" false profile_change true "one_phase_rebuilds_module"
+  assert_compile_end "std.cppm" false profile_change true "one_phase_rebuilds_std"
+
+  # One command per modular unit, and it still publishes the BMI importers read.
+  assert_jsonl_contains '-fmodule-output=' "one_phase_module_output"
+  assert_jsonl_not_contains '"--precompile"' "one_phase_no_precompile"
+  assert_file_exists "${work_dir}/${BUILD_DIR}/pcm/phases.pcm" "one_phase_pcm"
+  assert_file_exists "${work_dir}/${BUILD_DIR}/obj/phases.o" "one_phase_object"
+  assert_compile_start_end_pairs "one_phase_compile_pairs"
+
+  run_cb_build "${work_dir}" --modules=one-phase
+  assert_compile_cache_hits 2 "one_phase_cache_hit"
+  assert_jsonl_not_contains '"rebuild_reason":"profile_change"' "one_phase_profile_stable"
+
+  # And back: two-phase must not adopt the one-phase BMIs either.
+  run_cb_build "${work_dir}"
+  assert_jsonl_contains '"module_phases":{"old":"one-phase","new":"two-phase"}' "back_to_two_phase_diff"
+  assert_jsonl_event_value build_end ok true "back_to_two_phase_build"
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if run_cb_build "${work_dir}" --modules=half-phase; then
+    fail "--modules=half-phase should be rejected"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"module_phases_rejects_unknown"}'
+  fi
+  end_case module_phases
+}
+
 test_jsonl_modes() {
   should_run jsonl_modes || return 0
   begin_case jsonl_modes
@@ -1630,6 +1686,7 @@ main() {
   test_profile_change
   test_cache_status
   test_std_module_reported
+  test_module_phases
   test_jsonl_modes
   test_jsonl_failure_mode
 
