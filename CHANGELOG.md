@@ -8,6 +8,17 @@ Internal refactoring is not listed — roughly half the commits since `v1.0.0` r
 Versions follow the rules in the release policy. `Unreleased` accumulates until the next
 tag; cutting a release renames that section.
 
+## [Unreleased]
+
+### Fixed
+
+- **`--modules=one-phase` no longer compiles a project BMI into the object on
+  `object_missing` / `object_stale`.** The two-phase reuse path from 2.1.1 was applied to
+  one-phase units as well, so a deleted or lagging `.o` ran `pcm → .o` instead of
+  re-reading the source with `-fmodule-output=`. One-phase BMIs are reduced on Clang 22+
+  and are not valid object inputs; `build_std_module` already refused that shortcut.
+  Project modular units now match: one-phase always re-reads the source.
+
 ## [2.1.1] — 2026-08-02
 
 ### Fixed
