@@ -173,6 +173,15 @@ auto escape(std::string_view sv)
     return out;
 }
 
+auto test_failed(const data::test_result& r)
+{
+    return not r.success || r.assertions_ok < r.assertions_total;
+}
+
+} // namespace
+
+// Module-private (not anonymous-namespace / TU-local): exported observer
+// members and methods reference these types.
 struct failure_detail
 {
     std::string type;
@@ -185,13 +194,6 @@ struct test_events
     std::vector<failure_detail> failures;
     std::vector<failure_detail> errors;
 };
-
-auto test_failed(const data::test_result& r)
-{
-    return not r.success || r.assertions_ok < r.assertions_total;
-}
-
-} // namespace
 
 export struct observer final : tester::output::observer
 {
