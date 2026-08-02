@@ -1594,6 +1594,36 @@ test_modular_object_stale() {
   end_case modular_object_stale
 }
 
+test_modular_one_phase_object_missing() {
+  should_run modular_one_phase_object_missing || return 0
+  begin_case modular_one_phase_object_missing
+  local work_dir
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
+  rm -f "${work_dir}/hello.c++"
+
+  # One-phase BMIs are not inputs for a pcm→.o step (Clang 22+ writes reduced BMIs).
+  # object_missing / object_stale must re-read the source with -fmodule-output=, matching
+  # build_std_module — not compile_pcm_object_argv.
+  printf '%s\n' \
+    'export module oneshot;' \
+    'export int value() { return 3; }' > "${work_dir}/oneshot.c++m"
+  printf '%s\n' \
+    'import oneshot;' \
+    'int main() { return value() == 3 ? 0 : 1; }' > "${work_dir}/main.c++"
+
+  run_cb_build "${work_dir}" --modules=one-phase
+  assert_jsonl_event_value build_end ok true "one_phase_object_missing_seed"
+
+  rm -f "${work_dir}/${BUILD_DIR}/obj/oneshot.o"
+  run_cb_build "${work_dir}" --modules=one-phase
+  assert_compile_end "oneshot.c++m" false object_missing true "one_phase_object_missing_rebuilds"
+  assert_jsonl_contains '-fmodule-output=' "one_phase_object_missing_rereads_source"
+  assert_jsonl_not_contains '"--precompile"' "one_phase_object_missing_no_precompile"
+  assert_jsonl_event_value build_end ok true "one_phase_object_missing_build_ok"
+  end_case modular_one_phase_object_missing
+}
+
 test_module_phases() {
   should_run module_phases || return 0
   begin_case module_phases
@@ -1749,6 +1779,7 @@ main() {
   test_cache_status
   test_std_module_reported
   test_modular_object_stale
+  test_modular_one_phase_object_missing
   test_module_phases
   test_jsonl_modes
   test_jsonl_failure_mode

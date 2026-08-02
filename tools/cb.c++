@@ -2650,20 +2650,20 @@ private:
     void compile_unit(const translation_unit& tu, const output::rebuild_info& rebuild) {
         const auto unit = compile_unit_of(tu);
         auto compile = compile_scope{unit, rebuild};
-        // object_missing / object_stale reuse the pcm that is already there — same split
-        // build_std_module uses. Re-precompiling would bump the pcm mtime and force every
-        // importer through pcm_stale for no interface change.
-        const auto object_only = rebuild.kind == output::rebuild_kind::object_missing
-                              or rebuild.kind == output::rebuild_kind::object_stale;
+        // Two-phase: object_missing / object_stale reuse the pcm that is already there —
+        // same split build_std_module uses. Re-precompiling would bump the pcm mtime and
+        // force every importer through pcm_stale for no interface change.
+        // One-phase: the BMI is a sibling of the object (reduced on Clang 22+), not an
+        // input that can be compiled to .o — always re-read the source, as std does.
+        const auto object_only = module_phases == module_compilation::two_phase
+                              and (rebuild.kind == output::rebuild_kind::object_missing
+                                   or rebuild.kind == output::rebuild_kind::object_stale);
         if (tu.is_modular and module_phases == module_compilation::two_phase) {
             if(not object_only)
                 run_step(compile, compile_pcm_argv(tu), diagnostics_path_for_pcm(unit));
             run_step(compile, compile_pcm_object_argv(tu), diagnostics_path_for_object(unit));
         } else if (tu.is_modular) {
-            if(object_only)
-                run_step(compile, compile_pcm_object_argv(tu), diagnostics_path_for_object(unit));
-            else
-                run_step(compile, compile_module_object_argv(tu), diagnostics_path_for_object(unit));
+            run_step(compile, compile_module_object_argv(tu), diagnostics_path_for_object(unit));
         } else {
             run_step(compile, compile_source_object_argv(tu), diagnostics_path_for_object(unit));
         }
