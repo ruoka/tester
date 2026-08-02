@@ -439,7 +439,7 @@ Test runner output is configured via CLI options, not environment variables.
 
 ## Versioning & Releases
 
-**Current release: [`v2.1.2`](https://github.com/ruoka/tester/releases/tag/v2.1.2)** — Clang 21 + libc++ modules, JSONL, CB (`--modules=`, `posix_spawn`, one-phase BMI object recovery), CMake + Ninja, distinct Make/CMake build trees. Prior supported tags: [`v2.1.1`](https://github.com/ruoka/tester/releases/tag/v2.1.1), [`v2.1.0`](https://github.com/ruoka/tester/releases/tag/v2.1.0), [`v2.0.0`](https://github.com/ruoka/tester/releases/tag/v2.0.0). The November 2025 `v1.0.0` GitHub pre-release is historical and unsupported.
+**Current release: [`v2.2.0`](https://github.com/ruoka/tester/releases/tag/v2.2.0)** — Clang 21 + libc++ modules, JSONL, and CB with edge-driven module scheduling, bounded workers, dependency-scoped BMI mappings, and a shared standard-module cache. CMake + Ninja and Make remain supported alternative build paths. Prior supported tags: [`v2.1.3`](https://github.com/ruoka/tester/releases/tag/v2.1.3), [`v2.1.2`](https://github.com/ruoka/tester/releases/tag/v2.1.2), [`v2.1.1`](https://github.com/ruoka/tester/releases/tag/v2.1.1), [`v2.1.0`](https://github.com/ruoka/tester/releases/tag/v2.1.0), [`v2.0.0`](https://github.com/ruoka/tester/releases/tag/v2.0.0). The November 2025 `v1.0.0` GitHub pre-release is historical and unsupported.
 
 Pin a tag or an explicit commit as a submodule. Between tags, `main` is CI-gated but carries no compatibility promise. Prefer aligning **every** nested `deps/tester` in a parent tree to the same SHA (see [YarDB versioning](https://github.com/ruoka/YarDB/blob/master/docs/versioning.md)).
 
