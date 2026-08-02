@@ -38,7 +38,7 @@
 #include <charconv>
 #include <concepts>
 #include <cstddef>
-#include <semaphore>
+#include <type_traits>
 #include "cb-jsonl_observer.h++"
 #include "cb-console_observer.h++"
 
@@ -1024,66 +1024,57 @@ using thread_list = std::vector<std::jthread>;
 using module_to_ldflags_map = std::flat_map<std::string, std::string, std::less<>>;
 using executable_cache_map = std::flat_map<std::string, std::string, std::less<>>;
 
-// Bounds concurrent toolchain processes. CB spawned one jthread per translation unit
-// in a dependency level, so a level with hundreds of units launched hundreds of
-// clang++ processes at once — each one a multi-hundred-megabyte peak.
-class job_gate
-{
-public:
-    explicit job_gate(std::ptrdiff_t limit) : slots{limit} {}
-
-    class slot
-    {
-    public:
-        explicit slot(job_gate& gate) : gate{gate} { gate.slots.acquire(); }
-        ~slot() { gate.slots.release(); }
-        slot(const slot&) = delete;
-        slot& operator=(const slot&) = delete;
-
-    private:
-        job_gate& gate;
-    };
-
-private:
-    std::counting_semaphore<> slots;
-};
-
-// Compiling and linking differ only in the work: one worker per job, at most limit at a time,
-// nothing new started once a job has failed, and the first failure rethrown after every worker
-// has joined, so a failing build never leaves a toolchain process running. Written twice, the
-// copies had to agree about the relaxed loads, the recheck after the slot and which exception
-// survives.
+// Compiling and linking differ only in the work: a bounded set of workers claims jobs from the
+// input, nothing new starts once a job has failed, and the first failure is rethrown after every
+// worker has joined, so a failing build never leaves a toolchain process running.
 template <std::ranges::input_range Jobs, typename Work>
 void run_in_parallel(Jobs&& jobs, std::ptrdiff_t limit, Work work)
 {
-    auto threads = thread_list{};
+    using job_reference = std::ranges::range_reference_t<Jobs>;
+    static_assert(std::is_lvalue_reference_v<job_reference>);
+    using job_type = std::remove_cvref_t<job_reference>;
+
+    // The decisions outlive every worker. Snapshot pointers rather than the decisions
+    // themselves: a compile decision carries a rebuild reason with several strings.
+    auto items = std::vector<const job_type*>{};
+    for(const auto& job : jobs)
+        items.push_back(std::addressof(job));
+    if(items.empty())
+        return;
+
+    const auto worker_count = std::min(
+        items.size(),
+        static_cast<std::size_t>(std::max<std::ptrdiff_t>(1, limit)));
+    auto next = std::atomic_size_t{0};
     auto failed = std::atomic_bool{false};
     auto failure = std::exception_ptr{};
     auto failure_mutex = std::mutex{};
-    auto gate = job_gate{limit};
+    auto threads = thread_list{};
+    threads.reserve(worker_count);
 
-    for(const auto& job : jobs)
+    for(auto worker = std::size_t{0}; worker < worker_count; ++worker)
     {
-        // The job is addressed, not copied: it outlives join(), and a build decision carries a
-        // rebuild reason of four strings.
-        threads.emplace_back([&work, item = std::addressof(job), &failed, &failure, &failure_mutex, &gate]()
+        threads.emplace_back([&]()
         {
-            if(failed.load(std::memory_order_relaxed))
-                return;
-            const auto slot = job_gate::slot{gate};
-            // Recheck: a failure may have landed while waiting for a slot.
-            if(failed.load(std::memory_order_relaxed))
-                return;
-            try
+            while(not failed.load(std::memory_order_relaxed))
             {
-                work(*item);
-            }
-            catch(...)
-            {
-                failed.store(true, std::memory_order_relaxed);
-                auto lock = std::lock_guard<std::mutex>{failure_mutex};
-                if(not failure)
-                    failure = std::current_exception();
+                const auto index = next.fetch_add(1, std::memory_order_relaxed);
+                if(index >= items.size())
+                    return;
+                // A peer may have failed while this worker claimed the next index.
+                if(failed.load(std::memory_order_relaxed))
+                    return;
+                try
+                {
+                    work(*items[index]);
+                }
+                catch(...)
+                {
+                    failed.store(true, std::memory_order_relaxed);
+                    auto lock = std::lock_guard<std::mutex>{failure_mutex};
+                    if(not failure)
+                        failure = std::current_exception();
+                }
             }
         });
     }
