@@ -13,6 +13,7 @@
 # Usage:
 #   ./tools/bench-cb-vs-ninja.sh
 #   ./tools/bench-cb-vs-ninja.sh --modules=one-phase    # CB single-step modules
+#   ./tools/bench-cb-vs-ninja.sh --cb-only              # compare CB revisions separately
 #   ./tools/bench-cb-vs-ninja.sh --quiet-ninja          # default Ninja progress
 #   ./tools/bench-cb-vs-ninja.sh --jobs=4 --cold=2
 #   ./tools/bench-cb-vs-ninja.sh --results=/tmp/out.jsonl
@@ -33,6 +34,7 @@ COLD_N=3
 NOOP_N=5
 TOUCH_N=3
 NINJA_VERBOSE=1
+RUN_NINJA=1
 MODULES=two-phase
 RESULTS="${TMPDIR:-/tmp}/cb-vs-ninja-bench.jsonl"
 CONFIG=debug
@@ -51,6 +53,7 @@ usage() {
 for arg in "$@"; do
   case "$arg" in
     -h|--help) usage 0 ;;
+    --cb-only) RUN_NINJA=0 ;;
     --quiet-ninja) NINJA_VERBOSE=0 ;;
     --verbose-ninja) NINJA_VERBOSE=1 ;;
     --modules=one-phase|--modules=two-phase) MODULES="${arg#*=}" ;;
@@ -94,8 +97,10 @@ if [[ ! -s "$TOUCH_TEST" || ! -s "$TOUCH_MOD" ]]; then
   echo "ERROR: touch targets missing: $TOUCH_TEST / $TOUCH_MOD" >&2
   exit 1
 fi
-command -v cmake >/dev/null
-command -v ninja >/dev/null
+if [[ "$RUN_NINJA" == "1" ]]; then
+  command -v cmake >/dev/null
+  command -v ninja >/dev/null
+fi
 command -v python3 >/dev/null
 
 # Match tools/CB.sh.core env before exec.
@@ -216,8 +221,9 @@ print(json.dumps({
     "cxx": sys.argv[7],
     "cmake_dir": sys.argv[8],
     "cb_dir": sys.argv[9],
+    "ninja_enabled": sys.argv[10] == "1",
 }))
-' "$HOST" "$CONFIG" "$JOBS" "$NINJA_VERBOSE" "$MODULES" "$CB_BIN" "$CXX_COMPILER" "$CMAKE_DIR" "$CB_DIR")"
+' "$HOST" "$CONFIG" "$JOBS" "$NINJA_VERBOSE" "$MODULES" "$CB_BIN" "$CXX_COMPILER" "$CMAKE_DIR" "$CB_DIR" "$RUN_NINJA")"
 
 echo "=== Warm: align CB object-cache profile to --modules=$MODULES (untimed) ===" >&2
 # Do not warm via CB.sh — it defaults to two-phase and would fight --modules=.
@@ -241,17 +247,19 @@ for ((i = 1; i <= COLD_N; i++)); do
   assert_cb_ok
 done
 
-for ((i = 1; i <= COLD_N; i++)); do
-  echo "-- CMake+Ninja cold $i" >&2
-  rm -rf "$CMAKE_DIR"
-  run_timed "cmake_configure_$i" \
-    cmake -S . -B "$CMAKE_DIR" -G Ninja \
-      -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
-      -DCMAKE_CXX_COMPILER="$CXX_COMPILER" \
-      -DLLVM_PREFIX="$LLVM_PREFIX"
-  run_timed "cmake_cold_$i" cmake_build
-  assert_cmake_ok
-done
+if [[ "$RUN_NINJA" == "1" ]]; then
+  for ((i = 1; i <= COLD_N; i++)); do
+    echo "-- CMake+Ninja cold $i" >&2
+    rm -rf "$CMAKE_DIR"
+    run_timed "cmake_configure_$i" \
+      cmake -S . -B "$CMAKE_DIR" -G Ninja \
+        -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
+        -DCMAKE_CXX_COMPILER="$CXX_COMPILER" \
+        -DLLVM_PREFIX="$LLVM_PREFIX"
+    run_timed "cmake_cold_$i" cmake_build
+    assert_cmake_ok
+  done
+fi
 
 echo "===== NO-OP ($NOOP_N x) =====" >&2
 for ((i = 1; i <= NOOP_N; i++)); do
@@ -259,9 +267,11 @@ for ((i = 1; i <= NOOP_N; i++)); do
   extract_cb_build_end "cb_noop_$i"
   assert_cb_ok
 done
-for ((i = 1; i <= NOOP_N; i++)); do
-  run_timed "cmake_noop_$i" cmake_build
-done
+if [[ "$RUN_NINJA" == "1" ]]; then
+  for ((i = 1; i <= NOOP_N; i++)); do
+    run_timed "cmake_noop_$i" cmake_build
+  done
+fi
 
 echo "===== TOUCH TEST TU ($TOUCH_N x) =====" >&2
 for ((i = 1; i <= TOUCH_N; i++)); do
@@ -270,11 +280,13 @@ for ((i = 1; i <= TOUCH_N; i++)); do
   extract_cb_build_end "cb_touch_test_$i"
   assert_cb_ok
 done
-for ((i = 1; i <= TOUCH_N; i++)); do
-  touch "$TOUCH_TEST"
-  run_timed "cmake_touch_test_$i" cmake_build
-  assert_cmake_ok
-done
+if [[ "$RUN_NINJA" == "1" ]]; then
+  for ((i = 1; i <= TOUCH_N; i++)); do
+    touch "$TOUCH_TEST"
+    run_timed "cmake_touch_test_$i" cmake_build
+    assert_cmake_ok
+  done
+fi
 
 echo "===== TOUCH MODULE INTERFACE ($TOUCH_N x) =====" >&2
 for ((i = 1; i <= TOUCH_N; i++)); do
@@ -283,11 +295,13 @@ for ((i = 1; i <= TOUCH_N; i++)); do
   extract_cb_build_end "cb_touch_module_$i"
   assert_cb_ok
 done
-for ((i = 1; i <= TOUCH_N; i++)); do
-  touch "$TOUCH_MOD"
-  run_timed "cmake_touch_module_$i" cmake_build
-  assert_cmake_ok
-done
+if [[ "$RUN_NINJA" == "1" ]]; then
+  for ((i = 1; i <= TOUCH_N; i++)); do
+    touch "$TOUCH_MOD"
+    run_timed "cmake_touch_module_$i" cmake_build
+    assert_cmake_ok
+  done
+fi
 
 echo "===== SUMMARY =====" >&2
 python3 - "$RESULTS" <<'PY'
@@ -344,7 +358,8 @@ print(f"\nresults: {path}")
 if meta:
     print(
         f"modules={meta.get('modules')} ninja_verbose={meta.get('ninja_verbose')} "
-        f"jobs={meta.get('jobs')} config={meta.get('config')}"
+        f"ninja_enabled={meta.get('ninja_enabled')} jobs={meta.get('jobs')} "
+        f"config={meta.get('config')}"
     )
 PY
 

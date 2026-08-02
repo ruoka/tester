@@ -5,6 +5,7 @@ Wall-clock comparison of **`tools/cb`** (direct, no `CB.sh` bootstrap) against t
 ```bash
 ./tools/bench-cb-vs-ninja.sh                      # CB two-phase (default) vs Ninja -v
 ./tools/bench-cb-vs-ninja.sh --modules=one-phase  # CB one-phase vs Ninja -v
+./tools/bench-cb-vs-ninja.sh --cb-only             # CB scenarios only (revision comparisons)
 ./tools/bench-cb-vs-ninja.sh --quiet-ninja        # Ninja progress only
 ./tools/bench-cb-vs-ninja.sh --modules=one-phase --jobs=4
 ```
