@@ -10,6 +10,8 @@ tag; cutting a release renames that section.
 
 ## Unreleased
 
+## [2.2.1] — 2026-08-02
+
 ### Fixed
 
 - **Two-phase modular object-only repairs now validate every BMI input.** CB compares

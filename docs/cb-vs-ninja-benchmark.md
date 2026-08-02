@@ -5,6 +5,7 @@ Wall-clock comparison of **`tools/cb`** (direct, no `CB.sh` bootstrap) against t
 ```bash
 ./tools/bench-cb-vs-ninja.sh                      # CB two-phase (default) vs Ninja -v
 ./tools/bench-cb-vs-ninja.sh --modules=one-phase  # CB one-phase vs Ninja -v
+./tools/bench-cb-vs-ninja.sh --cb-only             # CB scenarios only (revision comparisons)
 ./tools/bench-cb-vs-ninja.sh --quiet-ninja        # Ninja progress only
 ./tools/bench-cb-vs-ninja.sh --modules=one-phase --jobs=4
 ```
@@ -101,6 +102,48 @@ deployment toolchain rather than assumed universally faster.
 With a machine-local std cache enabled (`CB_STD_CACHE_DIR` non-empty), a clean CB build
 can skip recompiling `std` after `clean`; that path is intentionally excluded from the
 cold rows above.
+
+## Class-boundary refactor A/B check
+
+The same Linux x86_64 / Clang 21 process compared the pre-refactor CB (`27f8f8b`) with
+the class-based namespaces (`3bddc84`) using `--cb-only --modules=one-phase --jobs=4`.
+The order was counterbalanced (old/new/new/old), with two complete runs per revision:
+six cold samples, thirty no-op samples, and six samples for each touch scenario.
+`CB_STD_CACHE_DIR` remained empty, and Ninja was deliberately not rerun.
+
+| Scenario | Before | Class-based | Change |
+|----------|-------:|------------:|-------:|
+| Cold full | 9.674 s | 9.692 s | +0.18% |
+| No-op | 158.27 ms | 157.20 ms | −0.67% |
+| Touch one test TU | 3.541 s | 3.552 s | +0.32% |
+| Touch module interface | 7.054 s | 7.056 s | +0.03% |
+
+No scenario shows a measurable regression: bootstrap 95% intervals for the percentage
+change all include zero (cold −0.72%…+1.13%, no-op −1.83%…+0.99%, test touch
+−0.73%…+1.49%, module touch −0.45%…+0.54%). The class boundaries do not transfer
+container ownership: cache and graph inputs are passed by `const&`, while the scanner's
+translation-unit vector is return-elided or moved. The no-op row, where compiler work
+cannot hide orchestration overhead, is slightly faster within noise.
+
+### Final helper-ownership cleanup
+
+The follow-up compared `20ded84` with the final source/cache helper ownership at `a7cfef4`.
+Both binaries ran the same `/workspace` checkout and build tree; this matters because running
+one revision from `/tmp` produced a large filesystem-location bias. The order was again
+old/new/new/old with `--cb-only --modules=one-phase --jobs=4`: six samples per cold/touch
+scenario and ten no-op samples per revision.
+
+| Scenario | Before | Final ownership | Change |
+|----------|-------:|----------------:|-------:|
+| Cold full | 9.642 s | 9.639 s | −0.03% |
+| No-op | 156.9 ms | 156.4 ms | −0.32% |
+| Touch one test TU | 3.555 s | 3.511 s | −1.24% |
+| Touch module interface | 7.031 s | 7.048 s | +0.24% |
+
+All changes are within ±1.3%, with the no-op path unchanged within sub-millisecond noise.
+Moving naming, exclusion and lexical cleaning onto the source classes, and profile/depfile
+logic onto the cache classes, therefore adds no measurable orchestration cost. A final accessor
+follow-up moves the serialized profile string out of a temporary instead of copying it.
 
 ## How to read the gap
 

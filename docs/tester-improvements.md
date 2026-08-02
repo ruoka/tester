@@ -224,7 +224,14 @@ Design rationale and comparison with CMake, Make, and other build tools: [`docs/
 - ✅ Two operand formatters instead of three — console delegates to `value_to_display_string`; `observe_value` stays separate for JSONL `value` / `kind` (see §1.7). The old “fold three formatters” bullet was stale.
 - ✅ CB smoke harness no longer leaks work trees. `work_dir="$(prepare_work_dir)"` ran in a subshell, so `LAST_WORK_DIR` never stuck in the parent and every case left a full build tree in `$TMPDIR` (hundreds observed; disk fill made later runs die with exit 1 and no useful message). Callers now run `prepare_work_dir` then `work_dir="${LAST_WORK_DIR}"` in the same shell (Bash 3.2 has no namerefs). Successful cases still clean up; a failed case keeps its tree and logs the path; the EXIT trap removes everything on success or prints the preserved path on failure.
 - 📋 Reduce the preamble cleaning window when a real project needs it. The cleaner still caps at `max_lines` (1000) while this repo’s deepest declaration sits near line 18; a huge global-module-fragment preamble could miss imports. Prefer end-of-fragment detection over raising a fixed cap. Low urgency here.
-- 📋 Extract `translation_unit` / source scanning, the cache layer, and CLI parsing out of `cb.c++` when editing pain justifies it. Maintainability only — no user-visible change.
+- 🔶 Class-based subsystem boundaries now divide the single `cb.c++`: `cb::source::translation_unit`
+  models source metadata, `cb::source::scanner` owns collection, exclusion, lexical cleaning,
+  dependency edges and topological order, `cb::cache::profile` owns profile serialization, keys
+  and diffs, `cb::cache::analyzer` owns recursive object/BMI/header freshness analysis and depfile
+  parsing, and `cb::cli::parser` / `options` own strict argv parsing and test-runner forwarding.
+  `cb::detail` now holds only primitives shared across those boundaries. No `*.h++` split is
+  required. Cache persistence and shared-std storage still live on `build_system`, so the
+  cache-layer extraction remains partial.
 - 📋 Optional polish: `std::from_chars` for remaining CLI integer parses (`test_runner` still has `parse_usize`); content hashing instead of mtime in the object cache only if false cache hits show up in practice. CB already uses `from_chars` for `--jobs=`.
 - 📋 Skip full TU rediscovery on unchanged trees (Ninja-style no-op). Today every `build` walks sources, re-parses `import` lines, and rebuilds the module graph before consulting the object cache — that dominates the ~0.4 s no-op in [`cb-vs-ninja-benchmark.md`](cb-vs-ninja-benchmark.md), while CMake+Ninja only cheaply re-checks `CONFIGURE_DEPENDS` globs and then exits with no work. Persist a fingerprint of the discovered inventory (directory mtimes / file set + per-TU source mtimes, or reuse/`refresh` `graph.json`) under `build-<os>-<config>/cache/`; on hit, load the prior graph and jump to compile/link decisions; on miss (new/deleted matching source, edited preamble that changes imports, profile change), rescan as today. Must not sacrifice CB’s “add a file and the next build sees it” contract — the cheap check has to notice membership changes, not only content of already-known paths. Object/executable cache indexes already update in memory and flush once per phase; this item is about discovery, not cache-file batching. Measure with `./tools/bench-cb-vs-ninja.sh --modules=one-phase` (no-op row).
 
@@ -258,7 +265,7 @@ Not required for correctness today: profile v3 + timestamp rules already drive r
 | `cache invalidate` | Delete the four files under `cache/` only — lighter than `clean`; next build treats everything as uncached without wiping artifacts. JSONL: `cache_invalidate_end`. ✅ |
 | `cache prune` | Garbage-collect artifacts the current module graph no longer references; trim cache index rows for missing paths. Optional `--aggressive` after `profile_change` to drop all `obj/` / `pcm/` under the config. JSONL: `cache_prune_end` with counts. |
 
-**Implementation sketch:** scan current TU graph → expected `{obj, pcm}` set; walk `obj/` and `pcm/`; delete files not in set; reconcile `object-cache.txt`. Reuse existing `object_cache_profile()` / `parse_object_cache_profile_fields()` for `status`.
+**Implementation sketch:** scan current TU graph → expected `{obj, pcm}` set; walk `obj/` and `pcm/`; delete files not in set; reconcile `object-cache.txt`. Reuse `object_cache_profile()` and `cache::profile` field parsing for `status`.
 
 **Smoke / CI:** add `cache_prune` cases only if the subcommand ships.
 
@@ -307,7 +314,11 @@ Not required for correctness today: profile v3 + timestamp rules already drive r
 - ✅ Assertion accounting is atomic on `test_statistics` (`record_assertion` / `begin_assertion` / `complete_assertion`). Soft asserts from test-spawned threads that share a context can no longer lose increments. Under `--jobs>1`, orphans that still land on the run-wide fallback are reified as `<unattributed thread assertion>` so `failed_test_ids` is never empty when `passed` is false. Parallel waves drop filtered-out cases before chunking so they cannot steal `--jobs` slots. Pinned by `[self]` concurrent-count and orphan-attribution probes.
 - ✅ Compiler probe and version stamp go through `invoke_shell`. A bare `LLVM_CXX` / `CXX` name was interpolated into `command -v …` and `clang++ --version` called `std::system` with a hand-built redirect — the two places that bypassed the single shell boundary. Both now use `invoke_shell`: the lookup is a quoted `sh -c 'command -v …'`, and the version line is captured to `cache/compiler-version.txt` like every other toolchain command.
 - ✅ Scanner and inventory smoke cases stop at `list`. Fifteen of the 44 CB smoke cases asked questions `scan_and_order` already answers — dotted modules, GMF preambles, commented and spliced phantoms, dead `#if` arms, deps skipping, basename and reserved-`std` refusals, `compile_commands` inventory — and then compiled the fixture "to prove it still builds." Those builds are gone; the collision cases call `list` too, since the refusal is thrown before any compile. The suite is 247 checks in ~61 s (was 245 / ~79 s before list-only; interim list-only figure was 234 / ~55 s on 41 cases). The remaining 29 cases are cache, rebuild, link, warning, and test work that need a toolchain; unit-testing `splice_physical_lines` still needs the extraction below.
-- 📋 Extract `translation_unit` and `parse_translation_unit` into their own header. Independent of the observer work: they are a self-contained island in a ~3,300-line file, and extracting them is what would let the preamble scanner be tested directly instead of only through `smoke.sh` fixture directories.
+- ✅ Source metadata and parsing have a same-file class boundary: `cb::source::translation_unit`
+  and `cb::source::scanner`; naming, scan exclusion and lexical cleaning are private class
+  behavior rather than generic `detail` helpers. CB deliberately remains one translation unit;
+  scanner behavior stays covered through `smoke.sh` fixture directories rather than exposing
+  implementation headers.
 
 ---
 

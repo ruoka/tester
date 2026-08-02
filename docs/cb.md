@@ -236,7 +236,7 @@ Environment variables for **bootstrap** (not test output): `LLVM_PATH`, `CXX`, `
 
 ## Object cache profile
 
-`build-<os>-<config>/cache/object-cache.txt` starts with a readable **profile header** (not a hash). CB compares the full profile string on load; a mismatch clears the in-memory object cache and sets `rebuild_reason: "profile_change"` on every recompiled TU.
+`build-<os>-<config>/cache/object-cache.txt` starts with a readable **profile header** (not a hash). `cb::cache::profile` owns its byte-stable serialization, shared-`std` key and field diff. CB compares the full profile string on load; a mismatch clears the in-memory object cache and sets `rebuild_reason: "profile_change"` on every recompiled TU.
 
 **Format:** `format=cb-object-cache-v3` (tab-separated `key=value` fields after the `profile\t` prefix).
 
@@ -260,7 +260,7 @@ Cache indexes are written through a checked temporary file and atomically rename
 
 ### Header dependencies
 
-The object cache tracks module imports and source mtimes, neither of which sees a textual `#include`. CB therefore compiles with `-MMD -MF <object>.d` — emitted by the step that actually reads the source (`--precompile` for two-phase modular units, `-c` otherwise) — and compares each prerequisite's mtime against the object. A newer header yields `rebuild_reason: "header_stale"` with the header in `rebuild.trigger_path`. A project header the depfile still names but that is missing or unreadable yields `rebuild_reason: "header_missing"` with that path in `rebuild.trigger_path` — a cache hit would keep shipping an object built against content that is gone.
+The object cache tracks module imports and source mtimes, neither of which sees a textual `#include`. CB therefore compiles with `-MMD -MF <object>.d` — emitted by the step that actually reads the source (`--precompile` for two-phase modular units, `-c` otherwise) — and `cb::cache::analyzer` parses the depfile and compares each prerequisite's mtime against the object. A newer header yields `rebuild_reason: "header_stale"` with the header in `rebuild.trigger_path`. A project header the depfile still names but that is missing or unreadable yields `rebuild_reason: "header_missing"` with that path in `rebuild.trigger_path` — a cache hit would keep shipping an object built against content that is gone.
 
 A depfile that cannot be read — missing, unreadable, or lacking the `target:` prefix — yields `rebuild_reason: "depfile_unusable"` with the `.d` path in `rebuild.trigger_path`. It is the only record of a unit's textual includes, so "no parseable prerequisites" cannot be read as "no headers": that would hold a cache hit while ignoring every header edit until the source itself changed. Since `-MMD` writes a depfile even for a unit that includes nothing, this fires once after an upgrade or a wiped `obj/` and then settles.
 
@@ -368,9 +368,12 @@ Example `profile_diff` fragment (on `profile_changed` only):
 | `cb-jsonl_observer.h++` | `cb::output::jsonl::observer` serialization, JSONL context, stream, and output lock |
 | `cb-console_observer.h++` | `cb::output::console::observer` human formatting, stream, and output lock |
 | `cb::output::notify` | Publishes build events directly to installed observers |
-| `cb::detail` | Domain compute only (profile parse/diff, flag token diff) — not presentation |
+| `cb::source::translation_unit` / `scanner` | Source identity, collection, exclusion, lexical cleaning, dependency edges and topological order |
+| `cb::cache::profile` / `analyzer` | Profile serialization/key/diff and recursive object/BMI/header freshness analysis |
+| `cb::cli::options` / `parser` | Strict argv parsing and test-runner forwarding |
+| `cb::detail` | Primitives shared across subsystems: shell/argv, flag text, paths, file signatures and diagnostics |
 
-`build_system` gathers facts and publishes them directly through `cb::output::notify`. `main` registers built-in observers by name and selects one from the parsed `output_name`. Compile, link, command, cache, list, and lifecycle events all cross the same observer boundary; adding a formatter does not add format branches to `build_system`. Observers retain channel-specific `format_*` and `write_*` helpers, while shared profile-field iteration keeps diff computation and every format aligned when fields are added.
+`build_system` orchestrates those classes, owns cache persistence and toolchain invocation, and publishes facts directly through `cb::output::notify`. `main` registers built-in observers by name and selects one from the parsed `output_name`. Compile, link, command, cache, list, and lifecycle events all cross the same observer boundary; adding a formatter does not add format branches to `build_system`. Observers retain channel-specific `format_*` and `write_*` helpers, while shared profile-field iteration keeps diff computation and every format aligned when fields are added.
 
 ### Ranges idioms (`cb.c++`)
 
@@ -380,10 +383,10 @@ CB uses C++23 range pipelines instead of hand-written accumulation loops where t
 |------|---------|
 | Join `string_list` with separator | `items \| std::views::join_with(sep) \| std::ranges::to<std::string>()` |
 | Split delimited text → `vector` | `text \| std::views::split(delim) \| … \| std::ranges::to<string_list>()` |
-| Split profile → `flat_map` | `profile \| std::views::split('\t') \| std::views::transform(parse_profile_field) \| std::ranges::to<profile_fields>()` |
+| Split profile → `flat_map` | `text_ \| std::views::split('\t') \| std::views::transform(parse_field) \| std::ranges::to<field_map>()` |
 | Shell-safe command string | `argv \| transform(shell_quote) \| views::join_with(' ') \| ranges::to<std::string>()` (`join_argv`; non-empty `argv` — contract at `invoke_shell`) |
 
-`parse_profile_field` splits on the **first** `=` only (`find`, not `views::split('=')`) because values like `compile` may contain `=`. Agent-oriented detail: [AGENTS.md](../AGENTS.md).
+`cache::profile::parse_field` splits on the **first** `=` only (`find`, not `views::split('=')`) because values like `compile` may contain `=`. Agent-oriented detail: [AGENTS.md](../AGENTS.md).
 
 ---
 

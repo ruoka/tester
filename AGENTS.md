@@ -210,7 +210,7 @@ os << '[' << cb::output::jsonl::join_json_strings(values) << ']';
 
 Prefer **`views::join_with` / `ranges::to`** for delimiter joins (including **`join_argv`**: `transform(shell_quote)` then `join_with(' ')`; **`join_json_strings`**: `transform(quote)` then `join_with(',')`). Use **`fold_left`** only when accumulation is not a plain per-element transform + join (e.g. **`collapse_whitespace`**). Not ad-hoc index loops or one-off join helpers.
 
-**Splitting / parsing** — prefer **`std::views::split`** + **`std::views::transform`** + **`std::ranges::to<Container>`** for delimited fields CB owns. Pair with symmetric read/write helpers (`append_profile_field` / `parse_profile_field`), not ad-hoc parsers with silent `continue` on every segment:
+**Splitting / parsing** — prefer **`std::views::split`** + **`std::views::transform`** + **`std::ranges::to<Container>`** for delimited fields CB owns. Pair symmetric readers and writers (for example, `cache::profile::append` / `parse_field`) rather than adding ad-hoc parsers with silent `continue` on every segment:
 
 ```cpp
 // external flag text → string_list (collapse whitespace, drop empty tokens)
@@ -221,14 +221,14 @@ return normalized
     | std::views::transform([](std::string_view t) { return std::string{t}; })
     | std::ranges::to<string_list>();
 
-// object-cache profile → flat_map (split on tab; key/value on first '=' only)
-return profile
+// cache::profile text → field_map (split on tab; key/value on first '=' only)
+return text_
     | std::views::split('\t')
-    | std::views::transform([](auto&& part) { return parse_profile_field(std::string_view{part}); })
-    | std::ranges::to<profile_fields>();
+    | std::views::transform([](auto&& part) { return parse_field(std::string_view{part}); })
+    | std::ranges::to<field_map>();
 ```
 
-`parse_profile_field` uses **`string_view::find('=')`** (first delimiter only) — not `views::split('=')` — because profile values such as `compile` may contain `=`.
+`cache::profile::parse_field` uses **`string_view::find('=')`** (first delimiter only) — not `views::split('=')` — because profile values such as `compile` may contain `=`.
 
 **Object-cache profile values** — tab-delimited `key=value` fields; values are stored verbatim (no percent-encoding). Invariant: values CB writes must not contain `'\t'`, `'\n'`, `'\r'`, or `'%'` (paths, flag lists, version lines satisfy this). For two-field cache entry lines (`path\tticks`), `string_view::find('\t')` is fine — no view pipeline needed.
 
@@ -236,9 +236,9 @@ Do **not** add defensive parsers or legacy upgrade paths for on-disk formats tha
 
 **Subprocess I/O** — see [Implementation policy](#implementation-policy-standard-c-only) above. All toolchain commands go through `invoke_shell(argv)` (`posix_spawn` of `/bin/sh -c`); probes/self-tests use stamp/temp file + `std::ifstream`. Test env uses POSIX `setenv` (copies values) before `invoke_shell` for `TESTER_CONFIG` / `TESTER_PARENT_RUN_ID` — not shell env prefixes. Never `popen` or ad-hoc `fork` / `execve`.
 
-**CB flag argv** — store toolchain flags as `string_list` (`compile_flags`, `link_flags`, `cpp_flags`, `module_flags`); argv builders extend lists with `append_range` (literal groups as `string_list{…}`). Parse external flag **text** only at boundaries (`cb::detail::parse_external_flag_text` in `main` for `--compile-flags` / `--link-flags`; same helper when diffing serialized profile `compile`/`cpp` fields). Serialize lists to the object-cache profile with `detail::flags_profile_string` (`views::join_with(' ')` + `ranges::to<std::string>`). Parse with `collapse_whitespace` then `views::split(' ')` + `filter` non-empty + `ranges::to<string_list>` — symmetric with the writer; not full POSIX shell word-splitting (C++26 `split_when` would cover predicate delimiters without the collapse step).
+**CB flag argv** — store toolchain flags as `string_list` (`compile_flags`, `link_flags`, `cpp_flags`, `module_flags`); argv builders extend lists with `append_range` (literal groups as `string_list{…}`). Parse external flag **text** only at boundaries (`cb::cli::parser` uses `cb::detail::parse_external_flag_text` for `--compile-flags` / `--link-flags`; `cb::cache::profile` uses the same helper to diff serialized `compile`/`cpp` fields). Serialize lists with `detail::flags_profile_string` (`views::join_with(' ')` + `ranges::to<std::string>`). Parse with `collapse_whitespace` then `views::split(' ')` + `filter` non-empty + `ranges::to<string_list>` — symmetric with the writer; not full POSIX shell word-splitting (C++26 `split_when` would cover predicate delimiters without the collapse step).
 
-**`cb.c++` namespaces** — sibling `cb::jsonl_observer()` / `cb::console_observer()` accessors expose the built-in observers; each observer owns its streams, lock, and format-specific lifecycle. Build code publishes command, compile, link, cache, list, and lifecycle events directly through `cb::output::notify` and the `cb::output::observer` contract in `cb-observer.h++`; it does not select a format. `main` installs the observer selected by CLI options, while activation and finalization happen through the observer contract. Shared profile-diff and source-inventory models also live under `cb::output`; channel-specific formatting/serialization stays in `cb::output::console::observer` and `cb::output::jsonl::observer`. `cb::detail` is for compute helpers (`shell_quote`, `join_argv`, profile/flag parsing, path/TU scan); `cb::translation_unit` and `cb::build_system` at top level; anonymous namespace + `main` for CLI argv parsing only.
+**`cb.c++` namespaces** — each same-file subsystem has a class boundary: `cb::source::translation_unit` models one source, `cb::source::scanner` owns collection, exclusion, lexical cleaning, dependency edges and topological order, `cb::cache::profile` owns profile serialization, keys and diffs, `cb::cache::analyzer` owns recursive object/BMI/header freshness decisions and depfile parsing, and `cb::cli::parser` / `options` own argv parsing and test-runner forwarding. `cb::build_system` remains the orchestration, persistence and toolchain boundary. Build code publishes command, compile, link, cache, list, and lifecycle events directly through `cb::output::notify` and the `cb::output::observer` contract in `cb-observer.h++`; it does not select a format. `main` installs the observer selected by parsed CLI options, while activation and finalization happen through the observer contract. Shared profile-diff and source-inventory models live under `cb::output`; channel-specific formatting/serialization stays in `cb::output::console::observer` and `cb::output::jsonl::observer`. `cb::detail` is limited to primitives shared across subsystem boundaries, such as shell/argv handling, flag text conversion, path predicates, file signatures and diagnostic capture.
 
 **When custom code is fine** — topological sort, module graph walks, percent-encoding, and domain-specific cache logic. Do not reimplement `set_difference`, substring search, map membership, or **delimiter-join loops** by hand.
 

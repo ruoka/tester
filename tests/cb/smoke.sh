@@ -379,6 +379,21 @@ test_strict_arguments() {
     jsonl_emit '{"type":"smoke_assert_passed","matcher":"forwards_junit_flag"}'
   fi
 
+  # Output selection is part of incremental parsing: once --jsonl was accepted, a later
+  # parse error must stay on stdout as structured cb_error + eof rather than falling back
+  # to console stderr.
+  status=0
+  output="$(cd "${work_dir}" && "${CB_BIN}" "${STD_CPPM}" debug build \
+    --jsonl=failures --totally-bogus 2>/dev/null)" || status=$?
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ "${status}" -eq 2 ]]; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"jsonl_parse_error_exit"}'
+  else
+    fail "expected JSONL parse error exit 2, got ${status}: ${output}"
+  fi
+  assert_text_contains "${output}" '"type":"cb_error"' "jsonl_parse_error_event"
+  assert_text_contains "${output}" '"type":"eof"' "jsonl_parse_error_eof"
+
   # A valid job cap still builds.
   run_cb_build "${work_dir}" --jobs=2
   assert_jsonl_event_value build_end ok true "jobs_flag_builds"
