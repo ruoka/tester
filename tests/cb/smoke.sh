@@ -1734,6 +1734,123 @@ test_modular_object_missing_import_stale() {
   end_case modular_object_missing_import_stale
 }
 
+test_modular_object_stale_import_stale() {
+  should_run modular_object_stale_import_stale || return 0
+  begin_case modular_object_stale_import_stale
+  local work_dir
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
+  rm -f "${work_dir}/hello.c++"
+
+  printf '%s\n' \
+    'export module base;' \
+    'export constexpr int magic = 1;' \
+    'export int base_runtime() { return magic; }' > "${work_dir}/base.c++m"
+  printf '%s\n' \
+    'export module mid;' \
+    'import base;' \
+    'export constexpr int mid_const = magic + 10;' \
+    'export int mid_value() { return mid_const; }' > "${work_dir}/mid.c++m"
+  printf '%s\n' \
+    'import mid;' \
+    'import base;' \
+    'int main() {' \
+    '  return (mid_value() == 11 && mid_const == 11 && base_runtime() == 1) ? 0 : 1;' \
+    '}' > "${work_dir}/main.c++"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "object_stale_import_stale_seed"
+
+  local mid_pcm="${work_dir}/${BUILD_DIR}/pcm/mid.pcm"
+  cp -a "${mid_pcm}" "${work_dir}/mid.pcm.before"
+  sleep 1
+  touch "${mid_pcm}"
+  sleep 1
+  printf '%s\n' \
+    'export module base;' \
+    'export constexpr int magic = 2;' \
+    'export int base_runtime() { return magic; }' > "${work_dir}/base.c++m"
+  printf '%s\n' \
+    'import mid;' \
+    'import base;' \
+    'int main() {' \
+    '  return (mid_value() == 12 && mid_const == 12 && base_runtime() == 2) ? 0 : 1;' \
+    '}' > "${work_dir}/main.c++"
+
+  run_cb_build "${work_dir}"
+  assert_compile_end "mid.c++m" false pcm_stale true "object_stale_import_stale_reprecompiles_mid"
+  assert_jsonl_event_value build_end ok true "object_stale_import_stale_build_ok"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if cmp -s "${work_dir}/mid.pcm.before" "${mid_pcm}"; then
+    fail "mid.pcm must be rewritten when its import is newer"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"object_stale_import_stale_pcm_rewritten"}'
+  fi
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if ! "${work_dir}/${BUILD_DIR}/bin/main"; then
+    fail "binary must see magic=2 through mid after object_stale"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"object_stale_import_stale_run"}'
+  fi
+  end_case modular_object_stale_import_stale
+}
+
+test_modular_object_missing_header_stale() {
+  should_run modular_object_missing_header_stale || return 0
+  begin_case modular_object_missing_header_stale
+  local work_dir
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
+  rm -f "${work_dir}/hello.c++"
+
+  printf '%s\n' \
+    '#pragma once' \
+    '#define HEADER_MAGIC 1' > "${work_dir}/value.h++"
+  printf '%s\n' \
+    'module;' \
+    '#include "value.h++"' \
+    'export module header_mid;' \
+    'export constexpr int mid_const = HEADER_MAGIC + 10;' \
+    'export int mid_value() { return mid_const; }' > "${work_dir}/mid.c++m"
+  printf '%s\n' \
+    'import header_mid;' \
+    'int main() { return (mid_value() == 11 && mid_const == 11) ? 0 : 1; }' \
+    > "${work_dir}/main.c++"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "object_missing_header_stale_seed"
+
+  local mid_pcm="${work_dir}/${BUILD_DIR}/pcm/header_mid.pcm"
+  cp -a "${mid_pcm}" "${work_dir}/mid.pcm.before"
+  rm -f "${work_dir}/${BUILD_DIR}/obj/header_mid.o"
+  sleep 1
+  printf '%s\n' \
+    '#pragma once' \
+    '#define HEADER_MAGIC 2' > "${work_dir}/value.h++"
+  printf '%s\n' \
+    'import header_mid;' \
+    'int main() { return (mid_value() == 12 && mid_const == 12) ? 0 : 1; }' \
+    > "${work_dir}/main.c++"
+
+  run_cb_build "${work_dir}"
+  assert_compile_end "mid.c++m" false header_stale true "object_missing_header_stale_reprecompiles"
+  assert_jsonl_contains '"--precompile"' "object_missing_header_stale_runs_precompile"
+  assert_jsonl_event_value build_end ok true "object_missing_header_stale_build_ok"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if cmp -s "${work_dir}/mid.pcm.before" "${mid_pcm}"; then
+    fail "mid.pcm must be rewritten when its textual header is newer"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"object_missing_header_stale_pcm_rewritten"}'
+  fi
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if ! "${work_dir}/${BUILD_DIR}/bin/main"; then
+    fail "binary must see HEADER_MAGIC=2 after object_missing"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"object_missing_header_stale_run"}'
+  fi
+  end_case modular_object_missing_header_stale
+}
+
 test_module_phases() {
   should_run module_phases || return 0
   begin_case module_phases
@@ -1956,6 +2073,8 @@ main() {
   test_modular_object_stale
   test_modular_one_phase_object_missing
   test_modular_object_missing_import_stale
+  test_modular_object_stale_import_stale
+  test_modular_object_missing_header_stale
   test_module_phases
   test_pcm_edge_scheduler
   test_jsonl_modes

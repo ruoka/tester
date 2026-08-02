@@ -10,6 +10,13 @@ tag; cutting a release renames that section.
 
 ## Unreleased
 
+### Fixed
+
+- **Two-phase modular object-only repairs now validate every BMI input.** CB compares
+  imported PCMs and textual-header depfiles against the BMI before reusing it when the
+  object is missing or older than its own PCM. A stale import/header now re-precompiles
+  instead of producing a green binary from outdated interface state.
+
 ## [2.2.0] — 2026-08-02
 
 ### Added

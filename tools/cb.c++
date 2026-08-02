@@ -2308,13 +2308,16 @@ private:
         else
         {
             object_timestamp = fs::last_write_time(tu.object_path);
-            if(object_timestamp < cache.entries.at(tu.full_path) and not tu.is_modular)
-                return output::rebuild_info{.kind = output::rebuild_kind::object_stale, .trigger_path = tu.full_path};
+            if(not tu.is_modular)
+            {
+                if(object_timestamp < cache.entries.at(tu.full_path))
+                    return output::rebuild_info{.kind = output::rebuild_kind::object_stale, .trigger_path = tu.full_path};
 
-            // Textual #include dependencies are invisible to the module graph, so the
-            // compiler's own depfile is the only record of them.
-            if(auto header_reason = stale_header(tu, object_timestamp))
-                return header_reason;
+                // Textual #include dependencies are invisible to the module graph, so the
+                // compiler's own depfile is the only record of them.
+                if(auto header_reason = stale_header(tu, object_timestamp))
+                    return header_reason;
+            }
         }
 
         // Implementation units consume their interface PCM implicitly through
@@ -2336,19 +2339,28 @@ private:
         // --precompile followed by a failed/skipped object step leaves a pcm newer than
         // the .o, and without this check the unit cache-hits while importers rebuild
         // against the new interface — linking the old implementation into the binary.
-        // When the object is missing, compare imports against the pcm itself: that is
-        // what object_only would feed to pcm→.o.
+        // When object_only would reuse the BMI, compare imports and textual headers against the
+        // pcm itself: that is what pcm→.o consumes. Defer object_stale until those inputs pass.
         auto freshness_timestamp = object_timestamp;
+        auto object_stale_vs_pcm = false;
         if (tu.is_modular) {
             if (not fs::exists(tu.pcm_path))
                 return pcm_rebuild(output::rebuild_kind::own_pcm_missing, tu);
-            auto pcm_timestamp = fs::last_write_time(tu.pcm_path);
+            const auto pcm_timestamp = fs::last_write_time(tu.pcm_path);
             if (pcm_timestamp < tu.last_modified)
                 return pcm_rebuild(output::rebuild_kind::own_pcm_stale, tu);
             if(object_absent)
                 freshness_timestamp = pcm_timestamp;
             else if (object_timestamp < pcm_timestamp)
-                return pcm_rebuild(output::rebuild_kind::object_stale, tu);
+            {
+                freshness_timestamp = pcm_timestamp;
+                object_stale_vs_pcm = true;
+            }
+
+            // The modular depfile is emitted by the source-reading precompile/one-phase step, so
+            // a missing or lagging object must not make a stale BMI look reusable.
+            if(auto header_reason = stale_header(tu, freshness_timestamp))
+                return header_reason;
         }
 
         // Rebuild when any transitive import PCM is newer than this object file.
@@ -2376,6 +2388,8 @@ private:
 
         if(object_absent)
             return output::rebuild_info{.kind = output::rebuild_kind::object_missing, .trigger_path = tu.full_path};
+        if(object_stale_vs_pcm)
+            return pcm_rebuild(output::rebuild_kind::object_stale, tu);
         if(object_timestamp < cache.entries.at(tu.full_path))
             return output::rebuild_info{.kind = output::rebuild_kind::object_stale, .trigger_path = tu.full_path};
 
