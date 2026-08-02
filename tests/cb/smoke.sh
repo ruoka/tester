@@ -1624,6 +1624,76 @@ test_modular_one_phase_object_missing() {
   end_case modular_one_phase_object_missing
 }
 
+test_modular_object_missing_import_stale() {
+  should_run modular_object_missing_import_stale || return 0
+  begin_case modular_object_missing_import_stale
+  local work_dir
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
+  rm -f "${work_dir}/hello.c++"
+
+  # Two-phase object_missing reuses the BMI. If needs_recompile returns that reason
+  # before checking imports, deleting mid.o + editing an imported constexpr leaves a
+  # green binary that still embeds the old value from the stale mid.pcm.
+  printf '%s\n' \
+    'export module base;' \
+    'export constexpr int magic = 1;' \
+    'export int base_runtime() { return magic; }' > "${work_dir}/base.c++m"
+  printf '%s\n' \
+    'export module mid;' \
+    'import base;' \
+    'export constexpr int mid_const = magic + 10;' \
+    'export int mid_value() { return mid_const; }' > "${work_dir}/mid.c++m"
+  printf '%s\n' \
+    'import mid;' \
+    'import base;' \
+    'int main() {' \
+    '  return (mid_value() == 11 && mid_const == 11 && base_runtime() == 1) ? 0 : 1;' \
+    '}' > "${work_dir}/main.c++"
+
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end ok true "object_missing_import_stale_seed"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if ! "${work_dir}/${BUILD_DIR}/bin/main"; then
+    fail "seed binary should exit 0"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"object_missing_import_stale_seed_run"}'
+  fi
+
+  local mid_pcm="${work_dir}/${BUILD_DIR}/pcm/mid.pcm"
+  cp -a "${mid_pcm}" "${work_dir}/mid.pcm.before"
+  rm -f "${work_dir}/${BUILD_DIR}/obj/mid.o"
+  sleep 1
+  printf '%s\n' \
+    'export module base;' \
+    'export constexpr int magic = 2;' \
+    'export int base_runtime() { return magic; }' > "${work_dir}/base.c++m"
+  printf '%s\n' \
+    'import mid;' \
+    'import base;' \
+    'int main() {' \
+    '  return (mid_value() == 12 && mid_const == 12 && base_runtime() == 2) ? 0 : 1;' \
+    '}' > "${work_dir}/main.c++"
+
+  run_cb_build "${work_dir}"
+  assert_compile_end "mid.c++m" false pcm_stale true "object_missing_import_stale_reprecompiles_mid"
+  assert_jsonl_contains '"--precompile"' "object_missing_import_stale_runs_precompile"
+  assert_jsonl_event_value build_end ok true "object_missing_import_stale_build_ok"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if cmp -s "${work_dir}/mid.pcm.before" "${mid_pcm}"; then
+    fail "mid.pcm must be rewritten when an import BMI is newer"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"object_missing_import_stale_pcm_rewritten"}'
+  fi
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if ! "${work_dir}/${BUILD_DIR}/bin/main"; then
+    fail "binary must see magic=2 through mid (not a stale BMI object_only)"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"object_missing_import_stale_run"}'
+  fi
+  end_case modular_object_missing_import_stale
+}
+
 test_module_phases() {
   should_run module_phases || return 0
   begin_case module_phases
@@ -1780,6 +1850,7 @@ main() {
   test_std_module_reported
   test_modular_object_stale
   test_modular_one_phase_object_missing
+  test_modular_object_missing_import_stale
   test_module_phases
   test_jsonl_modes
   test_jsonl_failure_mode
