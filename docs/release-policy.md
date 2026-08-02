@@ -3,13 +3,15 @@
 What counts as public, how versions are numbered, what breaks a consumer, and what has to
 be true before a release is cut.
 
-## Current status: v2.2.0
+## Current status: v2.2.1
 
-**`v2.2.0`** (2 August 2026) is the current **supported** SemVer release. CB now
-schedules compilation from ready module edges, publishes two-phase BMIs before their
-provider objects finish, uses bounded worker pools, overlaps source discovery with
-standard-module work, and can restore a full-profile-keyed `std.pcm` / `std.o` pair
-after `clean`.
+**`v2.2.1`** (2 August 2026) is the current **supported** SemVer release. Two-phase
+modular object-only repairs now validate imported BMIs and textual-header inputs before
+reusing a provider BMI.
+
+**`v2.2.0`** (2 August 2026) added ready-edge compilation scheduling, early two-phase
+BMI publication, bounded worker pools, overlapping source discovery with
+standard-module work, and a full-profile-keyed shared `std.pcm` / `std.o` cache.
 
 **`v2.1.3`** (2 August 2026) scoped project `-fmodule-file=` mappings to each
 translation unit's direct and transitive imports. **`v2.1.2`** (2 August 2026) fixed
@@ -26,7 +28,7 @@ Parents should pin a release tag or an explicit commit:
 
 ```bash
 git submodule add https://github.com/ruoka/tester deps/tester
-git -C deps/tester checkout v2.2.0   # or a later tag / deliberate commit
+git -C deps/tester checkout v2.2.1   # or a later tag / deliberate commit
 ```
 
 How a parent `tools/CB.sh` finds that checkout (`deps/tester` vs sibling `../tester` vs
