@@ -1022,6 +1022,29 @@ output::rebuild_info attributed_to(output::rebuild_info reason, const translatio
     return reason;
 }
 
+// Unit keys this consumer waits on: explicit imports plus an implementation unit's primary
+// interface. Unknown imports remain a compiler diagnostic rather than a CB preflight failure.
+// Deduplicate an explicit self-import against the implementation unit's implicit interface edge.
+template<typename KnownUnits, typename Visit>
+requires std::invocable<Visit&, const std::string&>
+void for_each_dependency_provider(const translation_unit& tu,
+                                  const KnownUnits& known,
+                                  Visit&& visit)
+{
+    auto seen = std::flat_set<std::string, std::less<>>{};
+    const auto consider = [&](const std::string& key)
+    {
+        if(not known.contains(key) or not seen.insert(key).second)
+            return;
+        visit(key);
+    };
+
+    for(const auto& imported : tu.imports)
+        consider(imported);
+    if(tu.kind == unit_kind::implementation_unit)
+        consider(tu.module);
+}
+
 using dependency_graph = std::flat_map<std::string, string_list, std::less<>>;
 using indegree_map = std::flat_map<std::string, int, std::less<>>;
 using unit_to_tu_map = std::flat_map<std::string, translation_unit*, std::less<>>;
@@ -2569,22 +2592,13 @@ private:
             indegrees[tu.unit] = 0;
         }
 
-        for (const auto& tu : units) {
-            // Module imports create edges from imported module -> importer.
-            for (const auto& module : tu.imports) {
-                if (unit_to_tu.contains(module)) {
-                    dependencies[module].push_back(tu.unit);
-                    indegrees[tu.unit]++;
-                }
-            }
-
-            // Implementation units must build after their interface.
-            if (tu.kind == unit_kind::implementation_unit) {
-                if (unit_to_tu.contains(tu.module)) {
-                    dependencies[tu.module].push_back(tu.unit);
-                    indegrees[tu.unit]++;
-                }
-            }
+        for(const auto& tu : units)
+        {
+            for_each_dependency_provider(tu, unit_to_tu, [&](const std::string& provider)
+            {
+                dependencies[provider].push_back(tu.unit);
+                ++indegrees[tu.unit];
+            });
         }
 
         auto ready = topo_sort_queue{};
@@ -3028,24 +3042,17 @@ private:
         for(auto index = std::size_t{0}; index < unit_count; ++index)
             unit_to_index[units_in_topological_order[index].unit] = index;
 
-        // Match scan_and_order's graph: imports are explicit edges, while an implementation unit
-        // also consumes its primary interface implicitly. A set prevents a self-import from
-        // counting that interface twice.
+        // The same provider rule drives inventory levels and compile readiness.
         auto dependents = std::vector<std::vector<std::size_t>>(unit_count);
         auto dependencies_remaining = std::vector<std::size_t>(unit_count);
         for(auto index = std::size_t{0}; index < unit_count; ++index)
         {
             const auto& tu = units_in_topological_order[index];
-            auto providers = std::flat_set<std::size_t>{};
-            for(const auto& imported : tu.imports)
-                if(unit_to_index.contains(imported))
-                    providers.insert(unit_to_index.at(imported));
-            if(tu.kind == unit_kind::implementation_unit and unit_to_index.contains(tu.module))
-                providers.insert(unit_to_index.at(tu.module));
-
-            dependencies_remaining[index] = providers.size();
-            for(const auto provider : providers)
-                dependents[provider].push_back(index);
+            for_each_dependency_provider(tu, unit_to_index, [&](const std::string& provider)
+            {
+                dependents[unit_to_index.at(provider)].push_back(index);
+                ++dependencies_remaining[index];
+            });
         }
 
         auto ready = std::queue<std::size_t>{};
