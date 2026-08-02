@@ -160,6 +160,8 @@ cmake --build build-cmake-darwin-debug --target run_all_tests  # examples includ
 
 Like Make, it has no object cache and no build telemetry, and it has no `list`-equivalent inventory. CI gates it warning-free for `Debug` and `Release` with `[self]` and the standalone suite (`cmake-ninja-build-and-test`); the dev container ships the pinned CMake and Ninja.
 
+Wall-clock comparison of `tools/cb` against this CMake + Ninja path (including `--modules=one-phase`): [`docs/cb-vs-ninja-benchmark.md`](cb-vs-ninja-benchmark.md). Reproduce with `./tools/bench-cb-vs-ninja.sh`.
+
 ### Ninja / Meson / Bazel
 
 - **Ninja** — a fast backend, not a project descriptor. CB invokes the compiler directly; there is no separate "generate then ninja" step. The bundled `CMakeLists.txt` above is where Ninja does get used, as CMake's backend.
@@ -398,6 +400,7 @@ CB uses C++23 range pipelines instead of hand-written accumulation loops where t
 - [README — Built-in Builder](../README.md#built-in-builder-cb) — quick start and commands
 - [README — Makefile runner](../README.md#makefile-runner-alternative-to-cb) — a non-CB path
 - [README — CMake + Ninja build](../README.md#cmake--ninja-build-alternative-to-cb) — the other one
+- [cb-vs-ninja-benchmark.md](cb-vs-ninja-benchmark.md) — measured build times (`tools/bench-cb-vs-ninja.sh`)
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — all three build paths and the checks a change has to pass
 - [YarDB](https://github.com/ruoka/YarDB) — public reference project (`deps/tester` + parent `tools/CB.sh`)
 - [AGENTS.md](../AGENTS.md) — JSONL events, triage, correlation
