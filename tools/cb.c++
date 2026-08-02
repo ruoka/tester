@@ -967,10 +967,12 @@ private:
 
 } // namespace source
 
+namespace output {
+
 // Observers format four of a unit's fields, so they receive those four and not the unit: the
 // rest is build state, and cb-observer.h++ stays independent of the scanner. The pcm path is the
 // one derived field, and deriving it here is why compile_start and compile_end cannot disagree.
-output::compile_unit compile_unit_of(const source::translation_unit& tu)
+compile_unit compile_unit_of(const source::translation_unit& tu)
 {
     return {.source = tu.full_path,
             .object = tu.object_path,
@@ -980,9 +982,8 @@ output::compile_unit compile_unit_of(const source::translation_unit& tu)
 }
 
 // The inventory projection, the sibling of compile_unit_of: the list command reports what a
-// unit is rather than where it compiles to, so it carries its own strings. Three adjacent
-// bools are why this is named fields and not an aggregate.
-output::source_unit source_unit_of(const source::translation_unit& tu)
+// unit is rather than where it compiles to, so it carries its own strings.
+source_unit source_unit_of(const source::translation_unit& tu)
 {
     return {.unit = tu.unit,
             .path = tu.display_path,
@@ -994,6 +995,8 @@ output::source_unit source_unit_of(const source::translation_unit& tu)
             .is_test = tu.is_test,
             .is_modular = tu.is_modular};
 }
+
+} // namespace output
 
 using unit_to_tu_map = std::flat_map<std::string, source::translation_unit*, std::less<>>;
 using translation_unit_list = std::vector<source::translation_unit>;
@@ -3490,7 +3493,7 @@ private:
     void compile_unit(const source::translation_unit& tu,
                       const output::rebuild_info& rebuild,
                       std::invocable auto&& on_dependency_ready) {
-        const auto unit = compile_unit_of(tu);
+        const auto unit = output::compile_unit_of(tu);
         auto compile = output::compile_scope{unit, rebuild};
         // Two-phase: object_missing / object_stale reuse the pcm that is already there —
         // same split build_std_module uses. Re-precompiling would bump the pcm mtime and
@@ -3634,7 +3637,7 @@ private:
                         else
                         {
                             {
-                                const auto hit = output::compile_scope{compile_unit_of(tu)};
+                                const auto hit = output::compile_scope{output::compile_unit_of(tu)};
                             }
                             publish_dependency(index);
                         }
@@ -4209,7 +4212,7 @@ public:
         inventory.units.reserve(units_in_topological_order.size());
         for(const auto& tu : units_in_topological_order)
         {
-            inventory.units.push_back(source_unit_of(tu));
+            inventory.units.push_back(output::source_unit_of(tu));
             if(tu.has_main)
                 ++inventory.main_count;
             if(tu.is_test)
