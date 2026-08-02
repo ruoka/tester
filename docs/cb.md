@@ -236,7 +236,7 @@ Environment variables for **bootstrap** (not test output): `LLVM_PATH`, `CXX`, `
 
 ## Object cache profile
 
-`build-<os>-<config>/cache/object-cache.txt` starts with a readable **profile header** (not a hash). `cb::cache::profile` owns its byte-stable serialization, shared-`std` key and field diff. CB compares the full profile string on load; a mismatch clears the in-memory object cache and sets `rebuild_reason: "profile_change"` on every recompiled TU.
+`build-<os>-<config>/cache/object-cache.txt` starts with a readable **profile header** (not a hash). `cb::cache::profile` owns its byte-stable serialization, shared-`std` key and field diff; `cb::cache::object_store` owns the path, loaded entries, persistence, status and invalidation. It compares the full profile string on load; a mismatch clears the in-memory object cache and sets `rebuild_reason: "profile_change"` on every recompiled TU.
 
 **Format:** `format=cb-object-cache-v3` (tab-separated `key=value` fields after the `profile\t` prefix).
 
@@ -254,7 +254,7 @@ Environment variables for **bootstrap** (not test output): `LLVM_PATH`, `CXX`, `
 
 Legacy caches without a `profile\t` header still load; the header is rewritten on the next save. Bumping `format` or adding fields intentionally invalidates old caches once.
 
-Cache indexes are written through a checked temporary file and atomically renamed only after a complete flush — one writer for all three, so they fail identically. A write or rename failure fails the build rather than promoting a partial index.
+Cache indexes are written through the shared `detail::write_atomic_file` primitive and atomically renamed only after a complete flush — one checked writer for all three stores (and the generated inventory files), so they fail identically. A write or rename failure fails the build rather than promoting a partial index.
 
 **Value encoding:** profile field values are stored verbatim (no percent-encoding). CB writes only values that cannot contain tab, newline, or `%` (paths, flag lists, and version lines satisfy this).
 
@@ -354,7 +354,7 @@ Example `profile_diff` fragment (on `profile_changed` only):
 
 ## Architecture (brief)
 
-**`tools/cb.c++`** — parses the module graph, maintains `object_cache_map` and executable link signature cache, schedules parallel compiles, invokes `clang++` with `-fmodule-file=` flags, handles module interfaces and `.impl.c++` units, links executables (including `test_runner` with discovered test objects), and writes `compile_commands.json` / `graph.json` from `list`.
+**`tools/cb.c++`** — parses the module graph, coordinates the owning cache classes, schedules parallel compiles, invokes `clang++` with `-fmodule-file=` flags, handles module interfaces and `.impl.c++` units, links executables (including `test_runner` with discovered test objects), and writes `compile_commands.json` / `graph.json` from `list`.
 
 **`tools/CB.sh.core`** — bootstraps the `cb` binary, resolves `std.cppm`, handles cross-OS rebuild detection, JSONL-safe logging to stderr, and forwards args to `cb`.
 
@@ -370,10 +370,14 @@ Example `profile_diff` fragment (on `profile_changed` only):
 | `cb::output::notify` | Publishes build events directly to installed observers |
 | `cb::source::translation_unit` / `scanner` | Source identity, collection, exclusion, lexical cleaning, dependency edges and topological order |
 | `cb::cache::profile` / `analyzer` | Profile serialization/key/diff and recursive object/BMI/header freshness analysis |
+| `cb::cache::object_store` | Object-cache path, entry snapshot, profile mismatch, persistence, status and invalidation |
+| `cb::cache::link_store` | Executable signatures, relink decisions, parallel-safe updates, persistence, status and invalidation |
+| `cb::cache::standard_module_store` | Local `std` profile/rebuild decision and shared-machine-cache hydrate/publish storage |
+| `cb::cache::compiler_stamp` | Compiler-version stamp path, read, status and invalidation |
 | `cb::cli::options` / `parser` | Strict argv parsing and test-runner forwarding |
-| `cb::detail` | Primitives shared across subsystems: shell/argv, flag text, paths, file signatures and diagnostics |
+| `cb::detail` | Primitives shared across subsystems: shell/argv, flag text, paths, atomic file replacement, file signatures and diagnostics |
 
-`build_system` orchestrates those classes, owns cache persistence and toolchain invocation, and publishes facts directly through `cb::output::notify`. `main` registers built-in observers by name and selects one from the parsed `output_name`. Compile, link, command, cache, list, and lifecycle events all cross the same observer boundary; adding a formatter does not add format branches to `build_system`. Observers retain channel-specific `format_*` and `write_*` helpers, while shared profile-field iteration keeps diff computation and every format aligned when fields are added.
+`build_system` orchestrates those classes, owns toolchain invocation, and publishes facts directly through `cb::output::notify`; cache maps, paths, persistence and reuse decisions remain inside `cb::cache`. `main` registers built-in observers by name and selects one from the parsed `output_name`. Compile, link, command, cache, list, and lifecycle events all cross the same observer boundary; adding a formatter does not add format branches to `build_system`. Observers retain channel-specific `format_*` and `write_*` helpers, while shared profile-field iteration keeps diff computation and every format aligned when fields are added.
 
 ### Ranges idioms (`cb.c++`)
 
