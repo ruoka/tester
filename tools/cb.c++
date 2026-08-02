@@ -2937,8 +2937,38 @@ private:
         fs::create_directories(binary_dir());
         fs::create_directories(cache_dir());
 
-        build_std_module();
-        scan_and_order();
+        // Source discovery and std compilation share no mutable build state: the scan writes
+        // units_in_topological_order while std owns only its artefacts/profile. Hide the scan
+        // under the cold build's root module work, then join before module flags consume units.
+        auto scan_failure = std::exception_ptr{};
+        auto scan = std::jthread{[&]()
+        {
+            try
+            {
+                scan_and_order();
+            }
+            catch(...)
+            {
+                scan_failure = std::current_exception();
+            }
+        }};
+
+        auto std_failure = std::exception_ptr{};
+        try
+        {
+            build_std_module();
+        }
+        catch(...)
+        {
+            std_failure = std::current_exception();
+        }
+        scan.join();
+
+        // Prefer the std failure, matching the old phase order when both sides fail.
+        if(std_failure)
+            std::rethrow_exception(std_failure);
+        if(scan_failure)
+            std::rethrow_exception(scan_failure);
         if(units_in_topological_order.empty())
             throw std::runtime_error{"No sources found"};
 
