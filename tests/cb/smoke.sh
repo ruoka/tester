@@ -402,8 +402,8 @@ test_source_list() {
 }
 
 # list writes compile_commands.json for the active TU set so clangd can see the real argv
-# builders (including -fmodule-file= after update_module_flags). One entry per source: the
-# step that reads that file — --precompile for modular interfaces, -c otherwise.
+# builders (including per-TU -fmodule-file= after update_module_flags). One entry per source:
+# the step that reads that file — --precompile for modular interfaces, -c otherwise.
 test_compile_commands() {
   should_run compile_commands || return 0
   begin_case compile_commands
@@ -1094,15 +1094,25 @@ test_module_safe_name() {
 
   # Partition demo:part and flat module demo_part must keep distinct artifacts.
   # Convention: ':' / '.' fold to '-', while '_' stays literal.
+  # -fmodule-file= is per-TU now, so an importer is required for those flags to
+  # appear on any compile argv (leaf interfaces only map std + prebuilt path).
   printf '%s\n' \
     'export module demo:part;' \
     'export int part_value() { return 1; }' > "${work_dir}/demo-part.c++m"
+  printf '%s\n' \
+    'export module demo;' \
+    'export import :part;' > "${work_dir}/demo.c++m"
   printf '%s\n' \
     'export module demo_part;' \
     'export int flat_value() { return 2; }' > "${work_dir}/demo_part.c++m"
   printf '%s\n' \
     'export module demo.app;' \
     'export int app_value() { return 3; }' > "${work_dir}/demo-app.c++m"
+  printf '%s\n' \
+    'import demo;' \
+    'import demo_part;' \
+    'import demo.app;' \
+    'int main() { return part_value() + flat_value() + app_value() - 6; }' > "${work_dir}/use.c++"
 
   run_cb_build "${work_dir}"
   assert_jsonl_event_value build_end ok true "module_safe_name_build_ok"
