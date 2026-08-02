@@ -252,70 +252,6 @@ std::string binary_signature(const std::string& path)
     return std::to_string(size) + ':' + std::to_string(ticks);
 }
 
-// waitpid yields a wait status; decode once so command_end / test_end report the
-// child's own exit_code (or signal) instead of the packed wait value (256 for exit 1).
-inline output::process_status decode_wait_status(int status)
-{
-    if(status < 0) // spawn or waitpid itself failed
-        return {.exit_code = status, .wait_status = status};
-    if(WIFSIGNALED(status))
-        return {.exit_code = -1, .wait_status = status, .signaled = true, .signal = WTERMSIG(status)};
-    if(WIFEXITED(status))
-        return {.exit_code = WEXITSTATUS(status), .wait_status = status};
-    return {.exit_code = -1, .wait_status = status};
-}
-
-// Compiler output can run to megabytes on a template error; only the head is worth
-// putting on a JSONL line, and the full capture stays on disk for the human.
-inline constexpr auto diagnostics_head_limit = std::size_t{8192};
-
-inline output::diagnostics read_diagnostics(std::string_view path)
-{
-    auto file = std::ifstream{std::string{path}, std::ios::binary};
-    if(not file)
-        return {};
-
-    auto text = std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
-    auto diag = output::diagnostics{.path = std::string{path}, .bytes = text.size()};
-    if(text.size() > diagnostics_head_limit)
-    {
-        text.resize(diagnostics_head_limit);
-        diag.truncated = true;
-    }
-    diag.head = std::move(text);
-    return diag;
-}
-
-// A modular unit runs two toolchain steps that share one compile_end, so warnings from the
-// first must still be visible when the second also printed (or failed). Cap the combined head
-// at the same limit a single capture uses.
-inline void append_diagnostics(output::diagnostics& into, output::diagnostics&& more)
-{
-    if(more.empty())
-        return;
-    if(into.empty())
-    {
-        into = std::move(more);
-        return;
-    }
-
-    if(not more.head.empty())
-    {
-        if(not into.head.empty())
-            into.head.push_back('\n');
-        into.head += more.head;
-        if(into.head.size() > diagnostics_head_limit)
-        {
-            into.head.resize(diagnostics_head_limit);
-            into.truncated = true;
-        }
-    }
-    into.bytes += more.bytes;
-    into.truncated = into.truncated or more.truncated;
-    if(into.path.empty())
-        into.path = std::move(more.path);
-}
-
 std::string read_first_line(const std::string& path)
 {
     auto file = std::ifstream{path};
@@ -2182,76 +2118,132 @@ private:
 
 } // namespace cache
 
-// Compiling and linking differ only in the work: a bounded set of workers claims jobs from the
-// input, nothing new starts once a job has failed, and the first failure is rethrown after every
-// worker has joined, so a failing build never leaves a toolchain process running.
-template <std::ranges::input_range Jobs, typename Work>
-void run_in_parallel(Jobs&& jobs, std::ptrdiff_t limit, Work work)
+namespace execution {
+
+// Generic bounded parallel execution for independent jobs: nothing new starts once one fails,
+// and the first failure is rethrown after every worker has joined, so no child work is abandoned.
+class worker_pool
 {
-    using job_reference = std::ranges::range_reference_t<Jobs>;
-    static_assert(std::is_lvalue_reference_v<job_reference>);
-    using job_type = std::remove_cvref_t<job_reference>;
+public:
+    explicit worker_pool(std::ptrdiff_t job_limit) : limit{job_limit} {}
 
-    // The decisions outlive every worker. Snapshot pointers rather than the decisions
-    // themselves: a compile decision carries a rebuild reason with several strings.
-    auto items = std::vector<const job_type*>{};
-    for(const auto& job : jobs)
-        items.push_back(std::addressof(job));
-    if(items.empty())
-        return;
-
-    const auto worker_count = std::min(
-        items.size(),
-        static_cast<std::size_t>(std::max<std::ptrdiff_t>(1, limit)));
-    auto next = std::atomic_size_t{0};
-    auto failed = std::atomic_bool{false};
-    auto failure = std::exception_ptr{};
-    auto failure_mutex = std::mutex{};
-    auto threads = thread_list{};
-    threads.reserve(worker_count);
-
-    for(auto worker = std::size_t{0}; worker < worker_count; ++worker)
+    template <std::ranges::input_range Jobs, typename Work>
+    void run(Jobs&& jobs, Work work) const
     {
-        threads.emplace_back([&]()
+        using job_reference = std::ranges::range_reference_t<Jobs>;
+        static_assert(std::is_lvalue_reference_v<job_reference>);
+        using job_type = std::remove_cvref_t<job_reference>;
+
+        // The decisions outlive every worker. Snapshot pointers rather than the decisions
+        // themselves: a compile decision carries a rebuild reason with several strings.
+        auto items = std::vector<const job_type*>{};
+        for(const auto& job : jobs)
+            items.push_back(std::addressof(job));
+        if(items.empty())
+            return;
+
+        const auto worker_count = std::min(
+            items.size(),
+            static_cast<std::size_t>(std::max<std::ptrdiff_t>(1, limit)));
+        auto next = std::atomic_size_t{0};
+        auto failed = std::atomic_bool{false};
+        auto failure = std::exception_ptr{};
+        auto failure_mutex = std::mutex{};
+        auto threads = thread_list{};
+        threads.reserve(worker_count);
+
+        for(auto worker = std::size_t{0}; worker < worker_count; ++worker)
         {
-            while(not failed.load(std::memory_order_relaxed))
+            threads.emplace_back([&]()
             {
-                const auto index = next.fetch_add(1, std::memory_order_relaxed);
-                if(index >= items.size())
-                    return;
-                // A peer may have failed while this worker claimed the next index.
-                if(failed.load(std::memory_order_relaxed))
-                    return;
-                try
+                while(not failed.load(std::memory_order_relaxed))
                 {
-                    work(*items[index]);
+                    const auto index = next.fetch_add(1, std::memory_order_relaxed);
+                    if(index >= items.size())
+                        return;
+                    // A peer may have failed while this worker claimed the next index.
+                    if(failed.load(std::memory_order_relaxed))
+                        return;
+                    try
+                    {
+                        work(*items[index]);
+                    }
+                    catch(...)
+                    {
+                        failed.store(true, std::memory_order_relaxed);
+                        auto lock = std::lock_guard<std::mutex>{failure_mutex};
+                        if(not failure)
+                            failure = std::current_exception();
+                    }
                 }
-                catch(...)
-                {
-                    failed.store(true, std::memory_order_relaxed);
-                    auto lock = std::lock_guard<std::mutex>{failure_mutex};
-                    if(not failure)
-                        failure = std::current_exception();
-                }
-            }
-        });
+            });
+        }
+
+        for(auto& thread : threads)
+            thread.join();
+        if(failure)
+            std::rethrow_exception(failure);
     }
 
-    for(auto& thread : threads)
-        thread.join();
-    if(failure)
-        std::rethrow_exception(failure);
-}
+private:
+    std::ptrdiff_t limit;
+};
 
-// One build_start, exactly one build_end, whichever way the steps end. Here rather than in the
-// callers, which each had to remember a phase flag, an emitted flag and a catch-and-rethrow, and
-// rather than in the observers, which would each reimplement the latch and could then disagree.
+} // namespace execution
+
+namespace output {
+
+// Compiler output can run to megabytes on a template error; only the head is worth
+// putting on a JSONL line, and the full capture stays on disk for the human.
+inline constexpr auto diagnostics_head_limit = std::size_t{8192};
+
+// Reporting scopes use one accumulator for warnings from multi-step compilation. A failing
+// step replaces prior warnings so its error gets the full diagnostics head budget.
+class diagnostic_buffer
+{
+public:
+    void append(diagnostics more)
+    {
+        if(more.empty())
+            return;
+        if(value_.empty())
+        {
+            value_ = std::move(more);
+            return;
+        }
+
+        if(not more.head.empty())
+        {
+            if(not value_.head.empty())
+                value_.head.push_back('\n');
+            value_.head += more.head;
+            if(value_.head.size() > diagnostics_head_limit)
+            {
+                value_.head.resize(diagnostics_head_limit);
+                value_.truncated = true;
+            }
+        }
+        value_.bytes += more.bytes;
+        value_.truncated = value_.truncated or more.truncated;
+        if(value_.path.empty())
+            value_.path = std::move(more.path);
+    }
+
+    void replace(diagnostics value) { value_ = std::move(value); }
+    const diagnostics& value() const { return value_; }
+
+private:
+    diagnostics value_{};
+};
+
+// One build_start, exactly one build_end, whichever way the steps end. Reporting owns this
+// pairing so every observer sees the same lifecycle.
 class build_scope
 {
 public:
     build_scope(std::string_view config, bool include_tests, bool include_examples)
     {
-        output::notify(&output::observer::build_start, config, include_tests, include_examples);
+        notify(&observer::build_start, config, include_tests, include_examples);
     }
 
     build_scope(const build_scope&) = delete;
@@ -2267,8 +2259,8 @@ private:
     {
         if(std::exchange(reported, true))
             return;
-        output::notify(&output::observer::build_end, ok,
-                       output::interval{started, std::chrono::steady_clock::now()});
+        notify(&observer::build_end, ok,
+               interval{started, std::chrono::steady_clock::now()});
     }
 
     std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
@@ -2276,23 +2268,21 @@ private:
 };
 
 // One compile_start, exactly one compile_end: build_scope's pairing one level down. A modular
-// unit compiles in two steps and either can fail, so without the scope each exit path carried its
-// own copy of the event and had to agree about the unit, the reason and the clock. attach()
-// collects the compiler's own output — errors on failure, warnings on success — so a consumer
-// sees the diagnostic and not just ok:false / silence.
+// unit compiles in two steps and either can fail. attach() collects the compiler's own output —
+// errors on failure, warnings on success — so a consumer sees the diagnostic and not silence.
 class compile_scope
 {
 public:
-    compile_scope(const output::compile_unit& compiled, const output::rebuild_info& reason)
+    compile_scope(const compile_unit& compiled, const rebuild_info& reason)
         : unit{compiled}, rebuild{reason}
     {
-        output::notify(&output::observer::compile_start, unit, rebuild);
+        notify(&observer::compile_start, unit, rebuild);
     }
 
     // A cache hit is the same pair with nothing in between: no reason, no duration, and ok from
     // the start, since there is no step that could fail. Constructing one reports the hit.
-    explicit compile_scope(const output::compile_unit& compiled)
-        : compile_scope{compiled, output::rebuild_info{}}
+    explicit compile_scope(const compile_unit& compiled)
+        : compile_scope{compiled, rebuild_info{}}
     {
         hit = true;
         ok = true;
@@ -2305,45 +2295,41 @@ public:
     ~compile_scope()
     {
         const auto finished = hit ? started : std::chrono::steady_clock::now();
-        output::notify(&output::observer::compile_end,
-                       unit,
-                       output::step_result{.ok = ok,
-                                           .cache_hit = hit,
-                                           .timing = {started, finished},
-                                           .rebuild = rebuild,
-                                           .diag = diag});
+        notify(&observer::compile_end,
+               unit,
+               step_result{.ok = ok,
+                           .cache_hit = hit,
+                           .timing = {started, finished},
+                           .rebuild = rebuild,
+                           .diag = diag.value()});
     }
 
     void succeeded() { ok = true; }
-    // Warnings from a successful step accumulate across a modular unit's two toolchain
-    // invocations. A failing step replaces them: the error is what triage reads first, and
-    // prior warning text must not consume the diagnostics head budget.
-    void attach(output::diagnostics said) { detail::append_diagnostics(diag, std::move(said)); }
-    void failed(output::diagnostics said) { diag = std::move(said); }
+    void attach(diagnostics said) { diag.append(std::move(said)); }
+    void failed(diagnostics said) { diag.replace(std::move(said)); }
 
 private:
-    output::compile_unit unit;
-    output::rebuild_info rebuild;
-    output::diagnostics diag{};
+    compile_unit unit;
+    rebuild_info rebuild;
+    diagnostic_buffer diag{};
     std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
     bool ok = false;
     bool hit = false;
 };
 
 // Linking has no start event, so this is the exit half only: exactly one link_end however the
-// link ends. The three copies it replaces needed a linked flag to keep the catch-all from
-// emitting a second one — a latch in a bool, which is what a scope is for.
+// link ends. The reporting scope owns the latch that prevents duplicate terminal events.
 class link_scope
 {
 public:
-    link_scope(std::string_view executable, const output::rebuild_info& reason, std::string sig)
+    link_scope(std::string_view executable, const rebuild_info& reason, std::string sig)
         : executable_path{executable}, rebuild{reason}, signature{std::move(sig)}
     {}
 
     // An up-to-date executable: nothing ran, so no reason and no duration, and there is no step
     // that could fail. Constructing one reports the hit — with the signature that made it a hit.
     link_scope(std::string_view executable, std::string sig)
-        : link_scope{executable, output::rebuild_info{}, std::move(sig)}
+        : link_scope{executable, rebuild_info{}, std::move(sig)}
     {
         hit = true;
         ok = true;
@@ -2355,81 +2341,211 @@ public:
     ~link_scope()
     {
         const auto finished = hit ? started : std::chrono::steady_clock::now();
-        output::notify(&output::observer::link_end,
-                       executable_path,
-                       output::step_result{.ok = ok,
-                                           .cache_hit = hit,
-                                           .timing = {started, finished},
-                                           .rebuild = rebuild,
-                                           .diag = diag,
-                                           .signature = signature});
+        notify(&observer::link_end,
+               executable_path,
+               step_result{.ok = ok,
+                           .cache_hit = hit,
+                           .timing = {started, finished},
+                           .rebuild = rebuild,
+                           .diag = diag.value(),
+                           .signature = signature});
     }
 
     void succeeded() { ok = true; }
-    void attach(output::diagnostics said) { detail::append_diagnostics(diag, std::move(said)); }
-    void failed(output::diagnostics said) { diag = std::move(said); }
+    void attach(diagnostics said) { diag.append(std::move(said)); }
+    void failed(diagnostics said) { diag.replace(std::move(said)); }
 
 private:
     std::string executable_path;
-    output::rebuild_info rebuild;
-    output::diagnostics diag{};
+    rebuild_info rebuild;
+    diagnostic_buffer diag{};
     std::string signature{};
     std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
     bool ok = false;
     bool hit = false;
 };
 
-// What run_step needs of a scope: somewhere to hand the child's own output — failures and
-// warnings alike — so it reaches stdout on compile_end / link_end rather than vanishing with
-// the capture file. compile_scope and link_scope both qualify, which is the whole reason one
-// function can run either phase's steps.
+// What process::runner needs of a scope: somewhere to hand the child's own output — failures
+// and warnings alike — so it reaches compile_end / link_end rather than remaining only on disk.
 template <typename Scope>
-concept step_scope = requires(Scope& scope, output::diagnostics said) {
+concept step_scope = requires(Scope& scope, diagnostics said) {
     scope.attach(std::move(said));
     scope.failed(std::move(said));
 };
 
-// One test_start, exactly one test_end, with the run's duration in the scope rather than in two
-// locals beside it. Nothing between the events throws today — a failing runner comes back as a
-// status — so this states the pairing rather than repairing it, and keeps it true if a step that
-// can throw is ever added between them.
+// One test_start, exactly one test_end, with the run's duration owned by the reporting scope.
 class test_scope
 {
 public:
     explicit test_scope(std::string_view runner)
     {
-        output::notify(&output::observer::test_start, runner);
+        notify(&observer::test_start, runner);
     }
 
     test_scope(const test_scope&) = delete;
     test_scope& operator=(const test_scope&) = delete;
 
     // A run whose outcome was never reported did not finish: the default process_result says
-    // exit -1, what decode_wait_status reports when the shell cannot be started. A run that ran
-    // and failed also says so as an error — the stream's cb_error after a failed run — but only
-    // when an outcome was reported: on the way out of a throw, main's handler reports it.
+    // exit -1, what process::runner reports when the shell cannot be started. A run that ran and
+    // failed also says so as an error, but only when an outcome was reported.
     ~test_scope()
     {
-        output::notify(&output::observer::test_end, result,
-                       output::interval{started, std::chrono::steady_clock::now()});
+        notify(&observer::test_end, result,
+               interval{started, std::chrono::steady_clock::now()});
         if(reported and not result.ok())
-            output::notify(&output::observer::error, output::test_failure_message(result));
+            notify(&observer::error, test_failure_message(result));
     }
 
     // finished(), not the succeeded() / failed() of the other scopes: a test run's outcome is not
     // a flag. test_end reports the exit code, the wait status and the signal, and a runner that
     // fails is a normal outcome the command turns into a return value rather than an exception.
-    void finished(output::process_result outcome)
+    void finished(process_result outcome)
     {
         result = std::move(outcome);
         reported = true;
     }
 
 private:
-    output::process_result result{};
+    process_result result{};
     std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
     bool reported = false;
 };
+
+} // namespace output
+
+namespace process {
+
+// Stateless, thread-safe owner of CB's sole process boundary and capture-file decoding.
+class runner
+{
+public:
+    output::process_result invoke_shell(
+        const string_list& argv,
+        std::string_view capture_path = {}) const
+    {
+        if(argv.empty())
+            throw std::logic_error{"invoke_shell: empty argv"};
+
+        auto cmd_str = detail::join_argv(argv);
+        auto shell_line = cmd_str;
+        if(not capture_path.empty())
+            shell_line += " > " + detail::shell_quote(std::string{capture_path}) + " 2>&1";
+
+        output::notify(&output::observer::command, cmd_str);
+        output::notify(&output::observer::command_start, cmd_str, argv);
+
+        const auto started = std::chrono::steady_clock::now();
+        // Apple's libc serializes std::system; posix_spawn does not. Still go through
+        // /bin/sh -c so capture_path's `> … 2>&1` redirect keeps working.
+        auto raw = -1;
+        auto spawn_error = std::string{};
+        auto pid = pid_t{};
+        char* const sh_argv[] = {
+            const_cast<char*>("/bin/sh"),
+            const_cast<char*>("-c"),
+            const_cast<char*>(shell_line.c_str()),
+            nullptr,
+        };
+        if(const auto spawn_rc = posix_spawn(&pid, "/bin/sh", nullptr, nullptr, sh_argv, environ);
+           spawn_rc == 0)
+        {
+            auto status = 0;
+            if(waitpid(pid, &status, 0) >= 0)
+                raw = status;
+            else
+                spawn_error = "waitpid failed: " + std::string{std::strerror(errno)};
+        }
+        else
+            spawn_error = "posix_spawn failed: " + std::string{std::strerror(spawn_rc)};
+        const auto finished = std::chrono::steady_clock::now();
+
+        auto result = output::process_result{.status = decode_wait_status(raw)};
+        if(not capture_path.empty())
+        {
+            auto diag = read_diagnostics(capture_path);
+            // A silent success leaves an empty capture; keep that off the wire. A failure still
+            // reports the path even when the child printed nothing, so the consumer can see that
+            // the capture was attempted.
+            if(not result.ok() or not diag.head.empty())
+                result.diag = std::move(diag);
+        }
+        // Spawn/wait failures never produce a capture file; surface strerror on the wire.
+        if(not spawn_error.empty() and result.diag.head.empty())
+            result.diag.head = std::move(spawn_error);
+
+        output::notify(&output::observer::command_end, cmd_str, argv, result,
+                       output::interval{started, finished});
+        return result;
+    }
+
+    // Every toolchain command is a step of a reported build phase: its output is attached to
+    // the reporting scope before a failure is thrown.
+    void run_step(
+        output::step_scope auto& scope,
+        const string_list& argv,
+        std::string_view capture) const
+    {
+        const auto result = invoke_shell(argv, capture);
+        if(not result.ok())
+        {
+            scope.failed(result.diag);
+            throw std::runtime_error{command_failure_message(argv, result)};
+        }
+        if(not result.diag.empty())
+            scope.attach(result.diag);
+    }
+
+private:
+    // waitpid yields a wait status; decode once so command_end / test_end report the child's
+    // own exit_code (or signal) instead of the packed wait value (256 for exit 1).
+    static output::process_status decode_wait_status(int status)
+    {
+        if(status < 0) // spawn or waitpid itself failed
+            return {.exit_code = status, .wait_status = status};
+        if(WIFSIGNALED(status))
+            return {.exit_code = -1,
+                    .wait_status = status,
+                    .signaled = true,
+                    .signal = WTERMSIG(status)};
+        if(WIFEXITED(status))
+            return {.exit_code = WEXITSTATUS(status), .wait_status = status};
+        return {.exit_code = -1, .wait_status = status};
+    }
+
+    static output::diagnostics read_diagnostics(std::string_view path)
+    {
+        auto file = std::ifstream{std::string{path}, std::ios::binary};
+        if(not file)
+            return {};
+
+        auto text =
+            std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+        auto diag = output::diagnostics{.path = std::string{path}, .bytes = text.size()};
+        if(text.size() > output::diagnostics_head_limit)
+        {
+            text.resize(output::diagnostics_head_limit);
+            diag.truncated = true;
+        }
+        diag.head = std::move(text);
+        return diag;
+    }
+
+    static std::string command_failure_message(
+        const string_list& argv,
+        const output::process_result& result)
+    {
+        auto message = "Command failed: " + detail::join_argv(argv);
+        if(result.status.signaled)
+            message += " (killed by signal " + std::to_string(result.status.signal) + ')';
+        else
+            message += " (exit " + std::to_string(result.status.exit_code) + ')';
+        if(not result.diag.head.empty())
+            message += '\n' + result.diag.head;
+        return message;
+    }
+};
+
+} // namespace process
 
 class build_system {
 public:
@@ -2470,6 +2586,7 @@ private:
     int max_jobs = 0;
     string_list extra_compile_flag_tokens;
     string_list extra_link_flag_tokens;
+    process::runner process_runner;
     std::string_view config_name() const
     {
         switch(config)
@@ -2519,7 +2636,7 @@ private:
         llvm_prefix = p.string();
         
         // Find clang++. Paths are a filesystem check; bare names need the shell's PATH
-        // lookup. Both go through invoke_shell so nothing reaches the shell unquoted.
+        // lookup. Both go through the process runner so nothing reaches the shell unquoted.
         auto command_available = [this](const std::string& candidate) {
             if(candidate.contains('/'))
                 return fs::exists(candidate);
@@ -2527,7 +2644,7 @@ private:
             fs::create_directories(cache_dir());
             const auto probe = detail::join_dir(cache_dir(), "command-probe.txt");
             // `command` is a shell builtin, so the argv is sh -c with the name quoted.
-            return invoke_shell(
+            return process_runner.invoke_shell(
                 string_list{"/bin/sh", "-c", "command -v " + detail::shell_quote(candidate)},
                 probe).ok();
         };
@@ -2567,7 +2684,7 @@ private:
 
         // Same boundary as every compile and link: argv in, stamp file out.
         const auto stamp = cache::compiler_stamp{cache_dir()};
-        if(invoke_shell(string_list{llvm_cxx, "--version"}, stamp.path()).ok())
+        if(process_runner.invoke_shell(string_list{llvm_cxx, "--version"}, stamp.path()).ok())
         {
             clang_version = stamp.read();
             // Humans only see COMMAND for the probe; echo the first line so the
@@ -2876,96 +2993,6 @@ private:
     // ============================================================================
     // General Utilities
     // ============================================================================
-
-    // Sole shell boundary: argv is non-empty (contract) and join_argv quotes each element. With
-    // capture_path the child's stdout and stderr are redirected there and read back whenever the
-    // child printed anything — failures always, successes when there are warnings. The test
-    // runner must not be captured — its stdout is the JSONL stream the caller forwards.
-    output::process_result invoke_shell(const string_list& argv, std::string_view capture_path = {}) const
-    {
-        if(argv.empty())
-            throw std::logic_error{"invoke_shell: empty argv"};
-
-        auto cmd_str = detail::join_argv(argv);
-        auto shell_line = cmd_str;
-        if(not capture_path.empty())
-            shell_line += " > " + detail::shell_quote(std::string{capture_path}) + " 2>&1";
-
-        output::notify(&output::observer::command, cmd_str);
-        output::notify(&output::observer::command_start, cmd_str, argv);
-
-        const auto started = std::chrono::steady_clock::now();
-        // Apple's libc serializes std::system; posix_spawn does not. Still go through
-        // /bin/sh -c so capture_path's `> … 2>&1` redirect keeps working.
-        auto raw = -1;
-        auto spawn_error = std::string{};
-        auto pid = pid_t{};
-        char* const sh_argv[] = {
-            const_cast<char*>("/bin/sh"),
-            const_cast<char*>("-c"),
-            const_cast<char*>(shell_line.c_str()),
-            nullptr,
-        };
-        if(const auto spawn_rc = posix_spawn(&pid, "/bin/sh", nullptr, nullptr, sh_argv, environ);
-           spawn_rc == 0)
-        {
-            auto status = 0;
-            if(waitpid(pid, &status, 0) >= 0)
-                raw = status;
-            else
-                spawn_error = "waitpid failed: " + std::string{std::strerror(errno)};
-        }
-        else
-            spawn_error = "posix_spawn failed: " + std::string{std::strerror(spawn_rc)};
-        const auto finished = std::chrono::steady_clock::now();
-
-        auto result = output::process_result{.status = detail::decode_wait_status(raw)};
-        if(not capture_path.empty())
-        {
-            auto diag = detail::read_diagnostics(capture_path);
-            // A silent success leaves an empty capture; keep that off the wire. A failure still
-            // reports the path even when the child printed nothing, so the consumer can see that
-            // the capture was attempted.
-            if(not result.ok() or not diag.head.empty())
-                result.diag = std::move(diag);
-        }
-        // Spawn/wait failures never produce a capture file; surface strerror on the wire.
-        if(not spawn_error.empty() and result.diag.head.empty())
-            result.diag.head = std::move(spawn_error);
-
-        output::notify(&output::observer::command_end, cmd_str, argv, result,
-                       output::interval{started, finished});
-        return result;
-    }
-
-    // Every toolchain command is a step of a reported build phase: its output is the scope's
-    // before it is the caller's, so the compiler's or linker's text travels on compile_end /
-    // link_end — including warnings from a successful step — and the exception only has to name
-    // a failing command. A modular unit runs two of these, each link one, and the std module's
-    // two go through the same path.
-    void run_step(step_scope auto& scope, const string_list& argv, std::string_view capture) const
-    {
-        const auto result = invoke_shell(argv, capture);
-        if(not result.ok())
-        {
-            scope.failed(result.diag);
-            throw std::runtime_error{command_failure_message(argv, result)};
-        }
-        if(not result.diag.empty())
-            scope.attach(result.diag);
-    }
-
-    static std::string command_failure_message(const string_list& argv, const output::process_result& result)
-    {
-        auto message = "Command failed: " + detail::join_argv(argv);
-        if(result.status.signaled)
-            message += " (killed by signal " + std::to_string(result.status.signal) + ')';
-        else
-            message += " (exit " + std::to_string(result.status.exit_code) + ')';
-        if(not result.diag.head.empty())
-            message += '\n' + result.diag.head;
-        return message;
-    }
 
     string_list base_compile_argv() const
     {
@@ -3356,7 +3383,7 @@ private:
 
         if(not reason)
         {
-            const auto hit = compile_scope{unit};
+            const auto hit = output::compile_scope{unit};
             return;
         }
         // The store only attempts hydration for a missing local PCM. In particular, cache
@@ -3368,16 +3395,17 @@ private:
         notify_std_cache_warning(hydrated);
         if(hydrated.ok)
         {
-            const auto hit = compile_scope{unit};
+            const auto hit = output::compile_scope{unit};
             return;
         }
 
-        auto compile = compile_scope{unit, *reason};
+        auto compile = output::compile_scope{unit, *reason};
         if(module_phases == module_compilation::one_phase)
         {
             // One step emits both artefacts, so there is no object-only shortcut to take: a
             // missing std.o re-reads std.cppm. Rare, and the cold build is a whole parse cheaper.
-            run_step(compile, build_std_module_object_argv(), diagnostics_path_for_object(unit));
+            process_runner.run_step(
+                compile, build_std_module_object_argv(), diagnostics_path_for_object(unit));
             std_store.save_profile(object_cache_profile());
             notify_std_cache_warning(
                 std_store.publish([&]() { return shared_std_cache_profile(); }));
@@ -3390,10 +3418,12 @@ private:
                               or reason->kind == output::rebuild_kind::object_stale;
         if(not object_only)
         {
-            run_step(compile, build_std_pcm_argv(), diagnostics_path_for_pcm(unit));
+            process_runner.run_step(
+                compile, build_std_pcm_argv(), diagnostics_path_for_pcm(unit));
             std_store.save_profile(object_cache_profile());
         }
-        run_step(compile, build_std_o_argv(), diagnostics_path_for_object(unit));
+        process_runner.run_step(
+            compile, build_std_o_argv(), diagnostics_path_for_object(unit));
         notify_std_cache_warning(
             std_store.publish([&]() { return shared_std_cache_profile(); }));
         compile.succeeded();
@@ -3411,7 +3441,7 @@ private:
                       const output::rebuild_info& rebuild,
                       std::invocable auto&& on_dependency_ready) {
         const auto unit = compile_unit_of(tu);
-        auto compile = compile_scope{unit, rebuild};
+        auto compile = output::compile_scope{unit, rebuild};
         // Two-phase: object_missing / object_stale reuse the pcm that is already there —
         // same split build_std_module uses. Re-precompiling would bump the pcm mtime and
         // force every importer through pcm_stale for no interface change.
@@ -3423,19 +3453,23 @@ private:
         if (tu.is_modular and module_phases == module_compilation::two_phase) {
             if(not object_only)
             {
-                run_step(compile, compile_pcm_argv(tu), diagnostics_path_for_pcm(unit));
+                process_runner.run_step(
+                    compile, compile_pcm_argv(tu), diagnostics_path_for_pcm(unit));
                 // Importers need the BMI, not this unit's object. Start them while clang turns
                 // the BMI into the provider object.
                 on_dependency_ready();
             }
-            run_step(compile, compile_pcm_object_argv(tu), diagnostics_path_for_object(unit));
+            process_runner.run_step(
+                compile, compile_pcm_object_argv(tu), diagnostics_path_for_object(unit));
             if(object_only)
                 on_dependency_ready();
         } else if (tu.is_modular) {
-            run_step(compile, compile_module_object_argv(tu), diagnostics_path_for_object(unit));
+            process_runner.run_step(
+                compile, compile_module_object_argv(tu), diagnostics_path_for_object(unit));
             on_dependency_ready();
         } else {
-            run_step(compile, compile_source_object_argv(tu), diagnostics_path_for_object(unit));
+            process_runner.run_step(
+                compile, compile_source_object_argv(tu), diagnostics_path_for_object(unit));
             on_dependency_ready();
         }
         compile.succeeded();
@@ -3550,7 +3584,7 @@ private:
                         else
                         {
                             {
-                                const auto hit = compile_scope{compile_unit_of(tu)};
+                                const auto hit = output::compile_scope{compile_unit_of(tu)};
                             }
                             publish_dependency(index);
                         }
@@ -3600,10 +3634,9 @@ private:
                          const output::rebuild_info& rebuild,
                          std::string signature) {
         if (not tu.has_main) return;
-        auto link = link_scope{tu.executable_path, rebuild, std::move(signature)};
-        run_step(link,
-                 link_executable_argv(tu, shared_objects),
-                 diagnostics_path_for_executable(tu));
+        auto link = output::link_scope{tu.executable_path, rebuild, std::move(signature)};
+        process_runner.run_step(
+            link, link_executable_argv(tu, shared_objects), diagnostics_path_for_executable(tu));
         link.succeeded();
     }
 
@@ -3645,17 +3678,19 @@ private:
         {
             if(decision.reason)
                 continue;
-            const auto hit = link_scope{decision.tu->executable_path, decision.signature};
+            const auto hit =
+                output::link_scope{decision.tu->executable_path, decision.signature};
         }
 
-        run_in_parallel(decisions | std::views::filter([](const link_decision& decision) {
-                                        return decision.reason.has_value(); }),
-                        job_limit(),
-                        [&](const link_decision& decision) {
-                            const auto& tu = *decision.tu;
-                            link_executable(tu, shared_objects, *decision.reason, decision.signature);
-                            links.remember(tu.executable_path, decision.signature);
-                        });
+        execution::worker_pool{job_limit()}.run(
+            decisions | std::views::filter([](const link_decision& decision) {
+                return decision.reason.has_value();
+            }),
+            [&](const link_decision& decision) {
+                const auto& tu = *decision.tu;
+                link_executable(tu, shared_objects, *decision.reason, decision.signature);
+                links.remember(tu.executable_path, decision.signature);
+            });
         links.save();
     }
 
@@ -3690,10 +3725,9 @@ private:
                                      const output::rebuild_info& rebuild,
                                      std::string signature)
     {
-        auto link = link_scope{runner.executable_path, rebuild, std::move(signature)};
-        run_step(link,
-                 link_test_runner_argv(runner),
-                 diagnostics_path_for_executable(runner));
+        auto link = output::link_scope{runner.executable_path, rebuild, std::move(signature)};
+        process_runner.run_step(
+            link, link_test_runner_argv(runner), diagnostics_path_for_executable(runner));
         link.succeeded();
     }
 
@@ -3724,7 +3758,7 @@ private:
         const auto reason = links.needs_relinking(runner.executable_path, signature);
         if(not reason)
         {
-            const auto hit = link_scope{runner.executable_path, signature};
+            const auto hit = output::link_scope{runner.executable_path, signature};
             return;
         }
 
@@ -3980,7 +4014,7 @@ public:
     }
 
     void build() {
-        auto build = build_scope{config_name(), include_tests, include_examples};
+        auto build = output::build_scope{config_name(), include_tests, include_examples};
         build_steps();
         build.succeeded();
 
@@ -3995,7 +4029,7 @@ public:
         {
             // No check that the runner is there afterwards: link_test_runner either produced
             // it or threw, and the missing-source case is the sentence it throws.
-            auto build = build_scope{config_name(), true, include_examples};
+            auto build = output::build_scope{config_name(), true, include_examples};
             build_steps();
             link_test_runner();
             build.succeeded();
@@ -4016,9 +4050,9 @@ public:
 
         auto result = output::process_result{};
         {
-            auto test = test_scope{runner};
+            auto test = output::test_scope{runner};
             // Not captured: the runner's stdout is the JSONL stream being forwarded.
-            result = invoke_shell(test_runner_argv(runner, args));
+            result = process_runner.invoke_shell(test_runner_argv(runner, args));
             test.finished(result);
         }
         return result.ok();

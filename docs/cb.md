@@ -26,9 +26,9 @@ On first run, **`CB.sh.core` bootstraps CB itself** — it compiles `tools/cb.c+
 
 `tools/cb.c++` and `tools/cb-*.h++` use **ISO C++23 and the standard library** — not POSIX APIs in the build path.
 
-- **Subprocesses:** `posix_spawn` + `waitpid` through `invoke_shell(argv)` (still `/bin/sh -c` so capture redirects stay shell syntax). Apple's libc serializes `std::system`, which caps parallel compiles on macOS; `posix_spawn` does not. No `popen`, and no ad-hoc `fork` / `execve` outside that helper.
+- **Subprocesses:** `posix_spawn` + `waitpid` through `cb::process::runner::invoke_shell(argv)` (still `/bin/sh -c` so capture redirects stay shell syntax). The runner also owns status decoding, diagnostics capture and failed-command messages. Apple's libc serializes `std::system`, which caps parallel compiles on macOS; `posix_spawn` does not. No `popen`, and no ad-hoc `fork` / `execve` outside that class.
 - **Probes / capture:** redirect child stdout to a file (`compiler-version.txt`, self-test temp files), read with `std::ifstream`.
-- **Invoked toolchain:** `clang++` and `lld` are external programs; calling them via `invoke_shell` is expected.
+- **Invoked toolchain:** `clang++` and `lld` are external programs; calling them through `process::runner` is expected.
 - **Algorithms:** prefer `std::views::join_with`, `std::ranges::to`, `std::views::split`, `std::ranges::set_difference`, etc. over index loops and one-off helpers — see [AGENTS.md — C++ style](../AGENTS.md).
 
 The **test runner** is separate: crash **stack traces** in `test_runner.c++` use `<execinfo.h>` (`backtrace`, `backtrace_symbols_fd`) — POSIX/glibc/macOS only, not ISO C++. That is the deliberate exception; see [AGENTS.md — Implementation policy](../AGENTS.md#implementation-policy-standard-c-only).
@@ -248,7 +248,7 @@ Environment variables for **bootstrap** (not test output): `LLVM_PATH`, `CXX`, `
 | `llvm` | LLVM prefix derived from `std.cppm` |
 | `cxx` | Resolved `clang++` path (`LLVM_CXX` / `CXX` override or `llvm/bin/clang++`) |
 | `cxx_sig` | Compiler binary `size:mtime_ns` (detects toolchain binary swaps) |
-| `clang_ver` | First line of `clang++ --version` (probed once per CB run through `invoke_shell`, written to `cache/compiler-version.txt`, read with `std::ifstream`) |
+| `clang_ver` | First line of `clang++ --version` (probed once per CB run through `process::runner`, written to `cache/compiler-version.txt`, read with `std::ifstream`) |
 | `std_cppm` | Canonical path to `std.cppm` with content signature (`path@size:mtime_ns`) |
 | `compile` / `cpp` | Effective compile / per-TU C++ flags (includes `--compile-flags`) |
 
@@ -339,7 +339,7 @@ A failed compile or link is not just `ok: false`. The command's stdout and stder
 
 `text` is capped at 8 KiB with `truncated` recording whether it was cut; `path` always points at the full capture. A consumer restricted to stdout no longer has to rerun the build to find out what broke. The human (non-JSONL) path is unchanged: the diagnostic is still printed to stderr.
 
-`command_end` and `test_end` also report a decoded process status. `waitpid` returns a wait status — 256 for a child that exited 1, 11 for one killed by `SIGSEGV` — so CB decodes it once at the shell boundary into `exit_code`, `signaled` and `signal`, keeping the raw value as `wait_status`. A test runner killed by a signal is reported as a crash rather than as an assertion failure.
+`command_end` and `test_end` also report a decoded process status. `waitpid` returns a wait status — 256 for a child that exited 1, 11 for one killed by `SIGSEGV` — so `process::runner` decodes it once at the shell boundary into `exit_code`, `signaled` and `signal`, keeping the raw value as `wait_status`. A test runner killed by a signal is reported as a crash rather than as an assertion failure.
 
 Example `profile_diff` fragment (on `profile_changed` only):
 
@@ -368,16 +368,19 @@ Example `profile_diff` fragment (on `profile_changed` only):
 | `cb-jsonl_observer.h++` | `cb::output::jsonl::observer` serialization, JSONL context, stream, and output lock |
 | `cb-console_observer.h++` | `cb::output::console::observer` human formatting, stream, and output lock |
 | `cb::output::notify` | Publishes build events directly to installed observers |
+| `cb::output::{build,compile,link,test}_scope` | RAII pairing for lifecycle events, timing and step diagnostics |
 | `cb::source::translation_unit` / `scanner` | Source identity, collection, exclusion, lexical cleaning, dependency edges and topological order |
 | `cb::cache::profile` / `analyzer` | Profile serialization/key/diff and recursive object/BMI/header freshness analysis |
 | `cb::cache::object_store` | Object-cache path, entry snapshot, profile mismatch, persistence, status and invalidation |
 | `cb::cache::link_store` | Executable signatures, relink decisions, parallel-safe updates, persistence, status and invalidation |
 | `cb::cache::standard_module_store` | Local `std` profile/rebuild decision and shared-machine-cache hydrate/publish storage |
 | `cb::cache::compiler_stamp` | Compiler-version stamp path, read, status and invalidation |
+| `cb::process::runner` | Sole child-process boundary, capture/status decoding and reported step execution |
+| `cb::execution::worker_pool` | Generic bounded parallel jobs with join-before-rethrow failure handling |
 | `cb::cli::options` / `parser` | Strict argv parsing and test-runner forwarding |
-| `cb::detail` | Primitives shared across subsystems: shell/argv, flag text, paths, atomic file replacement, file signatures and diagnostics |
+| `cb::detail` | Primitives shared across subsystems: shell/argv text, flags, paths, atomic file replacement and file signatures |
 
-`build_system` orchestrates those classes, owns toolchain invocation, and publishes facts directly through `cb::output::notify`; cache maps, paths, persistence and reuse decisions remain inside `cb::cache`. `main` registers built-in observers by name and selects one from the parsed `output_name`. Compile, link, command, cache, list, and lifecycle events all cross the same observer boundary; adding a formatter does not add format branches to `build_system`. Observers retain channel-specific `format_*` and `write_*` helpers, while shared profile-field iteration keeps diff computation and every format aligned when fields are added.
+`build_system` orchestrates those classes and constructs toolchain commands; cache maps and decisions stay in `cb::cache`, process mechanics stay in `cb::process`, generic independent-job concurrency stays in `cb::execution`, and event pairing stays in `cb::output`. `main` registers built-in observers by name and selects one from the parsed `output_name`. Compile, link, command, cache, list, and lifecycle events all cross the same observer boundary; adding a formatter does not add format branches to `build_system`. Observers retain channel-specific `format_*` and `write_*` helpers, while shared profile-field iteration keeps diff computation and every format aligned when fields are added.
 
 ### Ranges idioms (`cb.c++`)
 
@@ -388,7 +391,7 @@ CB uses C++23 range pipelines instead of hand-written accumulation loops where t
 | Join `string_list` with separator | `items \| std::views::join_with(sep) \| std::ranges::to<std::string>()` |
 | Split delimited text → `vector` | `text \| std::views::split(delim) \| … \| std::ranges::to<string_list>()` |
 | Split profile → `flat_map` | `text_ \| std::views::split('\t') \| std::views::transform(parse_field) \| std::ranges::to<field_map>()` |
-| Shell-safe command string | `argv \| transform(shell_quote) \| views::join_with(' ') \| ranges::to<std::string>()` (`join_argv`; non-empty `argv` — contract at `invoke_shell`) |
+| Shell-safe command string | `argv \| transform(shell_quote) \| views::join_with(' ') \| ranges::to<std::string>()` (`join_argv`; non-empty `argv` — `process::runner` contract) |
 
 `cache::profile::parse_field` splits on the **first** `=` only (`find`, not `views::split('=')`) because values like `compile` may contain `=`. Agent-oriented detail: [AGENTS.md](../AGENTS.md).
 
