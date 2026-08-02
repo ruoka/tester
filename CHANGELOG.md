@@ -8,7 +8,7 @@ Internal refactoring is not listed — roughly half the commits since `v1.0.0` r
 Versions follow the rules in the release policy. `Unreleased` accumulates until the next
 tag; cutting a release renames that section.
 
-## [Unreleased]
+## [2.1.2] — 2026-08-02
 
 ### Fixed
 
