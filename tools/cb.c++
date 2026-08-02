@@ -776,16 +776,15 @@ private:
 
 } // namespace detail
 
-namespace discovery {
-class source_scanner;
-}
+namespace source {
+class scanner;
 
 class translation_unit {
 public:
     static bool match_supported_suffix(std::string_view filename, std::string& out_suffix);
     static bool is_supported(const fs::path& file_path);
 
-    friend class discovery::source_scanner;
+    friend class scanner;
 
     // File identity
     const std::string filename;
@@ -874,20 +873,18 @@ translation_unit::translation_unit(const fs::path& relative,
       is_modular(kind_value == unit_kind::interface_unit or kind_value == unit_kind::partition_unit),
       last_modified(fs::last_write_time(full_path)) {}
 
-namespace discovery {
-
 // Owns the complete source-discovery pipeline. Build-system concerns such as object, PCM and
 // executable placement remain outside; the scanner returns ordered source metadata only.
-class source_scanner
+class scanner
 {
 public:
-    source_scanner(std::string source_root, bool include_tests, bool include_examples)
+    scanner(std::string source_root, bool include_tests, bool include_examples)
         : source_root_{std::move(source_root)},
           include_tests_{include_tests},
           include_examples_{include_examples}
     {}
 
-    std::vector<translation_unit> run() const
+    std::vector<translation_unit> scan() const
     {
         return order(collect());
     }
@@ -1174,12 +1171,12 @@ private:
     bool include_examples_ = false;
 };
 
-} // namespace discovery
+} // namespace source
 
 // Observers format four of a unit's fields, so they receive those four and not the unit: the
 // rest is build state, and cb-observer.h++ stays independent of the scanner. The pcm path is the
 // one derived field, and deriving it here is why compile_start and compile_end cannot disagree.
-output::compile_unit compile_unit_of(const translation_unit& tu)
+output::compile_unit compile_unit_of(const source::translation_unit& tu)
 {
     return {.source = tu.full_path,
             .object = tu.object_path,
@@ -1191,7 +1188,7 @@ output::compile_unit compile_unit_of(const translation_unit& tu)
 // The inventory projection, the sibling of compile_unit_of: the list command reports what a
 // unit is rather than where it compiles to, so it carries its own strings. Three adjacent
 // bools are why this is named fields and not an aggregate.
-output::source_unit source_unit_of(const translation_unit& tu)
+output::source_unit source_unit_of(const source::translation_unit& tu)
 {
     return {.unit = tu.unit,
             .path = tu.display_path,
@@ -1204,7 +1201,7 @@ output::source_unit source_unit_of(const translation_unit& tu)
             .is_modular = tu.is_modular};
 }
 
-using unit_to_tu_map = std::flat_map<std::string, translation_unit*, std::less<>>;
+using unit_to_tu_map = std::flat_map<std::string, source::translation_unit*, std::less<>>;
 using object_cache_map = std::flat_map<std::string, fs::file_time_type, std::less<>>;
 
 // What reading the object cache found: the entries, and the one thing that invalidates all of
@@ -1218,25 +1215,25 @@ struct object_cache_load
     std::optional<output::object_cache_profile_diff> profile_change{};
 };
 
-using translation_unit_list = std::vector<translation_unit>;
+using translation_unit_list = std::vector<source::translation_unit>;
 using thread_list = std::vector<std::jthread>;
 using module_to_ldflags_map = std::flat_map<std::string, std::string, std::less<>>;
 using executable_cache_map = std::flat_map<std::string, std::string, std::less<>>;
 
 namespace cache {
 
-// Answers whether an object/BMI set is reusable. It owns the recursive freshness policy while
-// build_system owns cache persistence and the compiler steps taken for the returned reason.
-class staleness
+// Analyzes whether an object/BMI set is reusable and returns the first rebuild reason.
+// build_system owns cache persistence and the compiler steps taken for that decision.
+class analyzer
 {
 public:
-    staleness(std::string source_root, std::string pcm_root)
+    analyzer(std::string source_root, std::string pcm_root)
         : source_root_{normalize_path(source_root)},
           pcm_root_{normalize_path(pcm_root)}
     {}
 
-    std::optional<output::rebuild_info> needs_recompile(
-        const translation_unit& tu,
+    std::optional<output::rebuild_info> rebuild_reason_for(
+        const source::translation_unit& tu,
         const object_cache_load& loaded,
         const unit_to_tu_map& units) const
     {
@@ -1288,7 +1285,7 @@ public:
                 return pcm_rebuild(output::rebuild_kind::dependency_pcm_stale, interface);
             if(fs::last_write_time(interface.pcm_path) > object_timestamp)
                 return pcm_rebuild(output::rebuild_kind::pcm_stale, interface);
-            if(auto interface_reason = needs_recompile(interface, loaded, units))
+            if(auto interface_reason = rebuild_reason_for(interface, loaded, units))
                 return attributed_to(*interface_reason, interface);
         }
 
@@ -1328,7 +1325,7 @@ public:
                and (not fs::exists(dependency.pcm_path)
                     or fs::last_write_time(dependency.pcm_path) < dependency.last_modified))
                 return pcm_rebuild(output::rebuild_kind::dependency_pcm_stale, dependency);
-            if(auto dependency_reason = needs_recompile(dependency, loaded, units))
+            if(auto dependency_reason = rebuild_reason_for(dependency, loaded, units))
                 return attributed_to(*dependency_reason, dependency);
         }
 
@@ -1360,13 +1357,13 @@ private:
         return path.string();
     }
 
-    static std::string depfile_path(const translation_unit& tu)
+    static std::string depfile_path(const source::translation_unit& tu)
     {
         return tu.object_path + ".d";
     }
 
     static output::rebuild_info pcm_rebuild(output::rebuild_kind kind,
-                                            const translation_unit& tu)
+                                            const source::translation_unit& tu)
     {
         return {.kind = kind,
                 .module = tu.module,
@@ -1375,7 +1372,7 @@ private:
     }
 
     static output::rebuild_info attributed_to(output::rebuild_info reason,
-                                              const translation_unit& tu)
+                                              const source::translation_unit& tu)
     {
         if(reason.trigger_path.empty())
             reason.trigger_path = tu.full_path;
@@ -1385,7 +1382,7 @@ private:
     }
 
     std::optional<output::rebuild_info> transitive_pcm_newer_than_object(
-        const translation_unit& tu,
+        const source::translation_unit& tu,
         fs::file_time_type object_timestamp,
         const unit_to_tu_map& units,
         std::flat_set<std::string>& visited) const
@@ -1411,7 +1408,7 @@ private:
     }
 
     std::optional<output::rebuild_info> stale_header(
-        const translation_unit& tu,
+        const source::translation_unit& tu,
         fs::file_time_type freshness_timestamp) const
     {
         const auto depfile = depfile_path(tu);
@@ -1721,7 +1718,7 @@ private:
     string_list module_flags;
     // Modular interfaces/partitions keyed by module name, filled after scan so each
     // compile argv can name only the BMIs that TU actually imports (transitively).
-    std::flat_map<std::string, const translation_unit*, std::less<>> module_interfaces;
+    std::flat_map<std::string, const source::translation_unit*, std::less<>> module_interfaces;
     std::string std_module_source;
     std::string llvm_prefix, llvm_cxx;
     std::string std_cppm_profile;
@@ -1987,19 +1984,19 @@ private:
     {
         module_interfaces =
             units_in_topological_order
-            | std::views::filter([](const translation_unit& tu) { return tu.is_modular; })
-            | std::views::transform([](const translation_unit& tu)
+            | std::views::filter([](const source::translation_unit& tu) { return tu.is_modular; })
+            | std::views::transform([](const source::translation_unit& tu)
             {
                 return std::pair{tu.module, &tu};
             })
-            | std::ranges::to<std::flat_map<std::string, const translation_unit*, std::less<>>>();
+            | std::ranges::to<std::flat_map<std::string, const source::translation_unit*, std::less<>>>();
     }
 
     // -fmodule-file= flags for the modules this TU needs: direct imports, their imports,
     // and (for implementation units) the primary interface. `std` stays on module_flags.
     // Explicit paths keep dotted module names working — CB's on-disk BMI names replace
     // '.' with '-', which -fprebuilt-module-path alone would not find.
-    string_list module_file_flags_for(const translation_unit& tu) const
+    string_list module_file_flags_for(const source::translation_unit& tu) const
     {
         auto pending = string_list{};
         auto seen = std::flat_set<std::string, std::less<>>{};
@@ -2100,7 +2097,7 @@ private:
         return safe;
     }
 
-    std::string object_suffix(const translation_unit& tu) const
+    std::string object_suffix(const source::translation_unit& tu) const
     {
         const auto ending = std::ranges::find_if(object_stem_suffixes, [&](std::string_view s)
         {
@@ -2111,24 +2108,24 @@ private:
         return std::string{tu.suffix.substr(0, tu.suffix.size() - ending->size())} + std::string{object_extension};
     }
 
-    std::string compute_object_path(const translation_unit& tu) const {
+    std::string compute_object_path(const source::translation_unit& tu) const {
         auto base = tu.is_modular ? module_safe_name(tu.module) : tu.base_name;
         return object_dir() + "/" + base + object_suffix(tu);
     }
 
-    std::string compute_pcm_path(const translation_unit& tu) const {
+    std::string compute_pcm_path(const source::translation_unit& tu) const {
         if (tu.module.empty())
             throw std::logic_error{"compute_pcm_path called on translation unit without module: " + tu.filename};
         return detail::join_dir(module_cache_dir(), module_safe_name(tu.module) + std::string{pcm_extension});
     }
 
-    std::string compute_executable_path(const translation_unit& tu) const {
+    std::string compute_executable_path(const source::translation_unit& tu) const {
         if (not tu.has_main)
             throw std::logic_error{"compute_executable_path called on non-main translation unit: " + tu.filename};
         return binary_dir() + "/" + tu.base_name;
     }
 
-    void validate_translation_unit(const translation_unit& tu) const {
+    void validate_translation_unit(const source::translation_unit& tu) const {
         if (tu.object_path.empty())
             throw std::logic_error{"translation unit missing object path: " + tu.filename};
         
@@ -2251,12 +2248,12 @@ private:
 
     // Header dependencies live next to the object file. Written by the step that
     // actually reads the source: --precompile for modular units, -c otherwise.
-    std::string depfile_path(const translation_unit& tu) const
+    std::string depfile_path(const source::translation_unit& tu) const
     {
         return tu.object_path + ".d";
     }
 
-    string_list depfile_argv(const translation_unit& tu) const
+    string_list depfile_argv(const source::translation_unit& tu) const
     {
         return string_list{"-MMD", "-MF", depfile_path(tu)};
     }
@@ -2280,12 +2277,12 @@ private:
         return std::string{unit.object} + ".log";
     }
 
-    std::string diagnostics_path_for_executable(const translation_unit& tu) const
+    std::string diagnostics_path_for_executable(const source::translation_unit& tu) const
     {
         return std::string{tu.executable_path} + ".link.log";
     }
 
-    string_list compile_pcm_argv(const translation_unit& tu) const
+    string_list compile_pcm_argv(const source::translation_unit& tu) const
     {
         auto argv = base_compile_argv();
         argv.append_range(module_flags);
@@ -2298,7 +2295,7 @@ private:
         return argv;
     }
 
-    string_list compile_pcm_object_argv(const translation_unit& tu) const
+    string_list compile_pcm_object_argv(const source::translation_unit& tu) const
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
@@ -2315,7 +2312,7 @@ private:
     // One-phase: one read of the source emits the object and, via -fmodule-output, the BMI its
     // importers consume. The BMI lands at the same pcm_path two-phase writes, so -fmodule-file=
     // flags, staleness checks and clean are unchanged.
-    string_list compile_module_object_argv(const translation_unit& tu) const
+    string_list compile_module_object_argv(const source::translation_unit& tu) const
     {
         auto argv = base_compile_argv();
         argv.append_range(module_flags);
@@ -2329,7 +2326,7 @@ private:
         return argv;
     }
 
-    string_list compile_source_object_argv(const translation_unit& tu) const
+    string_list compile_source_object_argv(const source::translation_unit& tu) const
     {
         auto argv = base_compile_argv();
         argv.append_range(module_flags);
@@ -2399,7 +2396,7 @@ private:
         return argv;
     }
 
-    string_list link_executable_argv(const translation_unit& tu, const string_list& shared_objects) const
+    string_list link_executable_argv(const source::translation_unit& tu, const string_list& shared_objects) const
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
@@ -2415,7 +2412,7 @@ private:
         return argv;
     }
 
-    string_list link_test_runner_argv(const translation_unit& runner) const
+    string_list link_test_runner_argv(const source::translation_unit& runner) const
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
@@ -2445,21 +2442,21 @@ private:
     auto test_units() const
     {
         return units_in_topological_order
-            | std::views::filter([](const translation_unit& tu) { return tu.is_test and not tu.has_main; });
+            | std::views::filter([](const source::translation_unit& tu) { return tu.is_test and not tu.has_main; });
     }
 
     string_list test_object_paths() const
     {
         return test_units()
-            | std::views::transform([](const translation_unit& tu) { return tu.object_path; })
+            | std::views::transform([](const source::translation_unit& tu) { return tu.object_path; })
             | std::ranges::to<string_list>();
     }
 
     string_list linkable_object_paths() const
     {
         return units_in_topological_order
-            | std::views::filter([](const translation_unit& tu) { return not tu.has_main and not tu.is_test; })
-            | std::views::transform([](const translation_unit& tu) { return tu.object_path; })
+            | std::views::filter([](const source::translation_unit& tu) { return not tu.has_main and not tu.is_test; })
+            | std::views::transform([](const source::translation_unit& tu) { return tu.object_path; })
             | std::ranges::to<string_list>();
     }
 
@@ -2479,7 +2476,7 @@ private:
         return std::ranges::fold_left(
             test_units(),
             string_list{},
-            [&](string_list flags, const translation_unit& tu) {
+            [&](string_list flags, const source::translation_unit& tu) {
                 flags.append_range(collect_module_ldflags(tu.imports));
                 return flags;
             });
@@ -2770,8 +2767,8 @@ private:
 
     void scan_and_order()
     {
-        auto units = discovery::source_scanner{
-            source_dir, include_tests, include_examples}.run();
+        auto units = source::scanner{
+            source_dir, include_tests, include_examples}.scan();
         attach_artifact_paths(units);
         units_in_topological_order = std::move(units);
     }
@@ -2780,7 +2777,7 @@ private:
     // Standard Library Module Building
     // ============================================================================
     // The same two halves as Compilation, for the one modular unit that is not in the scan:
-    // needs_std_module_rebuild is its needs_recompile and build_std_module its compile_unit,
+    // needs_std_module_rebuild is its rebuild_reason_for and build_std_module its compile_unit,
     // reporting through compile_scope like every other unit — the two most expensive steps of a
     // cold build used to explain nothing.
 
@@ -3082,7 +3079,7 @@ private:
     // those edge notifications. What both phases share sits above, in Cache Management (caches
     // and staleness) and General Utilities (argv builders, unit projections).
 
-    void compile_unit(const translation_unit& tu,
+    void compile_unit(const source::translation_unit& tu,
                       const output::rebuild_info& rebuild,
                       std::invocable auto&& on_dependency_ready) {
         const auto unit = compile_unit_of(tu);
@@ -3129,7 +3126,7 @@ private:
             auto k = tu.unit;
             u2tu[k] = &tu;
         }
-        const auto freshness = cache::staleness{source_dir, module_cache_dir()};
+        const auto cache_analyzer = cache::analyzer{source_dir, module_cache_dir()};
 
         const auto unit_count = units_in_topological_order.size();
         auto unit_to_index = std::flat_map<std::string, std::size_t, std::less<>>{};
@@ -3142,7 +3139,7 @@ private:
         for(auto index = std::size_t{0}; index < unit_count; ++index)
         {
             const auto& tu = units_in_topological_order[index];
-            discovery::source_scanner::for_each_provider(
+            source::scanner::for_each_provider(
                 tu, unit_to_index, [&](const std::string& provider)
             {
                 dependents[unit_to_index.at(provider)].push_back(index);
@@ -3211,7 +3208,8 @@ private:
                     try
                     {
                         const auto& tu = units_in_topological_order[index];
-                        const auto reason = freshness.needs_recompile(tu, loaded_cache, u2tu);
+                        const auto reason =
+                            cache_analyzer.rebuild_reason_for(tu, loaded_cache, u2tu);
                         if(reason)
                         {
                             compile_unit(tu, *reason, [&]() { publish_dependency(index); });
@@ -3265,7 +3263,7 @@ private:
     // is the pass. Only what nothing else uses lives here — the test-runner link reads the same
     // signature inputs and executable cache from the shared sections above.
 
-    void link_executable(const translation_unit& tu,
+    void link_executable(const source::translation_unit& tu,
                          const string_list& shared_objects,
                          const output::rebuild_info& rebuild,
                          std::string signature) {
@@ -3278,7 +3276,7 @@ private:
     }
 
     // What this executable takes in: its own object, the shared objects, the std object.
-    std::string compute_link_signature(const translation_unit& tu, const string_list& shared_objects) const {
+    std::string compute_link_signature(const source::translation_unit& tu, const string_list& shared_objects) const {
         auto paths = string_list{tu.object_path};
         paths.append_range(shared_objects);
         paths.push_back(std_obj_path());
@@ -3292,16 +3290,16 @@ private:
         // Snapshot relink decisions before workers mutate link_cache. Interleaving
         // needs_relinking (unlocked reads) with parallel operator[] writes is a data race.
         struct link_decision {
-            const translation_unit* tu = nullptr;
+            const source::translation_unit* tu = nullptr;
             std::string signature{};
             std::optional<output::rebuild_info> reason{};
         };
         auto decisions = units_in_topological_order
             // Exact base name only — substring matches like contest_runner / aaa_test_runner
             // are ordinary mains and must not be excluded from normal linking.
-            | std::views::filter([&](const translation_unit& tu) {
+            | std::views::filter([&](const source::translation_unit& tu) {
                   return tu.has_main and tu.base_name != test_runner_name; })
-            | std::views::transform([&](const translation_unit& tu) {
+            | std::views::transform([&](const source::translation_unit& tu) {
                   auto signature = compute_link_signature(tu, shared_objects);
                   auto reason = needs_relinking(tu.executable_path, signature, link_cache);
                   return link_decision{&tu, std::move(signature), std::move(reason)}; })
@@ -3337,9 +3335,9 @@ private:
     // a different bin/<name> while run_tests always executes bin/test_runner, leaving a stale
     // runner and silent CI passes. Never absent either — linking the test objects without a main
     // dies at the linker, so a project with no runner source is told so here.
-    const translation_unit& test_runner_unit() const
+    const source::translation_unit& test_runner_unit() const
     {
-        const auto is_runner = [](const translation_unit& tu) {
+        const auto is_runner = [](const source::translation_unit& tu) {
             return tu.has_main and tu.base_name == test_runner_name;
         };
         if(std::ranges::count_if(units_in_topological_order, is_runner) > 1)
@@ -3353,7 +3351,7 @@ private:
         return *found;
     }
 
-    void link_test_runner_executable(const translation_unit& runner,
+    void link_test_runner_executable(const source::translation_unit& runner,
                                      const output::rebuild_info& rebuild,
                                      std::string signature)
     {
@@ -3367,7 +3365,7 @@ private:
     // What the runner takes in: its object, the test objects, the shared objects, the std object.
     // The flag tail covers every test unit's imports as well as the runner's — a change to any is
     // a relink — while the argv needs only the runner's own, the split link_executable also has.
-    std::string compute_test_runner_signature(const translation_unit& runner) const {
+    std::string compute_test_runner_signature(const source::translation_unit& runner) const {
         auto paths = string_list{runner.object_path};
         paths.append_range(test_object_paths());
         paths.append_range(linkable_object_paths());
@@ -3722,7 +3720,7 @@ public:
     // The compilation-database entry for a source is the argv that reads that source —
     // --precompile for two-phase modular interfaces/partitions, -c for everything else. The
     // second two-phase step (pcm → .o) is omitted: it has no distinct source path for clangd.
-    string_list compile_argv_for_database(const translation_unit& tu) const
+    string_list compile_argv_for_database(const source::translation_unit& tu) const
     {
         if(tu.is_modular)
             return module_phases == module_compilation::two_phase
