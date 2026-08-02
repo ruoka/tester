@@ -37,6 +37,7 @@
 #include <cctype>
 #include <charconv>
 #include <concepts>
+#include <condition_variable>
 #include <cstddef>
 #include <type_traits>
 #include "cb-jsonl_observer.h++"
@@ -1019,7 +1020,6 @@ struct object_cache_load
 
 using translation_unit_list = std::vector<translation_unit>;
 using topo_sort_queue = std::queue<std::string>;
-using level_groups_map = std::flat_map<int, std::vector<const translation_unit*>>;
 using thread_list = std::vector<std::jthread>;
 using module_to_ldflags_map = std::flat_map<std::string, std::string, std::less<>>;
 using executable_cache_map = std::flat_map<std::string, std::string, std::less<>>;
@@ -1280,8 +1280,8 @@ public:
     // How a modular interface becomes a .pcm and a .o. two_phase runs `--precompile` and then
     // compiles the BMI; one_phase asks for both artefacts from one `-c -fmodule-output=` read of
     // the source. Two-phase only pays off when the BMI is published to dependents while the .o
-    // still compiles — CB's scheduler waits for both steps, so one_phase saves the second parse
-    // and (Clang 22+) gets reduced BMIs by default.
+    // still compiles; the edge-driven scheduler does that. One-phase saves the second parse and
+    // (Clang 22+) gets reduced BMIs by default.
     enum class module_compilation { two_phase, one_phase };
 
 private:
@@ -1304,7 +1304,6 @@ private:
     mutable std::string clang_version;
     mutable bool toolchain_profile_probed = false;
     translation_unit_list units_in_topological_order;
-    std::mutex cache_mutex;
     std::mutex link_cache_mutex;
     const build_config config;
     const bool static_link;
@@ -2701,12 +2700,14 @@ private:
     // ============================================================================
     // Compilation
     // ============================================================================
-    // Two halves, mirrored by Linking below: compile_unit does one translation unit, and
-    // compile_units is the pass that decides what to build, reports the hits and runs the rest
-    // through run_in_parallel. What both phases share sits above, in Cache Management (caches and
-    // staleness) and General Utilities (argv builders, unit projections).
+    // Two halves, mirrored by Linking below: compile_unit does one translation unit and publishes
+    // the dependency artefact as soon as it is usable; compile_units schedules consumers from
+    // those edge notifications. What both phases share sits above, in Cache Management (caches
+    // and staleness) and General Utilities (argv builders, unit projections).
 
-    void compile_unit(const translation_unit& tu, const output::rebuild_info& rebuild) {
+    void compile_unit(const translation_unit& tu,
+                      const output::rebuild_info& rebuild,
+                      std::invocable auto&& on_dependency_ready) {
         const auto unit = compile_unit_of(tu);
         auto compile = compile_scope{unit, rebuild};
         // Two-phase: object_missing / object_stale reuse the pcm that is already there —
@@ -2719,12 +2720,21 @@ private:
                                    or rebuild.kind == output::rebuild_kind::object_stale);
         if (tu.is_modular and module_phases == module_compilation::two_phase) {
             if(not object_only)
+            {
                 run_step(compile, compile_pcm_argv(tu), diagnostics_path_for_pcm(unit));
+                // Importers need the BMI, not this unit's object. Start them while clang turns
+                // the BMI into the provider object.
+                on_dependency_ready();
+            }
             run_step(compile, compile_pcm_object_argv(tu), diagnostics_path_for_object(unit));
+            if(object_only)
+                on_dependency_ready();
         } else if (tu.is_modular) {
             run_step(compile, compile_module_object_argv(tu), diagnostics_path_for_object(unit));
+            on_dependency_ready();
         } else {
             run_step(compile, compile_source_object_argv(tu), diagnostics_path_for_object(unit));
+            on_dependency_ready();
         }
         compile.succeeded();
     }
@@ -2743,40 +2753,136 @@ private:
             u2tu[k] = &tu;
         }
 
-        auto levels = level_groups_map{};
-        for (const auto& tu : units_in_topological_order)
-            levels[tu.dependency_level >= 0 ? tu.dependency_level : INT_MAX].push_back(&tu);
+        const auto unit_count = units_in_topological_order.size();
+        auto unit_to_index = std::flat_map<std::string, std::size_t, std::less<>>{};
+        for(auto index = std::size_t{0}; index < unit_count; ++index)
+            unit_to_index[units_in_topological_order[index].unit] = index;
 
-        // A reason is a fact about this moment: once a unit at this level rewrites its pcm,
-        // needs_recompile answers differently, and for the unit just built it answers nothing. So
-        // decision and reason are one answer taken before any worker starts, as link_decision is.
-        struct compile_decision {
-            const translation_unit* tu = nullptr;
-            std::optional<output::rebuild_info> reason{};
+        // Match scan_and_order's graph: imports are explicit edges, while an implementation unit
+        // also consumes its primary interface implicitly. A set prevents a self-import from
+        // counting that interface twice.
+        auto dependents = std::vector<std::vector<std::size_t>>(unit_count);
+        auto dependencies_remaining = std::vector<std::size_t>(unit_count);
+        for(auto index = std::size_t{0}; index < unit_count; ++index)
+        {
+            const auto& tu = units_in_topological_order[index];
+            auto providers = std::flat_set<std::size_t>{};
+            for(const auto& imported : tu.imports)
+                if(unit_to_index.contains(imported))
+                    providers.insert(unit_to_index.at(imported));
+            if(tu.kind == unit_kind::implementation_unit and unit_to_index.contains(tu.module))
+                providers.insert(unit_to_index.at(tu.module));
+
+            dependencies_remaining[index] = providers.size();
+            for(const auto provider : providers)
+                dependents[provider].push_back(index);
+        }
+
+        auto ready = std::queue<std::size_t>{};
+        for(auto index = std::size_t{0}; index < unit_count; ++index)
+            if(dependencies_remaining[index] == 0)
+                ready.push(index);
+        if(ready.empty())
+            throw std::runtime_error{"No dependency-free translation unit"};
+
+        auto scheduler_mutex = std::mutex{};
+        auto scheduler_changed = std::condition_variable{};
+        auto failure = std::exception_ptr{};
+        auto completed = std::size_t{0};
+        auto published = std::vector<unsigned char>(unit_count);
+        auto rebuilt = std::vector<unsigned char>(unit_count);
+
+        // Publish once. For two-phase modular units this runs after --precompile; for one-phase,
+        // object-only repairs, non-modular units and hits it runs when the whole unit is ready.
+        const auto publish_dependency = [&](std::size_t provider)
+        {
+            {
+                auto lock = std::lock_guard<std::mutex>{scheduler_mutex};
+                if(published[provider] != 0)
+                    return;
+                published[provider] = 1;
+                if(failure)
+                    return;
+                for(const auto dependent : dependents[provider])
+                {
+                    if(--dependencies_remaining[dependent] == 0)
+                        ready.push(dependent);
+                }
+            }
+            scheduler_changed.notify_all();
         };
 
-        for (const auto& [lvl, group] : levels) {
-            auto decisions = group
-                | std::views::transform([&](const translation_unit* tu) {
-                      return compile_decision{tu, needs_recompile(*tu, cache, u2tu)}; })
-                | std::ranges::to<std::vector>();
+        const auto worker_count = std::min(
+            unit_count,
+            static_cast<std::size_t>(std::max<std::ptrdiff_t>(1, job_limit())));
+        auto workers = thread_list{};
+        workers.reserve(worker_count);
+        for(auto worker = std::size_t{0}; worker < worker_count; ++worker)
+        {
+            workers.emplace_back([&]()
+            {
+                while(true)
+                {
+                    auto index = std::size_t{};
+                    {
+                        auto lock = std::unique_lock<std::mutex>{scheduler_mutex};
+                        scheduler_changed.wait(lock, [&]()
+                        {
+                            return failure or not ready.empty() or completed == unit_count;
+                        });
+                        if(failure or completed == unit_count)
+                            return;
+                        index = ready.front();
+                        ready.pop();
+                    }
 
-            for (const auto& decision : decisions) {
-                if(decision.reason)
-                    continue;
-                const auto hit = compile_scope{compile_unit_of(*decision.tu)};
-            }
+                    try
+                    {
+                        const auto& tu = units_in_topological_order[index];
+                        const auto reason = needs_recompile(tu, cache, u2tu);
+                        if(reason)
+                        {
+                            compile_unit(tu, *reason, [&]() { publish_dependency(index); });
+                            rebuilt[index] = 1;
+                        }
+                        else
+                        {
+                            {
+                                const auto hit = compile_scope{compile_unit_of(tu)};
+                            }
+                            publish_dependency(index);
+                        }
+                    }
+                    catch(...)
+                    {
+                        {
+                            auto lock = std::lock_guard<std::mutex>{scheduler_mutex};
+                            if(not failure)
+                                failure = std::current_exception();
+                        }
+                        scheduler_changed.notify_all();
+                        return;
+                    }
 
-            run_in_parallel(decisions | std::views::filter([](const compile_decision& decision) {
-                                            return decision.reason.has_value(); }),
-                            job_limit(),
-                            [&](const compile_decision& decision) {
-                                const auto& tu = *decision.tu;
-                                compile_unit(tu, *decision.reason);
-                                auto lock = std::lock_guard<std::mutex>{cache_mutex};
-                                cache.entries[tu.full_path] = tu.last_modified;
-                            });
+                    {
+                        auto lock = std::lock_guard<std::mutex>{scheduler_mutex};
+                        ++completed;
+                    }
+                    scheduler_changed.notify_all();
+                }
+            });
         }
+        for(auto& worker : workers)
+            worker.join();
+        if(failure)
+            std::rethrow_exception(failure);
+
+        for(auto index = std::size_t{0}; index < unit_count; ++index)
+            if(rebuilt[index] != 0)
+            {
+                const auto& tu = units_in_topological_order[index];
+                cache.entries[tu.full_path] = tu.last_modified;
+            }
         save_object_cache(cache.entries);
     }
 
