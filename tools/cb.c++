@@ -169,104 +169,6 @@ bool path_at_or_under_dir(std::string_view path, std::string_view dir)
         and path[path.size() - dir.size() - 1] == '/';
 }
 
-std::string module_file_flag(std::string_view module_name, std::string_view pcm_path)
-{
-    auto out = std::string{module_file_flag_prefix};
-    out.append(module_name);
-    out.push_back('=');
-    out.append(pcm_path);
-    return out;
-}
-
-std::string shell_quote(std::string_view arg)
-{
-    // POSIX: wrap in single quotes; internal ' becomes '\''.
-    auto out = std::ranges::fold_left(arg, "'"s, [](std::string acc, char c)
-    {
-        if(c == '\'')
-            acc += "'\\''"sv;
-        else
-            acc += c;
-        return acc;
-    });
-    out += '\'';
-    return out;
-}
-
-// Collapse any isspace run to a single space; trim leading/trailing whitespace.
-std::string collapse_whitespace(std::string_view text)
-{
-    auto out = std::ranges::fold_left(
-        text,
-        std::string{},
-        [](std::string acc, const char ch) {
-            if(std::isspace(static_cast<unsigned char>(ch)) != 0)
-            {
-                if(not acc.empty() && acc.back() != ' ')
-                    acc += ' ';
-            }
-            else
-                acc += ch;
-            return acc;
-        });
-    if(not out.empty() && out.back() == ' ')
-        out.pop_back();
-    return out;
-}
-
-// Parse external flag text only (CLI --compile-flags, object-cache profile fields).
-// CB stores flags as string_list; this runs at text boundaries, not in argv builders.
-// Symmetric with flags_profile_string (views::join_with on ' '); not POSIX shell parsing.
-string_list parse_external_flag_text(std::string_view text)
-{
-    const auto normalized = collapse_whitespace(text);
-    return normalized
-        | std::views::split(' ')
-        | std::views::transform([](auto&& part) { return std::string_view{part}; })
-        | std::views::filter([](std::string_view t) { return not t.empty(); })
-        | std::views::transform([](std::string_view t) { return std::string{t}; })
-        | std::ranges::to<string_list>();
-}
-
-std::string flags_profile_string(const string_list& flags)
-{
-    return flags | std::views::join_with(" "sv) | std::ranges::to<std::string>();
-}
-
-std::string join_argv(const string_list& argv)
-{
-    return argv
-        | std::views::transform([](const std::string& arg) { return shell_quote(arg); })
-        | std::views::join_with(" "sv)
-        | std::ranges::to<std::string>();
-}
-
-std::string binary_signature(const std::string& path)
-{
-    if(not fs::exists(path))
-        return {};
-
-    const auto size = fs::file_size(path);
-    const auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        fs::last_write_time(path).time_since_epoch()).count();
-    return std::to_string(size) + ':' + std::to_string(ticks);
-}
-
-std::string read_first_line(const std::string& path)
-{
-    auto file = std::ifstream{path};
-    if(not file)
-        return {};
-
-    auto line = ""s;
-    if(not std::getline(file, line))
-        return {};
-
-    if(not line.empty() and line.back() == '\r')
-        line.pop_back();
-    return line;
-}
-
 // A cache (or other stamped index) is replaced, never edited in place: write a sibling
 // temporary, then rename it over the target, so a build interrupted mid-write leaves the
 // previous file rather than half of the next. Callers differ only in what they write and
@@ -307,6 +209,54 @@ bool remove_if_exists(const std::string& path)
 }
 
 } // namespace detail
+
+namespace flags {
+
+// Converts between CB's flag-token representation and the whitespace-normalized text used at
+// CLI and cache-profile boundaries. This is intentionally not POSIX shell parsing.
+class codec
+{
+public:
+    static string_list parse(std::string_view text)
+    {
+        const auto normalized = collapse_whitespace(text);
+        return normalized
+            | std::views::split(' ')
+            | std::views::transform([](auto&& part) { return std::string_view{part}; })
+            | std::views::filter([](std::string_view token) { return not token.empty(); })
+            | std::views::transform([](std::string_view token) { return std::string{token}; })
+            | std::ranges::to<string_list>();
+    }
+
+    static std::string serialize(const string_list& flags)
+    {
+        return flags | std::views::join_with(" "sv) | std::ranges::to<std::string>();
+    }
+
+private:
+    // Collapse any isspace run to a single space; trim leading/trailing whitespace.
+    static std::string collapse_whitespace(std::string_view text)
+    {
+        auto out = std::ranges::fold_left(
+            text,
+            std::string{},
+            [](std::string acc, const char ch) {
+                if(std::isspace(static_cast<unsigned char>(ch)) != 0)
+                {
+                    if(not acc.empty() && acc.back() != ' ')
+                        acc += ' ';
+                }
+                else
+                    acc += ch;
+                return acc;
+            });
+        if(not out.empty() && out.back() == ' ')
+            out.pop_back();
+        return out;
+    }
+};
+
+} // namespace flags
 
 namespace source {
 class scanner;
@@ -1054,6 +1004,49 @@ namespace cache {
 
 class analyzer;
 
+// Common ownership and storage operations for one cache file. Cache types compose this value
+// while retaining ownership of their format and in-memory state.
+class storage_file
+{
+public:
+    storage_file(std::string cache_dir, std::string_view filename)
+        : path_{detail::join_dir(cache_dir, filename)}
+    {}
+
+    explicit storage_file(std::string path)
+        : path_{std::move(path)}
+    {}
+
+    const std::string& path() const { return path_; }
+    bool exists() const { return fs::exists(path_); }
+    bool invalidate() const { return detail::remove_if_exists(path_); }
+
+    std::string read_first_line() const
+    {
+        auto file = std::ifstream{path_};
+        if(not file)
+            return {};
+
+        auto line = ""s;
+        if(not std::getline(file, line))
+            return {};
+
+        if(not line.empty() and line.back() == '\r')
+            line.pop_back();
+        return line;
+    }
+
+    void replace(std::string_view what,
+                 const std::invocable<std::ostream&> auto& writer) const
+    {
+        fs::create_directories(fs::path{path_}.parent_path());
+        detail::write_atomic_file(path_, what, writer);
+    }
+
+private:
+    std::string path_;
+};
+
 // Serialized object-cache profile: tab-delimited key=value fields. Owns the text; key() and
 // diff() operate on that value. build_system supplies ingredients; object_store owns the
 // on-disk index that embeds this text. This type does not probe the toolchain. Values must
@@ -1090,9 +1083,9 @@ public:
         if(not facts.clang_ver.empty())
             append("clang_ver", facts.clang_ver);
         append("std_cppm", facts.std_cppm);
-        append("compile", detail::flags_profile_string(facts.compile_flags));
+        append("compile", cb::flags::codec::serialize(facts.compile_flags));
         if(facts.cpp_flags != nullptr)
-            append("cpp", detail::flags_profile_string(*facts.cpp_flags));
+            append("cpp", cb::flags::codec::serialize(*facts.cpp_flags));
     }
 
     explicit profile(std::string text)
@@ -1183,8 +1176,8 @@ private:
 
     static output::profile_token_change token_change(std::string_view old_text, std::string_view new_text)
     {
-        auto old_tokens = detail::parse_external_flag_text(old_text);
-        auto new_tokens = detail::parse_external_flag_text(new_text);
+        auto old_tokens = cb::flags::codec::parse(old_text);
+        auto new_tokens = cb::flags::codec::parse(new_text);
         std::ranges::sort(old_tokens);
         std::ranges::sort(new_tokens);
 
@@ -1216,11 +1209,11 @@ public:
     };
 
     explicit object_store(std::string cache_dir)
-        : path_{detail::join_dir(cache_dir, filename)}
+        : file_{std::move(cache_dir), filename}
     {}
 
-    const std::string& path() const { return path_; }
-    bool exists() const { return fs::exists(path_); }
+    const std::string& path() const { return file_.path(); }
+    bool exists() const { return file_.exists(); }
     bool missing_profile_header() const { return missing_profile_header_; }
     const std::optional<output::object_cache_profile_diff>& profile_change() const
     {
@@ -1234,7 +1227,7 @@ public:
         profile_change_.reset();
         missing_profile_header_ = false;
 
-        auto file = std::ifstream{path_};
+        auto file = std::ifstream{file_.path()};
         if(not file)
             return;
 
@@ -1270,8 +1263,7 @@ public:
 
     void save() const
     {
-        fs::create_directories(fs::path{path_}.parent_path());
-        detail::write_atomic_file(path_, "object cache", [&](std::ostream& file) {
+        file_.replace("object cache", [&](std::ostream& file) {
             file << "profile\t" << current_profile_ << "\n";
             for(const auto& [entry_path, timestamp] : entries_)
             {
@@ -1294,15 +1286,15 @@ public:
         return entries_.erase(std::string{source_path}) != 0;
     }
 
-    bool invalidate() const { return detail::remove_if_exists(path_); }
+    bool invalidate() const { return file_.invalidate(); }
 
     disk_status status(std::string_view current_profile) const
     {
-        auto result = disk_status{.exists = fs::exists(path_)};
+        auto result = disk_status{.exists = file_.exists()};
         if(not result.exists)
             return result;
 
-        auto file = std::ifstream{path_};
+        auto file = std::ifstream{file_.path()};
         auto header = ""s;
         if(std::getline(file, header) and header.starts_with("profile\t"))
         {
@@ -1354,7 +1346,7 @@ private:
         }
     }
 
-    std::string path_;
+    storage_file file_;
     std::string current_profile_;
     map entries_{};
     std::optional<output::object_cache_profile_diff> profile_change_{};
@@ -1385,23 +1377,23 @@ public:
     };
 
     link_store(std::string cache_dir, flag_ingredients flags)
-        : path_{detail::join_dir(cache_dir, filename)}
+        : file_{std::move(cache_dir), filename}
     {
         signature_flag_tail_ = "|flags=";
-        signature_flag_tail_ += detail::flags_profile_string(flags.compile_flags);
+        signature_flag_tail_ += cb::flags::codec::serialize(flags.compile_flags);
         signature_flag_tail_ += "|link=";
-        signature_flag_tail_ += detail::flags_profile_string(flags.link_flags);
+        signature_flag_tail_ += cb::flags::codec::serialize(flags.link_flags);
         signature_flag_tail_ += "|modules=";
-        signature_flag_tail_ += detail::flags_profile_string(flags.module_flags);
+        signature_flag_tail_ += cb::flags::codec::serialize(flags.module_flags);
     }
 
-    const std::string& path() const { return path_; }
-    bool exists() const { return fs::exists(path_); }
+    const std::string& path() const { return file_.path(); }
+    bool exists() const { return file_.exists(); }
 
     void load()
     {
         entries_.clear();
-        auto file = std::ifstream{path_};
+        auto file = std::ifstream{file_.path()};
         if(not file)
             return;
         auto entry_path = ""s;
@@ -1414,11 +1406,10 @@ public:
     {
         if(entries_.empty())
         {
-            detail::remove_if_exists(path_);
+            file_.invalidate();
             return;
         }
-        fs::create_directories(fs::path{path_}.parent_path());
-        detail::write_atomic_file(path_, "executable cache", [&](std::ostream& file) {
+        file_.replace("executable cache", [&](std::ostream& file) {
             for(const auto& [entry_path, signature] : entries_)
                 file << entry_path << "\t" << signature << "\n";
         });
@@ -1436,15 +1427,15 @@ public:
         return entries_.erase(std::string{executable}) != 0;
     }
 
-    bool invalidate() const { return detail::remove_if_exists(path_); }
+    bool invalidate() const { return file_.invalidate(); }
 
     disk_status status() const
     {
-        auto result = disk_status{.exists = fs::exists(path_)};
+        auto result = disk_status{.exists = file_.exists()};
         if(not result.exists)
             return result;
 
-        auto file = std::ifstream{path_};
+        auto file = std::ifstream{file_.path()};
         auto line = ""s;
         while(std::getline(file, line))
         {
@@ -1484,7 +1475,7 @@ public:
         auto signature = dependency_signatures_joined(input_paths);
         signature += signature_flag_tail_;
         signature += "|imports=";
-        signature += detail::flags_profile_string(import_flags);
+        signature += cb::flags::codec::serialize(import_flags);
         return signature;
     }
 
@@ -1521,7 +1512,7 @@ public:
 private:
     inline static constexpr auto filename = "executable-cache.txt"sv;
 
-    std::string path_;
+    storage_file file_;
     std::string signature_flag_tail_{};
     map entries_{};
     std::mutex mutex_{};
@@ -1540,7 +1531,7 @@ private:
         fs::path directory;
         fs::path pcm;
         fs::path object;
-        fs::path profile;
+        storage_file profile;
     };
 
 public:
@@ -1562,36 +1553,35 @@ public:
     standard_module_store(std::string cache_dir,
                           std::string pcm_path,
                           std::string object_path)
-        : profile_path_{detail::join_dir(cache_dir, profile_filename)},
+        : profile_file_{std::move(cache_dir), profile_filename},
           pcm_path_{std::move(pcm_path)},
           object_path_{std::move(object_path)}
     {}
 
-    const std::string& profile_path() const { return profile_path_; }
+    const std::string& profile_path() const { return profile_file_.path(); }
 
 private:
     // Whether std.pcm was precompiled by the profile a project unit is compiled with. The
     // pcm's own presence is a separate question, asked by rebuild_reason_for.
     bool profile_matches(std::string_view object_profile) const
     {
-        const auto stored = detail::read_first_line(profile_path_);
+        const auto stored = profile_file_.read_first_line();
         return not stored.empty() and stored == object_profile;
     }
 
 public:
     void save_profile(std::string_view object_profile) const
     {
-        fs::create_directories(fs::path{profile_path_}.parent_path());
-        detail::write_atomic_file(profile_path_, "std module profile", [&](std::ostream& file) {
+        profile_file_.replace("std module profile", [&](std::ostream& file) {
             file << object_profile << '\n';
         });
     }
 
-    bool invalidate() const { return detail::remove_if_exists(profile_path_); }
+    bool invalidate() const { return profile_file_.invalidate(); }
 
     disk_status status(std::string_view object_profile) const
     {
-        return {.exists = fs::exists(profile_path_),
+        return {.exists = profile_file_.exists(),
                 .profile_match = profile_matches(object_profile)};
     }
 
@@ -1646,13 +1636,13 @@ private:
             .directory = directory,
             .pcm = directory / std_pcm_filename,
             .object = directory / std_obj_filename,
-            .profile = directory / shared_profile_filename};
+            .profile = storage_file{(directory / shared_profile_filename).string()}};
     }
 
     bool materialize(const shared_slot& slot,
                      std::string_view shared_profile) const
     {
-        if(detail::read_first_line(slot.profile.string()) != shared_profile)
+        if(slot.profile.read_first_line() != shared_profile)
             return false;
         auto error = std::error_code{};
         if(not fs::is_regular_file(slot.pcm, error) or error)
@@ -1731,7 +1721,7 @@ public:
         try
         {
             const auto slot = shared_slot_for(*root, shared_profile);
-            if(detail::read_first_line(slot.profile.string()) == shared_profile
+            if(slot.profile.read_first_line() == shared_profile
                and fs::is_regular_file(slot.pcm)
                and fs::is_regular_file(slot.object))
                 return {.ok = true};
@@ -1817,7 +1807,7 @@ private:
         return std::to_string(value);
     }
 
-    std::string profile_path_;
+    storage_file profile_file_;
     std::string pcm_path_;
     std::string object_path_;
 };
@@ -1828,17 +1818,17 @@ class compiler_stamp
 {
 public:
     explicit compiler_stamp(std::string cache_dir)
-        : path_{detail::join_dir(cache_dir, filename)}
+        : file_{std::move(cache_dir), filename}
     {}
 
-    const std::string& path() const { return path_; }
-    bool exists() const { return fs::exists(path_); }
-    std::string read() const { return detail::read_first_line(path_); }
-    bool invalidate() const { return detail::remove_if_exists(path_); }
+    const std::string& path() const { return file_.path(); }
+    bool exists() const { return file_.exists(); }
+    std::string read() const { return file_.read_first_line(); }
+    bool invalidate() const { return file_.invalidate(); }
 
 private:
     inline static constexpr auto filename = "compiler-version.txt"sv;
-    std::string path_;
+    storage_file file_;
 };
 
 // Analyzes whether an object/BMI set is reusable and returns the first rebuild reason.
@@ -2426,10 +2416,10 @@ public:
         if(argv.empty())
             throw std::logic_error{"invoke_shell: empty argv"};
 
-        auto cmd_str = detail::join_argv(argv);
+        auto cmd_str = join_argv(argv);
         auto shell_line = cmd_str;
         if(not capture_path.empty())
-            shell_line += " > " + detail::shell_quote(std::string{capture_path}) + " 2>&1";
+            shell_line += " > " + shell_quote(capture_path) + " 2>&1";
 
         output::notify(&output::observer::command, cmd_str);
         output::notify(&output::observer::command_start, cmd_str, argv);
@@ -2478,6 +2468,15 @@ public:
         return result;
     }
 
+    bool command_available(std::string_view candidate,
+                           std::string_view capture_path) const
+    {
+        // `command` is a shell builtin, so invoke an explicit shell with the candidate quoted.
+        return invoke_shell(
+            string_list{"/bin/sh", "-c", "command -v " + shell_quote(candidate)},
+            capture_path).ok();
+    }
+
     // Every toolchain command is a step of a reported build phase: its output is attached to
     // the reporting scope before a failure is thrown.
     void run_step(
@@ -2496,6 +2495,29 @@ public:
     }
 
 private:
+    static std::string shell_quote(std::string_view arg)
+    {
+        // POSIX: wrap in single quotes; internal ' becomes '\''.
+        auto out = std::ranges::fold_left(arg, "'"s, [](std::string acc, char c)
+        {
+            if(c == '\'')
+                acc += "'\\''"sv;
+            else
+                acc += c;
+            return acc;
+        });
+        out += '\'';
+        return out;
+    }
+
+    static std::string join_argv(const string_list& argv)
+    {
+        return argv
+            | std::views::transform([](const std::string& arg) { return shell_quote(arg); })
+            | std::views::join_with(" "sv)
+            | std::ranges::to<std::string>();
+    }
+
     // waitpid yields a wait status; decode once so command_end / test_end report the child's
     // own exit_code (or signal) instead of the packed wait value (256 for exit 1).
     static output::process_status decode_wait_status(int status)
@@ -2534,7 +2556,7 @@ private:
         const string_list& argv,
         const output::process_result& result)
     {
-        auto message = "Command failed: " + detail::join_argv(argv);
+        auto message = "Command failed: " + join_argv(argv);
         if(result.status.signaled)
             message += " (killed by signal " + std::to_string(result.status.signal) + ')';
         else
@@ -2606,6 +2628,27 @@ private:
         }
         std::unreachable();
     }
+
+    static std::string module_file_flag(std::string_view module_name,
+                                        std::string_view pcm_path)
+    {
+        auto out = std::string{module_file_flag_prefix};
+        out.append(module_name);
+        out.push_back('=');
+        out.append(pcm_path);
+        return out;
+    }
+
+    static std::string binary_signature(const std::string& path)
+    {
+        if(not fs::exists(path))
+            return {};
+
+        const auto size = fs::file_size(path);
+        const auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            fs::last_write_time(path).time_since_epoch()).count();
+        return std::to_string(size) + ':' + std::to_string(ticks);
+    }
     
     // ============================================================================
     // Initialization and Setup
@@ -2635,18 +2678,15 @@ private:
         for (int i = 0; i < 4 and p.has_parent_path(); ++i) p = p.parent_path();
         llvm_prefix = p.string();
         
-        // Find clang++. Paths are a filesystem check; bare names need the shell's PATH
-        // lookup. Both go through the process runner so nothing reaches the shell unquoted.
+        // Find clang++. Paths are a filesystem check; bare names delegate the shell's PATH
+        // lookup to the process runner so nothing reaches the shell unquoted.
         auto command_available = [this](const std::string& candidate) {
             if(candidate.contains('/'))
                 return fs::exists(candidate);
 
             fs::create_directories(cache_dir());
             const auto probe = detail::join_dir(cache_dir(), "command-probe.txt");
-            // `command` is a shell builtin, so the argv is sh -c with the name quoted.
-            return process_runner.invoke_shell(
-                string_list{"/bin/sh", "-c", "command -v " + detail::shell_quote(candidate)},
-                probe).ok();
+            return process_runner.command_available(candidate, probe);
         };
         auto try_env_compiler = [&]() {
             for(const auto* env_name : {"LLVM_CXX", "CXX"})
@@ -2670,8 +2710,8 @@ private:
         }
 
         const auto canonical_std_cppm = fs::weakly_canonical(std_module_path).string();
-        std_cppm_profile = canonical_std_cppm + '@' + detail::binary_signature(canonical_std_cppm);
-        cxx_sig = detail::binary_signature(llvm_cxx);
+        std_cppm_profile = canonical_std_cppm + '@' + binary_signature(canonical_std_cppm);
+        cxx_sig = binary_signature(llvm_cxx);
     }
 
     void ensure_toolchain_profile() const
@@ -2809,19 +2849,19 @@ private:
         if(not extra_link_flag_tokens.empty())
         {
             link_flags.append_range(extra_link_flag_tokens);
-            output::notify(&output::observer::info, "Added extra linker flags: "s + detail::flags_profile_string(extra_link_flag_tokens));
+            output::notify(&output::observer::info, "Added extra linker flags: "s + cb::flags::codec::serialize(extra_link_flag_tokens));
         }
 
         if(not extra_compile_flag_tokens.empty())
         {
             compile_flags.append_range(extra_compile_flag_tokens);
-            output::notify(&output::observer::info, "Added extra compile flags: "s + detail::flags_profile_string(extra_compile_flag_tokens));
+            output::notify(&output::observer::info, "Added extra compile flags: "s + cb::flags::codec::serialize(extra_compile_flag_tokens));
         }
 
         module_flags = {
             "-fno-implicit-modules",
             "-fno-implicit-module-maps",
-            detail::module_file_flag(std_module_name, std_pcm_path()),
+            module_file_flag(std_module_name, std_pcm_path()),
             std::string{prebuilt_module_path_flag_prefix} + module_cache_dir(),
         };
     }
@@ -2873,7 +2913,7 @@ private:
             if(not module_interfaces.contains(name))
                 continue;
             const auto& dep = *module_interfaces.at(name);
-            flags.push_back(detail::module_file_flag(dep.module, dep.pcm_path));
+            flags.push_back(module_file_flag(dep.module, dep.pcm_path));
             for(const auto& imp : dep.imports)
                 enqueue(imp);
         }
@@ -3223,7 +3263,7 @@ private:
             imp | std::views::filter([&](const std::string& m) { return module_ldflags.contains(m); }),
             string_list{},
             [&](string_list flags, const std::string& m) {
-                flags.append_range(detail::parse_external_flag_text(module_ldflags.at(m)));
+                flags.append_range(cb::flags::codec::parse(module_ldflags.at(m)));
                 return flags;
             });
     }
@@ -4397,21 +4437,21 @@ public:
                 if(index + 1 >= argc_)
                     return failure(
                         1, "Missing flags after --link-flags", std::move(parsed));
-                parsed.extra_link_flags = detail::parse_external_flag_text(argv_[++index]);
+                parsed.extra_link_flags = cb::flags::codec::parse(argv_[++index]);
             }
             else if(argument == "--compile-flags" or argument == "--extra-compile-flags")
             {
                 if(index + 1 >= argc_)
                     return failure(
                         1, "Missing flags after --compile-flags", std::move(parsed));
-                parsed.extra_compile_flags = detail::parse_external_flag_text(argv_[++index]);
+                parsed.extra_compile_flags = cb::flags::codec::parse(argv_[++index]);
             }
             else if(argument.starts_with("--compile-flags=")
                     or argument.starts_with("--extra-compile-flags="))
             {
                 const auto equals = argument.find('=');
                 parsed.extra_compile_flags =
-                    detail::parse_external_flag_text(argument.substr(equals + 1));
+                    cb::flags::codec::parse(argument.substr(equals + 1));
             }
             else if(argument == "help" or argument == "-h" or argument == "--help")
                 return {.status = parse_status::help, .parsed = std::move(parsed)};
