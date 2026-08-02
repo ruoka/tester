@@ -125,6 +125,26 @@ container ownership: cache and graph inputs are passed by `const&`, while the sc
 translation-unit vector is return-elided or moved. The no-op row, where compiler work
 cannot hide orchestration overhead, is slightly faster within noise.
 
+### Final helper-ownership cleanup
+
+The follow-up compared `20ded84` with the final source/cache helper ownership at `a7cfef4`.
+Both binaries ran the same `/workspace` checkout and build tree; this matters because running
+one revision from `/tmp` produced a large filesystem-location bias. The order was again
+old/new/new/old with `--cb-only --modules=one-phase --jobs=4`: six samples per cold/touch
+scenario and ten no-op samples per revision.
+
+| Scenario | Before | Final ownership | Change |
+|----------|-------:|----------------:|-------:|
+| Cold full | 9.642 s | 9.639 s | −0.03% |
+| No-op | 156.9 ms | 156.4 ms | −0.32% |
+| Touch one test TU | 3.555 s | 3.511 s | −1.24% |
+| Touch module interface | 7.031 s | 7.048 s | +0.24% |
+
+All changes are within ±1.3%, with the no-op path unchanged within sub-millisecond noise.
+Moving naming, exclusion and lexical cleaning onto the source classes, and profile/depfile
+logic onto the cache classes, therefore adds no measurable orchestration cost. A final accessor
+follow-up moves the serialized profile string out of a temporary instead of copying it.
+
 ## How to read the gap
 
 - **No-op:** Ninja checks a persistent `build.ninja` graph (mtime / dirty edges). CB rediscovers TUs, re-reads `import` lines, and consults its object cache every run. That rediscovery dominates the warm CB invocation (~0.37 s on this Linux snapshot, ~0.3–0.4 s on macOS).
