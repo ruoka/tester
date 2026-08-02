@@ -87,10 +87,38 @@ The host exposes four physical cores. Raising both builders to `--jobs=8`
 oversubscribed it: CB cold and module-touch builds slowed by 4.8% and 7.6%;
 Ninja slowed by 13.5% and 18.2%. Four jobs is the useful ceiling on this runner.
 
+### Edge scheduler and shared-std follow-up
+
+The scheduling/cache branch was compared directly with its directory-pruning parent
+(`d37ccc3`) on the same Linux / Clang 21 host, still at four jobs. These shorter
+directional runs use two cold builds, three no-op builds, and two touch builds per
+mode; the shared-std row was separately seeded before both clean-build samples.
+
+| Scenario | two-phase before | two-phase after | change | one-phase before | one-phase after | change |
+|----------|-----------------:|----------------:|-------:|-----------------:|----------------:|-------:|
+| Cold full, std cache disabled | 11.70 s | 8.83 s | −24.5% | 12.16 s | 9.75 s | −19.8% |
+| No-op | 184 ms | 158 ms | −14.1% | 183 ms | 161 ms | −12.0% |
+| Touch one test TU | 3.57 s | 3.57 s | −0.1% | 3.63 s | 3.63 s | −0.1% |
+| Touch module interface | 7.16 s | 6.16 s | −14.0% | 6.99 s | 7.16 s | +2.5% |
+
+With the machine-local std cache enabled, a one-phase clean build fell again from
+9.75 s to **7.90 s**. That is 0.84× the paired Ninja cold build (9.37 s), while the
+strictly cold two-phase scheduler result was already 0.94× its paired Ninja build.
+The cache is not included in the ordinary cold rows: `bench-cb-vs-ninja.sh` disables
+it by default.
+
+The main two-phase gain is the intended one: importers are released after provider
+precompile rather than after provider object generation and a whole dependency-level
+barrier. One-phase has no intermediate BMI publication point, but still benefits on
+cold builds from edge readiness, bounded workers, and overlapping source discovery
+with std work. Its module-touch result did not improve in this small sample, so the
+two-phase touch result is the evidence for early BMI publication rather than a claim
+that every rebuild shape speeds up.
+
 ## How to read the gap
 
-- **No-op:** Ninja checks a persistent `build.ninja` graph (mtime / dirty edges). CB rediscovers TUs, re-reads `import` lines, and consults its object cache every run. That rediscovery dominates the warm CB invocation (~0.18 s on Linux, ~0.4 s on the macOS snapshot).
-- **Cold / touch:** Both spend most of the time in `clang++`. One-phase removes CB’s second modular compile step, but whether that pays off depends on the compiler and rebuild shape; scheduling and process orchestration account for the remaining gap.
+- **No-op:** Ninja checks a persistent `build.ninja` graph (mtime / dirty edges). CB rediscovers TUs, re-reads `import` lines, and consults its object cache every run. That rediscovery dominates the warm CB invocation (~0.16 s on the improved Linux build, ~0.4 s on the macOS snapshot).
+- **Cold / touch:** Both spend most of the time in `clang++`. One-phase removes CB’s second modular compile step, while two-phase can overlap a provider object with its importers. Whether either wins depends on the compiler and rebuild shape.
 - **Ninja `-v` vs quiet:** Full command-line logging did not change wall-clock meaningfully when redirected to files. Quiet Ninja no-op was also ~56 ms.
 - **Add/delete sources:** CB always rescans. This repo’s `CMakeLists.txt` uses `GLOB … CONFIGURE_DEPENDS`, so Ninja re-checks globs and CMake regenerates the graph when matching files appear or disappear — no hand `cmake` for ordinary glob hits.
 
