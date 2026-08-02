@@ -1140,7 +1140,8 @@ public:
         : text_{std::move(text)}
     {}
 
-    const std::string& text() const { return text_; }
+    const std::string& text() const & { return text_; }
+    std::string text() && { return std::move(text_); }
 
     // Stable across CB processes, with the full profile stored beside the artefacts to verify
     // the key before reuse. The length makes accidental collisions across differently sized
