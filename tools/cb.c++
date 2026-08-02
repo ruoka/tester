@@ -326,6 +326,10 @@ private:
     inline static const std::regex using_namespace_regex{R"(\busing\s+namespace\b)"};
 };
 
+using translation_unit_list = std::vector<translation_unit>;
+using unit_index =
+    std::flat_map<std::string, const translation_unit*, std::less<>>;
+
 bool translation_unit::match_supported_suffix(std::string_view filename, std::string& out_suffix)
 {
     const auto suffix = std::ranges::find_if(supported_suffixes, [&](std::string_view s) {
@@ -481,7 +485,7 @@ public:
           include_examples_{include_examples}
     {}
 
-    std::vector<translation_unit> scan() const
+    translation_unit_list scan() const
     {
         return order(collect());
     }
@@ -713,9 +717,9 @@ private:
         int m_skip_depth = 0;
     };
 
-    std::vector<translation_unit> collect() const
+    translation_unit_list collect() const
     {
-        auto units = std::vector<translation_unit>{};
+        auto units = translation_unit_list{};
         try
         {
             const auto root = fs::path{source_root_};
@@ -769,7 +773,7 @@ private:
         return units;
     }
 
-    static std::vector<translation_unit> order(std::vector<translation_unit> units)
+    static translation_unit_list order(translation_unit_list units)
     {
         if(units.empty())
             return units;
@@ -806,7 +810,7 @@ private:
             if(degree == 0)
                 ready.push(unit);
 
-        auto sorted = std::vector<translation_unit>{};
+        auto sorted = translation_unit_list{};
         auto level = 0;
         while(not ready.empty())
         {
@@ -997,11 +1001,6 @@ source_unit source_unit_of(const source::translation_unit& tu)
 }
 
 } // namespace output
-
-using unit_to_tu_map = std::flat_map<std::string, source::translation_unit*, std::less<>>;
-using translation_unit_list = std::vector<source::translation_unit>;
-using thread_list = std::vector<std::jthread>;
-using module_to_ldflags_map = std::flat_map<std::string, std::string, std::less<>>;
 
 namespace cache {
 
@@ -1848,7 +1847,7 @@ public:
     std::optional<output::rebuild_info> rebuild_reason_for(
         const source::translation_unit& tu,
         const object_store& loaded,
-        const unit_to_tu_map& units) const
+        const source::unit_index& units) const
     {
         if(not loaded.entries().contains(tu.full_path))
         {
@@ -2048,7 +2047,7 @@ private:
     std::optional<output::rebuild_info> transitive_pcm_newer_than_object(
         const source::translation_unit& tu,
         fs::file_time_type object_timestamp,
-        const unit_to_tu_map& units,
+        const source::unit_index& units,
         std::flat_set<std::string>& visited) const
     {
         for(const auto& dependency_key : tu.imports)
@@ -2142,7 +2141,7 @@ public:
         auto failed = std::atomic_bool{false};
         auto failure = std::exception_ptr{};
         auto failure_mutex = std::mutex{};
-        auto threads = thread_list{};
+        auto threads = std::vector<std::jthread>{};
         threads.reserve(worker_count);
 
         for(auto worker = std::size_t{0}; worker < worker_count; ++worker)
@@ -2574,10 +2573,13 @@ private:
 
 namespace toolchain {
 
-// Placeholder for compiler discovery, profile identity, and command construction that currently
-// remain in build_system. It intentionally has no behavior until those responsibilities move.
+// Shared home for toolchain-facing types. Compiler discovery, profile identity, and command
+// construction remain in build_system until their behavior moves here.
 class driver
 {
+public:
+    using module_link_flags =
+        std::flat_map<std::string, std::string, std::less<>>;
 };
 
 } // namespace toolchain
@@ -2597,7 +2599,7 @@ private:
 
     std::string source_dir;
     string_list compile_flags, link_flags, cpp_flags;
-    module_to_ldflags_map module_ldflags;
+    toolchain::driver::module_link_flags module_ldflags;
     // Shared clang module switches for every compile/link: disable implicit modules,
     // map `std`, and search the BMI cache. Per-TU `-fmodule-file=` flags for project
     // modules are not stored here — see `module_file_flags_for`.
@@ -2612,7 +2614,7 @@ private:
     // Lazily filled by ensure_toolchain_profile() from const cache queries.
     mutable std::string clang_version;
     mutable bool toolchain_profile_probed = false;
-    translation_unit_list units_in_topological_order;
+    source::translation_unit_list units_in_topological_order;
     const build_config config;
     const bool static_link;
     bool include_tests = false;
@@ -3341,7 +3343,7 @@ private:
     // Dependency Analysis
     // ============================================================================
 
-    void attach_artifact_paths(translation_unit_list& units)
+    void attach_artifact_paths(source::translation_unit_list& units)
     {
         auto object_owners = std::flat_map<std::string, std::string, std::less<>>{};
         auto pcm_owners = std::flat_map<std::string, std::string, std::less<>>{};
@@ -3540,7 +3542,7 @@ private:
                            output::rebuild_kind::profile_change,
                            *objects.profile_change());
 
-        auto u2tu = unit_to_tu_map{};
+        auto u2tu = source::unit_index{};
         for (auto& tu : units_in_topological_order) {
             auto k = tu.unit;
             u2tu[k] = &tu;
@@ -3603,7 +3605,7 @@ private:
         const auto worker_count = std::min(
             unit_count,
             static_cast<std::size_t>(std::max<std::ptrdiff_t>(1, job_limit())));
-        auto workers = thread_list{};
+        auto workers = std::vector<std::jthread>{};
         workers.reserve(worker_count);
         for(auto worker = std::size_t{0}; worker < worker_count; ++worker)
         {
@@ -3880,7 +3882,7 @@ public:
     build_system(
         build_config cfg,
         const string_list& cpf = {},
-        const module_to_ldflags_map& mlf = {},
+        const toolchain::driver::module_link_flags& mlf = {},
         const std::string& src = ".",
         const std::string& stdcppm = "",
         bool static_linking = false,
