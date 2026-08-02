@@ -2262,11 +2262,16 @@ private:
         const auto prerequisites = detail::parse_depfile(depfile);
         if(not prerequisites)
             return output::rebuild_info{.kind = output::rebuild_kind::depfile_unusable, .trigger_path = depfile};
+        const auto pcm_tree = normalize_path(module_cache_dir());
 
         for(const auto& prerequisite : *prerequisites)
         {
             const auto resolved = normalize_path(prerequisite);
-            if(resolved == tu.full_path or not resolved.starts_with(source_dir))
+            // Clang also records explicitly mapped BMIs in the depfile. The module graph checks
+            // those separately and reports pcm_stale; they are not textual headers.
+            if(resolved == tu.full_path
+               or not resolved.starts_with(source_dir)
+               or detail::path_at_or_under_dir(resolved, pcm_tree))
                 continue;
 
             auto error = std::error_code{};
