@@ -1720,6 +1720,70 @@ test_module_phases() {
   end_case module_phases
 }
 
+test_pcm_edge_scheduler() {
+  should_run pcm_edge_scheduler || return 0
+  begin_case pcm_edge_scheduler
+  local work_dir real_cxx wrapper old_llvm_cxx llvm_cxx_was_set
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
+  rm -f "${work_dir}/hello.c++"
+
+  printf '%s\n' \
+    'export module slow;' \
+    'export int slow_value() { return 9; }' > "${work_dir}/slow.c++m"
+  printf '%s\n' \
+    'import slow;' \
+    'int main() { return slow_value() == 9 ? 0 : 1; }' > "${work_dir}/main.c++"
+
+  # Hold the provider's pcm→object step open. The importer should start after --precompile,
+  # before the provider's compile_end; a dependency-level barrier cannot satisfy that ordering.
+  real_cxx="$(cd "$(dirname "${STD_CPPM}")/../../.." && pwd)/bin/clang++"
+  wrapper="${work_dir}/slow-clang++"
+  cat > "${wrapper}" <<EOF
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  if [[ "\$arg" != -* && "\$arg" == */slow.pcm ]]; then
+    sleep 1
+    break
+  fi
+done
+exec "${real_cxx}" "\$@"
+EOF
+  chmod +x "${wrapper}"
+
+  old_llvm_cxx="${LLVM_CXX-}"
+  llvm_cxx_was_set="${LLVM_CXX+x}"
+  export LLVM_CXX="${wrapper}"
+  run_cb_build "${work_dir}" --jobs=2
+  if [[ -n "${llvm_cxx_was_set}" ]]; then
+    export LLVM_CXX="${old_llvm_cxx}"
+  else
+    unset LLVM_CXX
+  fi
+
+  assert_jsonl_event_value build_end ok true "pcm_edge_scheduler_build"
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if python3 - "${LAST_JSONL}" <<'PY'
+import json, sys
+events = [json.loads(line) for line in sys.argv[1].splitlines() if line.startswith("{")]
+importer_start = next(
+    i for i, event in enumerate(events)
+    if event.get("type") == "compile_start"
+    and event.get("source_path", "").endswith("main.c++"))
+provider_end = next(
+    i for i, event in enumerate(events)
+    if event.get("type") == "compile_end"
+    and event.get("source_path", "").endswith("slow.c++m"))
+raise SystemExit(0 if importer_start < provider_end else 1)
+PY
+  then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"pcm_edge_releases_importer_early"}'
+  else
+    fail "expected importer compile_start before provider compile_end"
+  fi
+  end_case pcm_edge_scheduler
+}
+
 test_jsonl_modes() {
   should_run jsonl_modes || return 0
   begin_case jsonl_modes
@@ -1822,6 +1886,7 @@ main() {
   test_modular_object_stale
   test_modular_one_phase_object_missing
   test_module_phases
+  test_pcm_edge_scheduler
   test_jsonl_modes
   test_jsonl_failure_mode
 
