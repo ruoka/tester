@@ -2286,21 +2286,34 @@ private:
         if (cache.entries.at(tu.full_path) < tu.last_modified)
             return output::rebuild_info{.kind = output::rebuild_kind::source_stale, .trigger_path = tu.full_path};
 
-        // Ensure the object file exists and is up-to-date versus the source timestamp we cached.
-        if (not fs::exists(tu.object_path))
-            return output::rebuild_info{.kind = output::rebuild_kind::object_missing, .trigger_path = tu.full_path};
+        // Object presence / mtime versus the cached source stamp. Non-modular units can
+        // return here: their only input is the source. Modular units must not — under
+        // two-phase, object_missing / object_stale reuse the existing BMI for pcm→.o, so
+        // import freshness has to be checked first. Otherwise deleting mid.o, editing an
+        // imported constexpr, and rebuilding object_only-compiles the stale mid.pcm into
+        // a green binary that still embeds the old value.
+        const auto object_absent = not fs::exists(tu.object_path);
+        auto object_timestamp = fs::file_time_type{};
+        if(object_absent)
+        {
+            if(not tu.is_modular)
+                return output::rebuild_info{.kind = output::rebuild_kind::object_missing, .trigger_path = tu.full_path};
+        }
+        else
+        {
+            object_timestamp = fs::last_write_time(tu.object_path);
+            if(object_timestamp < cache.entries.at(tu.full_path) and not tu.is_modular)
+                return output::rebuild_info{.kind = output::rebuild_kind::object_stale, .trigger_path = tu.full_path};
 
-        auto object_timestamp = fs::last_write_time(tu.object_path);
-        if (object_timestamp < cache.entries.at(tu.full_path))
-            return output::rebuild_info{.kind = output::rebuild_kind::object_stale, .trigger_path = tu.full_path};
-
-        // Textual #include dependencies are invisible to the module graph, so the
-        // compiler's own depfile is the only record of them.
-        if (auto header_reason = stale_header(tu, object_timestamp))
-            return header_reason;
+            // Textual #include dependencies are invisible to the module graph, so the
+            // compiler's own depfile is the only record of them.
+            if(auto header_reason = stale_header(tu, object_timestamp))
+                return header_reason;
+        }
 
         // Implementation units consume their interface PCM implicitly through
         // -fmodule-file=<module>=<pcm>, even when they do not import that module.
+        // They are never is_modular, so object_absent already returned above.
         if(tu.kind == unit_kind::implementation_unit && u2tu.contains(tu.module))
         {
             const auto& interface = *u2tu.at(tu.module);
@@ -2317,20 +2330,25 @@ private:
         // --precompile followed by a failed/skipped object step leaves a pcm newer than
         // the .o, and without this check the unit cache-hits while importers rebuild
         // against the new interface — linking the old implementation into the binary.
+        // When the object is missing, compare imports against the pcm itself: that is
+        // what object_only would feed to pcm→.o.
+        auto freshness_timestamp = object_timestamp;
         if (tu.is_modular) {
             if (not fs::exists(tu.pcm_path))
                 return pcm_rebuild(output::rebuild_kind::own_pcm_missing, tu);
             auto pcm_timestamp = fs::last_write_time(tu.pcm_path);
             if (pcm_timestamp < tu.last_modified)
                 return pcm_rebuild(output::rebuild_kind::own_pcm_stale, tu);
-            if (object_timestamp < pcm_timestamp)
+            if(object_absent)
+                freshness_timestamp = pcm_timestamp;
+            else if (object_timestamp < pcm_timestamp)
                 return pcm_rebuild(output::rebuild_kind::object_stale, tu);
         }
 
         // Rebuild when any transitive import PCM is newer than this object file.
         // Catches partition updates (e.g. tester:assertions) for test TUs that import an umbrella module.
         auto visited = std::flat_set<std::string>{};
-        if (auto stale = transitive_pcm_newer_than_object(tu, object_timestamp, u2tu, visited))
+        if (auto stale = transitive_pcm_newer_than_object(tu, freshness_timestamp, u2tu, visited))
             return stale;
 
         // Rebuild if any imported modules have changed (their .pcm files are stale or they need recompiling)
@@ -2349,6 +2367,11 @@ private:
                     return attributed_to(*dep_reason, dep_tu);
             }
         }
+
+        if(object_absent)
+            return output::rebuild_info{.kind = output::rebuild_kind::object_missing, .trigger_path = tu.full_path};
+        if(object_timestamp < cache.entries.at(tu.full_path))
+            return output::rebuild_info{.kind = output::rebuild_kind::object_stale, .trigger_path = tu.full_path};
 
         return std::nullopt;
     }

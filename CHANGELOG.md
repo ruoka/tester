@@ -8,6 +8,16 @@ Internal refactoring is not listed — roughly half the commits since `v1.0.0` r
 Versions follow the rules in the release policy. `Unreleased` accumulates until the next
 tag; cutting a release renames that section.
 
+## Unreleased
+
+### Fixed
+
+- **Two-phase modular `object_missing` no longer skips import freshness.** Returning
+  `object_missing` before checking import PCMs let `pcm → .o` reuse a BMI that still
+  embedded old imported constexpr/interface state after a dependency rebuilt — a green
+  binary with the wrong values. Modular units now compare imports against the BMI when
+  the object is absent, and only then take the object-only shortcut.
+
 ## [2.2.0] — 2026-08-02
 
 ### Added
