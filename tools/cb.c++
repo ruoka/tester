@@ -158,6 +158,18 @@ bool path_under_dir(std::string_view path, std::string_view dir)
     return path.contains(needle);
 }
 
+// True when `dir` is a complete component anywhere in path, including the path's leaf.
+// path_under_dir intentionally excludes a bare/leaf directory because its original callers
+// pass file paths; the scanner also sees directories and needs to prune at the directory itself.
+bool path_at_or_under_dir(std::string_view path, std::string_view dir)
+{
+    if(path == dir or path_under_dir(path, dir))
+        return true;
+    return path.size() > dir.size()
+        and path.ends_with(dir)
+        and path[path.size() - dir.size() - 1] == '/';
+}
+
 // True for `dir` or `dir/...`.
 bool is_dir_or_under(std::string_view path, std::string_view dir)
 {
@@ -424,6 +436,17 @@ bool is_dependency_package_tests_path(std::string_view rel_path)
 
     const auto after_pkg = rest.substr(slash + 1);
     return is_dir_or_under(after_pkg, test_dir_name) or is_dir_or_under(after_pkg, tests_dir_name);
+}
+
+bool is_excluded_source_path(std::string_view rel_path, bool include_examples)
+{
+    return is_nested_dependency_path(rel_path)
+        or is_dependency_package_tests_path(rel_path)
+        or is_tester_package_tests_path(rel_path)
+        or is_build_output_path(rel_path)
+        or path_at_or_under_dir(rel_path, tools_dir_name)
+        or path_at_or_under_dir(rel_path, git_dir_name)
+        or (not include_examples and path_at_or_under_dir(rel_path, examples_dir_name));
 }
 
 bool determine_is_test(std::string_view rel_dir, std::string_view name, std::string_view suffix_value) {
@@ -2423,25 +2446,26 @@ private:
                 units_in_topological_order = std::move(units); return;
             }
 
-            for (const auto& entry : fs::recursive_directory_iterator(path)) {
-                if (not entry.is_regular_file()) continue;
+            auto entries = fs::recursive_directory_iterator{path};
+            const auto end = fs::recursive_directory_iterator{};
+            for (; entries != end; ++entries) {
+                const auto& entry = *entries;
+                const auto rel_path = entry.path().lexically_relative(path).string();
 
-                auto rel_path = entry.path().lexically_relative(path).string();
-
-                // Skip nested package checkouts, vendored package test trees, build-*
-                // output trees, tools/, and .git/. Do not hard-skip project test/ trees
-                // here — determine_is_test marks them as is_test, and include_tests
-                // (debug / --build-tests) decides whether they join.
-                if (detail::is_nested_dependency_path(rel_path) or
-                    detail::is_dependency_package_tests_path(rel_path) or
-                    detail::is_tester_package_tests_path(rel_path) or
-                    detail::is_build_output_path(rel_path) or
-                    detail::path_under_dir(rel_path, tools_dir_name) or
-                    detail::path_under_dir(rel_path, git_dir_name))
+                // Prune excluded trees at their directory entry instead of descending through
+                // every file and discarding it. Project test/ trees are deliberately absent:
+                // determine_is_test marks those after parsing and include_tests decides whether
+                // they join. Keep the file check too, preserving the old predicate contract for
+                // unusual non-directory paths and filesystem races.
+                if(entry.is_directory())
+                {
+                    if(detail::is_excluded_source_path(rel_path, include_examples))
+                        entries.disable_recursion_pending();
                     continue;
-
-                // Exclude examples by default, include only if flag is set
-                if (not include_examples and detail::path_under_dir(rel_path, examples_dir_name))
+                }
+                if(not entry.is_regular_file())
+                    continue;
+                if(detail::is_excluded_source_path(rel_path, include_examples))
                     continue;
 
                 if (not translation_unit::is_supported(entry.path()))
