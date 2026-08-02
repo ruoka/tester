@@ -174,13 +174,6 @@ bool path_at_or_under_dir(std::string_view path, std::string_view dir)
         and path[path.size() - dir.size() - 1] == '/';
 }
 
-// True for `dir` or `dir/...`.
-bool is_dir_or_under(std::string_view path, std::string_view dir)
-{
-    return path == dir
-        or (path.starts_with(dir) and path.size() > dir.size() and path[dir.size()] == '/');
-}
-
 std::string module_file_flag(std::string_view module_name, std::string_view pcm_path)
 {
     auto out = std::string{module_file_flag_prefix};
@@ -203,19 +196,6 @@ std::string shell_quote(std::string_view arg)
     });
     out += '\'';
     return out;
-}
-
-std::string_view unit_kind_name(unit_kind kind)
-{
-    switch(kind)
-    {
-        case unit_kind::non_module: return "non_module";
-        case unit_kind::interface_unit: return "interface";
-        case unit_kind::partition_unit: return "partition";
-        case unit_kind::implementation_unit: return "implementation";
-        case unit_kind::global_fragment: return "global_fragment";
-    }
-    return "unknown";
 }
 
 // Collapse any isspace run to a single space; trim leading/trailing whitespace.
@@ -258,249 +238,12 @@ std::string flags_profile_string(const string_list& flags)
     return flags | std::views::join_with(" "sv) | std::ranges::to<std::string>();
 }
 
-// Stable across CB processes, with the full profile stored beside the artefacts to verify the
-// key before reuse. The length makes accidental collisions across differently sized profiles
-// still less likely; a collision never bypasses the profile comparison.
-std::string cache_profile_key(std::string_view profile)
-{
-    constexpr auto offset = std::uint64_t{14695981039346656037ULL};
-    constexpr auto prime = std::uint64_t{1099511628211ULL};
-    const auto hash = std::ranges::fold_left(profile, offset, [=](std::uint64_t value, char byte)
-    {
-        return (value ^ static_cast<unsigned char>(byte)) * prime;
-    });
-    auto digits = std::array<char, 16>{};
-    const auto converted = std::to_chars(digits.data(), digits.data() + digits.size(), hash, 16);
-    return std::to_string(profile.size()) + '-'
-         + std::string{digits.data(), converted.ptr};
-}
-
 std::string join_argv(const string_list& argv)
 {
     return argv
         | std::views::transform([](const std::string& arg) { return shell_quote(arg); })
         | std::views::join_with(" "sv)
         | std::ranges::to<std::string>();
-}
-
-using profile_fields = std::flat_map<std::string, std::string, std::less<>>;
-
-// Object-cache profile values must not contain '\t', '\n', '\r', or '%' (tab-delimited format).
-void append_profile_field(std::string& profile, std::string_view key, std::string_view value)
-{
-    if(not profile.empty())
-        profile += '\t';
-    profile += key;
-    profile += '=';
-    profile += value;
-}
-
-std::pair<std::string, std::string> parse_profile_field(std::string_view segment)
-{
-    const auto eq = segment.find('=');
-    return {
-        std::string{segment.substr(0, eq)},
-        std::string{segment.substr(eq + 1)}};
-}
-
-profile_fields parse_object_cache_profile_fields(std::string_view profile)
-{
-    return profile
-        | std::views::split('\t')
-        | std::views::transform([](auto&& part) { return parse_profile_field(std::string_view{part}); })
-        | std::ranges::to<profile_fields>();
-}
-
-output::profile_token_change diff_profile_tokens(std::string_view old_text, std::string_view new_text)
-{
-    auto old_tokens = parse_external_flag_text(old_text);
-    auto new_tokens = parse_external_flag_text(new_text);
-    std::ranges::sort(old_tokens);
-    std::ranges::sort(new_tokens);
-
-    auto change = output::profile_token_change{};
-    std::ranges::set_difference(new_tokens, old_tokens, std::back_inserter(change.added));
-    std::ranges::set_difference(old_tokens, new_tokens, std::back_inserter(change.removed));
-    return change;
-}
-
-output::object_cache_profile_diff diff_object_cache_profiles(std::string_view old_profile, std::string_view new_profile)
-{
-    const auto old_fields = parse_object_cache_profile_fields(old_profile);
-    const auto new_fields = parse_object_cache_profile_fields(new_profile);
-    auto diff = output::object_cache_profile_diff{};
-
-    // Named, because `return {}` has nothing to deduce from.
-    const auto field_value = [](const profile_fields& fields, std::string_view key) -> std::string {
-        if(fields.contains(key))
-            return fields.at(key);
-        return {};
-    };
-
-    const auto diff_scalar = [&](std::string_view key, std::optional<output::profile_scalar_change>& out) {
-        const auto old_value = field_value(old_fields, key);
-        const auto new_value = field_value(new_fields, key);
-        if(old_value != new_value)
-            out = output::profile_scalar_change{old_value, new_value};
-    };
-
-    output::for_each_profile_scalar(diff, diff_scalar);
-
-    const auto diff_tokens = [&](std::string_view key, std::optional<output::profile_token_change>& out) {
-        auto change = diff_profile_tokens(field_value(old_fields, key), field_value(new_fields, key));
-        if(change.changed())
-            out = std::move(change);
-    };
-
-    output::for_each_profile_tokens(diff, diff_tokens);
-    return diff;
-}
-
-std::string make_base_name(std::string_view filename)
-{
-    const auto suffix = std::ranges::find_if(supported_suffixes, [&](std::string_view s) {
-        return filename.ends_with(s);
-    });
-    if(suffix != supported_suffixes.end())
-        return std::string{filename.substr(0, filename.size() - suffix->size())};
-    return std::string{filename};
-}
-
-std::string extract_suffix(std::string_view filename)
-{
-    const auto suffix = std::ranges::find_if(supported_suffixes, [&](std::string_view s) {
-        return filename.ends_with(s);
-    });
-    if(suffix == supported_suffixes.end())
-        throw std::runtime_error{"unsupported source suffix"};
-    return std::string{*suffix};
-}
-
-std::string normalize_relative_dir(const fs::path& dir) {
-    if (dir.empty()) return "";
-    auto str = dir.string();
-    return str == "." ? "" : str;
-}
-
-// The name reports use for a unit: its directory and filename joined, or the bare filename
-// for a unit at the project root.
-std::string make_display_path(std::string_view dir, std::string_view filename) {
-    return dir.empty() ? std::string{filename} : std::string{dir} + "/" + std::string{filename};
-}
-
-bool is_tester_framework_path(std::string_view path) {
-    // Nested or top-level tester library trees (not *.test.c++ sources).
-    return path_under_dir(path, tester_dir_name);
-}
-
-// Parent repos vendor packages under deps/<name>/. Nested checkouts such as
-// deps/net/deps/tester belong to the child package and must not join the parent
-// build — otherwise same-basename smoke fixtures collide across packages.
-bool is_nested_dependency_path(std::string_view rel_path)
-{
-    if(not rel_path.starts_with(deps_dir_prefix))
-        return false;
-
-    const auto rest = rel_path.substr(deps_dir_prefix.size());
-    const auto slash = rest.find('/');
-    if(slash == std::string_view::npos)
-        return false;
-
-    const auto after_pkg = rest.substr(slash + 1);
-    return is_dir_or_under(after_pkg, deps_dir_name);
-}
-
-// Top-level build-* trees are outputs (CB, Make, CMake), not project sources.
-// CMake's CompilerId .cpp under build-cmake-*/ would otherwise join the scan and
-// collide across configure trees.
-bool is_build_output_path(std::string_view rel_path)
-{
-    const auto first = rel_path.substr(0, rel_path.find('/'));
-    return first.starts_with(build_root_prefix);
-}
-
-bool path_has_test_segment(std::string_view path) {
-    // Match path components named exactly "test" or "tests" (not "tester" / "test_exception_bug").
-    auto rest = path;
-    while (not rest.empty()) {
-        const auto slash = rest.find('/');
-        const auto segment = slash == std::string_view::npos ? rest : rest.substr(0, slash);
-        if (segment == test_dir_name or segment == tests_dir_name)
-            return true;
-        if (slash == std::string_view::npos)
-            break;
-        rest.remove_prefix(slash + 1);
-    }
-    return false;
-}
-
-// First-level deps/tester/tests/... (and tester/tests/...) smoke fixtures must not join the
-// consumer scan: determine_is_test calls every tester/ path a library source, so fixture mains
-// such as hello.c++ would compile into parent builds and collide on the duplicate-key check.
-bool is_tester_package_tests_path(std::string_view rel_path)
-{
-    return is_tester_framework_path(rel_path) and path_has_test_segment(rel_path);
-}
-
-// deps/<pkg>/test and deps/<pkg>/tests are the vendored package's own suites (benchmarks,
-// package-local tests), not the consumer's, so they stay out of the parent build even now that
-// project test/ trees are in the scan (#14). Co-located deps/<pkg>/*.test.c++ still joins.
-bool is_dependency_package_tests_path(std::string_view rel_path)
-{
-    if(not rel_path.starts_with(deps_dir_prefix))
-        return false;
-
-    const auto rest = rel_path.substr(deps_dir_prefix.size());
-    const auto slash = rest.find('/');
-    if(slash == std::string_view::npos)
-        return false;
-
-    const auto after_pkg = rest.substr(slash + 1);
-    return is_dir_or_under(after_pkg, test_dir_name) or is_dir_or_under(after_pkg, tests_dir_name);
-}
-
-bool is_excluded_source_path(std::string_view rel_path, bool include_examples)
-{
-    return is_nested_dependency_path(rel_path)
-        or is_dependency_package_tests_path(rel_path)
-        or is_tester_package_tests_path(rel_path)
-        or is_build_output_path(rel_path)
-        or path_at_or_under_dir(rel_path, tools_dir_name)
-        or path_at_or_under_dir(rel_path, git_dir_name)
-        or (not include_examples and path_at_or_under_dir(rel_path, examples_dir_name));
-}
-
-bool determine_is_test(std::string_view rel_dir, std::string_view name, std::string_view suffix_value) {
-    const auto combined = rel_dir.empty() ? std::string{name} : std::string{rel_dir} + "/" + std::string{name};
-    if (is_tester_framework_path(combined))
-        return false;
-    if (suffix_value == test_cxx_suffix or suffix_value == test_cxxm_suffix)
-        return true;
-    return path_has_test_segment(combined);
-}
-
-std::string make_unit(std::string_view module_value, unit_kind kind, std::string_view filename_value) {
-    switch (kind) {
-        case unit_kind::interface_unit:
-        case unit_kind::partition_unit:
-            return std::string{module_value};
-        case unit_kind::implementation_unit:
-        case unit_kind::non_module:
-        case unit_kind::global_fragment:
-            return std::string{filename_value};
-    }
-    return std::string{filename_value};
-}
-
-std::string make_full_path(const fs::path& file_path) {
-    auto absolute = file_path;
-    if (absolute.is_relative()) absolute = fs::absolute(absolute);
-    try {
-        absolute = fs::canonical(absolute);
-    } catch (...) {
-        absolute = fs::absolute(absolute);
-    }
-    return absolute.string();
 }
 
 std::string binary_signature(const std::string& path)
@@ -512,57 +255,6 @@ std::string binary_signature(const std::string& path)
     const auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(
         fs::last_write_time(path).time_since_epoch()).count();
     return std::to_string(size) + ':' + std::to_string(ticks);
-}
-
-// Make-style depfile (clang -MMD -MF): `target: prereq prereq \<newline> prereq`, spaces in a
-// path backslash-escaped. Returns the prerequisites only. `nullopt` when the file cannot be
-// trusted — unreadable, or lacking the `target:` every depfile has — which is not the same
-// answer as an empty list: conflating them turns an unreadable depfile into a cache hit.
-std::optional<string_list> parse_depfile(const std::string& path)
-{
-    auto file = std::ifstream{path};
-    if(not file)
-        return std::nullopt;
-
-    auto text = std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
-    if(const auto colon = text.find(':'); colon != std::string::npos)
-        text.erase(0, colon + 1);
-    else
-        return std::nullopt;
-
-    auto prerequisites = string_list{};
-    auto current = std::string{};
-    const auto flush = [&]
-    {
-        if(not current.empty())
-            prerequisites.push_back(std::exchange(current, std::string{}));
-    };
-
-    for(auto index = std::size_t{}; index < text.size(); ++index)
-    {
-        const auto ch = text[index];
-        if(ch == '\\' and index + 1 < text.size())
-        {
-            const auto next = text[index + 1];
-            // Line continuation: the backslash and the newline both vanish.
-            if(next == '\n' or next == '\r')
-            {
-                flush();
-                continue;
-            }
-            // Escaped literal (most often `\ ` in a path).
-            current.push_back(next);
-            ++index;
-            continue;
-        }
-        if(std::isspace(static_cast<unsigned char>(ch)) != 0)
-            flush();
-        else
-            current.push_back(ch);
-    }
-    flush();
-
-    return prerequisites;
 }
 
 // waitpid yields a wait status; decode once so command_end / test_end report the
@@ -644,136 +336,6 @@ std::string read_first_line(const std::string& path)
     return line;
 }
 
-constexpr std::string_view object_cache_format = "cb-object-cache-v3"sv;
-
-// Comments, string literals and `#if 0` blocks are not declarations, and matching the
-// module regexes against them invents edges in the module graph.
-
-// Phase 2 of translation, done first because everything below assumes it: a backslash, any
-// horizontal whitespace after it (C++23 trims it, with a diagnostic) and the newline go. The
-// compiler splices before it recognises a directive, a comment or a literal, so a scanner
-// reading physical lines disagrees with it about what the source says — `#if \` on its own
-// line is `#if 0` there and an unrecognised directive here, and `import \` hides a real edge.
-//
-// Splices inside a raw-string body go too, which [lex.pptoken] would revert before looking for
-// the closer. Honouring that means telling an `R"(` opener from the same text in a comment or
-// another literal, which is lexical state rather than a pattern, and scanning here is
-// regex-based on purpose. The cost is a body ending a line with `)\`, read as closing early;
-// deciding it the other way cost more, freezing every later splice after a fake opener.
-inline static const std::regex line_splice_regex{R"(\\[ \t\v\f]*\r?\n)"};
-
-inline std::string splice_physical_lines(const std::string& text)
-{
-    return std::regex_replace(text, line_splice_regex, "");
-}
-
-// One alternation over the whole preamble, because a block comment and a raw string still
-// span lines after splicing and cannot be recognised a line at a time. Alternation also gets
-// the interleaving right for free: whichever construct opens first wins, so `"/*"` inside a
-// string starts no comment, and a quote inside a comment stays inert. Comments collapse to a
-// space, since a comment separates tokens (`import/*x*/foo`); literals keep their delimiters
-// but lose contents that may spell `import foo;`, which the unanchored matchers would find.
-//
-// A raw string's body has no escapes, so only `)delimiter"` closes it, matched by backreference
-// — the one unavoidable lazy `[\s\S]*?`, and it only runs where `R"` appears. `//` comments and
-// quoted literals end at the newline, a continued one having already been joined. The quoted
-// branches keep `\\.` for the escapes that remain (`"\""` closes nothing) and are unrolled as a
-// character-class run plus a group per escape (`[^"\\\n]*(?:\\.[^"\\\n]*)*`) rather than a
-// per-character alternation: run and escape group cannot both match a backslash, which is what
-// keeps the form linear in a pass that has dominated scan time before.
-inline static const std::regex comment_or_literal_regex{
-    R"(//[^\n]*)"
-    R"(|/\*[^*]*\*+(?:[^/*][^*]*\*+)*/)"
-    R"(|R(")([^()\\ \t\r\n"]{0,16})\([\s\S]*?\)\2")"
-    R"(|(")[^"\\\n]*(?:\\.[^"\\\n]*)*")"
-    R"(|(')[^'\\\n]*(?:\\.[^'\\\n]*)*')"};
-
-inline std::string strip_comments_and_literals(const std::string& text)
-{
-    // Comments collapse to a single space; a literal keeps its delimiters via whichever
-    // quote group matched, so `"import foo;"` cannot register as an edge. Exactly one of
-    // the three quote groups participates per match, so the others expand to nothing.
-    return std::regex_replace(text, comment_or_literal_regex, " $1$1$3$3$4$4");
-}
-
-// `#if 0` is the commented-out idiom, so its body is elided wholesale — and the idiom has more
-// spellings than the bare constant: parenthesised (`#if (0)`), short-circuited (`#if 0 &&
-// OLD_FEATURE`), and spread over arms (`#elif 0`). Only nesting is beyond a regex, balanced
-// delimiters not being regular, so directives are recognised and the depth counted. Genuine
-// conditionals are left alone: scanning both branches of an `#ifdef` costs a spurious edge,
-// while guessing which one is live risks dropping a real one.
-class conditional_filter
-{
-public:
-    // True when a line carries no live code: a preprocessor directive, or any line
-    // inside a dead `#if` region or dead `#elif` arm.
-    bool is_inactive(const std::string& line)
-    {
-        // Directives are a tiny minority of lines; the cheap check keeps the regex off
-        // the hot path of a scan that runs on every build, cached or not.
-        if(line.contains('#'))
-        {
-            auto m = std::smatch{};
-            if(std::regex_match(line, m, directive_regex))
-            {
-                apply(m[1].str(), m[2].str());
-                return true;
-            }
-        }
-        return m_skip_depth > 0;
-    }
-
-private:
-    // False without evaluating anything: the constant, in any grouping, optionally
-    // short-circuiting the rest away. Grouping and whitespace carry no meaning here, so they go
-    // first and `(0) && defined(X)` reads as `0&&definedX`. `!0` and `0 || X` stay live.
-    static bool is_never_taken(std::string_view condition)
-    {
-        const auto normalized = condition
-            | std::views::filter([](char c) { return c != '(' and c != ')' and not std::isspace(static_cast<unsigned char>(c)); })
-            | std::ranges::to<std::string>();
-        return normalized == "0" or normalized == "false"
-            or normalized.starts_with("0&&") or normalized.starts_with("false&&");
-    }
-
-    void apply(std::string_view name, std::string_view condition)
-    {
-        const auto skipping = m_skip_depth > 0;
-        if(name == "if" or name == "ifdef" or name == "ifndef")
-        {
-            ++m_if_depth;
-            if(not skipping and name == "if" and is_never_taken(condition))
-                m_skip_depth = m_if_depth;
-        }
-        else if(name == "endif")
-        {
-            if(skipping and m_if_depth == m_skip_depth)
-                m_skip_depth = 0;
-            if(m_if_depth > 0)
-                --m_if_depth;
-        }
-        else if(name == "else" or name == "elif")
-        {
-            // Each arm is judged on its own: leaving the skip region on every `#elif` would
-            // revive the next arm of `#if 0 / #elif 0`, and entering it on a dead arm is what
-            // elides `#elif 0` after a live one. `#else` has no condition to rule it out.
-            const auto dead_arm = name == "elif" and is_never_taken(condition);
-            if(skipping and m_if_depth == m_skip_depth and not dead_arm)
-                m_skip_depth = 0;
-            else if(not skipping and dead_arm)
-                m_skip_depth = m_if_depth;
-        }
-    }
-
-    // Group 2 is the whole condition, so a trailing operand cannot fail the full-line
-    // match: `#if 0 && OLD` used to match nothing, leaving the directive unrecognised,
-    // its body live, and the `#endif` depth bookkeeping off by one.
-    inline static const std::regex directive_regex{R"(\s*#\s*(\w+)\s*(.*))"};
-
-    int m_if_depth = 0;
-    int m_skip_depth = 0;
-};
-
 } // namespace detail
 
 namespace source {
@@ -783,6 +345,7 @@ class translation_unit {
 public:
     static bool match_supported_suffix(std::string_view filename, std::string& out_suffix);
     static bool is_supported(const fs::path& file_path);
+    std::string_view kind_name() const;
 
     friend class scanner;
 
@@ -824,6 +387,14 @@ private:
                      unit_kind kind_value,
                      bool has_main_flag);
 
+    static std::string normalize_relative_dir(const fs::path& dir);
+    static std::string make_base_name(std::string_view filename);
+    static std::string make_display_path(std::string_view dir, std::string_view filename);
+    static std::string make_full_path(const fs::path& file_path);
+    static std::string make_unit(std::string_view module_value, unit_kind kind, std::string_view filename_value);
+    static bool is_tester_framework_path(std::string_view path);
+    static bool path_has_test_segment(std::string_view path);
+    static bool determine_is_test(std::string_view rel_dir, std::string_view name, std::string_view suffix_value);
 
     // Module names may contain '.' (e.g. demo.core); partitions use ':' (demo.core:part).
     inline static const std::regex module_regex{R"(\s*(?:export\s+)?module\s+([\w.:-]+)\s*;)"};
@@ -852,6 +423,107 @@ bool translation_unit::is_supported(const fs::path& file_path) {
     return match_supported_suffix(name, suffix);
 }
 
+std::string_view translation_unit::kind_name() const
+{
+    switch(kind)
+    {
+        case unit_kind::non_module: return "non_module";
+        case unit_kind::interface_unit: return "interface";
+        case unit_kind::partition_unit: return "partition";
+        case unit_kind::implementation_unit: return "implementation";
+        case unit_kind::global_fragment: return "global_fragment";
+    }
+    return "unknown";
+}
+
+std::string translation_unit::normalize_relative_dir(const fs::path& dir)
+{
+    if(dir.empty())
+        return "";
+    auto str = dir.string();
+    return str == "." ? "" : str;
+}
+
+std::string translation_unit::make_base_name(std::string_view filename)
+{
+    const auto suffix = std::ranges::find_if(supported_suffixes, [&](std::string_view s) {
+        return filename.ends_with(s);
+    });
+    if(suffix != supported_suffixes.end())
+        return std::string{filename.substr(0, filename.size() - suffix->size())};
+    return std::string{filename};
+}
+
+std::string translation_unit::make_display_path(std::string_view dir, std::string_view filename)
+{
+    return dir.empty() ? std::string{filename} : std::string{dir} + "/" + std::string{filename};
+}
+
+std::string translation_unit::make_full_path(const fs::path& file_path)
+{
+    auto absolute = file_path;
+    if(absolute.is_relative())
+        absolute = fs::absolute(absolute);
+    try
+    {
+        absolute = fs::canonical(absolute);
+    }
+    catch(...)
+    {
+        absolute = fs::absolute(absolute);
+    }
+    return absolute.string();
+}
+
+std::string translation_unit::make_unit(std::string_view module_value, unit_kind kind, std::string_view filename_value)
+{
+    switch(kind)
+    {
+        case unit_kind::interface_unit:
+        case unit_kind::partition_unit:
+            return std::string{module_value};
+        case unit_kind::implementation_unit:
+        case unit_kind::non_module:
+        case unit_kind::global_fragment:
+            return std::string{filename_value};
+    }
+    return std::string{filename_value};
+}
+
+bool translation_unit::is_tester_framework_path(std::string_view path)
+{
+    // Nested or top-level tester library trees (not *.test.c++ sources).
+    // Uses path_under_dir (not path_at_or_under_dir): a bare leaf `tester` is not a framework path.
+    return detail::path_under_dir(path, tester_dir_name);
+}
+
+bool translation_unit::path_has_test_segment(std::string_view path)
+{
+    // Match path components named exactly "test" or "tests" (not "tester" / "test_exception_bug").
+    auto rest = path;
+    while(not rest.empty())
+    {
+        const auto slash = rest.find('/');
+        const auto segment = slash == std::string_view::npos ? rest : rest.substr(0, slash);
+        if(segment == test_dir_name or segment == tests_dir_name)
+            return true;
+        if(slash == std::string_view::npos)
+            break;
+        rest.remove_prefix(slash + 1);
+    }
+    return false;
+}
+
+bool translation_unit::determine_is_test(std::string_view rel_dir, std::string_view name, std::string_view suffix_value)
+{
+    const auto combined = rel_dir.empty() ? std::string{name} : std::string{rel_dir} + "/" + std::string{name};
+    if(is_tester_framework_path(combined))
+        return false;
+    if(suffix_value == test_cxx_suffix or suffix_value == test_cxxm_suffix)
+        return true;
+    return path_has_test_segment(combined);
+}
+
 translation_unit::translation_unit(const fs::path& relative,
                                           const fs::path& full_path,
                                           std::string module_value,
@@ -859,17 +531,22 @@ translation_unit::translation_unit(const fs::path& relative,
                                           unit_kind kind_value,
                                           bool has_main_flag)
     : filename(relative.filename().string()),
-      path(detail::normalize_relative_dir(relative.parent_path())),
-      suffix(detail::extract_suffix(relative.filename().string())),
-      base_name(detail::make_base_name(this->filename)),
-      full_path(detail::make_full_path(full_path)),
-      display_path(detail::make_display_path(this->path, this->filename)),
-      unit(detail::make_unit(module_value, kind_value, this->filename)),
+      path(normalize_relative_dir(relative.parent_path())),
+      suffix([&] {
+          auto matched = std::string{};
+          if(not match_supported_suffix(relative.filename().string(), matched))
+              throw std::runtime_error{"unsupported source suffix"};
+          return matched;
+      }()),
+      base_name(make_base_name(this->filename)),
+      full_path(make_full_path(full_path)),
+      display_path(make_display_path(this->path, this->filename)),
+      unit(make_unit(module_value, kind_value, this->filename)),
       module(std::move(module_value)),
       imports(std::move(imports_value)),
       kind(kind_value),
       has_main(has_main_flag),
-      is_test(detail::determine_is_test(this->path, this->filename, this->suffix)),
+      is_test(determine_is_test(this->path, this->filename, this->suffix)),
       is_modular(kind_value == unit_kind::interface_unit or kind_value == unit_kind::partition_unit),
       last_modified(fs::last_write_time(full_path)) {}
 
@@ -917,6 +594,205 @@ private:
     using unit_map = std::flat_map<std::string, translation_unit*, std::less<>>;
     using ready_queue = std::queue<std::string>;
 
+    // True for `dir` or `dir/...`.
+    static bool is_dir_or_under(std::string_view path, std::string_view dir)
+    {
+        return path == dir
+            or (path.starts_with(dir) and path.size() > dir.size() and path[dir.size()] == '/');
+    }
+
+    // Parent repos vendor packages under deps/<name>/. Nested checkouts such as
+    // deps/net/deps/tester belong to the child package and must not join the parent
+    // build — otherwise same-basename smoke fixtures collide across packages.
+    static bool is_nested_dependency_path(std::string_view rel_path)
+    {
+        if(not rel_path.starts_with(deps_dir_prefix))
+            return false;
+
+        const auto rest = rel_path.substr(deps_dir_prefix.size());
+        const auto slash = rest.find('/');
+        if(slash == std::string_view::npos)
+            return false;
+
+        const auto after_pkg = rest.substr(slash + 1);
+        return is_dir_or_under(after_pkg, deps_dir_name);
+    }
+
+    // Top-level build-* trees are outputs (CB, Make, CMake), not project sources.
+    // CMake's CompilerId .cpp under build-cmake-*/ would otherwise join the scan and
+    // collide across configure trees.
+    static bool is_build_output_path(std::string_view rel_path)
+    {
+        const auto first = rel_path.substr(0, rel_path.find('/'));
+        return first.starts_with(build_root_prefix);
+    }
+
+    // First-level deps/tester/tests/... (and tester/tests/...) smoke fixtures must not join the
+    // consumer scan: determine_is_test calls every tester/ path a library source, so fixture mains
+    // such as hello.c++ would compile into parent builds and collide on the duplicate-key check.
+    static bool is_tester_package_tests_path(std::string_view rel_path)
+    {
+        return translation_unit::is_tester_framework_path(rel_path)
+            and translation_unit::path_has_test_segment(rel_path);
+    }
+
+    // deps/<pkg>/test and deps/<pkg>/tests are the vendored package's own suites (benchmarks,
+    // package-local tests), not the consumer's, so they stay out of the parent build even now that
+    // project test/ trees are in the scan (#14). Co-located deps/<pkg>/*.test.c++ still joins.
+    static bool is_dependency_package_tests_path(std::string_view rel_path)
+    {
+        if(not rel_path.starts_with(deps_dir_prefix))
+            return false;
+
+        const auto rest = rel_path.substr(deps_dir_prefix.size());
+        const auto slash = rest.find('/');
+        if(slash == std::string_view::npos)
+            return false;
+
+        const auto after_pkg = rest.substr(slash + 1);
+        return is_dir_or_under(after_pkg, test_dir_name) or is_dir_or_under(after_pkg, tests_dir_name);
+    }
+
+    bool is_excluded_source_path(std::string_view rel_path) const
+    {
+        return is_nested_dependency_path(rel_path)
+            or is_dependency_package_tests_path(rel_path)
+            or is_tester_package_tests_path(rel_path)
+            or is_build_output_path(rel_path)
+            or detail::path_at_or_under_dir(rel_path, tools_dir_name)
+            or detail::path_at_or_under_dir(rel_path, git_dir_name)
+            or (not include_examples_
+                and detail::path_at_or_under_dir(rel_path, examples_dir_name));
+    }
+
+    // Comments, string literals and `#if 0` blocks are not declarations, and matching the
+    // module regexes against them invents edges in the module graph.
+
+    // Phase 2 of translation, done first because everything below assumes it: a backslash, any
+    // horizontal whitespace after it (C++23 trims it, with a diagnostic) and the newline go. The
+    // compiler splices before it recognises a directive, a comment or a literal, so a scanner
+    // reading physical lines disagrees with it about what the source says — `#if \` on its own
+    // line is `#if 0` there and an unrecognised directive here, and `import \` hides a real edge.
+    //
+    // Splices inside a raw-string body go too, which [lex.pptoken] would revert before looking for
+    // the closer. Honouring that means telling an `R"(` opener from the same text in a comment or
+    // another literal, which is lexical state rather than a pattern, and scanning here is
+    // regex-based on purpose. The cost is a body ending a line with `)\`, read as closing early;
+    // deciding it the other way cost more, freezing every later splice after a fake opener.
+    inline static const std::regex line_splice_regex{R"(\\[ \t\v\f]*\r?\n)"};
+
+    static std::string splice_physical_lines(const std::string& text)
+    {
+        return std::regex_replace(text, line_splice_regex, "");
+    }
+
+    // One alternation over the whole preamble, because a block comment and a raw string still
+    // span lines after splicing and cannot be recognised a line at a time. Alternation also gets
+    // the interleaving right for free: whichever construct opens first wins, so `"/*"` inside a
+    // string starts no comment, and a quote inside a comment stays inert. Comments collapse to a
+    // space, since a comment separates tokens (`import/*x*/foo`); literals keep their delimiters
+    // but lose contents that may spell `import foo;`, which the unanchored matchers would find.
+    //
+    // A raw string's body has no escapes, so only `)delimiter"` closes it, matched by backreference
+    // — the one unavoidable lazy `[\s\S]*?`, and it only runs where `R"` appears. `//` comments and
+    // quoted literals end at the newline, a continued one having already been joined. The quoted
+    // branches keep `\\.` for the escapes that remain (`"\""` closes nothing) and are unrolled as a
+    // character-class run plus a group per escape (`[^"\\\n]*(?:\\.[^"\\\n]*)*`) rather than a
+    // per-character alternation: run and escape group cannot both match a backslash, which is what
+    // keeps the form linear in a pass that has dominated scan time before.
+    inline static const std::regex comment_or_literal_regex{
+        R"(//[^\n]*)"
+        R"(|/\*[^*]*\*+(?:[^/*][^*]*\*+)*/)"
+        R"(|R(")([^()\\ \t\r\n"]{0,16})\([\s\S]*?\)\2")"
+        R"(|(")[^"\\\n]*(?:\\.[^"\\\n]*)*")"
+        R"(|(')[^'\\\n]*(?:\\.[^'\\\n]*)*')"};
+
+    static std::string strip_comments_and_literals(const std::string& text)
+    {
+        // Comments collapse to a single space; a literal keeps its delimiters via whichever
+        // quote group matched, so `"import foo;"` cannot register as an edge. Exactly one of
+        // the three quote groups participates per match, so the others expand to nothing.
+        return std::regex_replace(text, comment_or_literal_regex, " $1$1$3$3$4$4");
+    }
+
+    // `#if 0` is the commented-out idiom, so its body is elided wholesale — and the idiom has more
+    // spellings than the bare constant: parenthesised (`#if (0)`), short-circuited (`#if 0 &&
+    // OLD_FEATURE`), and spread over arms (`#elif 0`). Only nesting is beyond a regex, balanced
+    // delimiters not being regular, so directives are recognised and the depth counted. Genuine
+    // conditionals are left alone: scanning both branches of an `#ifdef` costs a spurious edge,
+    // while guessing which one is live risks dropping a real one.
+    class conditional_filter
+    {
+    public:
+        // True when a line carries no live code: a preprocessor directive, or any line
+        // inside a dead `#if` region or dead `#elif` arm.
+        bool is_inactive(const std::string& line)
+        {
+            // Directives are a tiny minority of lines; the cheap check keeps the regex off
+            // the hot path of a scan that runs on every build, cached or not.
+            if(line.contains('#'))
+            {
+                auto m = std::smatch{};
+                if(std::regex_match(line, m, directive_regex))
+                {
+                    apply(m[1].str(), m[2].str());
+                    return true;
+                }
+            }
+            return m_skip_depth > 0;
+        }
+
+    private:
+        // False without evaluating anything: the constant, in any grouping, optionally
+        // short-circuiting the rest away. Grouping and whitespace carry no meaning here, so they go
+        // first and `(0) && defined(X)` reads as `0&&definedX`. `!0` and `0 || X` stay live.
+        static bool is_never_taken(std::string_view condition)
+        {
+            const auto normalized = condition
+                | std::views::filter([](char c) { return c != '(' and c != ')' and not std::isspace(static_cast<unsigned char>(c)); })
+                | std::ranges::to<std::string>();
+            return normalized == "0" or normalized == "false"
+                or normalized.starts_with("0&&") or normalized.starts_with("false&&");
+        }
+
+        void apply(std::string_view name, std::string_view condition)
+        {
+            const auto skipping = m_skip_depth > 0;
+            if(name == "if" or name == "ifdef" or name == "ifndef")
+            {
+                ++m_if_depth;
+                if(not skipping and name == "if" and is_never_taken(condition))
+                    m_skip_depth = m_if_depth;
+            }
+            else if(name == "endif")
+            {
+                if(skipping and m_if_depth == m_skip_depth)
+                    m_skip_depth = 0;
+                if(m_if_depth > 0)
+                    --m_if_depth;
+            }
+            else if(name == "else" or name == "elif")
+            {
+                // Each arm is judged on its own: leaving the skip region on every `#elif` would
+                // revive the next arm of `#if 0 / #elif 0`, and entering it on a dead arm is what
+                // elides `#elif 0` after a live one. `#else` has no condition to rule it out.
+                const auto dead_arm = name == "elif" and is_never_taken(condition);
+                if(skipping and m_if_depth == m_skip_depth and not dead_arm)
+                    m_skip_depth = 0;
+                else if(not skipping and dead_arm)
+                    m_skip_depth = m_if_depth;
+            }
+        }
+
+        // Group 2 is the whole condition, so a trailing operand cannot fail the full-line
+        // match: `#if 0 && OLD` used to match nothing, leaving the directive unrecognised,
+        // its body live, and the `#endif` depth bookkeeping off by one.
+        inline static const std::regex directive_regex{R"(\s*#\s*(\w+)\s*(.*))"};
+
+        int m_if_depth = 0;
+        int m_skip_depth = 0;
+    };
+
     std::vector<translation_unit> collect() const
     {
         auto units = std::vector<translation_unit>{};
@@ -939,12 +815,12 @@ private:
                 // they join.
                 if(entry.is_directory())
                 {
-                    if(detail::is_excluded_source_path(rel_path, include_examples_))
+                    if(is_excluded_source_path(rel_path))
                         entries.disable_recursion_pending();
                     continue;
                 }
                 if(not entry.is_regular_file()
-                   or detail::is_excluded_source_path(rel_path, include_examples_)
+                   or is_excluded_source_path(rel_path)
                    or not translation_unit::is_supported(entry.path()))
                     continue;
 
@@ -987,11 +863,9 @@ private:
             if(unit_to_tu.contains(tu.unit))
             {
                 const auto& prior = *unit_to_tu.at(tu.unit);
-                const auto prior_path = prior.path.empty() ? prior.filename : prior.path + "/" + prior.filename;
-                const auto current_path = tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename;
                 throw std::runtime_error{
                     "Duplicate translation unit key '" + tu.unit + "' from "
-                    + prior_path + " and " + current_path
+                    + prior.display_path + " and " + tu.display_path
                     + " (object/module names must stay unique)"};
             }
             unit_to_tu[tu.unit] = &tu;
@@ -1081,8 +955,8 @@ private:
             raw += line;
             raw += '\n';
         }
-        const auto cleaned = detail::strip_comments_and_literals(detail::splice_physical_lines(raw));
-        auto conditionals = detail::conditional_filter{};
+        const auto cleaned = strip_comments_and_literals(splice_physical_lines(raw));
+        auto conditionals = conditional_filter{};
         auto seen_real_code = false;
 
         for(const auto part : std::views::split(cleaned, '\n'))
@@ -1193,7 +1067,7 @@ output::source_unit source_unit_of(const source::translation_unit& tu)
     return {.unit = tu.unit,
             .path = tu.display_path,
             .module = tu.module,
-            .kind = std::string{detail::unit_kind_name(tu.kind)},
+            .kind = std::string{tu.kind_name()},
             .imports = tu.imports,
             .level = tu.dependency_level,
             .has_main = tu.has_main,
@@ -1221,6 +1095,147 @@ using module_to_ldflags_map = std::flat_map<std::string, std::string, std::less<
 using executable_cache_map = std::flat_map<std::string, std::string, std::less<>>;
 
 namespace cache {
+
+// Serialized object-cache profile: tab-delimited key=value fields. Owns the text; key() and
+// diff() operate on that value. build_system supplies ingredients and owns persistence; this
+// type does not probe the toolchain. Values must not contain '\t', '\n', '\r', or '%'.
+class profile
+{
+public:
+    static constexpr std::string_view format_id = "cb-object-cache-v3";
+
+    struct ingredients
+    {
+        std::string_view config;
+        bool static_link = false;
+        std::string_view module_phases;
+        std::string_view llvm;
+        std::string_view cxx;
+        std::string_view cxx_sig;
+        std::string_view clang_ver;
+        std::string_view std_cppm;
+        const string_list& compile_flags;
+        const string_list* cpp_flags = nullptr; // null → shared-std profile (omit cpp)
+    };
+
+    explicit profile(ingredients facts)
+    {
+        text_.reserve(768);
+        append("format", format_id);
+        append("config", facts.config);
+        append("static_link", facts.static_link ? "1" : "0");
+        append("module_phases", facts.module_phases);
+        append("llvm", facts.llvm);
+        append("cxx", facts.cxx);
+        append("cxx_sig", facts.cxx_sig);
+        if(not facts.clang_ver.empty())
+            append("clang_ver", facts.clang_ver);
+        append("std_cppm", facts.std_cppm);
+        append("compile", detail::flags_profile_string(facts.compile_flags));
+        if(facts.cpp_flags != nullptr)
+            append("cpp", detail::flags_profile_string(*facts.cpp_flags));
+    }
+
+    explicit profile(std::string text)
+        : text_{std::move(text)}
+    {}
+
+    const std::string& text() const { return text_; }
+
+    // Stable across CB processes, with the full profile stored beside the artefacts to verify
+    // the key before reuse. The length makes accidental collisions across differently sized
+    // profiles still less likely; a collision never bypasses the profile comparison.
+    std::string key() const
+    {
+        constexpr auto offset = std::uint64_t{14695981039346656037ULL};
+        constexpr auto prime = std::uint64_t{1099511628211ULL};
+        const auto hash = std::ranges::fold_left(text_, offset, [=](std::uint64_t value, char byte)
+        {
+            return (value ^ static_cast<unsigned char>(byte)) * prime;
+        });
+        auto digits = std::array<char, 16>{};
+        const auto converted = std::to_chars(digits.data(), digits.data() + digits.size(), hash, 16);
+        return std::to_string(text_.size()) + '-'
+             + std::string{digits.data(), converted.ptr};
+    }
+
+    output::object_cache_profile_diff diff(const profile& newer) const
+    {
+        const auto old_fields = fields();
+        const auto new_fields = newer.fields();
+        auto result = output::object_cache_profile_diff{};
+
+        // Named, because `return {}` has nothing to deduce from.
+        const auto field_value = [](const field_map& map, std::string_view key) -> std::string {
+            if(map.contains(key))
+                return map.at(key);
+            return {};
+        };
+
+        const auto diff_scalar = [&](std::string_view key, std::optional<output::profile_scalar_change>& out) {
+            const auto old_value = field_value(old_fields, key);
+            const auto new_value = field_value(new_fields, key);
+            if(old_value != new_value)
+                out = output::profile_scalar_change{old_value, new_value};
+        };
+
+        output::for_each_profile_scalar(result, diff_scalar);
+
+        const auto diff_tokens = [&](std::string_view key, std::optional<output::profile_token_change>& out) {
+            auto change = token_change(field_value(old_fields, key), field_value(new_fields, key));
+            if(change.changed())
+                out = std::move(change);
+        };
+
+        output::for_each_profile_tokens(result, diff_tokens);
+        return result;
+    }
+
+    bool operator==(const profile&) const = default;
+
+private:
+    using field_map = std::flat_map<std::string, std::string, std::less<>>;
+
+    void append(std::string_view key, std::string_view value)
+    {
+        if(not text_.empty())
+            text_ += '\t';
+        text_ += key;
+        text_ += '=';
+        text_ += value;
+    }
+
+    static std::pair<std::string, std::string> parse_field(std::string_view segment)
+    {
+        const auto eq = segment.find('=');
+        return {
+            std::string{segment.substr(0, eq)},
+            std::string{segment.substr(eq + 1)}};
+    }
+
+    field_map fields() const
+    {
+        return text_
+            | std::views::split('\t')
+            | std::views::transform([](auto&& part) { return parse_field(std::string_view{part}); })
+            | std::ranges::to<field_map>();
+    }
+
+    static output::profile_token_change token_change(std::string_view old_text, std::string_view new_text)
+    {
+        auto old_tokens = detail::parse_external_flag_text(old_text);
+        auto new_tokens = detail::parse_external_flag_text(new_text);
+        std::ranges::sort(old_tokens);
+        std::ranges::sort(new_tokens);
+
+        auto change = output::profile_token_change{};
+        std::ranges::set_difference(new_tokens, old_tokens, std::back_inserter(change.added));
+        std::ranges::set_difference(old_tokens, new_tokens, std::back_inserter(change.removed));
+        return change;
+    }
+
+    std::string text_;
+};
 
 // Analyzes whether an object/BMI set is reusable and returns the first rebuild reason.
 // build_system owns cache persistence and the compiler steps taken for that decision.
@@ -1362,6 +1377,57 @@ private:
         return tu.object_path + ".d";
     }
 
+    // Make-style depfile (clang -MMD -MF): `target: prereq prereq \<newline> prereq`, spaces in a
+    // path backslash-escaped. Returns the prerequisites only. `nullopt` when the file cannot be
+    // trusted — unreadable, or lacking the `target:` every depfile has — which is not the same
+    // answer as an empty list: conflating them turns an unreadable depfile into a cache hit.
+    static std::optional<string_list> parse_depfile(const std::string& path)
+    {
+        auto file = std::ifstream{path};
+        if(not file)
+            return std::nullopt;
+
+        auto text = std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+        if(const auto colon = text.find(':'); colon != std::string::npos)
+            text.erase(0, colon + 1);
+        else
+            return std::nullopt;
+
+        auto prerequisites = string_list{};
+        auto current = std::string{};
+        const auto flush = [&]
+        {
+            if(not current.empty())
+                prerequisites.push_back(std::exchange(current, std::string{}));
+        };
+
+        for(auto index = std::size_t{}; index < text.size(); ++index)
+        {
+            const auto ch = text[index];
+            if(ch == '\\' and index + 1 < text.size())
+            {
+                const auto next = text[index + 1];
+                // Line continuation: the backslash and the newline both vanish.
+                if(next == '\n' or next == '\r')
+                {
+                    flush();
+                    continue;
+                }
+                // Escaped literal (most often `\ ` in a path).
+                current.push_back(next);
+                ++index;
+                continue;
+            }
+            if(std::isspace(static_cast<unsigned char>(ch)) != 0)
+                flush();
+            else
+                current.push_back(ch);
+        }
+        flush();
+
+        return prerequisites;
+    }
+
     static output::rebuild_info pcm_rebuild(output::rebuild_kind kind,
                                             const source::translation_unit& tu)
     {
@@ -1412,7 +1478,7 @@ private:
         fs::file_time_type freshness_timestamp) const
     {
         const auto depfile = depfile_path(tu);
-        const auto prerequisites = detail::parse_depfile(depfile);
+        const auto prerequisites = parse_depfile(depfile);
         if(not prerequisites)
             return output::rebuild_info{
                 .kind = output::rebuild_kind::depfile_unusable,
@@ -2488,23 +2554,18 @@ private:
 
     std::string cache_profile(bool include_project_includes) const {
         ensure_toolchain_profile();
-
-        auto profile = ""s;
-        profile.reserve(768);
-        detail::append_profile_field(profile, "format", detail::object_cache_format);
-        detail::append_profile_field(profile, "config", config_name());
-        detail::append_profile_field(profile, "static_link", static_link ? "1" : "0");
-        detail::append_profile_field(profile, "module_phases", module_phases_name());
-        detail::append_profile_field(profile, "llvm", llvm_prefix);
-        detail::append_profile_field(profile, "cxx", llvm_cxx);
-        detail::append_profile_field(profile, "cxx_sig", cxx_sig);
-        if(not clang_version.empty())
-            detail::append_profile_field(profile, "clang_ver", clang_version);
-        detail::append_profile_field(profile, "std_cppm", std_cppm_profile);
-        detail::append_profile_field(profile, "compile", detail::flags_profile_string(compile_flags));
-        if(include_project_includes)
-            detail::append_profile_field(profile, "cpp", detail::flags_profile_string(cpp_flags));
-        return profile;
+        return cache::profile{cache::profile::ingredients{
+            .config = config_name(),
+            .static_link = static_link,
+            .module_phases = module_phases_name(),
+            .llvm = llvm_prefix,
+            .cxx = llvm_cxx,
+            .cxx_sig = cxx_sig,
+            .clang_ver = clang_version,
+            .std_cppm = std_cppm_profile,
+            .compile_flags = compile_flags,
+            .cpp_flags = include_project_includes ? &cpp_flags : nullptr,
+        }}.text();
     }
 
     std::string object_cache_profile() const { return cache_profile(true); }
@@ -2539,7 +2600,8 @@ private:
         if (header.starts_with("profile\t")) {
             const auto stored_profile = header.substr(std::string_view{"profile\t"}.size());
             if (stored_profile != current_profile) {
-                loaded.profile_change = detail::diff_object_cache_profiles(stored_profile, current_profile);
+                loaded.profile_change =
+                    cache::profile{stored_profile}.diff(cache::profile{current_profile});
                 return loaded;
             }
         } else {
@@ -2734,7 +2796,7 @@ private:
             // Attach builder-managed artifact paths once we know the full configuration.
             // Keeping them here keeps the translation unit metadata immutable while giving downstream
             // steps a single place to read object/PCM/binary locations from.
-            const auto source_label = tu.path.empty() ? tu.filename : tu.path + "/" + tu.filename;
+            const auto& source_label = tu.display_path;
             tu.object_path = compute_object_path(tu);
             if(object_owners.contains(tu.object_path))
                 throw std::runtime_error{
@@ -2811,7 +2873,7 @@ private:
         const auto root = shared_std_cache_root();
         if(not root)
             return std::nullopt;
-        const auto directory = *root / detail::cache_profile_key(shared_std_cache_profile());
+        const auto directory = *root / cache::profile{shared_std_cache_profile()}.key();
         return shared_std_slot{
             .directory = directory,
             .pcm = directory / std_pcm_filename,
