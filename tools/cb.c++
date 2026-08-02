@@ -2569,6 +2569,16 @@ private:
 
 } // namespace process
 
+namespace toolchain {
+
+// Placeholder for compiler discovery, profile identity, and command construction that currently
+// remain in build_system. It intentionally has no behavior until those responsibilities move.
+class driver
+{
+};
+
+} // namespace toolchain
+
 class build_system {
 public:
     enum class build_config { debug, release };
