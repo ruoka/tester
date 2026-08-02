@@ -103,6 +103,28 @@ With a machine-local std cache enabled (`CB_STD_CACHE_DIR` non-empty), a clean C
 can skip recompiling `std` after `clean`; that path is intentionally excluded from the
 cold rows above.
 
+## Class-boundary refactor A/B check
+
+The same Linux x86_64 / Clang 21 process compared the pre-refactor CB (`27f8f8b`) with
+the class-based namespaces (`3bddc84`) using `--cb-only --modules=one-phase --jobs=4`.
+The order was counterbalanced (old/new/new/old), with two complete runs per revision:
+six cold samples, thirty no-op samples, and six samples for each touch scenario.
+`CB_STD_CACHE_DIR` remained empty, and Ninja was deliberately not rerun.
+
+| Scenario | Before | Class-based | Change |
+|----------|-------:|------------:|-------:|
+| Cold full | 9.674 s | 9.692 s | +0.18% |
+| No-op | 158.27 ms | 157.20 ms | −0.67% |
+| Touch one test TU | 3.541 s | 3.552 s | +0.32% |
+| Touch module interface | 7.054 s | 7.056 s | +0.03% |
+
+No scenario shows a measurable regression: bootstrap 95% intervals for the percentage
+change all include zero (cold −0.72%…+1.13%, no-op −1.83%…+0.99%, test touch
+−0.73%…+1.49%, module touch −0.45%…+0.54%). The class boundaries do not transfer
+container ownership: cache and graph inputs are passed by `const&`, while the scanner's
+translation-unit vector is return-elided or moved. The no-op row, where compiler work
+cannot hide orchestration overhead, is slightly faster within noise.
+
 ## How to read the gap
 
 - **No-op:** Ninja checks a persistent `build.ninja` graph (mtime / dirty edges). CB rediscovers TUs, re-reads `import` lines, and consults its object cache every run. That rediscovery dominates the warm CB invocation (~0.37 s on this Linux snapshot, ~0.3–0.4 s on macOS).

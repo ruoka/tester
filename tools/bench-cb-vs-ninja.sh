@@ -347,12 +347,15 @@ pairs = [
     ("cb_touch_module", "cmake_touch_module"),
 ]
 print()
-ninja_label = "verbose Ninja" if meta.get("ninja_verbose") else "quiet Ninja"
-modules = meta.get("modules") or "two-phase"
-print(f"CB (--modules={modules}) / {ninja_label} ratios (mean wall-clock):")
-for a, b in pairs:
-    if a in groups and b in groups:
-        print(f"  {a} / {b}: {ratio(a, b):.2f}x")
+if meta.get("ninja_enabled", True):
+    ninja_label = "verbose Ninja" if meta.get("ninja_verbose") else "quiet Ninja"
+    modules = meta.get("modules") or "two-phase"
+    print(f"CB (--modules={modules}) / {ninja_label} ratios (mean wall-clock):")
+    for a, b in pairs:
+        if a in groups and b in groups:
+            print(f"  {a} / {b}: {ratio(a, b):.2f}x")
+else:
+    print("CB-only run; Ninja scenarios skipped.")
 
 print(f"\nresults: {path}")
 if meta:
