@@ -106,6 +106,9 @@ if [[ "$(uname -s)" == "Darwin" ]] && command -v xcrun >/dev/null 2>&1; then
   fi
 fi
 export LDFLAGS="-Wl,-rpath,$LLVM_PREFIX/lib ${LDFLAGS-}"
+# Removing the local build tree is only a cold std build when the shared cache is disabled.
+# Respect an explicit non-empty override so the same script can measure clean-with-shared-cache.
+export CB_STD_CACHE_DIR="${CB_STD_CACHE_DIR-}"
 
 rm -f "$RESULTS"
 

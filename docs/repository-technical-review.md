@@ -219,17 +219,17 @@ unsupported. The envelope should stay visible, because it is real —
 preamble scan stops after 1,000 lines, and translation units are keyed by basename, so
 two `foo.c++` files in different directories are unsupported rather than distinguished.
 
-Concurrency is one `std::jthread` per rebuild job within a dependency level, with a
-counting semaphore capping active compilers and `--jobs=N` overriding the default.
-Levels are processed sequentially. Very wide levels still create thread churn
-proportional to the level's size, and jobs already running continue after a peer
-fails — only unstarted work is skipped. Staleness evaluation recurses through imports
-without a per-build memo; only the transitive-PCM walk keeps a visited set. At this
-repository's scale the cost is invisible (a warm no-op build is half a second for 36
-scanned units), but both are shape-dependent rather than bounded. On the test-runner
-side, parallel waves now spawn at most `--jobs` threads per chunk, drop filtered-out
-cases before scheduling, lock the observer registry around mutate/notify, and reify
-orphan soft fails that land on the run-wide fallback under `--jobs>1`.
+CB uses at most `--jobs=N` `std::jthread` workers (hardware concurrency by default).
+Compilation is edge-driven: a successful two-phase precompile releases direct
+importers while the provider object is still compiling, instead of waiting at a whole
+dependency-level barrier. Jobs already running continue after a peer fails; only
+unstarted work is skipped. Staleness evaluation still recurses through imports without
+a per-build memo; only the transitive-PCM walk keeps a visited set. At this repository's
+scale that cost is invisible (a warm no-op build is below a second for 36 scanned
+units), but it remains shape-dependent. On the test-runner side, parallel waves spawn
+at most `--jobs` threads per chunk, drop filtered-out cases before scheduling, lock the
+observer registry around mutate/notify, and reify orphan soft fails that land on the
+run-wide fallback under `--jobs>1`.
 
 CB is tested, but only from the outside. [`tests/cb/smoke.sh`](../tests/cb/smoke.sh) is
 thorough — 44 cases, 247 checks, covering cache profiles, every rebuild reason, strict
@@ -441,9 +441,10 @@ cannot read the results or because there is nothing to pin.
    that *are* the compiler, plus asking a function like `splice_physical_lines`
    directly — that still needs the extraction below. This is still the heaviest
    remaining weight under 9.
-2. Replace per-level CB compile thread fan-out with a bounded worker pool, and memoize
-   staleness results for the duration of one build pass. (Test-runner `--jobs` chunking
-   and orphan soft-fail attribution are done.)
+2. Memoize CB staleness results for the duration of one build pass. The scheduling half
+   is done: compile and link fan-out use bounded worker pools, and project compilation
+   releases importers from PCM edges instead of dependency-level barriers. (Test-runner
+   `--jobs` chunking and orphan soft-fail attribution are also done.)
 3. ~~Rewrite CONTRIBUTING with current artifact paths, both build paths, and which one CI
    gates; fix the `[acceptor]` example.~~ Done, together with the `cb.md`, `README.md`, and
    `AGENTS.md` corrections listed above. What remains is `make tools` on macOS.

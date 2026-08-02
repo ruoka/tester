@@ -37,8 +37,11 @@
 #include <cctype>
 #include <charconv>
 #include <concepts>
+#include <condition_variable>
 #include <cstddef>
-#include <semaphore>
+#include <cstdint>
+#include <random>
+#include <type_traits>
 #include "cb-jsonl_observer.h++"
 #include "cb-console_observer.h++"
 
@@ -103,6 +106,7 @@ constexpr auto std_module_profile_filename = "std-module-profile.txt"sv;
 constexpr auto compiler_version_filename = "compiler-version.txt"sv;
 constexpr auto std_pcm_filename = "std.pcm"sv;
 constexpr auto std_obj_filename = "std.o"sv;
+constexpr auto shared_std_profile_filename = "profile.txt"sv;
 constexpr auto compile_commands_filename = "compile_commands.json"sv;
 constexpr auto graph_filename = "graph.json"sv;
 constexpr auto std_module_name = "std"sv;
@@ -156,6 +160,18 @@ bool path_under_dir(std::string_view path, std::string_view dir)
     needle.append(dir);
     needle.push_back('/');
     return path.contains(needle);
+}
+
+// True when `dir` is a complete component anywhere in path, including the path's leaf.
+// path_under_dir intentionally excludes a bare/leaf directory because its original callers
+// pass file paths; the scanner also sees directories and needs to prune at the directory itself.
+bool path_at_or_under_dir(std::string_view path, std::string_view dir)
+{
+    if(path == dir or path_under_dir(path, dir))
+        return true;
+    return path.size() > dir.size()
+        and path.ends_with(dir)
+        and path[path.size() - dir.size() - 1] == '/';
 }
 
 // True for `dir` or `dir/...`.
@@ -240,6 +256,23 @@ string_list parse_external_flag_text(std::string_view text)
 std::string flags_profile_string(const string_list& flags)
 {
     return flags | std::views::join_with(" "sv) | std::ranges::to<std::string>();
+}
+
+// Stable across CB processes, with the full profile stored beside the artefacts to verify the
+// key before reuse. The length makes accidental collisions across differently sized profiles
+// still less likely; a collision never bypasses the profile comparison.
+std::string cache_profile_key(std::string_view profile)
+{
+    constexpr auto offset = std::uint64_t{14695981039346656037ULL};
+    constexpr auto prime = std::uint64_t{1099511628211ULL};
+    const auto hash = std::ranges::fold_left(profile, offset, [=](std::uint64_t value, char byte)
+    {
+        return (value ^ static_cast<unsigned char>(byte)) * prime;
+    });
+    auto digits = std::array<char, 16>{};
+    const auto converted = std::to_chars(digits.data(), digits.data() + digits.size(), hash, 16);
+    return std::to_string(profile.size()) + '-'
+         + std::string{digits.data(), converted.ptr};
 }
 
 std::string join_argv(const string_list& argv)
@@ -424,6 +457,17 @@ bool is_dependency_package_tests_path(std::string_view rel_path)
 
     const auto after_pkg = rest.substr(slash + 1);
     return is_dir_or_under(after_pkg, test_dir_name) or is_dir_or_under(after_pkg, tests_dir_name);
+}
+
+bool is_excluded_source_path(std::string_view rel_path, bool include_examples)
+{
+    return is_nested_dependency_path(rel_path)
+        or is_dependency_package_tests_path(rel_path)
+        or is_tester_package_tests_path(rel_path)
+        or is_build_output_path(rel_path)
+        or path_at_or_under_dir(rel_path, tools_dir_name)
+        or path_at_or_under_dir(rel_path, git_dir_name)
+        or (not include_examples and path_at_or_under_dir(rel_path, examples_dir_name));
 }
 
 bool determine_is_test(std::string_view rel_dir, std::string_view name, std::string_view suffix_value) {
@@ -996,71 +1040,61 @@ struct object_cache_load
 
 using translation_unit_list = std::vector<translation_unit>;
 using topo_sort_queue = std::queue<std::string>;
-using level_groups_map = std::flat_map<int, std::vector<const translation_unit*>>;
 using thread_list = std::vector<std::jthread>;
 using module_to_ldflags_map = std::flat_map<std::string, std::string, std::less<>>;
 using executable_cache_map = std::flat_map<std::string, std::string, std::less<>>;
 
-// Bounds concurrent toolchain processes. CB spawned one jthread per translation unit
-// in a dependency level, so a level with hundreds of units launched hundreds of
-// clang++ processes at once — each one a multi-hundred-megabyte peak.
-class job_gate
-{
-public:
-    explicit job_gate(std::ptrdiff_t limit) : slots{limit} {}
-
-    class slot
-    {
-    public:
-        explicit slot(job_gate& gate) : gate{gate} { gate.slots.acquire(); }
-        ~slot() { gate.slots.release(); }
-        slot(const slot&) = delete;
-        slot& operator=(const slot&) = delete;
-
-    private:
-        job_gate& gate;
-    };
-
-private:
-    std::counting_semaphore<> slots;
-};
-
-// Compiling and linking differ only in the work: one worker per job, at most limit at a time,
-// nothing new started once a job has failed, and the first failure rethrown after every worker
-// has joined, so a failing build never leaves a toolchain process running. Written twice, the
-// copies had to agree about the relaxed loads, the recheck after the slot and which exception
-// survives.
+// Compiling and linking differ only in the work: a bounded set of workers claims jobs from the
+// input, nothing new starts once a job has failed, and the first failure is rethrown after every
+// worker has joined, so a failing build never leaves a toolchain process running.
 template <std::ranges::input_range Jobs, typename Work>
 void run_in_parallel(Jobs&& jobs, std::ptrdiff_t limit, Work work)
 {
-    auto threads = thread_list{};
+    using job_reference = std::ranges::range_reference_t<Jobs>;
+    static_assert(std::is_lvalue_reference_v<job_reference>);
+    using job_type = std::remove_cvref_t<job_reference>;
+
+    // The decisions outlive every worker. Snapshot pointers rather than the decisions
+    // themselves: a compile decision carries a rebuild reason with several strings.
+    auto items = std::vector<const job_type*>{};
+    for(const auto& job : jobs)
+        items.push_back(std::addressof(job));
+    if(items.empty())
+        return;
+
+    const auto worker_count = std::min(
+        items.size(),
+        static_cast<std::size_t>(std::max<std::ptrdiff_t>(1, limit)));
+    auto next = std::atomic_size_t{0};
     auto failed = std::atomic_bool{false};
     auto failure = std::exception_ptr{};
     auto failure_mutex = std::mutex{};
-    auto gate = job_gate{limit};
+    auto threads = thread_list{};
+    threads.reserve(worker_count);
 
-    for(const auto& job : jobs)
+    for(auto worker = std::size_t{0}; worker < worker_count; ++worker)
     {
-        // The job is addressed, not copied: it outlives join(), and a build decision carries a
-        // rebuild reason of four strings.
-        threads.emplace_back([&work, item = std::addressof(job), &failed, &failure, &failure_mutex, &gate]()
+        threads.emplace_back([&]()
         {
-            if(failed.load(std::memory_order_relaxed))
-                return;
-            const auto slot = job_gate::slot{gate};
-            // Recheck: a failure may have landed while waiting for a slot.
-            if(failed.load(std::memory_order_relaxed))
-                return;
-            try
+            while(not failed.load(std::memory_order_relaxed))
             {
-                work(*item);
-            }
-            catch(...)
-            {
-                failed.store(true, std::memory_order_relaxed);
-                auto lock = std::lock_guard<std::mutex>{failure_mutex};
-                if(not failure)
-                    failure = std::current_exception();
+                const auto index = next.fetch_add(1, std::memory_order_relaxed);
+                if(index >= items.size())
+                    return;
+                // A peer may have failed while this worker claimed the next index.
+                if(failed.load(std::memory_order_relaxed))
+                    return;
+                try
+                {
+                    work(*items[index]);
+                }
+                catch(...)
+                {
+                    failed.store(true, std::memory_order_relaxed);
+                    auto lock = std::lock_guard<std::mutex>{failure_mutex};
+                    if(not failure)
+                        failure = std::current_exception();
+                }
             }
         });
     }
@@ -1266,8 +1300,8 @@ public:
     // How a modular interface becomes a .pcm and a .o. two_phase runs `--precompile` and then
     // compiles the BMI; one_phase asks for both artefacts from one `-c -fmodule-output=` read of
     // the source. Two-phase only pays off when the BMI is published to dependents while the .o
-    // still compiles — CB's scheduler waits for both steps, so one_phase saves the second parse
-    // and (Clang 22+) gets reduced BMIs by default.
+    // still compiles; the edge-driven scheduler does that. One-phase saves the second parse and
+    // (Clang 22+) gets reduced BMIs by default.
     enum class module_compilation { two_phase, one_phase };
 
 private:
@@ -1290,7 +1324,6 @@ private:
     mutable std::string clang_version;
     mutable bool toolchain_profile_probed = false;
     translation_unit_list units_in_topological_order;
-    std::mutex cache_mutex;
     std::mutex link_cache_mutex;
     const build_config config;
     const bool static_link;
@@ -1899,14 +1932,14 @@ private:
         return argv;
     }
 
-    // Everything up to and including std.cppm: the project's compile flags with libc++'s own
-    // include setup. Both module-compilation schemes read the source with exactly these.
+    // Everything up to and including std.cppm: compile flags with libc++'s own include setup.
+    // Project include directories do not affect std.cppm and would make its shared cache key
+    // depend on the checkout path. Both module-compilation schemes read the source with these.
     string_list std_module_source_argv() const
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
         argv.append_range(compile_flags);
-        argv.append_range(cpp_flags);
         argv.push_back("-nostdinc++");
         argv.push_back("-isystem");
         argv.push_back(llvm_prefix + "/include/c++/v1");
@@ -2044,7 +2077,7 @@ private:
     // Cache Management
     // ============================================================================
 
-    std::string object_cache_profile() const {
+    std::string cache_profile(bool include_project_includes) const {
         ensure_toolchain_profile();
 
         auto profile = ""s;
@@ -2060,9 +2093,13 @@ private:
             detail::append_profile_field(profile, "clang_ver", clang_version);
         detail::append_profile_field(profile, "std_cppm", std_cppm_profile);
         detail::append_profile_field(profile, "compile", detail::flags_profile_string(compile_flags));
-        detail::append_profile_field(profile, "cpp", detail::flags_profile_string(cpp_flags));
+        if(include_project_includes)
+            detail::append_profile_field(profile, "cpp", detail::flags_profile_string(cpp_flags));
         return profile;
     }
+
+    std::string object_cache_profile() const { return cache_profile(true); }
+    std::string shared_std_cache_profile() const { return cache_profile(false); }
 
     static bool parse_object_cache_entry(const std::string& line, std::string& path, long long& ticks) {
         if (line.empty() or line.starts_with("profile\t"))
@@ -2423,25 +2460,26 @@ private:
                 units_in_topological_order = std::move(units); return;
             }
 
-            for (const auto& entry : fs::recursive_directory_iterator(path)) {
-                if (not entry.is_regular_file()) continue;
+            auto entries = fs::recursive_directory_iterator{path};
+            const auto end = fs::recursive_directory_iterator{};
+            for (; entries != end; ++entries) {
+                const auto& entry = *entries;
+                const auto rel_path = entry.path().lexically_relative(path).string();
 
-                auto rel_path = entry.path().lexically_relative(path).string();
-
-                // Skip nested package checkouts, vendored package test trees, build-*
-                // output trees, tools/, and .git/. Do not hard-skip project test/ trees
-                // here — determine_is_test marks them as is_test, and include_tests
-                // (debug / --build-tests) decides whether they join.
-                if (detail::is_nested_dependency_path(rel_path) or
-                    detail::is_dependency_package_tests_path(rel_path) or
-                    detail::is_tester_package_tests_path(rel_path) or
-                    detail::is_build_output_path(rel_path) or
-                    detail::path_under_dir(rel_path, tools_dir_name) or
-                    detail::path_under_dir(rel_path, git_dir_name))
+                // Prune excluded trees at their directory entry instead of descending through
+                // every file and discarding it. Project test/ trees are deliberately absent:
+                // determine_is_test marks those after parsing and include_tests decides whether
+                // they join. Keep the file check too, preserving the old predicate contract for
+                // unusual non-directory paths and filesystem races.
+                if(entry.is_directory())
+                {
+                    if(detail::is_excluded_source_path(rel_path, include_examples))
+                        entries.disable_recursion_pending();
                     continue;
-
-                // Exclude examples by default, include only if flag is set
-                if (not include_examples and detail::path_under_dir(rel_path, examples_dir_name))
+                }
+                if(not entry.is_regular_file())
+                    continue;
+                if(detail::is_excluded_source_path(rel_path, include_examples))
                     continue;
 
                 if (not translation_unit::is_supported(entry.path()))
@@ -2591,6 +2629,193 @@ private:
     // reporting through compile_scope like every other unit — the two most expensive steps of a
     // cold build used to explain nothing.
 
+    struct shared_std_slot
+    {
+        fs::path directory;
+        fs::path pcm;
+        fs::path object;
+        fs::path profile;
+    };
+
+    std::optional<fs::path> shared_std_cache_root() const
+    {
+        // An explicitly empty override disables sharing, which keeps benchmarks and isolated
+        // cache-contract tests able to request a truly cold std build.
+        if(const auto* configured = std::getenv("CB_STD_CACHE_DIR"))
+        {
+            if(*configured == '\0')
+                return std::nullopt;
+            return fs::path{configured};
+        }
+        if(const auto* xdg = std::getenv("XDG_CACHE_HOME"); xdg and *xdg)
+            return fs::path{xdg} / "cb" / "std-module";
+        if(const auto* home = std::getenv("HOME"); home and *home)
+            return fs::path{home} / ".cache" / "cb" / "std-module";
+        return std::nullopt;
+    }
+
+    std::optional<shared_std_slot> shared_std_cache_slot() const
+    {
+        const auto root = shared_std_cache_root();
+        if(not root)
+            return std::nullopt;
+        const auto directory = *root / detail::cache_profile_key(shared_std_cache_profile());
+        return shared_std_slot{
+            .directory = directory,
+            .pcm = directory / std_pcm_filename,
+            .object = directory / std_obj_filename,
+            .profile = directory / shared_std_profile_filename};
+    }
+
+    static bool link_or_copy_file(const fs::path& source, const fs::path& destination)
+    {
+        auto error = std::error_code{};
+        fs::create_hard_link(source, destination, error);
+        if(not error)
+            return true;
+        error.clear();
+        fs::copy_file(source, destination, fs::copy_options::overwrite_existing, error);
+        return not error;
+    }
+
+    static std::string shared_cache_nonce()
+    {
+        auto value = static_cast<std::uint64_t>(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+        try
+        {
+            auto entropy = std::random_device{};
+            value ^= static_cast<std::uint64_t>(entropy()) << 32;
+            value ^= static_cast<std::uint64_t>(entropy());
+        }
+        catch(...)
+        {
+            // The monotonic-clock value still makes a collision between practical publishers
+            // vanishingly unlikely; create_directories below refuses an existing staging path.
+        }
+        return std::to_string(value);
+    }
+
+    bool materialize_shared_std_module(const shared_std_slot& slot)
+    {
+        if(detail::read_first_line(slot.profile.string()) != shared_std_cache_profile())
+            return false;
+        auto error = std::error_code{};
+        if(not fs::is_regular_file(slot.pcm, error) or error)
+            return false;
+        error.clear();
+        if(not fs::is_regular_file(slot.object, error) or error)
+            return false;
+
+        fs::create_directories(module_cache_dir());
+        fs::create_directories(object_dir());
+        const auto nonce = shared_cache_nonce();
+        const auto temporary_pcm = fs::path{std_pcm_path() + ".shared-" + nonce};
+        const auto temporary_object = fs::path{std_obj_path() + ".shared-" + nonce};
+        if(not link_or_copy_file(slot.pcm, temporary_pcm)
+           or not link_or_copy_file(slot.object, temporary_object))
+        {
+            fs::remove(temporary_pcm, error);
+            fs::remove(temporary_object, error);
+            return false;
+        }
+
+        fs::remove(std_pcm_path(), error);
+        error.clear();
+        fs::rename(temporary_pcm, std_pcm_path(), error);
+        if(error)
+        {
+            fs::remove(temporary_pcm, error);
+            fs::remove(temporary_object, error);
+            return false;
+        }
+        fs::remove(std_obj_path(), error);
+        error.clear();
+        fs::rename(temporary_object, std_obj_path(), error);
+        if(error)
+        {
+            fs::remove(std_pcm_path(), error);
+            fs::remove(temporary_object, error);
+            return false;
+        }
+        save_std_module_profile();
+        return true;
+    }
+
+    bool hydrate_shared_std_module()
+    {
+        const auto slot = shared_std_cache_slot();
+        if(not slot)
+            return false;
+        try
+        {
+            return materialize_shared_std_module(*slot);
+        }
+        catch(const std::exception& error)
+        {
+            output::notify(&output::observer::warning,
+                           "Shared std module cache read failed: "s + error.what());
+            return false;
+        }
+    }
+
+    void publish_shared_std_module()
+    {
+        const auto slot = shared_std_cache_slot();
+        if(not slot)
+            return;
+        try
+        {
+            if(detail::read_first_line(slot->profile.string()) == shared_std_cache_profile()
+               and fs::is_regular_file(slot->pcm)
+               and fs::is_regular_file(slot->object))
+                return;
+
+            fs::create_directories(slot->directory.parent_path());
+            auto staging = slot->directory;
+            staging += ".tmp-" + shared_cache_nonce();
+            auto error = std::error_code{};
+            if(not fs::create_directories(staging, error) or error)
+                return;
+
+            const auto staged_pcm = staging / std_pcm_filename;
+            const auto staged_object = staging / std_obj_filename;
+            const auto staged_profile = staging / shared_std_profile_filename;
+            if(not link_or_copy_file(std_pcm_path(), staged_pcm)
+               or not link_or_copy_file(std_obj_path(), staged_object))
+            {
+                fs::remove_all(staging, error);
+                return;
+            }
+            {
+                auto profile = std::ofstream{staged_profile, std::ios::trunc};
+                if(not profile)
+                {
+                    fs::remove_all(staging, error);
+                    return;
+                }
+                profile << shared_std_cache_profile() << '\n';
+                if(not profile)
+                {
+                    profile.close();
+                    fs::remove_all(staging, error);
+                    return;
+                }
+            }
+
+            // Publish the complete directory at once. If another CB won the same key, retain its
+            // equivalent slot and discard this staging tree.
+            fs::rename(staging, slot->directory, error);
+            if(error)
+                fs::remove_all(staging, error);
+        }
+        catch(const std::exception& error)
+        {
+            output::notify(&output::observer::warning,
+                           "Shared std module cache write failed: "s + error.what());
+        }
+    }
+
     // Whether std.pcm was precompiled by the profile a project unit is compiled with. The pcm's
     // own presence is a separate question, asked by needs_std_module_rebuild before this one.
     bool std_module_profile_matches() const
@@ -2659,6 +2884,15 @@ private:
             const auto hit = compile_scope{unit};
             return;
         }
+        // A clean removes the local build tree, not the machine-local std store. Only hydrate
+        // that missing-tree case: cache invalidate deliberately removes the local profile and
+        // must continue to force a profile_change rebuild.
+        if(reason->kind == output::rebuild_kind::own_pcm_missing
+           and hydrate_shared_std_module())
+        {
+            const auto hit = compile_scope{unit};
+            return;
+        }
 
         auto compile = compile_scope{unit, *reason};
         if(module_phases == module_compilation::one_phase)
@@ -2667,6 +2901,7 @@ private:
             // missing std.o re-reads std.cppm. Rare, and the cold build is a whole parse cheaper.
             run_step(compile, build_std_module_object_argv(), diagnostics_path_for_object(unit));
             save_std_module_profile();
+            publish_shared_std_module();
             compile.succeeded();
             return;
         }
@@ -2680,18 +2915,21 @@ private:
             save_std_module_profile();
         }
         run_step(compile, build_std_o_argv(), diagnostics_path_for_object(unit));
+        publish_shared_std_module();
         compile.succeeded();
     }
 
     // ============================================================================
     // Compilation
     // ============================================================================
-    // Two halves, mirrored by Linking below: compile_unit does one translation unit, and
-    // compile_units is the pass that decides what to build, reports the hits and runs the rest
-    // through run_in_parallel. What both phases share sits above, in Cache Management (caches and
-    // staleness) and General Utilities (argv builders, unit projections).
+    // Two halves, mirrored by Linking below: compile_unit does one translation unit and publishes
+    // the dependency artefact as soon as it is usable; compile_units schedules consumers from
+    // those edge notifications. What both phases share sits above, in Cache Management (caches
+    // and staleness) and General Utilities (argv builders, unit projections).
 
-    void compile_unit(const translation_unit& tu, const output::rebuild_info& rebuild) {
+    void compile_unit(const translation_unit& tu,
+                      const output::rebuild_info& rebuild,
+                      std::invocable auto&& on_dependency_ready) {
         const auto unit = compile_unit_of(tu);
         auto compile = compile_scope{unit, rebuild};
         // Two-phase: object_missing / object_stale reuse the pcm that is already there —
@@ -2704,12 +2942,21 @@ private:
                                    or rebuild.kind == output::rebuild_kind::object_stale);
         if (tu.is_modular and module_phases == module_compilation::two_phase) {
             if(not object_only)
+            {
                 run_step(compile, compile_pcm_argv(tu), diagnostics_path_for_pcm(unit));
+                // Importers need the BMI, not this unit's object. Start them while clang turns
+                // the BMI into the provider object.
+                on_dependency_ready();
+            }
             run_step(compile, compile_pcm_object_argv(tu), diagnostics_path_for_object(unit));
+            if(object_only)
+                on_dependency_ready();
         } else if (tu.is_modular) {
             run_step(compile, compile_module_object_argv(tu), diagnostics_path_for_object(unit));
+            on_dependency_ready();
         } else {
             run_step(compile, compile_source_object_argv(tu), diagnostics_path_for_object(unit));
+            on_dependency_ready();
         }
         compile.succeeded();
     }
@@ -2728,40 +2975,136 @@ private:
             u2tu[k] = &tu;
         }
 
-        auto levels = level_groups_map{};
-        for (const auto& tu : units_in_topological_order)
-            levels[tu.dependency_level >= 0 ? tu.dependency_level : INT_MAX].push_back(&tu);
+        const auto unit_count = units_in_topological_order.size();
+        auto unit_to_index = std::flat_map<std::string, std::size_t, std::less<>>{};
+        for(auto index = std::size_t{0}; index < unit_count; ++index)
+            unit_to_index[units_in_topological_order[index].unit] = index;
 
-        // A reason is a fact about this moment: once a unit at this level rewrites its pcm,
-        // needs_recompile answers differently, and for the unit just built it answers nothing. So
-        // decision and reason are one answer taken before any worker starts, as link_decision is.
-        struct compile_decision {
-            const translation_unit* tu = nullptr;
-            std::optional<output::rebuild_info> reason{};
+        // Match scan_and_order's graph: imports are explicit edges, while an implementation unit
+        // also consumes its primary interface implicitly. A set prevents a self-import from
+        // counting that interface twice.
+        auto dependents = std::vector<std::vector<std::size_t>>(unit_count);
+        auto dependencies_remaining = std::vector<std::size_t>(unit_count);
+        for(auto index = std::size_t{0}; index < unit_count; ++index)
+        {
+            const auto& tu = units_in_topological_order[index];
+            auto providers = std::flat_set<std::size_t>{};
+            for(const auto& imported : tu.imports)
+                if(unit_to_index.contains(imported))
+                    providers.insert(unit_to_index.at(imported));
+            if(tu.kind == unit_kind::implementation_unit and unit_to_index.contains(tu.module))
+                providers.insert(unit_to_index.at(tu.module));
+
+            dependencies_remaining[index] = providers.size();
+            for(const auto provider : providers)
+                dependents[provider].push_back(index);
+        }
+
+        auto ready = std::queue<std::size_t>{};
+        for(auto index = std::size_t{0}; index < unit_count; ++index)
+            if(dependencies_remaining[index] == 0)
+                ready.push(index);
+        if(ready.empty())
+            throw std::runtime_error{"No dependency-free translation unit"};
+
+        auto scheduler_mutex = std::mutex{};
+        auto scheduler_changed = std::condition_variable{};
+        auto failure = std::exception_ptr{};
+        auto completed = std::size_t{0};
+        auto published = std::vector<unsigned char>(unit_count);
+        auto rebuilt = std::vector<unsigned char>(unit_count);
+
+        // Publish once. For two-phase modular units this runs after --precompile; for one-phase,
+        // object-only repairs, non-modular units and hits it runs when the whole unit is ready.
+        const auto publish_dependency = [&](std::size_t provider)
+        {
+            {
+                auto lock = std::lock_guard<std::mutex>{scheduler_mutex};
+                if(published[provider] != 0)
+                    return;
+                published[provider] = 1;
+                if(failure)
+                    return;
+                for(const auto dependent : dependents[provider])
+                {
+                    if(--dependencies_remaining[dependent] == 0)
+                        ready.push(dependent);
+                }
+            }
+            scheduler_changed.notify_all();
         };
 
-        for (const auto& [lvl, group] : levels) {
-            auto decisions = group
-                | std::views::transform([&](const translation_unit* tu) {
-                      return compile_decision{tu, needs_recompile(*tu, cache, u2tu)}; })
-                | std::ranges::to<std::vector>();
+        const auto worker_count = std::min(
+            unit_count,
+            static_cast<std::size_t>(std::max<std::ptrdiff_t>(1, job_limit())));
+        auto workers = thread_list{};
+        workers.reserve(worker_count);
+        for(auto worker = std::size_t{0}; worker < worker_count; ++worker)
+        {
+            workers.emplace_back([&]()
+            {
+                while(true)
+                {
+                    auto index = std::size_t{};
+                    {
+                        auto lock = std::unique_lock<std::mutex>{scheduler_mutex};
+                        scheduler_changed.wait(lock, [&]()
+                        {
+                            return failure or not ready.empty() or completed == unit_count;
+                        });
+                        if(failure or completed == unit_count)
+                            return;
+                        index = ready.front();
+                        ready.pop();
+                    }
 
-            for (const auto& decision : decisions) {
-                if(decision.reason)
-                    continue;
-                const auto hit = compile_scope{compile_unit_of(*decision.tu)};
-            }
+                    try
+                    {
+                        const auto& tu = units_in_topological_order[index];
+                        const auto reason = needs_recompile(tu, cache, u2tu);
+                        if(reason)
+                        {
+                            compile_unit(tu, *reason, [&]() { publish_dependency(index); });
+                            rebuilt[index] = 1;
+                        }
+                        else
+                        {
+                            {
+                                const auto hit = compile_scope{compile_unit_of(tu)};
+                            }
+                            publish_dependency(index);
+                        }
+                    }
+                    catch(...)
+                    {
+                        {
+                            auto lock = std::lock_guard<std::mutex>{scheduler_mutex};
+                            if(not failure)
+                                failure = std::current_exception();
+                        }
+                        scheduler_changed.notify_all();
+                        return;
+                    }
 
-            run_in_parallel(decisions | std::views::filter([](const compile_decision& decision) {
-                                            return decision.reason.has_value(); }),
-                            job_limit(),
-                            [&](const compile_decision& decision) {
-                                const auto& tu = *decision.tu;
-                                compile_unit(tu, *decision.reason);
-                                auto lock = std::lock_guard<std::mutex>{cache_mutex};
-                                cache.entries[tu.full_path] = tu.last_modified;
-                            });
+                    {
+                        auto lock = std::lock_guard<std::mutex>{scheduler_mutex};
+                        ++completed;
+                    }
+                    scheduler_changed.notify_all();
+                }
+            });
         }
+        for(auto& worker : workers)
+            worker.join();
+        if(failure)
+            std::rethrow_exception(failure);
+
+        for(auto index = std::size_t{0}; index < unit_count; ++index)
+            if(rebuilt[index] != 0)
+            {
+                const auto& tu = units_in_topological_order[index];
+                cache.entries[tu.full_path] = tu.last_modified;
+            }
         save_object_cache(cache.entries);
     }
 
@@ -2922,8 +3265,38 @@ private:
         fs::create_directories(binary_dir());
         fs::create_directories(cache_dir());
 
-        build_std_module();
-        scan_and_order();
+        // Source discovery and std compilation share no mutable build state: the scan writes
+        // units_in_topological_order while std owns only its artefacts/profile. Hide the scan
+        // under the cold build's root module work, then join before module flags consume units.
+        auto scan_failure = std::exception_ptr{};
+        auto scan = std::jthread{[&]()
+        {
+            try
+            {
+                scan_and_order();
+            }
+            catch(...)
+            {
+                scan_failure = std::current_exception();
+            }
+        }};
+
+        auto std_failure = std::exception_ptr{};
+        try
+        {
+            build_std_module();
+        }
+        catch(...)
+        {
+            std_failure = std::current_exception();
+        }
+        scan.join();
+
+        // Prefer the std failure, matching the old phase order when both sides fail.
+        if(std_failure)
+            std::rethrow_exception(std_failure);
+        if(scan_failure)
+            std::rethrow_exception(scan_failure);
         if(units_in_topological_order.empty())
             throw std::runtime_error{"No sources found"};
 

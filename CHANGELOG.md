@@ -8,6 +8,19 @@ Internal refactoring is not listed — roughly half the commits since `v1.0.0` r
 Versions follow the rules in the release policy. `Unreleased` accumulates until the next
 tag; cutting a release renames that section.
 
+## Unreleased
+
+### Changed
+
+- **CB cold builds can reuse the standard-library module across clean build trees.**
+  Successful `std.pcm` / `std.o` pairs are stored under a full toolchain/profile key in
+  a machine-local cache and restored after `clean`; `cache invalidate` still forces a
+  rebuild. Set `CB_STD_CACHE_DIR` to choose the store or to an empty value to disable it.
+- **CB compilation is edge-driven and uses bounded worker pools.** In two-phase mode,
+  direct importers can start as soon as their provider BMI is complete instead of
+  waiting for its object and every peer at the same dependency level. Source discovery
+  also overlaps cold standard-module work.
+
 ## [2.1.2] — 2026-08-02
 
 ### Fixed
