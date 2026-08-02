@@ -1275,7 +1275,13 @@ private:
     std::string source_dir;
     string_list compile_flags, link_flags, cpp_flags;
     module_to_ldflags_map module_ldflags;
+    // Shared clang module switches for every compile/link: disable implicit modules,
+    // map `std`, and search the BMI cache. Per-TU `-fmodule-file=` flags for project
+    // modules are not stored here — see `module_file_flags_for`.
     string_list module_flags;
+    // Modular interfaces/partitions keyed by module name, filled after scan so each
+    // compile argv can name only the BMIs that TU actually imports (transitively).
+    std::flat_map<std::string, const translation_unit*, std::less<>> module_interfaces;
     std::string std_module_source;
     std::string llvm_prefix, llvm_cxx;
     std::string std_cppm_profile;
@@ -1527,22 +1533,58 @@ private:
         };
     }
 
-    // The rest of module_flags: one -fmodule-file= per modular unit, which is why it cannot be
-    // set above — the units are only known once scan_and_order has run. build_steps calls this
-    // between the two.
+    // Index modular interfaces after scan_and_order. Formerly this appended one
+    // -fmodule-file= per modular unit onto the shared module_flags list; every TU then
+    // handed Clang the whole project map. Named -fmodule-file=M=path is lazy, but the
+    // argv still grew with the module count. Now each compile lists only the BMIs in
+    // that TU's import closure (see module_file_flags_for).
     void update_module_flags()
     {
-        module_flags.append_range(
+        module_interfaces =
             units_in_topological_order
             | std::views::filter([](const translation_unit& tu) { return tu.is_modular; })
             | std::views::transform([](const translation_unit& tu)
             {
-                return detail::module_file_flag(tu.module, tu.pcm_path);
+                return std::pair{tu.module, &tu};
             })
-            | std::views::filter([&](const auto& flag)
-            {
-                return not std::ranges::contains(module_flags, flag);
-            }));
+            | std::ranges::to<std::flat_map<std::string, const translation_unit*, std::less<>>>();
+    }
+
+    // -fmodule-file= flags for the modules this TU needs: direct imports, their imports,
+    // and (for implementation units) the primary interface. `std` stays on module_flags.
+    // Explicit paths keep dotted module names working — CB's on-disk BMI names replace
+    // '.' with '-', which -fprebuilt-module-path alone would not find.
+    string_list module_file_flags_for(const translation_unit& tu) const
+    {
+        auto pending = string_list{};
+        auto seen = std::flat_set<std::string, std::less<>>{};
+
+        auto enqueue = [&](std::string_view module_name)
+        {
+            if(module_name.empty() or module_name == std_module_name)
+                return;
+            if(not seen.insert(std::string{module_name}).second)
+                return;
+            pending.emplace_back(module_name);
+        };
+
+        for(const auto& imp : tu.imports)
+            enqueue(imp);
+        if(tu.kind == unit_kind::implementation_unit)
+            enqueue(tu.module);
+
+        auto flags = string_list{};
+        for(std::size_t i = 0; i < pending.size(); ++i)
+        {
+            const auto& name = pending[i];
+            if(not module_interfaces.contains(name))
+                continue;
+            const auto& dep = *module_interfaces.at(name);
+            flags.push_back(detail::module_file_flag(dep.module, dep.pcm_path));
+            for(const auto& imp : dep.imports)
+                enqueue(imp);
+        }
+        return flags;
     }
 
     // ============================================================================
@@ -1802,6 +1844,7 @@ private:
     {
         auto argv = base_compile_argv();
         argv.append_range(module_flags);
+        argv.append_range(module_file_flags_for(tu));
         argv.append_range(depfile_argv(tu));
         argv.push_back(tu.full_path);
         argv.push_back("--precompile");
@@ -1816,6 +1859,7 @@ private:
         argv.push_back(llvm_cxx);
         argv.append_range(compile_flags);
         argv.append_range(module_flags);
+        argv.append_range(module_file_flags_for(tu));
         argv.push_back(tu.pcm_path);
         argv.push_back("-c");
         argv.push_back("-o");
@@ -1830,6 +1874,7 @@ private:
     {
         auto argv = base_compile_argv();
         argv.append_range(module_flags);
+        argv.append_range(module_file_flags_for(tu));
         argv.append_range(depfile_argv(tu));
         argv.push_back("-fmodule-output=" + tu.pcm_path);
         argv.push_back(tu.full_path);
@@ -1843,11 +1888,10 @@ private:
     {
         auto argv = base_compile_argv();
         argv.append_range(module_flags);
+        // Covers imports and, for implementation units, the primary interface BMI that
+        // used to be appended as a one-off -fmodule-file= here.
+        argv.append_range(module_file_flags_for(tu));
         argv.append_range(depfile_argv(tu));
-        if (tu.kind == unit_kind::implementation_unit) {
-            auto module_pcm = compute_pcm_path(tu);
-            argv.push_back(detail::module_file_flag(tu.module, module_pcm));
-        }
         argv.push_back(tu.full_path);
         argv.push_back("-c");
         argv.push_back("-o");
@@ -3166,7 +3210,8 @@ public:
 
     // clangd discovers how each file is built through this file. list already scanned the
     // active TU set; writing here keeps the database aligned with that inventory without a
-    // second configuration language. Module -fmodule-file= flags require update_module_flags.
+    // second configuration language. Per-TU -fmodule-file= flags need update_module_flags
+    // so module_interfaces is populated before the argv builders run.
     void write_compile_commands() const
     {
         const auto path = detail::join_dir(source_dir, compile_commands_filename);
@@ -3240,7 +3285,7 @@ public:
 
     void list_sources() {
         scan_and_order();
-        // Same as build: per-module -fmodule-file= flags are only known after the scan.
+        // Same as build: module_interfaces (for per-TU -fmodule-file=) needs the scan.
         update_module_flags();
         write_compile_commands();
         auto inventory = output::source_inventory{
