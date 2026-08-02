@@ -11,6 +11,9 @@ Wall-clock comparison of **`tools/cb`** (direct, no `CB.sh` bootstrap) against t
 
 Scenarios: cold full rebuild (after `clean` / `rm -rf` build tree), no-op rebuild,
 touch one test TU, touch a widely imported module interface.
+The script exports an empty `CB_STD_CACHE_DIR` by default, so every cold sample includes
+the std module compile. Supply a non-empty directory explicitly to measure clean builds
+that reuse CB's shared std cache.
 
 ## macOS / Clang 23 reference
 
