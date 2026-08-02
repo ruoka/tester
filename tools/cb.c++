@@ -3963,7 +3963,8 @@ public:
                 else if(mode == "trace")
                     parsed.jsonl_mode = output::jsonl::jsonl_mode::trace;
                 else
-                    return failure(1, "Unknown JSONL mode: "s + std::string{mode});
+                    return failure(
+                        1, "Unknown JSONL mode: "s + std::string{mode}, std::move(parsed));
                 parsed.output_name = "jsonl";
                 continue;
             }
@@ -3998,14 +3999,14 @@ public:
             else if(argument == "cache")
             {
                 if(index + 1 >= argc_)
-                    return failure(1, "Usage: cache status|invalidate");
+                    return failure(1, "Usage: cache status|invalidate", std::move(parsed));
                 const auto verb = std::string_view{argv_[++index]};
                 if(verb == "status")
                     parsed.do_cache_status = true;
                 else if(verb == "invalidate")
                     parsed.do_cache_invalidate = true;
                 else
-                    return failure(1, "Usage: cache status|invalidate");
+                    return failure(1, "Usage: cache status|invalidate", std::move(parsed));
             }
             else if(argument == "static")
                 parsed.static_linking = true;
@@ -4023,7 +4024,9 @@ public:
                     std::from_chars(text.data(), text.data() + text.size(), value);
                 if(error != std::errc{} or value < 1)
                     return failure(
-                        2, "--jobs expects a positive integer, got: "s + std::string{text});
+                        2,
+                        "--jobs expects a positive integer, got: "s + std::string{text},
+                        std::move(parsed));
                 parsed.max_jobs = value;
                 parsed.jobs_explicit = true;
             }
@@ -4038,26 +4041,30 @@ public:
                     return failure(
                         2,
                         "--modules expects one-phase or two-phase, got: "s
-                            + std::string{text});
+                            + std::string{text},
+                        std::move(parsed));
             }
             else if(parsed.do_run_tests and is_test_runner_token(argument))
                 parsed.test_runner_args.emplace_back(argv_[index]);
             else if(argument == "-I" or argument == "--include")
             {
                 if(index + 1 >= argc_)
-                    return failure(1, "Missing path after -I/--include");
+                    return failure(
+                        1, "Missing path after -I/--include", std::move(parsed));
                 parsed.include_paths.emplace_back(argv_[++index]);
             }
             else if(argument == "--link-flags")
             {
                 if(index + 1 >= argc_)
-                    return failure(1, "Missing flags after --link-flags");
+                    return failure(
+                        1, "Missing flags after --link-flags", std::move(parsed));
                 parsed.extra_link_flags = detail::parse_external_flag_text(argv_[++index]);
             }
             else if(argument == "--compile-flags" or argument == "--extra-compile-flags")
             {
                 if(index + 1 >= argc_)
-                    return failure(1, "Missing flags after --compile-flags");
+                    return failure(
+                        1, "Missing flags after --compile-flags", std::move(parsed));
                 parsed.extra_compile_flags = detail::parse_external_flag_text(argv_[++index]);
             }
             else if(argument.starts_with("--compile-flags=")
@@ -4075,7 +4082,7 @@ public:
                 if(argument.starts_with("--tag") and not argument.starts_with("--tags="))
                     message += " (did you mean --tags=<filter>?)";
                 message += "\nRun with --help for usage.";
-                return failure(2, std::move(message));
+                return failure(2, std::move(message), std::move(parsed));
             }
         }
 
@@ -4131,9 +4138,12 @@ public:
     }
 
 private:
-    static parse_result failure(int exit_code, std::string message)
+    static parse_result failure(int exit_code,
+                                std::string message,
+                                options parsed = {})
     {
         return {.status = parse_status::error,
+                .parsed = std::move(parsed),
                 .error = parse_error{exit_code, std::move(message)}};
     }
 
@@ -4194,6 +4204,16 @@ int main(int argc, char* argv[])
 
         const auto cli_parser = cb::cli::parser{argc, argv};
         const auto result = cli_parser.parse();
+        const auto& opts = result.parsed;
+        if(opts.jsonl_mode)
+            jsonl_observer.set_mode(*opts.jsonl_mode);
+        if(not cb::output::select_observer(opts.output_name))
+        {
+            cb::output::notify(&cb::output::observer::error,
+                "Unknown output observer: "s + opts.output_name);
+            return 1;
+        }
+
         if(result.status == cb::cli::parse_status::help)
         {
             cli_parser.write_help(std::cout);
@@ -4203,16 +4223,6 @@ int main(int argc, char* argv[])
         {
             cb::output::notify(&cb::output::observer::error, result.error->message);
             return result.error->exit_code;
-        }
-
-        const auto& opts = result.parsed;
-        if(opts.jsonl_mode)
-            jsonl_observer.set_mode(*opts.jsonl_mode);
-        if(not cb::output::select_observer(opts.output_name))
-        {
-            cb::output::notify(&cb::output::observer::error,
-                "Unknown output observer: "s + opts.output_name);
-            return 1;
         }
 
         auto build_system = cb::build_system{
