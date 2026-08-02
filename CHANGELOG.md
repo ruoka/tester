@@ -8,6 +8,19 @@ Internal refactoring is not listed — roughly half the commits since `v1.0.0` r
 Versions follow the rules in the release policy. `Unreleased` accumulates until the next
 tag; cutting a release renames that section.
 
+## [2.1.3] — 2026-08-02
+
+### Changed
+
+- **CB now passes each translation unit only the project BMIs in its import
+  closure.** Compile and precompile commands previously carried one
+  `-fmodule-file=<module>=<pcm>` mapping for every project module. They now map
+  direct and transitive imports (plus the primary interface for implementation
+  units), and `compile_commands.json` reflects the same dependency-scoped argv.
+  Named mappings were already lazy in Clang, so this primarily shortens commands
+  and makes their declared dependencies precise rather than materially changing
+  build time.
+
 ## [2.1.2] — 2026-08-02
 
 ### Fixed
