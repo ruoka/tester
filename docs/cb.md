@@ -378,7 +378,8 @@ Example `profile_diff` fragment (on `profile_changed` only):
 | `cb::cache::standard_module_store` | Local `std` profile/rebuild decision and shared-machine-cache hydrate/publish storage |
 | `cb::cache::compiler_stamp` | Compiler-version stamp path, read, status and invalidation |
 | `cb::process::runner` | Sole child-process boundary; shell quoting/argv joining, capture/status decoding and reported step execution |
-| `cb::execution::worker_pool` | Generic bounded parallel jobs with join-before-rethrow failure handling |
+| `cb::execution::run_workers` | Shared thread-group creation and join lifecycle; callers retain scheduling and failure policy |
+| `cb::execution::worker_pool` | Bounded fixed-range job claiming with join-before-rethrow failure handling |
 | `cb::cli::options` / `parser` | Strict argv parsing and test-runner forwarding |
 | `cb::build_system` | Toolchain orchestration, including module-map flag construction and toolchain file signatures |
 | `cb::detail` | Five shared filesystem/path primitives: directory joining, two path predicates, atomic replacement and remove-if-present |

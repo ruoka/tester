@@ -2112,6 +2112,20 @@ private:
 
 namespace execution {
 
+// Own only the common thread-group lifecycle. Each caller retains its scheduling and failure
+// policy, so worker bodies must catch exceptions that should not terminate the process.
+template<std::copy_constructible Work>
+requires std::invocable<Work&>
+void run_workers(std::size_t worker_count, Work work)
+{
+    auto workers = std::vector<std::jthread>{};
+    workers.reserve(worker_count);
+    for(auto worker = std::size_t{0}; worker < worker_count; ++worker)
+        workers.emplace_back(work);
+    for(auto& worker : workers)
+        worker.join();
+}
+
 // Generic bounded parallel execution for independent jobs: nothing new starts once one fails,
 // and the first failure is rethrown after every worker has joined, so no child work is abandoned.
 class worker_pool
@@ -2141,38 +2155,30 @@ public:
         auto failed = std::atomic_bool{false};
         auto failure = std::exception_ptr{};
         auto failure_mutex = std::mutex{};
-        auto threads = std::vector<std::jthread>{};
-        threads.reserve(worker_count);
 
-        for(auto worker = std::size_t{0}; worker < worker_count; ++worker)
+        run_workers(worker_count, [&]()
         {
-            threads.emplace_back([&]()
+            while(not failed.load(std::memory_order_relaxed))
             {
-                while(not failed.load(std::memory_order_relaxed))
+                const auto index = next.fetch_add(1, std::memory_order_relaxed);
+                if(index >= items.size())
+                    return;
+                // A peer may have failed while this worker claimed the next index.
+                if(failed.load(std::memory_order_relaxed))
+                    return;
+                try
                 {
-                    const auto index = next.fetch_add(1, std::memory_order_relaxed);
-                    if(index >= items.size())
-                        return;
-                    // A peer may have failed while this worker claimed the next index.
-                    if(failed.load(std::memory_order_relaxed))
-                        return;
-                    try
-                    {
-                        work(*items[index]);
-                    }
-                    catch(...)
-                    {
-                        failed.store(true, std::memory_order_relaxed);
-                        auto lock = std::lock_guard<std::mutex>{failure_mutex};
-                        if(not failure)
-                            failure = std::current_exception();
-                    }
+                    work(*items[index]);
                 }
-            });
-        }
-
-        for(auto& thread : threads)
-            thread.join();
+                catch(...)
+                {
+                    failed.store(true, std::memory_order_relaxed);
+                    auto lock = std::lock_guard<std::mutex>{failure_mutex};
+                    if(not failure)
+                        failure = std::current_exception();
+                }
+            }
+        });
         if(failure)
             std::rethrow_exception(failure);
     }
@@ -3605,66 +3611,59 @@ private:
         const auto worker_count = std::min(
             unit_count,
             static_cast<std::size_t>(std::max<std::ptrdiff_t>(1, job_limit())));
-        auto workers = std::vector<std::jthread>{};
-        workers.reserve(worker_count);
-        for(auto worker = std::size_t{0}; worker < worker_count; ++worker)
+        execution::run_workers(worker_count, [&]()
         {
-            workers.emplace_back([&]()
+            while(true)
             {
-                while(true)
+                auto index = std::size_t{};
                 {
-                    auto index = std::size_t{};
+                    auto lock = std::unique_lock<std::mutex>{scheduler_mutex};
+                    scheduler_changed.wait(lock, [&]()
                     {
-                        auto lock = std::unique_lock<std::mutex>{scheduler_mutex};
-                        scheduler_changed.wait(lock, [&]()
-                        {
-                            return failure or not ready.empty() or completed == unit_count;
-                        });
-                        if(failure or completed == unit_count)
-                            return;
-                        index = ready.front();
-                        ready.pop();
-                    }
-
-                    try
-                    {
-                        const auto& tu = units_in_topological_order[index];
-                        const auto reason =
-                            cache_analyzer.rebuild_reason_for(tu, objects, u2tu);
-                        if(reason)
-                        {
-                            compile_unit(tu, *reason, [&]() { publish_dependency(index); });
-                            rebuilt[index] = 1;
-                        }
-                        else
-                        {
-                            {
-                                const auto hit = output::compile_scope{output::compile_unit_of(tu)};
-                            }
-                            publish_dependency(index);
-                        }
-                    }
-                    catch(...)
-                    {
-                        {
-                            auto lock = std::lock_guard<std::mutex>{scheduler_mutex};
-                            if(not failure)
-                                failure = std::current_exception();
-                        }
-                        scheduler_changed.notify_all();
+                        return failure or not ready.empty() or completed == unit_count;
+                    });
+                    if(failure or completed == unit_count)
                         return;
-                    }
+                    index = ready.front();
+                    ready.pop();
+                }
 
+                try
+                {
+                    const auto& tu = units_in_topological_order[index];
+                    const auto reason =
+                        cache_analyzer.rebuild_reason_for(tu, objects, u2tu);
+                    if(reason)
+                    {
+                        compile_unit(tu, *reason, [&]() { publish_dependency(index); });
+                        rebuilt[index] = 1;
+                    }
+                    else
+                    {
+                        {
+                            const auto hit = output::compile_scope{output::compile_unit_of(tu)};
+                        }
+                        publish_dependency(index);
+                    }
+                }
+                catch(...)
+                {
                     {
                         auto lock = std::lock_guard<std::mutex>{scheduler_mutex};
-                        ++completed;
+                        if(not failure)
+                            failure = std::current_exception();
                     }
                     scheduler_changed.notify_all();
+                    return;
                 }
-            });
-        }
-        for(auto& worker : workers)
-            worker.join();
+
+                {
+                    auto lock = std::lock_guard<std::mutex>{scheduler_mutex};
+                    ++completed;
+                }
+                scheduler_changed.notify_all();
+            }
+        });
         if(failure)
             std::rethrow_exception(failure);
 
