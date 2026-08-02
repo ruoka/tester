@@ -39,6 +39,8 @@
 #include <concepts>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
+#include <random>
 #include <type_traits>
 #include "cb-jsonl_observer.h++"
 #include "cb-console_observer.h++"
@@ -104,6 +106,7 @@ constexpr auto std_module_profile_filename = "std-module-profile.txt"sv;
 constexpr auto compiler_version_filename = "compiler-version.txt"sv;
 constexpr auto std_pcm_filename = "std.pcm"sv;
 constexpr auto std_obj_filename = "std.o"sv;
+constexpr auto shared_std_profile_filename = "profile.txt"sv;
 constexpr auto compile_commands_filename = "compile_commands.json"sv;
 constexpr auto graph_filename = "graph.json"sv;
 constexpr auto std_module_name = "std"sv;
@@ -253,6 +256,23 @@ string_list parse_external_flag_text(std::string_view text)
 std::string flags_profile_string(const string_list& flags)
 {
     return flags | std::views::join_with(" "sv) | std::ranges::to<std::string>();
+}
+
+// Stable across CB processes, with the full profile stored beside the artefacts to verify the
+// key before reuse. The length makes accidental collisions across differently sized profiles
+// still less likely; a collision never bypasses the profile comparison.
+std::string cache_profile_key(std::string_view profile)
+{
+    constexpr auto offset = std::uint64_t{14695981039346656037ULL};
+    constexpr auto prime = std::uint64_t{1099511628211ULL};
+    const auto hash = std::ranges::fold_left(profile, offset, [=](std::uint64_t value, char byte)
+    {
+        return (value ^ static_cast<unsigned char>(byte)) * prime;
+    });
+    auto digits = std::array<char, 16>{};
+    const auto converted = std::to_chars(digits.data(), digits.data() + digits.size(), hash, 16);
+    return std::to_string(profile.size()) + '-'
+         + std::string{digits.data(), converted.ptr};
 }
 
 std::string join_argv(const string_list& argv)
@@ -1912,14 +1932,14 @@ private:
         return argv;
     }
 
-    // Everything up to and including std.cppm: the project's compile flags with libc++'s own
-    // include setup. Both module-compilation schemes read the source with exactly these.
+    // Everything up to and including std.cppm: compile flags with libc++'s own include setup.
+    // Project include directories do not affect std.cppm and would make its shared cache key
+    // depend on the checkout path. Both module-compilation schemes read the source with these.
     string_list std_module_source_argv() const
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
         argv.append_range(compile_flags);
-        argv.append_range(cpp_flags);
         argv.push_back("-nostdinc++");
         argv.push_back("-isystem");
         argv.push_back(llvm_prefix + "/include/c++/v1");
@@ -2057,7 +2077,7 @@ private:
     // Cache Management
     // ============================================================================
 
-    std::string object_cache_profile() const {
+    std::string cache_profile(bool include_project_includes) const {
         ensure_toolchain_profile();
 
         auto profile = ""s;
@@ -2073,9 +2093,13 @@ private:
             detail::append_profile_field(profile, "clang_ver", clang_version);
         detail::append_profile_field(profile, "std_cppm", std_cppm_profile);
         detail::append_profile_field(profile, "compile", detail::flags_profile_string(compile_flags));
-        detail::append_profile_field(profile, "cpp", detail::flags_profile_string(cpp_flags));
+        if(include_project_includes)
+            detail::append_profile_field(profile, "cpp", detail::flags_profile_string(cpp_flags));
         return profile;
     }
+
+    std::string object_cache_profile() const { return cache_profile(true); }
+    std::string shared_std_cache_profile() const { return cache_profile(false); }
 
     static bool parse_object_cache_entry(const std::string& line, std::string& path, long long& ticks) {
         if (line.empty() or line.starts_with("profile\t"))
@@ -2605,6 +2629,193 @@ private:
     // reporting through compile_scope like every other unit — the two most expensive steps of a
     // cold build used to explain nothing.
 
+    struct shared_std_slot
+    {
+        fs::path directory;
+        fs::path pcm;
+        fs::path object;
+        fs::path profile;
+    };
+
+    std::optional<fs::path> shared_std_cache_root() const
+    {
+        // An explicitly empty override disables sharing, which keeps benchmarks and isolated
+        // cache-contract tests able to request a truly cold std build.
+        if(const auto* configured = std::getenv("CB_STD_CACHE_DIR"))
+        {
+            if(*configured == '\0')
+                return std::nullopt;
+            return fs::path{configured};
+        }
+        if(const auto* xdg = std::getenv("XDG_CACHE_HOME"); xdg and *xdg)
+            return fs::path{xdg} / "cb" / "std-module";
+        if(const auto* home = std::getenv("HOME"); home and *home)
+            return fs::path{home} / ".cache" / "cb" / "std-module";
+        return std::nullopt;
+    }
+
+    std::optional<shared_std_slot> shared_std_cache_slot() const
+    {
+        const auto root = shared_std_cache_root();
+        if(not root)
+            return std::nullopt;
+        const auto directory = *root / detail::cache_profile_key(shared_std_cache_profile());
+        return shared_std_slot{
+            .directory = directory,
+            .pcm = directory / std_pcm_filename,
+            .object = directory / std_obj_filename,
+            .profile = directory / shared_std_profile_filename};
+    }
+
+    static bool link_or_copy_file(const fs::path& source, const fs::path& destination)
+    {
+        auto error = std::error_code{};
+        fs::create_hard_link(source, destination, error);
+        if(not error)
+            return true;
+        error.clear();
+        fs::copy_file(source, destination, fs::copy_options::overwrite_existing, error);
+        return not error;
+    }
+
+    static std::string shared_cache_nonce()
+    {
+        auto value = static_cast<std::uint64_t>(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+        try
+        {
+            auto entropy = std::random_device{};
+            value ^= static_cast<std::uint64_t>(entropy()) << 32;
+            value ^= static_cast<std::uint64_t>(entropy());
+        }
+        catch(...)
+        {
+            // The monotonic-clock value still makes a collision between practical publishers
+            // vanishingly unlikely; create_directories below refuses an existing staging path.
+        }
+        return std::to_string(value);
+    }
+
+    bool materialize_shared_std_module(const shared_std_slot& slot)
+    {
+        if(detail::read_first_line(slot.profile.string()) != shared_std_cache_profile())
+            return false;
+        auto error = std::error_code{};
+        if(not fs::is_regular_file(slot.pcm, error) or error)
+            return false;
+        error.clear();
+        if(not fs::is_regular_file(slot.object, error) or error)
+            return false;
+
+        fs::create_directories(module_cache_dir());
+        fs::create_directories(object_dir());
+        const auto nonce = shared_cache_nonce();
+        const auto temporary_pcm = fs::path{std_pcm_path() + ".shared-" + nonce};
+        const auto temporary_object = fs::path{std_obj_path() + ".shared-" + nonce};
+        if(not link_or_copy_file(slot.pcm, temporary_pcm)
+           or not link_or_copy_file(slot.object, temporary_object))
+        {
+            fs::remove(temporary_pcm, error);
+            fs::remove(temporary_object, error);
+            return false;
+        }
+
+        fs::remove(std_pcm_path(), error);
+        error.clear();
+        fs::rename(temporary_pcm, std_pcm_path(), error);
+        if(error)
+        {
+            fs::remove(temporary_pcm, error);
+            fs::remove(temporary_object, error);
+            return false;
+        }
+        fs::remove(std_obj_path(), error);
+        error.clear();
+        fs::rename(temporary_object, std_obj_path(), error);
+        if(error)
+        {
+            fs::remove(std_pcm_path(), error);
+            fs::remove(temporary_object, error);
+            return false;
+        }
+        save_std_module_profile();
+        return true;
+    }
+
+    bool hydrate_shared_std_module()
+    {
+        const auto slot = shared_std_cache_slot();
+        if(not slot)
+            return false;
+        try
+        {
+            return materialize_shared_std_module(*slot);
+        }
+        catch(const std::exception& error)
+        {
+            output::notify(&output::observer::warning,
+                           "Shared std module cache read failed: "s + error.what());
+            return false;
+        }
+    }
+
+    void publish_shared_std_module()
+    {
+        const auto slot = shared_std_cache_slot();
+        if(not slot)
+            return;
+        try
+        {
+            if(detail::read_first_line(slot->profile.string()) == shared_std_cache_profile()
+               and fs::is_regular_file(slot->pcm)
+               and fs::is_regular_file(slot->object))
+                return;
+
+            fs::create_directories(slot->directory.parent_path());
+            auto staging = slot->directory;
+            staging += ".tmp-" + shared_cache_nonce();
+            auto error = std::error_code{};
+            if(not fs::create_directories(staging, error) or error)
+                return;
+
+            const auto staged_pcm = staging / std_pcm_filename;
+            const auto staged_object = staging / std_obj_filename;
+            const auto staged_profile = staging / shared_std_profile_filename;
+            if(not link_or_copy_file(std_pcm_path(), staged_pcm)
+               or not link_or_copy_file(std_obj_path(), staged_object))
+            {
+                fs::remove_all(staging, error);
+                return;
+            }
+            {
+                auto profile = std::ofstream{staged_profile, std::ios::trunc};
+                if(not profile)
+                {
+                    fs::remove_all(staging, error);
+                    return;
+                }
+                profile << shared_std_cache_profile() << '\n';
+                if(not profile)
+                {
+                    profile.close();
+                    fs::remove_all(staging, error);
+                    return;
+                }
+            }
+
+            // Publish the complete directory at once. If another CB won the same key, retain its
+            // equivalent slot and discard this staging tree.
+            fs::rename(staging, slot->directory, error);
+            if(error)
+                fs::remove_all(staging, error);
+        }
+        catch(const std::exception& error)
+        {
+            output::notify(&output::observer::warning,
+                           "Shared std module cache write failed: "s + error.what());
+        }
+    }
+
     // Whether std.pcm was precompiled by the profile a project unit is compiled with. The pcm's
     // own presence is a separate question, asked by needs_std_module_rebuild before this one.
     bool std_module_profile_matches() const
@@ -2673,6 +2884,15 @@ private:
             const auto hit = compile_scope{unit};
             return;
         }
+        // A clean removes the local build tree, not the machine-local std store. Only hydrate
+        // that missing-tree case: cache invalidate deliberately removes the local profile and
+        // must continue to force a profile_change rebuild.
+        if(reason->kind == output::rebuild_kind::own_pcm_missing
+           and hydrate_shared_std_module())
+        {
+            const auto hit = compile_scope{unit};
+            return;
+        }
 
         auto compile = compile_scope{unit, *reason};
         if(module_phases == module_compilation::one_phase)
@@ -2681,6 +2901,7 @@ private:
             // missing std.o re-reads std.cppm. Rare, and the cold build is a whole parse cheaper.
             run_step(compile, build_std_module_object_argv(), diagnostics_path_for_object(unit));
             save_std_module_profile();
+            publish_shared_std_module();
             compile.succeeded();
             return;
         }
@@ -2694,6 +2915,7 @@ private:
             save_std_module_profile();
         }
         run_step(compile, build_std_o_argv(), diagnostics_path_for_object(unit));
+        publish_shared_std_module();
         compile.succeeded();
     }
 

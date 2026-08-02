@@ -12,6 +12,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "${SCRIPT_DIR}/lib.sh"
 
+# Keep existing cases isolated from the machine-local std cache. The dedicated shared-cache case
+# supplies its own directory and verifies clean/invalidate behavior explicitly.
+export CB_STD_CACHE_DIR=
+
 SELECTED_CASE=""
 START_MS=$(python3 - <<'PY'
 import time
@@ -1572,6 +1576,32 @@ test_std_module_reported() {
   end_case std_module_reported
 }
 
+test_shared_std_cache() {
+  should_run shared_std_cache || return 0
+  begin_case shared_std_cache
+  local work_dir
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
+  export CB_STD_CACHE_DIR="${work_dir}/shared-std-cache"
+
+  run_cb_build "${work_dir}"
+  assert_compile_end "std.cppm" false own_pcm_missing true "shared_std_cache_seed"
+
+  run_cb_clean "${work_dir}"
+  run_cb_build "${work_dir}"
+  assert_compile_end "std.cppm" true "" true "shared_std_cache_survives_clean"
+  assert_jsonl_not_contains '"--precompile"' "shared_std_cache_skips_precompile"
+
+  # Invalidation is an explicit rebuild request. A matching shared slot must not turn it back
+  # into a hit merely because the local artefacts still exist.
+  run_cb_cache_invalidate "${work_dir}"
+  run_cb_build "${work_dir}"
+  assert_compile_end "std.cppm" false profile_change true "shared_std_cache_respects_invalidate"
+
+  export CB_STD_CACHE_DIR=
+  end_case shared_std_cache
+}
+
 test_modular_object_stale() {
   should_run modular_object_stale || return 0
   begin_case modular_object_stale
@@ -1788,6 +1818,7 @@ main() {
   test_profile_change
   test_cache_status
   test_std_module_reported
+  test_shared_std_cache
   test_modular_object_stale
   test_modular_one_phase_object_missing
   test_module_phases
