@@ -100,13 +100,8 @@ constexpr auto pcm_dir_name = "pcm"sv;
 constexpr auto obj_dir_name = "obj"sv;
 constexpr auto bin_dir_name = "bin"sv;
 constexpr auto cache_dir_name = "cache"sv;
-constexpr auto object_cache_filename = "object-cache.txt"sv;
-constexpr auto executable_cache_filename = "executable-cache.txt"sv;
-constexpr auto std_module_profile_filename = "std-module-profile.txt"sv;
-constexpr auto compiler_version_filename = "compiler-version.txt"sv;
 constexpr auto std_pcm_filename = "std.pcm"sv;
 constexpr auto std_obj_filename = "std.o"sv;
-constexpr auto shared_std_profile_filename = "profile.txt"sv;
 constexpr auto compile_commands_filename = "compile_commands.json"sv;
 constexpr auto graph_filename = "graph.json"sv;
 constexpr auto std_module_name = "std"sv;
@@ -334,6 +329,45 @@ std::string read_first_line(const std::string& path)
     if(not line.empty() and line.back() == '\r')
         line.pop_back();
     return line;
+}
+
+// A cache (or other stamped index) is replaced, never edited in place: write a sibling
+// temporary, then rename it over the target, so a build interrupted mid-write leaves the
+// previous file rather than half of the next. Callers differ only in what they write and
+// what the failure message calls the file.
+void write_atomic_file(const std::string& path,
+                       std::string_view what,
+                       const std::invocable<std::ostream&> auto& write_contents)
+{
+    const auto tmp = path + ".tmp";
+    auto file = std::ofstream{tmp};
+    if(not file)
+        throw std::runtime_error{"Cannot open "s + std::string{what} + " temporary file: " + tmp};
+
+    write_contents(file);
+
+    file.close();
+    if(not file)
+    {
+        auto ignored = std::error_code{};
+        fs::remove(tmp, ignored);
+        throw std::runtime_error{"Failed to write "s + std::string{what} + " temporary file: " + tmp};
+    }
+
+    auto error = std::error_code{};
+    fs::rename(tmp, path, error);
+    if(error)
+    {
+        auto ignored = std::error_code{};
+        fs::remove(tmp, ignored);
+        throw std::runtime_error{"Failed to replace "s + std::string{what} + ": " + error.message()};
+    }
+}
+
+// Whether there was a file to remove, which is what cache_invalidate reports per cache.
+bool remove_if_exists(const std::string& path)
+{
+    return fs::remove(path);
 }
 
 } // namespace detail
@@ -1076,29 +1110,18 @@ output::source_unit source_unit_of(const source::translation_unit& tu)
 }
 
 using unit_to_tu_map = std::flat_map<std::string, source::translation_unit*, std::less<>>;
-using object_cache_map = std::flat_map<std::string, fs::file_time_type, std::less<>>;
-
-// What reading the object cache found: the entries, and the one thing that invalidates all of
-// them at once. A profile mismatch answers two questions together — every unit is about to miss,
-// and here is the field that changed — so it travels with the entries rather than being left in
-// the build system for the caller to collect. The diff is the miss, not a reason beside a diff
-// only some reasons fill: engaged means profile_change, the only blanket miss there is.
-struct object_cache_load
-{
-    object_cache_map entries{};
-    std::optional<output::object_cache_profile_diff> profile_change{};
-};
-
 using translation_unit_list = std::vector<source::translation_unit>;
 using thread_list = std::vector<std::jthread>;
 using module_to_ldflags_map = std::flat_map<std::string, std::string, std::less<>>;
-using executable_cache_map = std::flat_map<std::string, std::string, std::less<>>;
 
 namespace cache {
 
+class analyzer;
+
 // Serialized object-cache profile: tab-delimited key=value fields. Owns the text; key() and
-// diff() operate on that value. build_system supplies ingredients and owns persistence; this
-// type does not probe the toolchain. Values must not contain '\t', '\n', '\r', or '%'.
+// diff() operate on that value. build_system supplies ingredients; object_store owns the
+// on-disk index that embeds this text. This type does not probe the toolchain. Values must
+// not contain '\t', '\n', '\r', or '%'.
 class profile
 {
 public:
@@ -1238,8 +1261,653 @@ private:
     std::string text_;
 };
 
+// Owns the object-cache index: path, current profile text, loaded entries, and the profile
+// mismatch from the last load. build_system builds the profile string and publishes events;
+// analyzer reads the loaded snapshot without locking. record() updates entries after workers
+// join — the same single-threaded window as before this extraction.
+class object_store
+{
+private:
+    using map = std::flat_map<std::string, fs::file_time_type, std::less<>>;
+
+public:
+    struct disk_status
+    {
+        bool exists = false;
+        bool profile_match = false;
+        int entries = 0;
+        int stale_entries = 0;
+    };
+
+    explicit object_store(std::string cache_dir)
+        : path_{detail::join_dir(cache_dir, filename)}
+    {}
+
+    const std::string& path() const { return path_; }
+    bool exists() const { return fs::exists(path_); }
+    bool missing_profile_header() const { return missing_profile_header_; }
+    const std::optional<output::object_cache_profile_diff>& profile_change() const
+    {
+        return profile_change_;
+    }
+
+    void load(std::string current_profile)
+    {
+        current_profile_ = std::move(current_profile);
+        entries_.clear();
+        profile_change_.reset();
+        missing_profile_header_ = false;
+
+        auto file = std::ifstream{path_};
+        if(not file)
+            return;
+
+        auto header = ""s;
+        if(not std::getline(file, header))
+            return;
+
+        if(header.starts_with("profile\t"))
+        {
+            const auto stored_profile = header.substr(std::string_view{"profile\t"}.size());
+            if(stored_profile != current_profile_)
+            {
+                profile_change_ =
+                    profile{stored_profile}.diff(profile{current_profile_});
+                return;
+            }
+        }
+        else
+        {
+            missing_profile_header_ = true;
+            return;
+        }
+
+        auto line = ""s;
+        while(std::getline(file, line))
+        {
+            auto entry_path = ""s;
+            auto ticks = 0ll;
+            if(parse_entry(line, entry_path, ticks) and fs::exists(entry_path))
+                entries_[entry_path] = fs::file_time_type{std::chrono::nanoseconds{ticks}};
+        }
+    }
+
+    void save() const
+    {
+        fs::create_directories(fs::path{path_}.parent_path());
+        detail::write_atomic_file(path_, "object cache", [&](std::ostream& file) {
+            file << "profile\t" << current_profile_ << "\n";
+            for(const auto& [entry_path, timestamp] : entries_)
+            {
+                if(not fs::exists(entry_path))
+                    continue;
+                const auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    timestamp.time_since_epoch()).count();
+                file << entry_path << "\t" << ticks << "\n";
+            }
+        });
+    }
+
+    void record(std::string source_path, fs::file_time_type mtime)
+    {
+        entries_[std::move(source_path)] = mtime;
+    }
+
+    bool erase(std::string_view source_path)
+    {
+        return entries_.erase(std::string{source_path}) != 0;
+    }
+
+    bool invalidate() const { return detail::remove_if_exists(path_); }
+
+    disk_status status(std::string_view current_profile) const
+    {
+        auto result = disk_status{.exists = fs::exists(path_)};
+        if(not result.exists)
+            return result;
+
+        auto file = std::ifstream{path_};
+        auto header = ""s;
+        if(std::getline(file, header) and header.starts_with("profile\t"))
+        {
+            const auto stored_profile = header.substr(std::string_view{"profile\t"}.size());
+            result.profile_match = stored_profile == current_profile;
+            count_entries(file, result.entries, result.stale_entries);
+        }
+        return result;
+    }
+
+private:
+    friend class analyzer;
+
+    inline static constexpr auto filename = "object-cache.txt"sv;
+
+    const map& entries() const { return entries_; }
+
+    static bool parse_entry(const std::string& line, std::string& path, long long& ticks)
+    {
+        if(line.empty() or line.starts_with("profile\t"))
+            return false;
+        const auto tab = line.find('\t');
+        if(tab == std::string::npos)
+            return false;
+        path = line.substr(0, tab);
+        try
+        {
+            ticks = std::stoll(line.substr(tab + 1));
+        }
+        catch(...)
+        {
+            return false;
+        }
+        return not path.empty();
+    }
+
+    static void count_entries(std::istream& file, int& entries, int& stale_entries)
+    {
+        auto line = ""s;
+        while(std::getline(file, line))
+        {
+            auto entry_path = ""s;
+            auto ticks = 0ll;
+            if(not parse_entry(line, entry_path, ticks))
+                continue;
+            ++entries;
+            if(not fs::exists(entry_path))
+                ++stale_entries;
+        }
+    }
+
+    std::string path_;
+    std::string current_profile_;
+    map entries_{};
+    std::optional<output::object_cache_profile_diff> profile_change_{};
+    bool missing_profile_header_ = false;
+};
+
+// Owns the executable/link-cache index: path, loaded signatures, the mutex for parallel
+// remember(), and an owned serialization of the common compile/link/module flag tail.
+// build_system gathers input paths from the TU graph, runs the linker, and publishes
+// link_end / cache_* events; this type owns link identity, reuse decisions and persistence.
+class link_store
+{
+private:
+    using map = std::flat_map<std::string, std::string, std::less<>>;
+
+public:
+    struct flag_ingredients
+    {
+        const string_list& compile_flags;
+        const string_list& link_flags;
+        const string_list& module_flags;
+    };
+
+    struct disk_status
+    {
+        bool exists = false;
+        int entries = 0;
+    };
+
+    link_store(std::string cache_dir, flag_ingredients flags)
+        : path_{detail::join_dir(cache_dir, filename)}
+    {
+        signature_flag_tail_ = "|flags=";
+        signature_flag_tail_ += detail::flags_profile_string(flags.compile_flags);
+        signature_flag_tail_ += "|link=";
+        signature_flag_tail_ += detail::flags_profile_string(flags.link_flags);
+        signature_flag_tail_ += "|modules=";
+        signature_flag_tail_ += detail::flags_profile_string(flags.module_flags);
+    }
+
+    const std::string& path() const { return path_; }
+    bool exists() const { return fs::exists(path_); }
+
+    void load()
+    {
+        entries_.clear();
+        auto file = std::ifstream{path_};
+        if(not file)
+            return;
+        auto entry_path = ""s;
+        auto signature = ""s;
+        while(std::getline(file, entry_path, '\t') and std::getline(file, signature))
+            entries_[entry_path] = signature;
+    }
+
+    void save() const
+    {
+        if(entries_.empty())
+        {
+            detail::remove_if_exists(path_);
+            return;
+        }
+        fs::create_directories(fs::path{path_}.parent_path());
+        detail::write_atomic_file(path_, "executable cache", [&](std::ostream& file) {
+            for(const auto& [entry_path, signature] : entries_)
+                file << entry_path << "\t" << signature << "\n";
+        });
+    }
+
+    // Parallel link workers: lock, then record the signature that made the link succeed.
+    void remember(std::string executable, std::string signature)
+    {
+        auto lock = std::lock_guard<std::mutex>{mutex_};
+        entries_[std::move(executable)] = std::move(signature);
+    }
+
+    bool erase(std::string_view executable)
+    {
+        return entries_.erase(std::string{executable}) != 0;
+    }
+
+    bool invalidate() const { return detail::remove_if_exists(path_); }
+
+    disk_status status() const
+    {
+        auto result = disk_status{.exists = fs::exists(path_)};
+        if(not result.exists)
+            return result;
+
+        auto file = std::ifstream{path_};
+        auto line = ""s;
+        while(std::getline(file, line))
+        {
+            const auto tab = line.find('\t');
+            if(tab != std::string::npos and not line.substr(0, tab).empty())
+                ++result.entries;
+        }
+        return result;
+    }
+
+private:
+    static std::string dependency_signature(const std::string& input_path)
+    {
+        if(input_path.empty() or not fs::exists(input_path))
+            return input_path + ":missing";
+        const auto timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            fs::last_write_time(input_path).time_since_epoch()).count();
+        return input_path + ":" + std::to_string(timestamp);
+    }
+
+    std::string dependency_signatures_joined(const string_list& paths) const
+    {
+        return paths
+            | std::views::transform([&](const std::string& input_path) {
+                  return dependency_signature(input_path);
+              })
+            | std::views::join_with("|"sv)
+            | std::ranges::to<std::string>();
+    }
+
+public:
+    // What identifies a link: every input's timestamp, plus the flag sets that would change
+    // the result even when no input moved. Callers differ only in the input list.
+    std::string link_signature(const string_list& input_paths,
+                               const string_list& import_flags) const
+    {
+        auto signature = dependency_signatures_joined(input_paths);
+        signature += signature_flag_tail_;
+        signature += "|imports=";
+        signature += detail::flags_profile_string(import_flags);
+        return signature;
+    }
+
+    // Reads entries_ only — call only before parallel remember(), or on a single-threaded path.
+    std::optional<output::rebuild_info> needs_relinking(std::string_view executable_path,
+                                                        const std::string& signature) const
+    {
+        if(not fs::exists(executable_path))
+            return output::rebuild_info{.kind = output::rebuild_kind::missing_executable};
+
+        if(not entries_.contains(executable_path))
+            return output::rebuild_info{.kind = output::rebuild_kind::not_in_cache};
+
+        const auto& previous = entries_.at(executable_path);
+        if(previous == signature)
+            return std::nullopt;
+
+        const auto flag_marker = "|flags="sv;
+        const auto previous_flags = previous.find(flag_marker);
+        const auto current_flags = signature.find(flag_marker);
+        if(previous_flags != std::string::npos and current_flags != std::string::npos)
+        {
+            const auto previous_objects = previous.substr(0, previous_flags);
+            const auto current_objects = signature.substr(0, current_flags);
+            if(previous_objects != current_objects)
+                return output::rebuild_info{.kind = output::rebuild_kind::object_changed};
+            if(previous.substr(previous_flags) != signature.substr(current_flags))
+                return output::rebuild_info{.kind = output::rebuild_kind::link_flags_changed};
+        }
+
+        return output::rebuild_info{.kind = output::rebuild_kind::signature_changed};
+    }
+
+private:
+    inline static constexpr auto filename = "executable-cache.txt"sv;
+
+    std::string path_;
+    std::string signature_flag_tail_{};
+    map entries_{};
+    std::mutex mutex_{};
+};
+
+// Owns the local std-module profile file and the machine-local shared std.pcm/std.o store.
+// It decides local reuse and whether a rebuild reason may hydrate; build_system supplies profile
+// text lazily, runs the compiler for misses, and publishes warnings. Paths, atomic profile I/O,
+// and shared root/slot/materialize/publish — including nonce staging and hardlink-or-copy — stay
+// here.
+class standard_module_store
+{
+private:
+    struct shared_slot
+    {
+        fs::path directory;
+        fs::path pcm;
+        fs::path object;
+        fs::path profile;
+    };
+
+public:
+    struct disk_status
+    {
+        bool exists = false;
+        bool profile_match = false;
+    };
+
+    // Soft failure from hydrate/publish: ok means artefacts are in place (hydrate) or the
+    // publish attempt finished without an exception. warning is empty unless an exception
+    // escaped the shared-cache I/O — build_system turns that into the exact notify text.
+    struct transfer_result
+    {
+        bool ok = false;
+        std::string warning{};
+    };
+
+    standard_module_store(std::string cache_dir,
+                          std::string pcm_path,
+                          std::string object_path)
+        : profile_path_{detail::join_dir(cache_dir, profile_filename)},
+          pcm_path_{std::move(pcm_path)},
+          object_path_{std::move(object_path)}
+    {}
+
+    const std::string& profile_path() const { return profile_path_; }
+
+private:
+    // Whether std.pcm was precompiled by the profile a project unit is compiled with. The
+    // pcm's own presence is a separate question, asked by rebuild_reason_for.
+    bool profile_matches(std::string_view object_profile) const
+    {
+        const auto stored = detail::read_first_line(profile_path_);
+        return not stored.empty() and stored == object_profile;
+    }
+
+public:
+    void save_profile(std::string_view object_profile) const
+    {
+        fs::create_directories(fs::path{profile_path_}.parent_path());
+        detail::write_atomic_file(profile_path_, "std module profile", [&](std::ostream& file) {
+            file << object_profile << '\n';
+        });
+    }
+
+    bool invalidate() const { return detail::remove_if_exists(profile_path_); }
+
+    disk_status status(std::string_view object_profile) const
+    {
+        return {.exists = fs::exists(profile_path_),
+                .profile_match = profile_matches(object_profile)};
+    }
+
+    std::optional<output::rebuild_info> rebuild_reason_for(
+        std::string_view source_path,
+        std::invocable auto&& object_profile_of) const
+    {
+        const auto module_of = [&](output::rebuild_kind kind) {
+            return output::rebuild_info{
+                .kind = kind,
+                .module = std::string{std_module_name},
+                .pcm_path = pcm_path_};
+        };
+
+        if(not fs::exists(pcm_path_))
+            return module_of(output::rebuild_kind::own_pcm_missing);
+        if(not profile_matches(
+               std::forward<decltype(object_profile_of)>(object_profile_of)()))
+            return module_of(output::rebuild_kind::profile_change);
+        if(fs::last_write_time(pcm_path_) < fs::last_write_time(source_path))
+            return module_of(output::rebuild_kind::own_pcm_stale);
+        if(not fs::exists(object_path_))
+            return module_of(output::rebuild_kind::object_missing);
+        if(fs::last_write_time(object_path_) < fs::last_write_time(pcm_path_))
+            return module_of(output::rebuild_kind::object_stale);
+        return std::nullopt;
+    }
+
+private:
+    // An explicitly empty CB_STD_CACHE_DIR disables sharing, which keeps benchmarks and
+    // isolated cache-contract tests able to request a truly cold std build.
+    static std::optional<fs::path> shared_root()
+    {
+        if(const auto* configured = std::getenv("CB_STD_CACHE_DIR"))
+        {
+            if(*configured == '\0')
+                return std::nullopt;
+            return fs::path{configured};
+        }
+        if(const auto* xdg = std::getenv("XDG_CACHE_HOME"); xdg and *xdg)
+            return fs::path{xdg} / "cb" / "std-module";
+        if(const auto* home = std::getenv("HOME"); home and *home)
+            return fs::path{home} / ".cache" / "cb" / "std-module";
+        return std::nullopt;
+    }
+
+    static shared_slot shared_slot_for(const fs::path& root,
+                                       std::string_view shared_profile)
+    {
+        const auto directory = root / profile{std::string{shared_profile}}.key();
+        return shared_slot{
+            .directory = directory,
+            .pcm = directory / std_pcm_filename,
+            .object = directory / std_obj_filename,
+            .profile = directory / shared_profile_filename};
+    }
+
+    bool materialize(const shared_slot& slot,
+                     std::string_view shared_profile) const
+    {
+        if(detail::read_first_line(slot.profile.string()) != shared_profile)
+            return false;
+        auto error = std::error_code{};
+        if(not fs::is_regular_file(slot.pcm, error) or error)
+            return false;
+        error.clear();
+        if(not fs::is_regular_file(slot.object, error) or error)
+            return false;
+
+        fs::create_directories(fs::path{pcm_path_}.parent_path());
+        fs::create_directories(fs::path{object_path_}.parent_path());
+        const auto nonce = shared_nonce();
+        const auto temporary_pcm = fs::path{pcm_path_ + ".shared-" + nonce};
+        const auto temporary_object = fs::path{object_path_ + ".shared-" + nonce};
+        if(not link_or_copy_file(slot.pcm, temporary_pcm)
+           or not link_or_copy_file(slot.object, temporary_object))
+        {
+            fs::remove(temporary_pcm, error);
+            fs::remove(temporary_object, error);
+            return false;
+        }
+
+        fs::remove(pcm_path_, error);
+        error.clear();
+        fs::rename(temporary_pcm, pcm_path_, error);
+        if(error)
+        {
+            fs::remove(temporary_pcm, error);
+            fs::remove(temporary_object, error);
+            return false;
+        }
+        fs::remove(object_path_, error);
+        error.clear();
+        fs::rename(temporary_object, object_path_, error);
+        if(error)
+        {
+            fs::remove(pcm_path_, error);
+            fs::remove(temporary_object, error);
+            return false;
+        }
+        return true;
+    }
+
+public:
+    transfer_result hydrate_for(const output::rebuild_info& reason,
+                                std::invocable auto&& shared_profile_of,
+                                std::invocable auto&& object_profile_of) const
+    {
+        if(reason.kind != output::rebuild_kind::own_pcm_missing)
+            return {};
+        const auto root = shared_root();
+        if(not root)
+            return {};
+        const auto shared_profile =
+            std::forward<decltype(shared_profile_of)>(shared_profile_of)();
+        try
+        {
+            const auto slot = shared_slot_for(*root, shared_profile);
+            if(not materialize(slot, shared_profile))
+                return {};
+            save_profile(std::forward<decltype(object_profile_of)>(object_profile_of)());
+            return {.ok = true};
+        }
+        catch(const std::exception& error)
+        {
+            return {.warning = "Shared std module cache read failed: "s + error.what()};
+        }
+    }
+
+    transfer_result publish(std::invocable auto&& shared_profile_of) const
+    {
+        const auto root = shared_root();
+        if(not root)
+            return {};
+        const auto shared_profile =
+            std::forward<decltype(shared_profile_of)>(shared_profile_of)();
+        try
+        {
+            const auto slot = shared_slot_for(*root, shared_profile);
+            if(detail::read_first_line(slot.profile.string()) == shared_profile
+               and fs::is_regular_file(slot.pcm)
+               and fs::is_regular_file(slot.object))
+                return {.ok = true};
+
+            fs::create_directories(slot.directory.parent_path());
+            auto staging = slot.directory;
+            staging += ".tmp-" + shared_nonce();
+            auto error = std::error_code{};
+            if(not fs::create_directories(staging, error) or error)
+                return {};
+
+            const auto staged_pcm = staging / std_pcm_filename;
+            const auto staged_object = staging / std_obj_filename;
+            const auto staged_profile = staging / shared_profile_filename;
+            if(not link_or_copy_file(pcm_path_, staged_pcm)
+               or not link_or_copy_file(object_path_, staged_object))
+            {
+                fs::remove_all(staging, error);
+                return {};
+            }
+            {
+                auto profile_file = std::ofstream{staged_profile, std::ios::trunc};
+                if(not profile_file)
+                {
+                    fs::remove_all(staging, error);
+                    return {};
+                }
+                profile_file << shared_profile << '\n';
+                if(not profile_file)
+                {
+                    profile_file.close();
+                    fs::remove_all(staging, error);
+                    return {};
+                }
+            }
+
+            // Publish the complete directory at once. If another CB won the same key, retain
+            // its equivalent slot and discard this staging tree.
+            fs::rename(staging, slot.directory, error);
+            if(error)
+            {
+                fs::remove_all(staging, error);
+                return {};
+            }
+            return {.ok = true};
+        }
+        catch(const std::exception& error)
+        {
+            return {.warning = "Shared std module cache write failed: "s + error.what()};
+        }
+    }
+
+private:
+    inline static constexpr auto profile_filename = "std-module-profile.txt"sv;
+    inline static constexpr auto shared_profile_filename = "profile.txt"sv;
+
+    static bool link_or_copy_file(const fs::path& source, const fs::path& destination)
+    {
+        auto error = std::error_code{};
+        fs::create_hard_link(source, destination, error);
+        if(not error)
+            return true;
+        error.clear();
+        fs::copy_file(source, destination, fs::copy_options::overwrite_existing, error);
+        return not error;
+    }
+
+    static std::string shared_nonce()
+    {
+        auto value = static_cast<std::uint64_t>(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+        try
+        {
+            auto entropy = std::random_device{};
+            value ^= static_cast<std::uint64_t>(entropy()) << 32;
+            value ^= static_cast<std::uint64_t>(entropy());
+        }
+        catch(...)
+        {
+            // The monotonic-clock value still makes a collision between practical publishers
+            // vanishingly unlikely; create_directories below refuses an existing staging path.
+        }
+        return std::to_string(value);
+    }
+
+    std::string profile_path_;
+    std::string pcm_path_;
+    std::string object_path_;
+};
+
+// Owns the cached compiler-version stamp path and its storage operations. build_system still
+// decides when to run the compiler probe because subprocess execution is a toolchain concern.
+class compiler_stamp
+{
+public:
+    explicit compiler_stamp(std::string cache_dir)
+        : path_{detail::join_dir(cache_dir, filename)}
+    {}
+
+    const std::string& path() const { return path_; }
+    bool exists() const { return fs::exists(path_); }
+    std::string read() const { return detail::read_first_line(path_); }
+    bool invalidate() const { return detail::remove_if_exists(path_); }
+
+private:
+    inline static constexpr auto filename = "compiler-version.txt"sv;
+    std::string path_;
+};
+
 // Analyzes whether an object/BMI set is reusable and returns the first rebuild reason.
-// build_system owns cache persistence and the compiler steps taken for that decision.
+// object_store owns cache persistence; build_system owns the compiler steps taken for that
+// decision.
 class analyzer
 {
 public:
@@ -1250,12 +1918,12 @@ public:
 
     std::optional<output::rebuild_info> rebuild_reason_for(
         const source::translation_unit& tu,
-        const object_cache_load& loaded,
+        const object_store& loaded,
         const unit_to_tu_map& units) const
     {
-        if(not loaded.entries.contains(tu.full_path))
+        if(not loaded.entries().contains(tu.full_path))
         {
-            if(loaded.profile_change)
+            if(loaded.profile_change())
                 return output::rebuild_info{
                     .kind = output::rebuild_kind::profile_change,
                     .trigger_path = tu.full_path};
@@ -1263,7 +1931,7 @@ public:
                 .kind = output::rebuild_kind::not_in_cache,
                 .trigger_path = tu.full_path};
         }
-        if(loaded.entries.at(tu.full_path) < tu.last_modified)
+        if(loaded.entries().at(tu.full_path) < tu.last_modified)
             return output::rebuild_info{
                 .kind = output::rebuild_kind::source_stale,
                 .trigger_path = tu.full_path};
@@ -1284,7 +1952,7 @@ public:
             object_timestamp = fs::last_write_time(tu.object_path);
             if(not tu.is_modular)
             {
-                if(object_timestamp < loaded.entries.at(tu.full_path))
+                if(object_timestamp < loaded.entries().at(tu.full_path))
                     return output::rebuild_info{
                         .kind = output::rebuild_kind::object_stale,
                         .trigger_path = tu.full_path};
@@ -1351,7 +2019,7 @@ public:
                 .trigger_path = tu.full_path};
         if(object_stale_vs_pcm)
             return pcm_rebuild(output::rebuild_kind::object_stale, tu);
-        if(object_timestamp < loaded.entries.at(tu.full_path))
+        if(object_timestamp < loaded.entries().at(tu.full_path))
             return output::rebuild_info{
                 .kind = output::rebuild_kind::object_stale,
                 .trigger_path = tu.full_path};
@@ -1794,7 +2462,6 @@ private:
     mutable std::string clang_version;
     mutable bool toolchain_profile_probed = false;
     translation_unit_list units_in_topological_order;
-    std::mutex link_cache_mutex;
     const build_config config;
     const bool static_link;
     bool include_tests = false;
@@ -1899,10 +2566,10 @@ private:
         fs::create_directories(cache_dir());
 
         // Same boundary as every compile and link: argv in, stamp file out.
-        const auto stamp = compiler_stamp_path();
-        if(invoke_shell(string_list{llvm_cxx, "--version"}, stamp).ok())
+        const auto stamp = cache::compiler_stamp{cache_dir()};
+        if(invoke_shell(string_list{llvm_cxx, "--version"}, stamp.path()).ok())
         {
-            clang_version = detail::read_first_line(stamp);
+            clang_version = stamp.read();
             // Humans only see COMMAND for the probe; echo the first line so the
             // active toolchain is visible without opening the stamp file.
             if(not clang_version.empty())
@@ -2136,10 +2803,6 @@ private:
     std::string object_dir() const            { return detail::join_dir(build_root(), obj_dir_name); }
     std::string binary_dir() const            { return detail::join_dir(build_root(), bin_dir_name); }
     std::string cache_dir() const             { return detail::join_dir(build_root(), cache_dir_name); }
-    std::string object_cache_path() const     { return detail::join_dir(cache_dir(), object_cache_filename); }
-    std::string executable_cache_path() const { return detail::join_dir(cache_dir(), executable_cache_filename); }
-    std::string std_module_profile_path() const { return detail::join_dir(cache_dir(), std_module_profile_filename); }
-    std::string compiler_stamp_path() const   { return detail::join_dir(cache_dir(), compiler_version_filename); }
     std::string std_pcm_path() const          { return detail::join_dir(module_cache_dir(), std_pcm_filename); }
     std::string std_obj_path() const          { return detail::join_dir(object_dir(), std_obj_filename); }
 
@@ -2572,209 +3235,26 @@ private:
     std::string object_cache_profile() const { return cache_profile(true); }
     std::string shared_std_cache_profile() const { return cache_profile(false); }
 
-    static bool parse_object_cache_entry(const std::string& line, std::string& path, long long& ticks) {
-        if (line.empty() or line.starts_with("profile\t"))
-            return false;
-        const auto tab = line.find('\t');
-        if (tab == std::string::npos)
-            return false;
-        path = line.substr(0, tab);
-        try {
-            ticks = std::stoll(line.substr(tab + 1));
-        } catch (...) {
-            return false;
-        }
-        return not path.empty();
-    }
-
-    object_cache_load load_object_cache() {
-        auto loaded = object_cache_load{};
-        auto file = std::ifstream{object_cache_path()};
-        if (not file)
-            return loaded;
-
-        auto header = ""s;
-        if (not std::getline(file, header))
-            return loaded;
-
-        const auto current_profile = object_cache_profile();
-        if (header.starts_with("profile\t")) {
-            const auto stored_profile = header.substr(std::string_view{"profile\t"}.size());
-            if (stored_profile != current_profile) {
-                loaded.profile_change =
-                    cache::profile{stored_profile}.diff(cache::profile{current_profile});
-                return loaded;
-            }
-        } else {
-            output::notify(&output::observer::info, "Object cache missing profile header; ignoring"s);
-            return loaded;
-        }
-
-        auto line = ""s;
-        while (std::getline(file, line)) {
-            auto path = ""s;
-            auto ticks = 0ll;
-            if (parse_object_cache_entry(line, path, ticks) and fs::exists(path))
-                loaded.entries[path] = fs::file_time_type{std::chrono::nanoseconds{ticks}};
-        }
-        return loaded;
-    }
-
-    // A cache is replaced, never edited in place: write a sibling temporary, then rename it over
-    // the target, so a build interrupted mid-write leaves the previous cache rather than half of
-    // the next. The caches differ only in what they write and what the failure message calls them.
-    static void write_cache_file(const std::string& path,
-                                 std::string_view what,
-                                 const std::invocable<std::ostream&> auto& write_contents)
+    cache::object_store make_object_store() const
     {
-        const auto tmp = path + ".tmp";
-        auto file = std::ofstream{tmp};
-        if(not file)
-            throw std::runtime_error{"Cannot open "s + std::string{what} + " temporary file: " + tmp};
-
-        write_contents(file);
-
-        file.close();
-        if(not file)
-        {
-            auto ignored = std::error_code{};
-            fs::remove(tmp, ignored);
-            throw std::runtime_error{"Failed to write "s + std::string{what} + " temporary file: " + tmp};
-        }
-
-        auto error = std::error_code{};
-        fs::rename(tmp, path, error);
-        if(error)
-        {
-            auto ignored = std::error_code{};
-            fs::remove(tmp, ignored);
-            throw std::runtime_error{"Failed to replace "s + std::string{what} + ": " + error.message()};
-        }
+        return cache::object_store{cache_dir()};
     }
 
-    void save_object_cache(const object_cache_map& c) {
-        write_cache_file(object_cache_path(), "object cache", [&](std::ostream& file) {
-            file << "profile\t" << object_cache_profile() << "\n";
-            for (const auto& [path, timestamp] : c) {
-                if (not fs::exists(path))
-                    continue;
-                auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    timestamp.time_since_epoch()).count();
-                file << path << "\t" << ticks << "\n";
-            }
-        });
-    }
-
-    static void count_cache_entries(std::istream& file,
-                                    int& entries,
-                                    int& stale_entries)
+    cache::link_store make_link_store() const
     {
-        auto line = ""s;
-        while(std::getline(file, line))
-        {
-            auto path = ""s;
-            auto ticks = 0ll;
-            if(not parse_object_cache_entry(line, path, ticks))
-                continue;
-            ++entries;
-            if(not fs::exists(path))
-                ++stale_entries;
-        }
+        return cache::link_store{
+            cache_dir(),
+            {.compile_flags = compile_flags,
+             .link_flags = link_flags,
+             .module_flags = module_flags}};
     }
 
-    executable_cache_map load_executable_cache() const {
-        auto cache = executable_cache_map{};
-        auto file = std::ifstream{executable_cache_path()};
-        if (not file) return cache;
-        auto path = ""s;
-        auto signature = ""s;
-        while (std::getline(file, path, '\t') and std::getline(file, signature)) {
-            cache[path] = signature;
-        }
-        return cache;
-    }
-
-    void save_executable_cache(const executable_cache_map& cache) const {
-        if (cache.empty()) {
-            remove_if_exists(executable_cache_path());
-            return;
-        }
-        write_cache_file(executable_cache_path(), "executable cache", [&](std::ostream& file) {
-            for (const auto& [path, signature] : cache)
-                file << path << "\t" << signature << "\n";
-        });
-    }
-
-    std::string dependency_signature(const std::string& path) const {
-        if (path.empty() or not fs::exists(path))
-            return path + ":missing";
-        const auto timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            fs::last_write_time(path).time_since_epoch()).count();
-        return path + ":" + std::to_string(timestamp);
-    }
-
-    // Whether there was a file to remove, which is what cache_invalidate reports per cache.
-    static bool remove_if_exists(const std::string& path)
+    cache::standard_module_store make_standard_module_store() const
     {
-        if(not fs::exists(path))
-            return false;
-        fs::remove(path);
-        return true;
-    }
-
-    std::string dependency_signatures_joined(const string_list& paths) const
-    {
-        return paths
-            | std::views::transform([&](const std::string& path) { return dependency_signature(path); })
-            | std::views::join_with("|"sv)
-            | std::ranges::to<std::string>();
-    }
-
-    // What identifies a link in the executable cache: every input's timestamp, plus the flag sets
-    // that would change the result even when no input moved. Both links are cached the same way —
-    // they differ only in what they take in, which is the caller's half of the answer.
-    std::string link_signature(const string_list& input_paths, const string_list& import_flags) const
-    {
-        auto signature = dependency_signatures_joined(input_paths);
-        signature += "|flags=";
-        signature += detail::flags_profile_string(compile_flags);
-        signature += "|link=";
-        signature += detail::flags_profile_string(link_flags);
-        signature += "|modules=";
-        signature += detail::flags_profile_string(module_flags);
-        signature += "|imports=";
-        signature += detail::flags_profile_string(import_flags);
-        return signature;
-    }
-
-    std::optional<output::rebuild_info> needs_relinking(std::string_view executable_path,
-                                                        const std::string& signature,
-                                                        const executable_cache_map& link_cache) const
-    {
-        if(not fs::exists(executable_path))
-            return output::rebuild_info{.kind = output::rebuild_kind::missing_executable};
-
-        if(not link_cache.contains(executable_path))
-            return output::rebuild_info{.kind = output::rebuild_kind::not_in_cache};
-
-        const auto& previous = link_cache.at(executable_path);
-        if(previous == signature)
-            return std::nullopt;
-
-        const auto flag_marker = "|flags="sv;
-        const auto previous_flags = previous.find(flag_marker);
-        const auto current_flags = signature.find(flag_marker);
-        if(previous_flags != std::string::npos and current_flags != std::string::npos)
-        {
-            const auto previous_objects = previous.substr(0, previous_flags);
-            const auto current_objects = signature.substr(0, current_flags);
-            if(previous_objects != current_objects)
-                return output::rebuild_info{.kind = output::rebuild_kind::object_changed};
-            if(previous.substr(previous_flags) != signature.substr(current_flags))
-                return output::rebuild_info{.kind = output::rebuild_kind::link_flags_changed};
-        }
-
-        return output::rebuild_info{.kind = output::rebuild_kind::signature_changed};
+        return cache::standard_module_store{
+            cache_dir(),
+            std_pcm_path(),
+            std_obj_path()};
     }
 
     // ============================================================================
@@ -2840,238 +3320,10 @@ private:
     // Standard Library Module Building
     // ============================================================================
     // The same two halves as Compilation, for the one modular unit that is not in the scan:
-    // needs_std_module_rebuild is its rebuild_reason_for and build_std_module its compile_unit,
-    // reporting through compile_scope like every other unit — the two most expensive steps of a
-    // cold build used to explain nothing.
-
-    struct shared_std_slot
-    {
-        fs::path directory;
-        fs::path pcm;
-        fs::path object;
-        fs::path profile;
-    };
-
-    std::optional<fs::path> shared_std_cache_root() const
-    {
-        // An explicitly empty override disables sharing, which keeps benchmarks and isolated
-        // cache-contract tests able to request a truly cold std build.
-        if(const auto* configured = std::getenv("CB_STD_CACHE_DIR"))
-        {
-            if(*configured == '\0')
-                return std::nullopt;
-            return fs::path{configured};
-        }
-        if(const auto* xdg = std::getenv("XDG_CACHE_HOME"); xdg and *xdg)
-            return fs::path{xdg} / "cb" / "std-module";
-        if(const auto* home = std::getenv("HOME"); home and *home)
-            return fs::path{home} / ".cache" / "cb" / "std-module";
-        return std::nullopt;
-    }
-
-    std::optional<shared_std_slot> shared_std_cache_slot() const
-    {
-        const auto root = shared_std_cache_root();
-        if(not root)
-            return std::nullopt;
-        const auto directory = *root / cache::profile{shared_std_cache_profile()}.key();
-        return shared_std_slot{
-            .directory = directory,
-            .pcm = directory / std_pcm_filename,
-            .object = directory / std_obj_filename,
-            .profile = directory / shared_std_profile_filename};
-    }
-
-    static bool link_or_copy_file(const fs::path& source, const fs::path& destination)
-    {
-        auto error = std::error_code{};
-        fs::create_hard_link(source, destination, error);
-        if(not error)
-            return true;
-        error.clear();
-        fs::copy_file(source, destination, fs::copy_options::overwrite_existing, error);
-        return not error;
-    }
-
-    static std::string shared_cache_nonce()
-    {
-        auto value = static_cast<std::uint64_t>(
-            std::chrono::steady_clock::now().time_since_epoch().count());
-        try
-        {
-            auto entropy = std::random_device{};
-            value ^= static_cast<std::uint64_t>(entropy()) << 32;
-            value ^= static_cast<std::uint64_t>(entropy());
-        }
-        catch(...)
-        {
-            // The monotonic-clock value still makes a collision between practical publishers
-            // vanishingly unlikely; create_directories below refuses an existing staging path.
-        }
-        return std::to_string(value);
-    }
-
-    bool materialize_shared_std_module(const shared_std_slot& slot)
-    {
-        if(detail::read_first_line(slot.profile.string()) != shared_std_cache_profile())
-            return false;
-        auto error = std::error_code{};
-        if(not fs::is_regular_file(slot.pcm, error) or error)
-            return false;
-        error.clear();
-        if(not fs::is_regular_file(slot.object, error) or error)
-            return false;
-
-        fs::create_directories(module_cache_dir());
-        fs::create_directories(object_dir());
-        const auto nonce = shared_cache_nonce();
-        const auto temporary_pcm = fs::path{std_pcm_path() + ".shared-" + nonce};
-        const auto temporary_object = fs::path{std_obj_path() + ".shared-" + nonce};
-        if(not link_or_copy_file(slot.pcm, temporary_pcm)
-           or not link_or_copy_file(slot.object, temporary_object))
-        {
-            fs::remove(temporary_pcm, error);
-            fs::remove(temporary_object, error);
-            return false;
-        }
-
-        fs::remove(std_pcm_path(), error);
-        error.clear();
-        fs::rename(temporary_pcm, std_pcm_path(), error);
-        if(error)
-        {
-            fs::remove(temporary_pcm, error);
-            fs::remove(temporary_object, error);
-            return false;
-        }
-        fs::remove(std_obj_path(), error);
-        error.clear();
-        fs::rename(temporary_object, std_obj_path(), error);
-        if(error)
-        {
-            fs::remove(std_pcm_path(), error);
-            fs::remove(temporary_object, error);
-            return false;
-        }
-        save_std_module_profile();
-        return true;
-    }
-
-    bool hydrate_shared_std_module()
-    {
-        const auto slot = shared_std_cache_slot();
-        if(not slot)
-            return false;
-        try
-        {
-            return materialize_shared_std_module(*slot);
-        }
-        catch(const std::exception& error)
-        {
-            output::notify(&output::observer::warning,
-                           "Shared std module cache read failed: "s + error.what());
-            return false;
-        }
-    }
-
-    void publish_shared_std_module()
-    {
-        const auto slot = shared_std_cache_slot();
-        if(not slot)
-            return;
-        try
-        {
-            if(detail::read_first_line(slot->profile.string()) == shared_std_cache_profile()
-               and fs::is_regular_file(slot->pcm)
-               and fs::is_regular_file(slot->object))
-                return;
-
-            fs::create_directories(slot->directory.parent_path());
-            auto staging = slot->directory;
-            staging += ".tmp-" + shared_cache_nonce();
-            auto error = std::error_code{};
-            if(not fs::create_directories(staging, error) or error)
-                return;
-
-            const auto staged_pcm = staging / std_pcm_filename;
-            const auto staged_object = staging / std_obj_filename;
-            const auto staged_profile = staging / shared_std_profile_filename;
-            if(not link_or_copy_file(std_pcm_path(), staged_pcm)
-               or not link_or_copy_file(std_obj_path(), staged_object))
-            {
-                fs::remove_all(staging, error);
-                return;
-            }
-            {
-                auto profile = std::ofstream{staged_profile, std::ios::trunc};
-                if(not profile)
-                {
-                    fs::remove_all(staging, error);
-                    return;
-                }
-                profile << shared_std_cache_profile() << '\n';
-                if(not profile)
-                {
-                    profile.close();
-                    fs::remove_all(staging, error);
-                    return;
-                }
-            }
-
-            // Publish the complete directory at once. If another CB won the same key, retain its
-            // equivalent slot and discard this staging tree.
-            fs::rename(staging, slot->directory, error);
-            if(error)
-                fs::remove_all(staging, error);
-        }
-        catch(const std::exception& error)
-        {
-            output::notify(&output::observer::warning,
-                           "Shared std module cache write failed: "s + error.what());
-        }
-    }
-
-    // Whether std.pcm was precompiled by the profile a project unit is compiled with. The pcm's
-    // own presence is a separate question, asked by needs_std_module_rebuild before this one.
-    bool std_module_profile_matches() const
-    {
-        const auto stored = detail::read_first_line(std_module_profile_path());
-        return not stored.empty() and stored == object_cache_profile();
-    }
-
-    void save_std_module_profile() const
-    {
-        fs::create_directories(cache_dir());
-        write_cache_file(std_module_profile_path(), "std module profile", [&](std::ostream& file) {
-            file << object_cache_profile() << '\n';
-        });
-    }
-
-    // In the order the artifacts depend on each other, so the reason names the first thing that
-    // has to be rebuilt and the caller can tell whether the pcm step is included. The profile is
-    // what mtimes cannot see: a toolchain change leaves a pcm newer than std.cppm and wrong.
-    // std.cppm is known to exist — detect_llvm_environment throws otherwise.
-    std::optional<output::rebuild_info> needs_std_module_rebuild() const
-    {
-        const auto pcm = std_pcm_path();
-        const auto object = std_obj_path();
-        const auto module_of = [&](output::rebuild_kind kind) {
-            return output::rebuild_info{
-                .kind = kind, .module = std::string{std_module_name}, .pcm_path = pcm};
-        };
-
-        if(not fs::exists(pcm))
-            return module_of(output::rebuild_kind::own_pcm_missing);
-        if(not std_module_profile_matches())
-            return module_of(output::rebuild_kind::profile_change);
-        if(fs::last_write_time(pcm) < fs::last_write_time(std_module_source))
-            return module_of(output::rebuild_kind::own_pcm_stale);
-        if(not fs::exists(object))
-            return module_of(output::rebuild_kind::object_missing);
-        if(fs::last_write_time(object) < fs::last_write_time(pcm))
-            return module_of(output::rebuild_kind::object_stale);
-        return std::nullopt;
-    }
+    // standard_module_store::rebuild_reason_for decides reuse and build_std_module performs the
+    // compile, reporting through compile_scope like every other unit — the two most expensive
+    // steps of a cold build used to explain nothing. Shared-std persistence lives on
+    // cache::standard_module_store; this section only decides and compiles.
 
     // Observers see what they see for a project modular unit: one source, one pcm, one object.
     // The strings are the caller's, because compile_unit holds views.
@@ -3086,24 +3338,35 @@ private:
                 .display_path = display};
     }
 
+    void notify_std_cache_warning(const cache::standard_module_store::transfer_result& result) const
+    {
+        if(not result.warning.empty())
+            output::notify(&output::observer::warning, result.warning);
+    }
+
     void build_std_module()
     {
         const auto pcm = std_pcm_path();
         const auto object = std_obj_path();
         const auto display = fs::path{std_module_source}.filename().string();
         const auto unit = std_compile_unit(pcm, object, display);
-        const auto reason = needs_std_module_rebuild();
+        auto std_store = make_standard_module_store();
+        const auto reason = std_store.rebuild_reason_for(
+            std_module_source, [&]() { return object_cache_profile(); });
 
         if(not reason)
         {
             const auto hit = compile_scope{unit};
             return;
         }
-        // A clean removes the local build tree, not the machine-local std store. Only hydrate
-        // that missing-tree case: cache invalidate deliberately removes the local profile and
-        // must continue to force a profile_change rebuild.
-        if(reason->kind == output::rebuild_kind::own_pcm_missing
-           and hydrate_shared_std_module())
+        // The store only attempts hydration for a missing local PCM. In particular, cache
+        // invalidate removes the local profile and must continue to force a rebuild.
+        const auto hydrated = std_store.hydrate_for(
+            *reason,
+            [&]() { return shared_std_cache_profile(); },
+            [&]() { return object_cache_profile(); });
+        notify_std_cache_warning(hydrated);
+        if(hydrated.ok)
         {
             const auto hit = compile_scope{unit};
             return;
@@ -3115,8 +3378,9 @@ private:
             // One step emits both artefacts, so there is no object-only shortcut to take: a
             // missing std.o re-reads std.cppm. Rare, and the cold build is a whole parse cheaper.
             run_step(compile, build_std_module_object_argv(), diagnostics_path_for_object(unit));
-            save_std_module_profile();
-            publish_shared_std_module();
+            std_store.save_profile(object_cache_profile());
+            notify_std_cache_warning(
+                std_store.publish([&]() { return shared_std_cache_profile(); }));
             compile.succeeded();
             return;
         }
@@ -3127,10 +3391,11 @@ private:
         if(not object_only)
         {
             run_step(compile, build_std_pcm_argv(), diagnostics_path_for_pcm(unit));
-            save_std_module_profile();
+            std_store.save_profile(object_cache_profile());
         }
         run_step(compile, build_std_o_argv(), diagnostics_path_for_object(unit));
-        publish_shared_std_module();
+        notify_std_cache_warning(
+            std_store.publish([&]() { return shared_std_cache_profile(); }));
         compile.succeeded();
     }
 
@@ -3178,11 +3443,15 @@ private:
 
     void compile_units() {
         if (units_in_topological_order.empty()) return;
-        auto loaded_cache = load_object_cache();
-        if(loaded_cache.profile_change)
+        auto objects = make_object_store();
+        objects.load(object_cache_profile());
+        if(objects.missing_profile_header())
+            output::notify(&output::observer::info,
+                           "Object cache missing profile header; ignoring"s);
+        if(objects.profile_change())
             output::notify(&output::observer::profile_changed,
                            output::rebuild_kind::profile_change,
-                           *loaded_cache.profile_change);
+                           *objects.profile_change());
 
         auto u2tu = unit_to_tu_map{};
         for (auto& tu : units_in_topological_order) {
@@ -3272,7 +3541,7 @@ private:
                     {
                         const auto& tu = units_in_topological_order[index];
                         const auto reason =
-                            cache_analyzer.rebuild_reason_for(tu, loaded_cache, u2tu);
+                            cache_analyzer.rebuild_reason_for(tu, objects, u2tu);
                         if(reason)
                         {
                             compile_unit(tu, *reason, [&]() { publish_dependency(index); });
@@ -3314,9 +3583,9 @@ private:
             if(rebuilt[index] != 0)
             {
                 const auto& tu = units_in_topological_order[index];
-                loaded_cache.entries[tu.full_path] = tu.last_modified;
+                objects.record(tu.full_path, tu.last_modified);
             }
-        save_object_cache(loaded_cache.entries);
+        objects.save();
     }
 
     // ============================================================================
@@ -3339,19 +3608,23 @@ private:
     }
 
     // What this executable takes in: its own object, the shared objects, the std object.
-    std::string compute_link_signature(const source::translation_unit& tu, const string_list& shared_objects) const {
+    std::string compute_link_signature(const source::translation_unit& tu,
+                                       const string_list& shared_objects,
+                                       const cache::link_store& links) const
+    {
         auto paths = string_list{tu.object_path};
         paths.append_range(shared_objects);
         paths.push_back(std_obj_path());
-        return link_signature(paths, collect_module_ldflags(tu.imports));
+        return links.link_signature(paths, collect_module_ldflags(tu.imports));
     }
 
     void link_executables() {
         auto shared_objects = linkable_object_paths();
-        auto link_cache = load_executable_cache();
+        auto links = make_link_store();
+        links.load();
 
-        // Snapshot relink decisions before workers mutate link_cache. Interleaving
-        // needs_relinking (unlocked reads) with parallel operator[] writes is a data race.
+        // Snapshot relink decisions before workers mutate the store. Interleaving
+        // needs_relinking (unlocked reads) with parallel remember() writes is a data race.
         struct link_decision {
             const source::translation_unit* tu = nullptr;
             std::string signature{};
@@ -3363,8 +3636,8 @@ private:
             | std::views::filter([&](const source::translation_unit& tu) {
                   return tu.has_main and tu.base_name != test_runner_name; })
             | std::views::transform([&](const source::translation_unit& tu) {
-                  auto signature = compute_link_signature(tu, shared_objects);
-                  auto reason = needs_relinking(tu.executable_path, signature, link_cache);
+                  auto signature = compute_link_signature(tu, shared_objects, links);
+                  auto reason = links.needs_relinking(tu.executable_path, signature);
                   return link_decision{&tu, std::move(signature), std::move(reason)}; })
             | std::ranges::to<std::vector>();
 
@@ -3381,10 +3654,9 @@ private:
                         [&](const link_decision& decision) {
                             const auto& tu = *decision.tu;
                             link_executable(tu, shared_objects, *decision.reason, decision.signature);
-                            auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
-                            link_cache[tu.executable_path] = decision.signature;
+                            links.remember(tu.executable_path, decision.signature);
                         });
-        save_executable_cache(link_cache);
+        links.save();
     }
 
     // ============================================================================
@@ -3428,14 +3700,16 @@ private:
     // What the runner takes in: its object, the test objects, the shared objects, the std object.
     // The flag tail covers every test unit's imports as well as the runner's — a change to any is
     // a relink — while the argv needs only the runner's own, the split link_executable also has.
-    std::string compute_test_runner_signature(const source::translation_unit& runner) const {
+    std::string compute_test_runner_signature(const source::translation_unit& runner,
+                                              const cache::link_store& links) const
+    {
         auto paths = string_list{runner.object_path};
         paths.append_range(test_object_paths());
         paths.append_range(linkable_object_paths());
         paths.push_back(std_obj_path());
         auto flags = collect_test_module_ldflags();
         flags.append_range(collect_module_ldflags(runner.imports));
-        return link_signature(paths, flags);
+        return links.link_signature(paths, flags);
     }
 
     void link_test_runner() {
@@ -3444,9 +3718,10 @@ private:
         // compute_executable_path is the only place a main's executable is sited.
         const auto& runner = test_runner_unit();
 
-        auto link_cache = load_executable_cache();
-        const auto signature = compute_test_runner_signature(runner);
-        const auto reason = needs_relinking(runner.executable_path, signature, link_cache);
+        auto links = make_link_store();
+        links.load();
+        const auto signature = compute_test_runner_signature(runner, links);
+        const auto reason = links.needs_relinking(runner.executable_path, signature);
         if(not reason)
         {
             const auto hit = link_scope{runner.executable_path, signature};
@@ -3455,11 +3730,8 @@ private:
 
         link_test_runner_executable(runner, *reason, signature);
         output::notify(&output::observer::success, "test_runner linked with test objects");
-        {
-            auto lock = std::lock_guard<std::mutex>{link_cache_mutex};
-            link_cache[runner.executable_path] = signature;
-        }
-        save_executable_cache(link_cache);
+        links.remember(runner.executable_path, signature);
+        links.save();
     }
 
     // ============================================================================
@@ -3567,7 +3839,7 @@ public:
         auto removed = 0;
 
         const auto try_remove = [&](const std::string& path) {
-            if(remove_if_exists(path))
+            if(detail::remove_if_exists(path))
                 ++removed;
         };
 
@@ -3596,34 +3868,33 @@ public:
             }
         }
 
-        if(not dropped_sources.empty() and fs::exists(object_cache_path()))
+        auto objects = make_object_store();
+        if(not dropped_sources.empty() and objects.exists())
         {
-            auto cache = load_object_cache();
-            if(not cache.profile_change)
+            objects.load(object_cache_profile());
+            if(objects.missing_profile_header())
+                output::notify(&output::observer::info,
+                               "Object cache missing profile header; ignoring"s);
+            if(not objects.profile_change())
             {
                 auto erased = false;
                 for(const auto& path : dropped_sources)
                 {
-                    if(cache.entries.contains(path))
-                    {
-                        cache.entries.erase(path);
+                    if(objects.erase(path))
                         erased = true;
-                    }
                 }
                 if(erased)
-                    save_object_cache(cache.entries);
+                    objects.save();
             }
         }
 
-        if(fs::exists(executable_cache_path()))
+        auto links = make_link_store();
+        if(links.exists())
         {
-            auto link_cache = load_executable_cache();
+            links.load();
             const auto runner_exe = detail::join_dir(binary_dir(), test_runner_name);
-            if(link_cache.contains(runner_exe))
-            {
-                link_cache.erase(runner_exe);
-                save_executable_cache(link_cache);
-            }
+            if(links.erase(runner_exe))
+                links.save();
         }
 
         if(removed == 0)
@@ -3641,60 +3912,33 @@ public:
         fs::create_directories(cache_dir());
 
         const auto current_profile = object_cache_profile();
-        const auto cache_path = object_cache_path();
-        const auto cache_exists = fs::exists(cache_path);
-
-        auto profile_match = false;
-        auto object_entries = 0;
-        auto object_stale = 0;
-
-        if(cache_exists)
-        {
-            auto file = std::ifstream{cache_path};
-            auto header = ""s;
-            if(std::getline(file, header) && header.starts_with("profile\t"))
-            {
-                const auto stored_profile = header.substr(std::string_view{"profile\t"}.size());
-                profile_match = stored_profile == current_profile;
-                count_cache_entries(file, object_entries, object_stale);
-            }
-        }
+        const auto objects = make_object_store();
+        const auto object_status = objects.status(current_profile);
 
         // Paths outlive the notify: cache_inventory holds views, so the strings they point at
         // are named here rather than built inside the aggregate.
-        const auto link_cache_path = executable_cache_path();
-        const auto std_profile_path = std_module_profile_path();
-        const auto stamp_path = compiler_stamp_path();
-
-        auto executable_entries = 0;
-        if(fs::exists(link_cache_path))
-        {
-            auto file = std::ifstream{link_cache_path};
-            auto line = ""s;
-            while(std::getline(file, line))
-            {
-                const auto tab = line.find('\t');
-                if(tab != std::string::npos && not line.substr(0, tab).empty())
-                    ++executable_entries;
-            }
-        }
+        const auto links = make_link_store();
+        const auto link_status = links.status();
+        const auto std_modules = make_standard_module_store();
+        const auto std_status = std_modules.status(current_profile);
+        const auto stamp = cache::compiler_stamp{cache_dir()};
 
         output::notify(
             &output::observer::cache_status,
             output::cache_inventory{
-                .object_cache_path = cache_path,
-                .object_cache_exists = cache_exists,
-                .profile_match = profile_match,
-                .object_entries = object_entries,
-                .object_stale_entries = object_stale,
-                .executable_cache_path = link_cache_path,
-                .executable_cache_exists = fs::exists(link_cache_path),
-                .executable_entries = executable_entries,
-                .std_module_profile_path = std_profile_path,
-                .std_module_profile_exists = fs::exists(std_profile_path),
-                .std_module_profile_match = std_module_profile_matches(),
-                .compiler_stamp_path = stamp_path,
-                .compiler_stamp_exists = fs::exists(stamp_path),
+                .object_cache_path = objects.path(),
+                .object_cache_exists = object_status.exists,
+                .profile_match = object_status.profile_match,
+                .object_entries = object_status.entries,
+                .object_stale_entries = object_status.stale_entries,
+                .executable_cache_path = links.path(),
+                .executable_cache_exists = link_status.exists,
+                .executable_entries = link_status.entries,
+                .std_module_profile_path = std_modules.profile_path(),
+                .std_module_profile_exists = std_status.exists,
+                .std_module_profile_match = std_status.profile_match,
+                .compiler_stamp_path = stamp.path(),
+                .compiler_stamp_exists = stamp.exists(),
                 .current_profile = current_profile});
     }
 
@@ -3705,10 +3949,10 @@ public:
         // Every file cache_status reports, so the two commands cannot disagree about what the
         // cache is. The std module profile is the one that makes CB rebuild std.pcm.
         const auto removed = output::cache_removals{
-            .object_cache = remove_if_exists(object_cache_path()),
-            .executable_cache = remove_if_exists(executable_cache_path()),
-            .compiler_stamp = remove_if_exists(compiler_stamp_path()),
-            .std_module_profile = remove_if_exists(std_module_profile_path())};
+            .object_cache = make_object_store().invalidate(),
+            .executable_cache = make_link_store().invalidate(),
+            .compiler_stamp = cache::compiler_stamp{cache_dir()}.invalidate(),
+            .std_module_profile = make_standard_module_store().invalidate()};
 
         output::notify(&output::observer::cache_invalidate_end, removed);
     }
@@ -3799,7 +4043,7 @@ public:
     void write_compile_commands() const
     {
         const auto path = detail::join_dir(source_dir, compile_commands_filename);
-        write_cache_file(path, "compile commands database", [&](std::ostream& file) {
+        detail::write_atomic_file(path, "compile commands database", [&](std::ostream& file) {
             file << "[\n";
             auto first = true;
             for(const auto& tu : units_in_topological_order)
@@ -3826,7 +4070,7 @@ public:
     void write_graph_json(const output::source_inventory& inventory) const
     {
         const auto path = detail::join_dir(source_dir, graph_filename);
-        write_cache_file(path, "module dependency graph", [&](std::ostream& file) {
+        detail::write_atomic_file(path, "module dependency graph", [&](std::ostream& file) {
             file << "{\n";
             file << "  \"schema\": \"cb-graph\",\n";
             file << "  \"version\": 1,\n";
