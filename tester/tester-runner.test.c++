@@ -431,8 +431,11 @@ auto register_tests()
 
     test_case("test_case [self] output observers receive assertion events") = []
     {
-        auto recorder = recording_observer{};
+        // Static: even with registry shared_lock covering notify, a stack observer that
+        // outlives unobserve only by accident is the wrong model under --jobs>1.
+        static recording_observer recorder{};
         recorder.filter_id = std::string{tester::data::current_test_id()};
+        recorder.assertions.store(0);
         output::observe(recorder);
         check_eq(1, 1);
         output::unobserve(recorder);

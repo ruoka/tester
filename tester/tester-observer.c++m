@@ -142,13 +142,14 @@ public:
 inline output_capture* g_capture = nullptr;
 inline auto g_observers = std::vector<std::reference_wrapper<observer>>{};
 inline auto g_named_observers = std::vector<std::pair<std::string, std::reference_wrapper<observer>>>{};
-// Parallel workers notify while a test may observe()/unobserve() mid-run; the registry
-// itself needs a lock (individual observers already take their own).
-inline std::mutex g_observers_mutex{};
+// Shared for notify fan-out, unique for registry mutations. A plain mutex + snapshot left a
+// window where unobserve returned and a stack-local observer was destroyed while another
+// worker still invoked it from its copied reference_wrapper list (--jobs>1 SIGSEGV).
+inline std::shared_mutex g_observers_mutex{};
 
 export void register_observer(std::string_view name, observer& value)
 {
-    auto lock = std::lock_guard<std::mutex>{g_observers_mutex};
+    auto lock = std::unique_lock<std::shared_mutex>{g_observers_mutex};
     if(const auto found = std::ranges::find_if(g_named_observers, [name](const auto& entry)
     {
         return entry.first == name;
@@ -164,17 +165,17 @@ export void register_observer(std::string_view name, observer& value)
 export void observe(observer& value)
 {
     {
-        auto lock = std::lock_guard<std::mutex>{g_observers_mutex};
+        auto lock = std::unique_lock<std::shared_mutex>{g_observers_mutex};
         g_observers.emplace_back(value);
     }
     // Activate outside the registry lock: console activate registers the capture buffer
-    // and must not nest with notify's snapshot path.
+    // and must not nest unique_lock with itself via capture_into.
     value.activate();
 }
 
 export void clear_observers()
 {
-    auto lock = std::lock_guard<std::mutex>{g_observers_mutex};
+    auto lock = std::unique_lock<std::shared_mutex>{g_observers_mutex};
     g_observers.clear();
     g_capture = nullptr;
 }
@@ -183,19 +184,19 @@ export void clear_observers()
 // observers drops it with them.
 export void capture_into(output_capture& value)
 {
-    auto lock = std::lock_guard<std::mutex>{g_observers_mutex};
+    auto lock = std::unique_lock<std::shared_mutex>{g_observers_mutex};
     g_capture = &value;
 }
 
 export std::string captured_text()
 {
-    auto lock = std::lock_guard<std::mutex>{g_observers_mutex};
+    auto lock = std::unique_lock<std::shared_mutex>{g_observers_mutex};
     return g_capture != nullptr ? g_capture->text() : std::string{};
 }
 
 export void reset_captured_text()
 {
-    auto lock = std::lock_guard<std::mutex>{g_observers_mutex};
+    auto lock = std::unique_lock<std::shared_mutex>{g_observers_mutex};
     if(g_capture != nullptr)
         g_capture->reset();
 }
@@ -204,7 +205,7 @@ export bool select_observer(std::string_view name)
 {
     observer* selected = nullptr;
     {
-        auto lock = std::lock_guard<std::mutex>{g_observers_mutex};
+        auto lock = std::unique_lock<std::shared_mutex>{g_observers_mutex};
         const auto found = std::ranges::find_if(g_named_observers, [name](const auto& entry)
         {
             return entry.first == name;
@@ -223,7 +224,7 @@ export bool select_observer(std::string_view name)
 
 export void unobserve(observer& value)
 {
-    auto lock = std::lock_guard<std::mutex>{g_observers_mutex};
+    auto lock = std::unique_lock<std::shared_mutex>{g_observers_mutex};
     std::erase_if(g_observers, [&value](const auto target)
     {
         return std::addressof(target.get()) == std::addressof(value);
@@ -233,14 +234,12 @@ export void unobserve(observer& value)
 export template<typename Callback>
 void notify(Callback&& callback)
 {
-    // Snapshot under the lock so observe/unobserve cannot invalidate the walk; invoke
-    // outside so an observer's own mutex cannot deadlock against registry mutations.
-    auto targets = std::vector<std::reference_wrapper<observer>>{};
-    {
-        auto lock = std::lock_guard<std::mutex>{g_observers_mutex};
-        targets = g_observers;
-    }
-    for(auto target : targets)
+    // Hold shared ownership of the registry for the whole fan-out so unobserve cannot
+    // erase (and the caller destroy) an observer mid-callback. Observers must not call
+    // observe/unobserve/select_observer/capture_into from a notify callback (would block
+    // on a unique_lock while this shared_lock is held on the same thread).
+    auto lock = std::shared_lock<std::shared_mutex>{g_observers_mutex};
+    for(auto target : g_observers)
         callback(target.get());
 }
 

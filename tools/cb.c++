@@ -1431,7 +1431,13 @@ private:
         // Same boundary as every compile and link: argv in, stamp file out.
         const auto stamp = compiler_stamp_path();
         if(invoke_shell(string_list{llvm_cxx, "--version"}, stamp).ok())
+        {
             clang_version = detail::read_first_line(stamp);
+            // Humans only see COMMAND for the probe; echo the first line so the
+            // active toolchain is visible without opening the stamp file.
+            if(not clang_version.empty())
+                output::notify(&output::observer::info, clang_version);
+        }
     }
 
     void initialize_build_flags()
