@@ -1022,6 +1022,29 @@ output::rebuild_info attributed_to(output::rebuild_info reason, const translatio
     return reason;
 }
 
+// Unit keys this consumer waits on: explicit imports plus an implementation unit's primary
+// interface. Unknown imports remain a compiler diagnostic rather than a CB preflight failure.
+// Deduplicate an explicit self-import against the implementation unit's implicit interface edge.
+template<typename KnownUnits, typename Visit>
+requires std::invocable<Visit&, const std::string&>
+void for_each_dependency_provider(const translation_unit& tu,
+                                  const KnownUnits& known,
+                                  Visit&& visit)
+{
+    auto seen = std::flat_set<std::string, std::less<>>{};
+    const auto consider = [&](const std::string& key)
+    {
+        if(not known.contains(key) or not seen.insert(key).second)
+            return;
+        visit(key);
+    };
+
+    for(const auto& imported : tu.imports)
+        consider(imported);
+    if(tu.kind == unit_kind::implementation_unit)
+        consider(tu.module);
+}
+
 using dependency_graph = std::flat_map<std::string, string_list, std::less<>>;
 using indegree_map = std::flat_map<std::string, int, std::less<>>;
 using unit_to_tu_map = std::flat_map<std::string, translation_unit*, std::less<>>;
@@ -2262,11 +2285,16 @@ private:
         const auto prerequisites = detail::parse_depfile(depfile);
         if(not prerequisites)
             return output::rebuild_info{.kind = output::rebuild_kind::depfile_unusable, .trigger_path = depfile};
+        const auto pcm_tree = normalize_path(module_cache_dir());
 
         for(const auto& prerequisite : *prerequisites)
         {
             const auto resolved = normalize_path(prerequisite);
-            if(resolved == tu.full_path or not resolved.starts_with(source_dir))
+            // Clang also records explicitly mapped BMIs in the depfile. The module graph checks
+            // those separately and reports pcm_stale; they are not textual headers.
+            if(resolved == tu.full_path
+               or not resolved.starts_with(source_dir)
+               or detail::path_at_or_under_dir(resolved, pcm_tree))
                 continue;
 
             auto error = std::error_code{};
@@ -2308,13 +2336,16 @@ private:
         else
         {
             object_timestamp = fs::last_write_time(tu.object_path);
-            if(object_timestamp < cache.entries.at(tu.full_path) and not tu.is_modular)
-                return output::rebuild_info{.kind = output::rebuild_kind::object_stale, .trigger_path = tu.full_path};
+            if(not tu.is_modular)
+            {
+                if(object_timestamp < cache.entries.at(tu.full_path))
+                    return output::rebuild_info{.kind = output::rebuild_kind::object_stale, .trigger_path = tu.full_path};
 
-            // Textual #include dependencies are invisible to the module graph, so the
-            // compiler's own depfile is the only record of them.
-            if(auto header_reason = stale_header(tu, object_timestamp))
-                return header_reason;
+                // Textual #include dependencies are invisible to the module graph, so the
+                // compiler's own depfile is the only record of them.
+                if(auto header_reason = stale_header(tu, object_timestamp))
+                    return header_reason;
+            }
         }
 
         // Implementation units consume their interface PCM implicitly through
@@ -2336,19 +2367,28 @@ private:
         // --precompile followed by a failed/skipped object step leaves a pcm newer than
         // the .o, and without this check the unit cache-hits while importers rebuild
         // against the new interface — linking the old implementation into the binary.
-        // When the object is missing, compare imports against the pcm itself: that is
-        // what object_only would feed to pcm→.o.
+        // When object_only would reuse the BMI, compare imports and textual headers against the
+        // pcm itself: that is what pcm→.o consumes. Defer object_stale until those inputs pass.
         auto freshness_timestamp = object_timestamp;
+        auto object_stale_vs_pcm = false;
         if (tu.is_modular) {
             if (not fs::exists(tu.pcm_path))
                 return pcm_rebuild(output::rebuild_kind::own_pcm_missing, tu);
-            auto pcm_timestamp = fs::last_write_time(tu.pcm_path);
+            const auto pcm_timestamp = fs::last_write_time(tu.pcm_path);
             if (pcm_timestamp < tu.last_modified)
                 return pcm_rebuild(output::rebuild_kind::own_pcm_stale, tu);
             if(object_absent)
                 freshness_timestamp = pcm_timestamp;
             else if (object_timestamp < pcm_timestamp)
-                return pcm_rebuild(output::rebuild_kind::object_stale, tu);
+            {
+                freshness_timestamp = pcm_timestamp;
+                object_stale_vs_pcm = true;
+            }
+
+            // The modular depfile is emitted by the source-reading precompile/one-phase step, so
+            // a missing or lagging object must not make a stale BMI look reusable.
+            if(auto header_reason = stale_header(tu, freshness_timestamp))
+                return header_reason;
         }
 
         // Rebuild when any transitive import PCM is newer than this object file.
@@ -2376,6 +2416,8 @@ private:
 
         if(object_absent)
             return output::rebuild_info{.kind = output::rebuild_kind::object_missing, .trigger_path = tu.full_path};
+        if(object_stale_vs_pcm)
+            return pcm_rebuild(output::rebuild_kind::object_stale, tu);
         if(object_timestamp < cache.entries.at(tu.full_path))
             return output::rebuild_info{.kind = output::rebuild_kind::object_stale, .trigger_path = tu.full_path};
 
@@ -2550,22 +2592,13 @@ private:
             indegrees[tu.unit] = 0;
         }
 
-        for (const auto& tu : units) {
-            // Module imports create edges from imported module -> importer.
-            for (const auto& module : tu.imports) {
-                if (unit_to_tu.contains(module)) {
-                    dependencies[module].push_back(tu.unit);
-                    indegrees[tu.unit]++;
-                }
-            }
-
-            // Implementation units must build after their interface.
-            if (tu.kind == unit_kind::implementation_unit) {
-                if (unit_to_tu.contains(tu.module)) {
-                    dependencies[tu.module].push_back(tu.unit);
-                    indegrees[tu.unit]++;
-                }
-            }
+        for(const auto& tu : units)
+        {
+            for_each_dependency_provider(tu, unit_to_tu, [&](const std::string& provider)
+            {
+                dependencies[provider].push_back(tu.unit);
+                ++indegrees[tu.unit];
+            });
         }
 
         auto ready = topo_sort_queue{};
@@ -3009,24 +3042,17 @@ private:
         for(auto index = std::size_t{0}; index < unit_count; ++index)
             unit_to_index[units_in_topological_order[index].unit] = index;
 
-        // Match scan_and_order's graph: imports are explicit edges, while an implementation unit
-        // also consumes its primary interface implicitly. A set prevents a self-import from
-        // counting that interface twice.
+        // The same provider rule drives inventory levels and compile readiness.
         auto dependents = std::vector<std::vector<std::size_t>>(unit_count);
         auto dependencies_remaining = std::vector<std::size_t>(unit_count);
         for(auto index = std::size_t{0}; index < unit_count; ++index)
         {
             const auto& tu = units_in_topological_order[index];
-            auto providers = std::flat_set<std::size_t>{};
-            for(const auto& imported : tu.imports)
-                if(unit_to_index.contains(imported))
-                    providers.insert(unit_to_index.at(imported));
-            if(tu.kind == unit_kind::implementation_unit and unit_to_index.contains(tu.module))
-                providers.insert(unit_to_index.at(tu.module));
-
-            dependencies_remaining[index] = providers.size();
-            for(const auto provider : providers)
-                dependents[provider].push_back(index);
+            for_each_dependency_provider(tu, unit_to_index, [&](const std::string& provider)
+            {
+                dependents[unit_to_index.at(provider)].push_back(index);
+                ++dependencies_remaining[index];
+            });
         }
 
         auto ready = std::queue<std::size_t>{};
