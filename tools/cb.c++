@@ -2138,6 +2138,7 @@ public:
             entries_[entry_path] = signature;
     }
 
+
     void save() const
     {
         if(entries_.empty())
@@ -2156,6 +2157,14 @@ public:
     {
         auto lock = std::lock_guard<std::mutex>{mutex_};
         entries_[std::move(executable)] = std::move(signature);
+    }
+
+    // Loaded snapshot only — call before parallel remember(), or on a single-threaded path.
+    std::optional<std::string> remembered(std::string_view executable) const
+    {
+        if(not entries_.contains(executable))
+            return std::nullopt;
+        return entries_.at(executable);
     }
 
     bool erase(std::string_view executable)
@@ -2217,36 +2226,6 @@ public:
         return signature;
     }
 
-    // Reads entries_ only — call only before parallel remember(), or on a single-threaded path.
-    std::optional<output::rebuild_info> needs_relinking(std::string_view executable_path,
-                                                        const std::string& signature) const
-    {
-        if(not fs::exists(executable_path))
-            return output::rebuild_info{.kind = output::rebuild_kind::missing_executable};
-
-        if(not entries_.contains(executable_path))
-            return output::rebuild_info{.kind = output::rebuild_kind::not_in_cache};
-
-        const auto& previous = entries_.at(executable_path);
-        if(previous == signature)
-            return std::nullopt;
-
-        const auto flag_marker = "|flags="sv;
-        const auto previous_flags = previous.find(flag_marker);
-        const auto current_flags = signature.find(flag_marker);
-        if(previous_flags != std::string::npos and current_flags != std::string::npos)
-        {
-            const auto previous_objects = previous.substr(0, previous_flags);
-            const auto current_objects = signature.substr(0, current_flags);
-            if(previous_objects != current_objects)
-                return output::rebuild_info{.kind = output::rebuild_kind::object_changed};
-            if(previous.substr(previous_flags) != signature.substr(current_flags))
-                return output::rebuild_info{.kind = output::rebuild_kind::link_flags_changed};
-        }
-
-        return output::rebuild_info{.kind = output::rebuild_kind::signature_changed};
-    }
-
 private:
     inline static constexpr auto filename = "executable-cache.txt"sv;
     // v2 records the import flags actually passed to every link, including test-unit imports.
@@ -2293,17 +2272,17 @@ public:
     {}
 
     const std::string& profile_path() const { return profile_file_.path(); }
+    const std::string& bmi_path() const { return bmi_path_; }
+    const std::string& object_path() const { return object_path_; }
 
-private:
     // Whether the std BMI was precompiled by the profile a project unit is compiled with.
-    // The BMI's own presence is a separate question, asked by rebuild_reason_for.
+    // The BMI's own presence is a separate question, asked by analyzer::rebuild_reason_for.
     bool profile_matches(std::string_view object_profile) const
     {
         const auto stored = profile_file_.read_first_line();
         return not stored.empty() and stored == object_profile;
     }
 
-public:
     void save_profile(std::string_view object_profile) const
     {
         profile_file_.replace("std module profile", [&](std::ostream& file) {
@@ -2317,31 +2296,6 @@ public:
     {
         return {.exists = profile_file_.exists(),
                 .profile_match = profile_matches(object_profile)};
-    }
-
-    std::optional<output::rebuild_info> rebuild_reason_for(
-        std::string_view source_path,
-        std::invocable auto&& object_profile_of) const
-    {
-        const auto module_of = [&](output::rebuild_kind kind) {
-            return output::rebuild_info{
-                .kind = kind,
-                .module = std::string{std_module_name},
-                .bmi_path = bmi_path_};
-        };
-
-        if(not fs::exists(bmi_path_))
-            return module_of(output::rebuild_kind::own_bmi_missing);
-        if(not profile_matches(
-               std::forward<decltype(object_profile_of)>(object_profile_of)()))
-            return module_of(output::rebuild_kind::profile_change);
-        if(fs::last_write_time(bmi_path_) < fs::last_write_time(source_path))
-            return module_of(output::rebuild_kind::own_bmi_stale);
-        if(not fs::exists(object_path_))
-            return module_of(output::rebuild_kind::object_missing);
-        if(fs::last_write_time(object_path_) < fs::last_write_time(bmi_path_))
-            return module_of(output::rebuild_kind::object_stale);
-        return std::nullopt;
     }
 
 private:
@@ -2561,7 +2515,7 @@ private:
     storage_file file_;
 };
 
-// Returns the first reason an object/BMI set cannot be reused.
+// Rebuild policy for project TUs, std, and links. Stores persist; this class only decides.
 class analyzer
 {
 public:
@@ -2569,6 +2523,64 @@ public:
         : source_root_{detail::canonical_path(source_root)},
           bmi_root_{detail::canonical_path(bmi_root)}
     {}
+
+    std::optional<output::rebuild_info> rebuild_reason_for(
+        const standard_module_store& std_modules,
+        std::string_view source_path,
+        std::invocable auto&& object_profile_of) const
+    {
+        const auto module_of = [&](output::rebuild_kind kind) {
+            return output::rebuild_info{
+                .kind = kind,
+                .module = std::string{std_module_name},
+                .bmi_path = std_modules.bmi_path()};
+        };
+
+        if(not fs::exists(std_modules.bmi_path()))
+            return module_of(output::rebuild_kind::own_bmi_missing);
+        if(not std_modules.profile_matches(
+               std::forward<decltype(object_profile_of)>(object_profile_of)()))
+            return module_of(output::rebuild_kind::profile_change);
+        if(fs::last_write_time(std_modules.bmi_path()) < fs::last_write_time(source_path))
+            return module_of(output::rebuild_kind::own_bmi_stale);
+        if(not fs::exists(std_modules.object_path()))
+            return module_of(output::rebuild_kind::object_missing);
+        if(fs::last_write_time(std_modules.object_path())
+           < fs::last_write_time(std_modules.bmi_path()))
+            return module_of(output::rebuild_kind::object_stale);
+        return std::nullopt;
+    }
+
+    // Reads the loaded link snapshot only — call before parallel remember(), or single-threaded.
+    std::optional<output::rebuild_info> rebuild_reason_for(
+        const link_store& links,
+        std::string_view executable_path,
+        const std::string& signature) const
+    {
+        if(not fs::exists(executable_path))
+            return output::rebuild_info{.kind = output::rebuild_kind::missing_executable};
+
+        const auto previous = links.remembered(executable_path);
+        if(not previous)
+            return output::rebuild_info{.kind = output::rebuild_kind::not_in_cache};
+        if(*previous == signature)
+            return std::nullopt;
+
+        const auto flag_marker = "|flags="sv;
+        const auto previous_flags = previous->find(flag_marker);
+        const auto current_flags = signature.find(flag_marker);
+        if(previous_flags != std::string::npos and current_flags != std::string::npos)
+        {
+            const auto previous_objects = previous->substr(0, previous_flags);
+            const auto current_objects = signature.substr(0, current_flags);
+            if(previous_objects != current_objects)
+                return output::rebuild_info{.kind = output::rebuild_kind::object_changed};
+            if(previous->substr(previous_flags) != signature.substr(current_flags))
+                return output::rebuild_info{.kind = output::rebuild_kind::link_flags_changed};
+        }
+
+        return output::rebuild_info{.kind = output::rebuild_kind::signature_changed};
+    }
 
     std::optional<output::rebuild_info> rebuild_reason_for(
         const source::translation_unit& tu,
@@ -3619,8 +3631,9 @@ private:
         const auto display = fs::path{state.std_module_source}.filename().string();
         const auto unit = std_compile_unit(bmi, object, display);
         auto std_store = make_standard_module_store();
-        const auto reason = std_store.rebuild_reason_for(
-            state.std_module_source, [&]() { return object_cache_profile(); });
+        const auto freshness = cache::analyzer{source_dir, artifact_paths.bmi.string()};
+        const auto reason = freshness.rebuild_reason_for(
+            std_store, state.std_module_source, [&]() { return object_cache_profile(); });
 
         if(not reason)
         {
@@ -3848,7 +3861,8 @@ private:
         links.load();
 
         // Snapshot relink decisions before workers mutate the store. Interleaving
-        // needs_relinking (unlocked reads) with parallel remember() writes is a data race.
+        // analyzer reads of the loaded snapshot with parallel remember() writes is a data race.
+        const auto freshness = cache::analyzer{source_dir, artifact_paths.bmi.string()};
         struct link_decision {
             const source::translation_unit* tu = nullptr;
             string_list input_paths{};
@@ -3865,7 +3879,8 @@ private:
                   auto input_paths = executable_link_inputs(tu, shared_objects);
                   auto import_flags = collect_module_ldflags(tu.imports);
                   auto signature = links.link_signature(input_paths, import_flags);
-                  auto reason = links.needs_relinking(tu.executable_path, signature);
+                  auto reason = freshness.rebuild_reason_for(
+                      links, tu.executable_path, signature);
                   return link_decision{
                       .tu = &tu,
                       .input_paths = std::move(input_paths),
@@ -3929,7 +3944,9 @@ private:
         const auto input_paths = test_runner_link_inputs(runner);
         const auto import_flags = test_runner_link_flags(runner);
         const auto signature = links.link_signature(input_paths, import_flags);
-        const auto reason = links.needs_relinking(runner.executable_path, signature);
+        const auto freshness = cache::analyzer{source_dir, artifact_paths.bmi.string()};
+        const auto reason = freshness.rebuild_reason_for(
+            links, runner.executable_path, signature);
         if(not reason)
         {
             const auto hit = output::link_scope{runner.executable_path, signature};

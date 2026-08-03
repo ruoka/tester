@@ -374,10 +374,10 @@ Example `profile_diff` fragment (on `profile_changed` only):
 | `cb::toolchain::artifact_conventions` / `clang_driver` | Target artifact extensions plus LLVM discovery/identity, Clang/libc++ flags, compile-step callbacks and compile/link argv construction |
 | `cb::build_tree::paths` | Build-tree directories, source-to-artifact naming, and depfile/diagnostic sidecars |
 | `cb::cache::storage_file` | Composed cache-file path, first-line read, atomic replacement and invalidation operations |
-| `cb::cache::profile` / `analyzer` | Profile serialization/key/diff and recursive object/BMI/header freshness analysis |
+| `cb::cache::profile` / `analyzer` | Profile serialization/key/diff; rebuild policy for project TUs, `std`, and links |
 | `cb::cache::object_store` | Object-cache path, entry snapshot, profile mismatch, persistence, status and invalidation |
-| `cb::cache::link_store` | Executable signatures, relink decisions, parallel-safe updates, persistence, status and invalidation |
-| `cb::cache::standard_module_store` | Local `std` profile/rebuild decision and shared-machine-cache hydrate/publish storage |
+| `cb::cache::link_store` | Executable signatures, remembered stamps, parallel-safe updates, persistence, status and invalidation |
+| `cb::cache::standard_module_store` | Local `std` profile persistence and shared-machine-cache hydrate/publish storage |
 | `cb::cache::compiler_stamp` | Compiler-version stamp path, read, status and invalidation |
 | `cb::process::runner` / `shell_quote` | Sole child-process boundary; shared shell quoting, argv joining, capture/status decoding and reported step execution |
 | `cb::execution::run_workers` | Shared thread-group creation and join lifecycle; callers retain scheduling and failure policy |
