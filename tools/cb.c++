@@ -41,6 +41,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <random>
+#include <scope>
 #include <type_traits>
 #include "cb-jsonl_observer.h++"
 #include "cb-console_observer.h++"
@@ -188,6 +189,11 @@ void write_atomic_file(const std::string& path,
                        const std::invocable<std::ostream&> auto& write_contents)
 {
     const auto tmp = path + ".tmp";
+    auto remove_tmp = std::scope_exit{[&tmp]
+    {
+        auto ignored = std::error_code{};
+        fs::remove(tmp, ignored);
+    }};
     auto file = std::ofstream{tmp};
     if(not file)
         throw std::runtime_error{"Cannot open "s + std::string{what} + " temporary file: " + tmp};
@@ -196,20 +202,13 @@ void write_atomic_file(const std::string& path,
 
     file.close();
     if(not file)
-    {
-        auto ignored = std::error_code{};
-        fs::remove(tmp, ignored);
         throw std::runtime_error{"Failed to write "s + std::string{what} + " temporary file: " + tmp};
-    }
 
     auto error = std::error_code{};
     fs::rename(tmp, path, error);
     if(error)
-    {
-        auto ignored = std::error_code{};
-        fs::remove(tmp, ignored);
         throw std::runtime_error{"Failed to replace "s + std::string{what} + ": " + error.message()};
-    }
+    remove_tmp.release();
 }
 
 // Whether there was a file to remove, which is what cache_invalidate reports per cache.
