@@ -228,26 +228,26 @@ struct observer final : cb::output::observer
     {
         const auto yes_no = [](bool value) { return std::string{value ? "yes" : "no"}; };
 
-        info("Object cache: " + std::string{caches.object_cache_path});
-        info("  exists: " + yes_no(caches.object_cache_exists));
-        if(caches.object_cache_exists)
+        info("Object cache: " + std::string{caches.object.path});
+        info("  exists: " + yes_no(caches.object.exists));
+        if(caches.object.exists)
         {
-            info("  profile_match: " + yes_no(caches.profile_match));
-            info("  object_entries: " + std::to_string(caches.object_entries));
-            info("  object_stale_entries: " + std::to_string(caches.object_stale_entries));
+            info("  profile_match: " + yes_no(caches.object.profile_match));
+            info("  object_entries: " + std::to_string(caches.object.entries));
+            info("  object_stale_entries: " + std::to_string(caches.object.stale_entries));
         }
 
-        info("Executable cache: " + std::string{caches.executable_cache_path});
-        info("  exists: " + yes_no(caches.executable_cache_exists));
-        info("  executable_entries: " + std::to_string(caches.executable_entries));
+        info("Executable cache: " + std::string{caches.executable.path});
+        info("  exists: " + yes_no(caches.executable.exists));
+        info("  executable_entries: " + std::to_string(caches.executable.entries));
 
-        info("Std module profile: " + std::string{caches.std_module_profile_path});
-        info("  exists: " + yes_no(caches.std_module_profile_exists));
-        if(caches.std_module_profile_exists)
-            info("  profile_match: " + yes_no(caches.std_module_profile_match));
+        info("Std module profile: " + std::string{caches.std_module_profile.path});
+        info("  exists: " + yes_no(caches.std_module_profile.exists));
+        if(caches.std_module_profile.exists)
+            info("  profile_match: " + yes_no(caches.std_module_profile.profile_match));
 
-        info("Compiler stamp: " + std::string{caches.compiler_stamp_path});
-        info("  exists: " + yes_no(caches.compiler_stamp_exists));
+        info("Compiler stamp: " + std::string{caches.compiler_stamp.path});
+        info("  exists: " + yes_no(caches.compiler_stamp.exists));
     }
 
     void cache_invalidate_end(const cache_removals& removed) override
@@ -255,8 +255,8 @@ struct observer final : cb::output::observer
         const auto state = [](bool value) { return std::string{value ? "removed" : "absent"}; };
 
         info("Invalidated compile/link cache indexes:");
-        info("  object_cache: " + state(removed.object_cache));
-        info("  executable_cache: " + state(removed.executable_cache));
+        info("  object_cache: " + state(removed.object));
+        info("  executable_cache: " + state(removed.executable));
         info("  compiler_stamp: " + state(removed.compiler_stamp));
         info("  std_module_profile: " + state(removed.std_module_profile));
     }

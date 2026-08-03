@@ -372,19 +372,19 @@ struct observer final : cb::output::observer
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("cache_status") << [&](std::ostream& os){
-            os << ",\"object_cache_path\":\"" << escape(caches.object_cache_path) << "\"";
-            os << ",\"object_cache_exists\":" << (caches.object_cache_exists ? "true" : "false");
-            os << ",\"profile_match\":" << (caches.profile_match ? "true" : "false");
-            os << ",\"object_entries\":" << caches.object_entries;
-            os << ",\"object_stale_entries\":" << caches.object_stale_entries;
-            os << ",\"executable_cache_path\":\"" << escape(caches.executable_cache_path) << "\"";
-            os << ",\"executable_cache_exists\":" << (caches.executable_cache_exists ? "true" : "false");
-            os << ",\"executable_entries\":" << caches.executable_entries;
-            os << ",\"std_module_profile_path\":\"" << escape(caches.std_module_profile_path) << "\"";
-            os << ",\"std_module_profile_exists\":" << (caches.std_module_profile_exists ? "true" : "false");
-            os << ",\"std_module_profile_match\":" << (caches.std_module_profile_match ? "true" : "false");
-            os << ",\"compiler_stamp_path\":\"" << escape(caches.compiler_stamp_path) << "\"";
-            os << ",\"compiler_stamp_exists\":" << (caches.compiler_stamp_exists ? "true" : "false");
+            os << ",\"object_cache_path\":\"" << escape(caches.object.path) << "\"";
+            os << ",\"object_cache_exists\":" << (caches.object.exists ? "true" : "false");
+            os << ",\"profile_match\":" << (caches.object.profile_match ? "true" : "false");
+            os << ",\"object_entries\":" << caches.object.entries;
+            os << ",\"object_stale_entries\":" << caches.object.stale_entries;
+            os << ",\"executable_cache_path\":\"" << escape(caches.executable.path) << "\"";
+            os << ",\"executable_cache_exists\":" << (caches.executable.exists ? "true" : "false");
+            os << ",\"executable_entries\":" << caches.executable.entries;
+            os << ",\"std_module_profile_path\":\"" << escape(caches.std_module_profile.path) << "\"";
+            os << ",\"std_module_profile_exists\":" << (caches.std_module_profile.exists ? "true" : "false");
+            os << ",\"std_module_profile_match\":" << (caches.std_module_profile.profile_match ? "true" : "false");
+            os << ",\"compiler_stamp_path\":\"" << escape(caches.compiler_stamp.path) << "\"";
+            os << ",\"compiler_stamp_exists\":" << (caches.compiler_stamp.exists ? "true" : "false");
             os << ",\"current_profile\":\"" << escape(caches.current_profile) << "\"";
         };
     }
@@ -393,8 +393,8 @@ struct observer final : cb::output::observer
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
         m.json << m.jsonl("cache_invalidate_end") << [&](std::ostream& os){
-            os << ",\"object_cache_removed\":" << (removed.object_cache ? "true" : "false");
-            os << ",\"executable_cache_removed\":" << (removed.executable_cache ? "true" : "false");
+            os << ",\"object_cache_removed\":" << (removed.object ? "true" : "false");
+            os << ",\"executable_cache_removed\":" << (removed.executable ? "true" : "false");
             os << ",\"compiler_stamp_removed\":" << (removed.compiler_stamp ? "true" : "false");
             os << ",\"std_module_profile_removed\":" << (removed.std_module_profile ? "true" : "false");
         };

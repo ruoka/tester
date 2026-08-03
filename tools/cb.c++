@@ -1138,9 +1138,10 @@ inline std::string shell_quote(std::string_view arg)
 
 } // namespace process
 
-namespace build_tree {
+// Per-unit object / BMI / executable paths. Lives below toolchain so argv builders can take it
+// without opening build_tree (paths) early.
+namespace artifacts {
 
-// Object / BMI / executable paths for one scanned unit. Owned by build_system, not the TU.
 struct unit_artifacts
 {
     std::string object{};
@@ -1150,7 +1151,7 @@ struct unit_artifacts
 
 using artifact_index = std::flat_map<std::string_view, unit_artifacts, std::less<>>;
 
-} // namespace build_tree
+} // namespace artifacts
 
 namespace toolchain {
 
@@ -1316,7 +1317,7 @@ public:
 
     // One or two clang invocations; argv is moved into `step` (no plan vector).
     void compile(const source::translation_unit& tu,
-                 const build_tree::unit_artifacts& artifacts,
+                 const artifacts::unit_artifacts& artifacts,
                  const module_interface_map& interfaces,
                  bool object_only,
                  std::invocable<string_list, compile_step> auto&& step) const
@@ -1367,7 +1368,7 @@ public:
     }
 
     string_list compile_database_argv(const source::translation_unit& tu,
-                                      const build_tree::unit_artifacts& artifacts,
+                                      const artifacts::unit_artifacts& artifacts,
                                       const module_interface_map& interfaces) const
     {
         const auto imports = module_file_flags(tu, interfaces);
@@ -1612,7 +1613,7 @@ private:
     }
 
     string_list compile_bmi_argv(const source::translation_unit& tu,
-                                 const build_tree::unit_artifacts& artifacts,
+                                 const artifacts::unit_artifacts& artifacts,
                                  string_span imports) const
     {
         auto argv = base_compile_argv();
@@ -1637,7 +1638,7 @@ private:
     }
 
     string_list compile_module_object_argv(const source::translation_unit& tu,
-                                           const build_tree::unit_artifacts& artifacts,
+                                           const artifacts::unit_artifacts& artifacts,
                                            string_span imports) const
     {
         auto argv = base_compile_argv();
@@ -1650,7 +1651,7 @@ private:
     }
 
     string_list compile_source_object_argv(const source::translation_unit& tu,
-                                           const build_tree::unit_artifacts& artifacts,
+                                           const artifacts::unit_artifacts& artifacts,
                                            string_span imports) const
     {
         auto argv = base_compile_argv();
@@ -1754,6 +1755,35 @@ private:
     string_list extra_compile_flags_{};
     string_list extra_link_flags_{};
 };
+
+// Portable compile/link surface. clang_driver is the only model today; build_system depends on
+// this shape rather than Clang-specific members.
+template<typename T>
+concept driver = requires(
+    const T& d,
+    const source::translation_unit& tu,
+    const artifacts::unit_artifacts& art,
+    const module_interface_map& interfaces,
+    std::string_view executable,
+    std::string_view std_bmi,
+    std::string_view std_object,
+    string_span inputs,
+    string_span import_flags,
+    bool object_only)
+{
+    { T::artifacts() } -> std::same_as<artifact_conventions>;
+    { d.module_phases_name() } -> std::convertible_to<std::string_view>;
+    { d.static_linking() } -> std::convertible_to<bool>;
+    { d.state() };
+    { d.warnings() } -> std::same_as<string_list>;
+    { d.version_argv() } -> std::same_as<string_list>;
+    { d.compile_database_argv(tu, art, interfaces) } -> std::same_as<string_list>;
+    { d.link_argv(executable, inputs, import_flags) } -> std::same_as<string_list>;
+    d.compile(tu, art, interfaces, object_only, [](string_list, compile_step) {});
+    d.compile_standard_module(std_bmi, std_object, object_only, [](string_list, compile_step) {});
+};
+
+static_assert(driver<clang_driver>);
 
 } // namespace toolchain
 
@@ -1867,7 +1897,7 @@ namespace output {
 // rest is build state, and cb-observer.h++ stays independent of the scanner. The bmi path is the
 // one derived field, and deriving it here is why compile_start and compile_end cannot disagree.
 compile_unit compile_unit_of(const source::translation_unit& tu,
-                             const build_tree::unit_artifacts& artifacts)
+                             const artifacts::unit_artifacts& artifacts)
 {
     return {.source = tu.full_path,
             .object = artifacts.object,
@@ -2305,9 +2335,6 @@ public:
 // Executable signatures and their common compile/link/module flag tail.
 class link_store
 {
-private:
-    using map = std::flat_map<std::string, std::string, std::less<>>;
-
 public:
     struct flag_ingredients
     {
@@ -2400,6 +2427,18 @@ public:
         return result;
     }
 
+    // What identifies a link: every input's timestamp, plus the flag sets that would change
+    // the result even when no input moved. Callers differ only in the input list.
+    std::string signature_for(string_span input_paths, string_span import_flags) const
+    {
+        return link_signature{
+            .objects = dependency_signatures_joined(input_paths),
+            .flags = flag_tail_,
+            .imports = cb::flags::codec::serialize(import_flags),
+            .format = std::string{link_signature::format_v2},
+        }.serialize();
+    }
+
 private:
     static std::string dependency_signature(const std::string& input_path)
     {
@@ -2422,20 +2461,7 @@ private:
             | std::ranges::to<std::string>();
     }
 
-public:
-    // What identifies a link: every input's timestamp, plus the flag sets that would change
-    // the result even when no input moved. Callers differ only in the input list.
-    std::string signature_for(string_span input_paths, string_span import_flags) const
-    {
-        return link_signature{
-            .objects = dependency_signatures_joined(input_paths),
-            .flags = flag_tail_,
-            .imports = cb::flags::codec::serialize(import_flags),
-            .format = std::string{link_signature::format_v2},
-        }.serialize();
-    }
-
-private:
+    using map = std::flat_map<std::string, std::string, std::less<>>;
     inline static constexpr auto filename = "executable-cache.txt"sv;
 
     storage_file file_;
@@ -2444,18 +2470,9 @@ private:
     std::mutex mutex_{};
 };
 
-// Local std-module profile and machine-wide artifact sharing.
+// Local std-module profile; machine-wide sharing is nested::shared_store.
 class standard_module_store
 {
-private:
-    struct shared_slot
-    {
-        fs::path directory;
-        fs::path bmi;
-        fs::path object;
-        storage_file profile;
-    };
-
 public:
     struct disk_status
     {
@@ -2483,7 +2500,7 @@ public:
     const std::string& object_path() const { return object_path_; }
 
     // Whether the std BMI was precompiled by the profile a project unit is compiled with.
-    // The BMI's own presence is a separate question, asked by analyzer::rebuild_reason_for.
+    // The BMI's own presence is a separate question (rebuild_reason_for_standard_module).
     bool profile_matches(std::string_view object_profile) const
     {
         const auto stored = profile_file_.read_first_line();
@@ -2505,199 +2522,227 @@ public:
                 .profile_match = profile_matches(object_profile)};
     }
 
-private:
-    // An explicitly empty CB_STD_CACHE_DIR disables sharing, which keeps benchmarks and
-    // isolated cache-contract tests able to request a truly cold std build.
-    static std::optional<fs::path> shared_root()
-    {
-        if(const auto* configured = std::getenv("CB_STD_CACHE_DIR"))
-        {
-            if(*configured == '\0')
-                return std::nullopt;
-            return fs::path{configured};
-        }
-        if(const auto* xdg = std::getenv("XDG_CACHE_HOME"); xdg and *xdg)
-            return fs::path{xdg} / "cb" / "std-module";
-        if(const auto* home = std::getenv("HOME"); home and *home)
-            return fs::path{home} / ".cache" / "cb" / "std-module";
-        return std::nullopt;
-    }
-
-    shared_slot shared_slot_for(const fs::path& root,
-                                std::string_view shared_profile) const
-    {
-        const auto directory = root / profile{std::string{shared_profile}}.key();
-        return shared_slot{
-            .directory = directory,
-            .bmi = directory / fs::path{bmi_path_}.filename(),
-            .object = directory / fs::path{object_path_}.filename(),
-            .profile = storage_file{(directory / shared_profile_filename).string()}};
-    }
-
-    bool materialize(const shared_slot& slot,
-                     std::string_view shared_profile) const
-    {
-        if(slot.profile.read_first_line() != shared_profile)
-            return false;
-        auto error = std::error_code{};
-        if(not fs::is_regular_file(slot.bmi, error) or error)
-            return false;
-        error.clear();
-        if(not fs::is_regular_file(slot.object, error) or error)
-            return false;
-
-        fs::create_directories(fs::path{bmi_path_}.parent_path());
-        fs::create_directories(fs::path{object_path_}.parent_path());
-        const auto nonce = shared_nonce();
-        const auto temporary_bmi = fs::path{bmi_path_ + ".shared-" + nonce};
-        const auto temporary_object = fs::path{object_path_ + ".shared-" + nonce};
-        if(not link_or_copy_file(slot.bmi, temporary_bmi)
-           or not link_or_copy_file(slot.object, temporary_object))
-        {
-            fs::remove(temporary_bmi, error);
-            fs::remove(temporary_object, error);
-            return false;
-        }
-
-        fs::remove(bmi_path_, error);
-        error.clear();
-        fs::rename(temporary_bmi, bmi_path_, error);
-        if(error)
-        {
-            fs::remove(temporary_bmi, error);
-            fs::remove(temporary_object, error);
-            return false;
-        }
-        fs::remove(object_path_, error);
-        error.clear();
-        fs::rename(temporary_object, object_path_, error);
-        if(error)
-        {
-            fs::remove(bmi_path_, error);
-            fs::remove(temporary_object, error);
-            return false;
-        }
-        return true;
-    }
-
-public:
     transfer_result hydrate_for(const output::rebuild_info& reason,
                                 std::invocable auto&& shared_profile_of,
                                 std::invocable auto&& object_profile_of) const
     {
-        if(reason.kind != output::rebuild_kind::own_bmi_missing)
-            return {};
-        const auto root = shared_root();
-        if(not root)
-            return {};
-        const auto shared_profile = std::forward<decltype(shared_profile_of)>(shared_profile_of)();
-        try
-        {
-            const auto slot = shared_slot_for(*root, shared_profile);
-            if(not materialize(slot, shared_profile))
-                return {};
-            save_profile(std::forward<decltype(object_profile_of)>(object_profile_of)());
-            return {.ok = true};
-        }
-        catch(const std::exception& error)
-        {
-            return {.warning = "Shared std module cache read failed: "s + error.what()};
-        }
+        return shared_store{*this}.hydrate_for(
+            reason,
+            std::forward<decltype(shared_profile_of)>(shared_profile_of),
+            std::forward<decltype(object_profile_of)>(object_profile_of));
     }
 
     transfer_result publish(std::invocable auto&& shared_profile_of) const
     {
-        const auto root = shared_root();
-        if(not root)
-            return {};
-        const auto shared_profile = std::forward<decltype(shared_profile_of)>(shared_profile_of)();
-        try
-        {
-            const auto slot = shared_slot_for(*root, shared_profile);
-            if(slot.profile.read_first_line() == shared_profile
-               and fs::is_regular_file(slot.bmi)
-               and fs::is_regular_file(slot.object))
-                return {.ok = true};
-
-            fs::create_directories(slot.directory.parent_path());
-            auto staging = slot.directory;
-            staging += ".tmp-" + shared_nonce();
-            auto error = std::error_code{};
-            if(not fs::create_directories(staging, error) or error)
-                return {};
-
-            const auto staged_bmi = staging / slot.bmi.filename();
-            const auto staged_object = staging / slot.object.filename();
-            const auto staged_profile = staging / shared_profile_filename;
-            if(not link_or_copy_file(bmi_path_, staged_bmi)
-               or not link_or_copy_file(object_path_, staged_object))
-            {
-                fs::remove_all(staging, error);
-                return {};
-            }
-            {
-                auto profile_file = std::ofstream{staged_profile, std::ios::trunc};
-                if(not profile_file)
-                {
-                    fs::remove_all(staging, error);
-                    return {};
-                }
-                profile_file << shared_profile << '\n';
-                if(not profile_file)
-                {
-                    profile_file.close();
-                    fs::remove_all(staging, error);
-                    return {};
-                }
-            }
-
-            // Publish the complete directory at once. If another CB won the same key, retain
-            // its equivalent slot and discard this staging tree.
-            fs::rename(staging, slot.directory, error);
-            if(error)
-            {
-                fs::remove_all(staging, error);
-                return {};
-            }
-            return {.ok = true};
-        }
-        catch(const std::exception& error)
-        {
-            return {.warning = "Shared std module cache write failed: "s + error.what()};
-        }
+        return shared_store{*this}.publish(
+            std::forward<decltype(shared_profile_of)>(shared_profile_of));
     }
 
 private:
-    inline static constexpr auto profile_filename = "std-module-profile.txt"sv;
-    inline static constexpr auto shared_profile_filename = "profile.txt"sv;
-
-    static bool link_or_copy_file(const fs::path& source, const fs::path& destination)
+    // Content-addressed machine-wide BMI/object cache keyed by shared profile.
+    class shared_store
     {
-        auto error = std::error_code{};
-        fs::create_hard_link(source, destination, error);
-        if(not error)
+    public:
+        explicit shared_store(const standard_module_store& local) : local_{local} {}
+
+        transfer_result hydrate_for(const output::rebuild_info& reason,
+                                    std::invocable auto&& shared_profile_of,
+                                    std::invocable auto&& object_profile_of) const
+        {
+            if(reason.kind != output::rebuild_kind::own_bmi_missing)
+                return {};
+            const auto root = shared_root();
+            if(not root)
+                return {};
+            const auto shared_profile = std::forward<decltype(shared_profile_of)>(shared_profile_of)();
+            try
+            {
+                const auto slot = slot_for(*root, shared_profile);
+                if(not materialize(slot, shared_profile))
+                    return {};
+                local_.save_profile(std::forward<decltype(object_profile_of)>(object_profile_of)());
+                return {.ok = true};
+            }
+            catch(const std::exception& error)
+            {
+                return {.warning = "Shared std module cache read failed: "s + error.what()};
+            }
+        }
+
+        transfer_result publish(std::invocable auto&& shared_profile_of) const
+        {
+            const auto root = shared_root();
+            if(not root)
+                return {};
+            const auto shared_profile = std::forward<decltype(shared_profile_of)>(shared_profile_of)();
+            try
+            {
+                const auto slot = slot_for(*root, shared_profile);
+                if(slot.profile.read_first_line() == shared_profile and fs::is_regular_file(slot.bmi) and fs::is_regular_file(slot.object))
+                    return {.ok = true};
+
+                fs::create_directories(slot.directory.parent_path());
+                auto staging = slot.directory;
+                staging += ".tmp-" + nonce();
+                auto error = std::error_code{};
+                if(not fs::create_directories(staging, error) or error)
+                    return {};
+
+                const auto staged_bmi = staging / slot.bmi.filename();
+                const auto staged_object = staging / slot.object.filename();
+                const auto staged_profile = staging / profile_filename;
+                if(not link_or_copy_file(local_.bmi_path_, staged_bmi) or not link_or_copy_file(local_.object_path_, staged_object))
+                {
+                    fs::remove_all(staging, error);
+                    return {};
+                }
+                {
+                    auto profile_file = std::ofstream{staged_profile, std::ios::trunc};
+                    if(not profile_file)
+                    {
+                        fs::remove_all(staging, error);
+                        return {};
+                    }
+                    profile_file << shared_profile << '\n';
+                    if(not profile_file)
+                    {
+                        profile_file.close();
+                        fs::remove_all(staging, error);
+                        return {};
+                    }
+                }
+
+                // Publish the complete directory at once. If another CB won the same key, retain
+                // its equivalent slot and discard this staging tree.
+                fs::rename(staging, slot.directory, error);
+                if(error)
+                {
+                    fs::remove_all(staging, error);
+                    return {};
+                }
+                return {.ok = true};
+            }
+            catch(const std::exception& error)
+            {
+                return {.warning = "Shared std module cache write failed: "s + error.what()};
+            }
+        }
+
+    private:
+        struct slot
+        {
+            fs::path directory;
+            fs::path bmi;
+            fs::path object;
+            storage_file profile;
+        };
+
+        inline static constexpr auto profile_filename = "profile.txt"sv;
+
+        // An explicitly empty CB_STD_CACHE_DIR disables sharing, which keeps benchmarks and
+        // isolated cache-contract tests able to request a truly cold std build.
+        static std::optional<fs::path> shared_root()
+        {
+            if(const auto* configured = std::getenv("CB_STD_CACHE_DIR"))
+            {
+                if(*configured == '\0')
+                    return std::nullopt;
+                return fs::path{configured};
+            }
+            if(const auto* xdg = std::getenv("XDG_CACHE_HOME"); xdg and *xdg)
+                return fs::path{xdg} / "cb" / "std-module";
+            if(const auto* home = std::getenv("HOME"); home and *home)
+                return fs::path{home} / ".cache" / "cb" / "std-module";
+            return std::nullopt;
+        }
+
+        slot slot_for(const fs::path& root, std::string_view shared_profile) const
+        {
+            const auto directory = root / profile{std::string{shared_profile}}.key();
+            return slot{
+                .directory = directory,
+                .bmi = directory / fs::path{local_.bmi_path_}.filename(),
+                .object = directory / fs::path{local_.object_path_}.filename(),
+                .profile = storage_file{(directory / profile_filename).string()}};
+        }
+
+        bool materialize(const slot& slot, std::string_view shared_profile) const
+        {
+            if(slot.profile.read_first_line() != shared_profile)
+                return false;
+            auto error = std::error_code{};
+            if(not fs::is_regular_file(slot.bmi, error) or error)
+                return false;
+            error.clear();
+            if(not fs::is_regular_file(slot.object, error) or error)
+                return false;
+
+            fs::create_directories(fs::path{local_.bmi_path_}.parent_path());
+            fs::create_directories(fs::path{local_.object_path_}.parent_path());
+            const auto id = nonce();
+            const auto temporary_bmi = fs::path{local_.bmi_path_ + ".shared-" + id};
+            const auto temporary_object = fs::path{local_.object_path_ + ".shared-" + id};
+            if(not link_or_copy_file(slot.bmi, temporary_bmi) or not link_or_copy_file(slot.object, temporary_object))
+            {
+                fs::remove(temporary_bmi, error);
+                fs::remove(temporary_object, error);
+                return false;
+            }
+
+            fs::remove(local_.bmi_path_, error);
+            error.clear();
+            fs::rename(temporary_bmi, local_.bmi_path_, error);
+            if(error)
+            {
+                fs::remove(temporary_bmi, error);
+                fs::remove(temporary_object, error);
+                return false;
+            }
+            fs::remove(local_.object_path_, error);
+            error.clear();
+            fs::rename(temporary_object, local_.object_path_, error);
+            if(error)
+            {
+                fs::remove(local_.bmi_path_, error);
+                fs::remove(temporary_object, error);
+                return false;
+            }
             return true;
-        error.clear();
-        fs::copy_file(source, destination, fs::copy_options::overwrite_existing, error);
-        return not error;
-    }
+        }
 
-    static std::string shared_nonce()
-    {
-        auto value = static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
-        try
+        static bool link_or_copy_file(const fs::path& source, const fs::path& destination)
         {
-            auto entropy = std::random_device{};
-            value ^= static_cast<std::uint64_t>(entropy()) << 32;
-            value ^= static_cast<std::uint64_t>(entropy());
+            auto error = std::error_code{};
+            fs::create_hard_link(source, destination, error);
+            if(not error)
+                return true;
+            error.clear();
+            fs::copy_file(source, destination, fs::copy_options::overwrite_existing, error);
+            return not error;
         }
-        catch(...)
+
+        static std::string nonce()
         {
-            // The monotonic-clock value still makes a collision between practical publishers
-            // vanishingly unlikely; create_directories below refuses an existing staging path.
+            auto value = static_cast<std::uint64_t>(
+                std::chrono::steady_clock::now().time_since_epoch().count());
+            try
+            {
+                auto entropy = std::random_device{};
+                value ^= static_cast<std::uint64_t>(entropy()) << 32;
+                value ^= static_cast<std::uint64_t>(entropy());
+            }
+            catch(...)
+            {
+                // The monotonic-clock value still makes a collision between practical publishers
+                // vanishingly unlikely; create_directories below refuses an existing staging path.
+            }
+            return std::to_string(value);
         }
-        return std::to_string(value);
-    }
+
+        const standard_module_store& local_;
+    };
+
+    inline static constexpr auto profile_filename = "std-module-profile.txt"sv;
 
     storage_file profile_file_;
     std::string bmi_path_;
@@ -2750,45 +2795,46 @@ std::optional<output::rebuild_info> rebuild_reason_for_standard_module(
     return std::nullopt;
 }
 
-// Project-TU freshness (memoized) and link stamp compare. Needs the artifact index.
+// Link stamp compare — reads the loaded snapshot only. Call before parallel remember(),
+// or single-threaded; no project artifact index or memo state.
+std::optional<output::rebuild_info> rebuild_reason_for_link(
+    const link_store& links,
+    std::string_view executable_path,
+    const std::string& signature)
+{
+    if(not fs::exists(executable_path))
+        return output::rebuild_info{.kind = output::rebuild_kind::missing_executable};
+
+    const auto previous = links.remembered(executable_path);
+    if(not previous)
+        return output::rebuild_info{.kind = output::rebuild_kind::not_in_cache};
+    if(*previous == signature)
+        return std::nullopt;
+
+    const auto previous_sig = link_signature::parse(*previous);
+    const auto current_sig = link_signature::parse(signature);
+    if(not previous_sig or not current_sig)
+        return output::rebuild_info{.kind = output::rebuild_kind::signature_changed};
+    if(auto kind = previous_sig->compare(*current_sig))
+        return output::rebuild_info{.kind = *kind};
+    return std::nullopt;
+}
+
+// Memoized project-TU freshness over the artifact index.
 class analyzer
 {
 public:
     analyzer(std::string source_root,
              std::string bmi_root,
-             const build_tree::artifact_index& unit_artifacts)
+             const artifacts::artifact_index& unit_artifacts)
         : source_root_{detail::canonical_path(source_root)},
           bmi_root_{detail::canonical_path(bmi_root)},
           unit_artifacts_{unit_artifacts}
     {}
 
-    const build_tree::unit_artifacts& artifacts_of(const source::translation_unit& tu) const
+    const artifacts::unit_artifacts& artifacts_of(const source::translation_unit& tu) const
     {
         return unit_artifacts_.at(tu.unit);
-    }
-
-    // Reads the loaded link snapshot only — call before parallel remember(), or single-threaded.
-    std::optional<output::rebuild_info> rebuild_reason_for(
-        const link_store& links,
-        std::string_view executable_path,
-        const std::string& signature) const
-    {
-        if(not fs::exists(executable_path))
-            return output::rebuild_info{.kind = output::rebuild_kind::missing_executable};
-
-        const auto previous = links.remembered(executable_path);
-        if(not previous)
-            return output::rebuild_info{.kind = output::rebuild_kind::not_in_cache};
-        if(*previous == signature)
-            return std::nullopt;
-
-        const auto previous_sig = link_signature::parse(*previous);
-        const auto current_sig = link_signature::parse(signature);
-        if(not previous_sig or not current_sig)
-            return output::rebuild_info{.kind = output::rebuild_kind::signature_changed};
-        if(auto kind = previous_sig->compare(*current_sig))
-            return output::rebuild_info{.kind = *kind};
-        return std::nullopt;
     }
 
     // Consumers ask about the same provider once per path that reaches it, so an unmemoized
@@ -2989,7 +3035,7 @@ private:
 
     static output::rebuild_info bmi_rebuild(output::rebuild_kind kind,
                                             const source::translation_unit& tu,
-                                            const build_tree::unit_artifacts& artifacts)
+                                            const artifacts::unit_artifacts& artifacts)
     {
         return {.kind = kind,
                 .module = tu.module,
@@ -3039,7 +3085,7 @@ private:
 
     std::optional<output::rebuild_info> stale_header(
         const source::translation_unit& tu,
-        const build_tree::unit_artifacts& artifacts,
+        const artifacts::unit_artifacts& artifacts,
         fs::file_time_type freshness_timestamp) const
     {
         const auto depfile = build_tree::paths::depfile(artifacts.object);
@@ -3093,7 +3139,7 @@ private:
 
     std::string source_root_;
     std::string bmi_root_;
-    const build_tree::artifact_index& unit_artifacts_;
+    const artifacts::artifact_index& unit_artifacts_;
     // Decisions and resolved paths are shared by the compile workers; the analyzer itself
     // stays logically const, so both caches lock rather than serialize the callers.
     mutable std::mutex decisions_mutex_{};
@@ -3614,11 +3660,11 @@ clang_driver clang_driver::make(
 struct scanned_project
 {
     source::translation_unit_list units{};
-    build_tree::artifact_index artifacts{};
+    artifacts::artifact_index artifacts{};
     source::unit_index by_unit{};
     toolchain::module_interface_map interfaces{};
 
-    const build_tree::unit_artifacts& artifacts_of(const source::translation_unit& tu) const
+    const artifacts::unit_artifacts& artifacts_of(const source::translation_unit& tu) const
     {
         return artifacts.at(tu.unit);
     }
@@ -3664,7 +3710,7 @@ private:
     const bool include_tests_for_build;
     int max_jobs = 0;
     process::runner process_runner;
-    toolchain::clang_driver driver;
+    toolchain::clang_driver driver; // models toolchain::driver
     std::string_view config_name() const
     {
         switch(config)
@@ -3868,7 +3914,7 @@ private:
 
         for(const auto& tu : project_.units)
         {
-            auto artifacts = build_tree::unit_artifacts{};
+            auto artifacts = artifacts::unit_artifacts{};
             const auto& source_label = tu.display_path;
             artifacts.object = artifact_paths.object(tu);
             claim(object_owners, artifacts.object, source_label, "object");
@@ -4120,7 +4166,7 @@ private:
         auto schedule = compile_schedule{project_.units};
         auto rebuilt = std::vector<unsigned char>(schedule.unit_count());
         auto failures = execution::failure_latch{};
-        auto& decisions = freshness();
+        auto& analyzer = freshness();
 
         execution::run_workers(
             execution::worker_count(job_limit(), schedule.unit_count()),
@@ -4131,11 +4177,11 @@ private:
                     try
                     {
                         const auto& tu = project_.units[*index];
-                        const auto reason = decisions.rebuild_reason_for(tu, objects, project_.by_unit);
+                        const auto reason = analyzer.rebuild_reason_for(tu, objects, project_.by_unit);
                         if(reason)
                         {
                             compile_one(tu, *reason, [&]() { schedule.publish(*index, failures); });
-                            decisions.artifacts_changed(tu);
+                            analyzer.artifacts_changed(tu);
                             rebuilt[*index] = 1;
                         }
                         else
@@ -4189,8 +4235,8 @@ private:
         links.load();
 
         // Snapshot relink decisions before workers mutate the store. Interleaving
-        // analyzer reads of the loaded snapshot with parallel remember() writes is a data race.
-        auto& oracle = freshness();
+        // rebuild_reason_for_link reads of the loaded snapshot with parallel remember() writes
+        // is a data race.
         struct link_decision {
             const source::translation_unit& tu;
             string_list input_paths{};
@@ -4199,15 +4245,13 @@ private:
             std::optional<output::rebuild_info> reason{};
         };
         auto decisions = project_.units
-            // Exact base name only — substring matches like contest_runner / aaa_test_runner
-            // are ordinary mains and must not be excluded from normal linking.
-            | std::views::filter([&](const source::translation_unit& tu) {
-                  return tu.has_main and tu.base_name != test_runner_name; })
+            | std::views::filter([](const source::translation_unit& tu) {
+                  return tu.has_main and not is_test_runner(tu); })
             | std::views::transform([&](const source::translation_unit& tu) {
                   auto input_paths = executable_link_inputs(tu, shared_objects);
                   auto import_flags = collect_module_ldflags(tu.imports);
                   auto signature = links.signature_for(input_paths, import_flags);
-                  auto reason = oracle.rebuild_reason_for(
+                  auto reason = cache::rebuild_reason_for_link(
                       links, project_.artifacts_of(tu).executable, signature);
                   return link_decision{
                       .tu = tu,
@@ -4243,20 +4287,28 @@ private:
 
     // Test support
 
-    // Require an exact base name: substring selection (aaa_test_runner, contest_runner) can link
-    // a different bin/<name> while run_tests always executes bin/test_runner, leaving a stale
-    // runner and silent CI passes. Never absent either — linking the test objects without a main
-    // dies at the linker, so a project with no runner source is told so here.
+    // Exact base name only — substring matches like contest_runner / aaa_test_runner are
+    // ordinary mains. Matching anything else can link bin/<other> while run_tests still
+    // executes bin/test_runner, leaving a stale runner and silent CI passes.
+    static bool is_test_runner(const source::translation_unit& tu)
+    {
+        return tu.has_main and tu.base_name == test_runner_name;
+    }
+
+    std::string test_runner_executable() const
+    {
+        return artifact_paths.executable(test_runner_name);
+    }
+
+    // Never absent — linking test objects without a main dies at the linker, so a project
+    // with no runner source is told so here.
     const source::translation_unit& test_runner_unit() const
     {
-        const auto is_runner = [](const source::translation_unit& tu) {
-            return tu.has_main and tu.base_name == test_runner_name;
-        };
-        if(std::ranges::count_if(project_.units, is_runner) > 1)
+        if(std::ranges::count_if(project_.units, is_test_runner) > 1)
             throw std::runtime_error{
                 "multiple test_runner mains found — keep a single source named test_runner"};
 
-        const auto found = std::ranges::find_if(project_.units, is_runner);
+        const auto found = std::ranges::find_if(project_.units, is_test_runner);
         if(found == project_.units.end())
             throw std::runtime_error{
                 "test_runner not found — make sure .test.c++ files or test_runner.c++ exist"};
@@ -4271,7 +4323,7 @@ private:
         const auto input_paths = test_runner_link_inputs(runner);
         const auto import_flags = test_runner_link_flags(runner);
         const auto signature = links.signature_for(input_paths, import_flags);
-        const auto reason = freshness().rebuild_reason_for(
+        const auto reason = cache::rebuild_reason_for_link(
             links, project_.artifacts_of(runner).executable, signature);
         if(not reason)
         {
@@ -4397,8 +4449,7 @@ public:
 
         for(const auto& tu : project_.units)
         {
-            const auto is_runner = tu.has_main and tu.base_name == test_runner_name;
-            if(not tu.is_test and not is_runner)
+            if(not tu.is_test and not is_test_runner(tu))
                 continue;
 
             dropped_sources.insert(tu.full_path);
@@ -4414,7 +4465,7 @@ public:
                 try_remove(art.bmi);
                 try_remove(build_tree::paths::compile_log(art.bmi));
             }
-            if(is_runner and not art.executable.empty())
+            if(is_test_runner(tu) and not art.executable.empty())
             {
                 try_remove(art.executable);
                 try_remove(build_tree::paths::link_log(art.executable));
@@ -4444,8 +4495,7 @@ public:
         if(links.exists())
         {
             links.load();
-            const auto runner_exe = artifact_paths.executable(test_runner_name);
-            if(links.erase(runner_exe))
+            if(links.erase(test_runner_executable()))
                 links.save();
         }
 
@@ -4473,19 +4523,18 @@ public:
         const auto stamp = cache::compiler_stamp_store{artifact_paths.cache.string()};
 
         notify(&observer::cache_status, output::cache_inventory{
-                .object_cache_path = objects.path(),
-                .object_cache_exists = object_status.exists,
-                .profile_match = object_status.profile_match,
-                .object_entries = object_status.entries,
-                .object_stale_entries = object_status.stale_entries,
-                .executable_cache_path = links.path(),
-                .executable_cache_exists = link_status.exists,
-                .executable_entries = link_status.entries,
-                .std_module_profile_path = std_modules.profile_path(),
-                .std_module_profile_exists = std_status.exists,
-                .std_module_profile_match = std_status.profile_match,
-                .compiler_stamp_path = stamp.path(),
-                .compiler_stamp_exists = stamp.exists(),
+                .object = {.path = objects.path(),
+                           .exists = object_status.exists,
+                           .profile_match = object_status.profile_match,
+                           .entries = object_status.entries,
+                           .stale_entries = object_status.stale_entries},
+                .executable = {.path = links.path(),
+                               .exists = link_status.exists,
+                               .entries = link_status.entries},
+                .std_module_profile = {.path = std_modules.profile_path(),
+                                       .exists = std_status.exists,
+                                       .profile_match = std_status.profile_match},
+                .compiler_stamp = {.path = stamp.path(), .exists = stamp.exists()},
                 .current_profile = current_profile});
     }
 
@@ -4496,8 +4545,8 @@ public:
         // Every file cache_status reports, so the two commands cannot disagree about what the
         // cache is. The std module profile is the one that makes CB rebuild the std BMI.
         const auto removed = output::cache_removals{
-            .object_cache = make_object_store().invalidate(),
-            .executable_cache = make_link_store().invalidate(),
+            .object = make_object_store().invalidate(),
+            .executable = make_link_store().invalidate(),
             .compiler_stamp = cache::compiler_stamp_store{artifact_paths.cache.string()}.invalidate(),
             .std_module_profile = make_standard_module_store().invalidate()};
 
@@ -4708,6 +4757,14 @@ public:
     {
         return do_clean or do_list or do_run_tests or do_build
             or do_cache_status or do_cache_invalidate;
+    }
+
+    // Cross-flag rules that parse cannot see from a single token. Empty ⇒ ok.
+    std::optional<std::string> validate() const
+    {
+        if(clean_tests_only and not do_clean)
+            return "--tests requires clean"s;
+        return std::nullopt;
     }
 
     std::vector<std::string> runner_arguments() const
@@ -5005,29 +5062,70 @@ public:
     }
 
 private:
+    enum class token_owner : unsigned char { cb, test_runner, both };
+
+    struct known_token
+    {
+        std::string_view text{};
+        bool prefix = false; // starts_with vs exact
+        token_owner owner = token_owner::cb;
+    };
+
+    // Single vocabulary for CB words, test_runner forwards, and shared flags. Parse still
+    // owns action semantics; these helpers only classify tokens for filter vs forward.
+    static constexpr known_token known_tokens[] = {
+        {"release", false, token_owner::cb},
+        {"debug", false, token_owner::cb},
+        {"ci", false, token_owner::cb},
+        {"clean", false, token_owner::cb},
+        {"build", false, token_owner::cb},
+        {"list", false, token_owner::cb},
+        {"test", false, token_owner::cb},
+        {"cache", false, token_owner::cb},
+        {"status", false, token_owner::cb},
+        {"invalidate", false, token_owner::cb},
+        {"static", false, token_owner::cb},
+        {"help", false, token_owner::cb},
+        {"-h", false, token_owner::cb},
+        {"--help", false, token_owner::both},
+        {"--include-examples", false, token_owner::cb},
+        {"--build-tests", false, token_owner::cb},
+        {"--tests", false, token_owner::cb},
+        {"-I", false, token_owner::cb},
+        {"--include", false, token_owner::cb},
+        {"--link-flags", false, token_owner::cb},
+        {"--compile-flags", false, token_owner::cb},
+        {"--extra-compile-flags", false, token_owner::cb},
+        {"--modules=", true, token_owner::cb},
+        {"--list", false, token_owner::test_runner},
+        {"--result", false, token_owner::test_runner},
+        {"--tags=", true, token_owner::test_runner},
+        {"--slowest=", true, token_owner::test_runner},
+        {"--jsonl-output-max-bytes=", true, token_owner::test_runner},
+        {"--junit=", true, token_owner::test_runner},
+        {"--xunit-xml=", true, token_owner::test_runner},
+        {"--jsonl", false, token_owner::both},
+        {"--jsonl=", true, token_owner::both},
+        {"--jobs=", true, token_owner::both},
+    };
+
+    static bool token_matches(std::string_view arg, const known_token& token)
+    {
+        return token.prefix ? arg.starts_with(token.text) : arg == token.text;
+    }
+
     static bool is_cb_token(std::string_view arg)
     {
-        return arg == "release" or arg == "debug" or arg == "ci" or arg == "clean"
-            or arg == "build" or arg == "list" or arg == "test" or arg == "cache"
-            or arg == "status" or arg == "invalidate" or arg == "static"
-            or arg == "help" or arg == "-h" or arg == "--help"
-            or arg == "--include-examples" or arg == "--build-tests" or arg == "--tests"
-            or arg == "-I" or arg == "--include" or arg == "--link-flags"
-            or arg == "--compile-flags" or arg == "--extra-compile-flags"
-            or arg == "--jsonl" or arg.starts_with("--jsonl=")
-            or arg.starts_with("--jobs=") or arg.starts_with("--modules=");
+        return std::ranges::any_of(known_tokens, [&](const known_token& token) {
+            return token.owner != token_owner::test_runner and token_matches(arg, token);
+        });
     }
 
     static bool is_test_runner_token(std::string_view arg)
     {
-        return arg == "--list" or arg == "--jsonl" or arg == "--result" or arg == "--help"
-            or arg.starts_with("--tags=")
-            or arg.starts_with("--slowest=")
-            or arg.starts_with("--jobs=")
-            or arg.starts_with("--jsonl=")
-            or arg.starts_with("--jsonl-output-max-bytes=")
-            or arg.starts_with("--junit=")
-            or arg.starts_with("--xunit-xml=");
+        return std::ranges::any_of(known_tokens, [&](const known_token& token) {
+            return token.owner != token_owner::cb and token_matches(arg, token);
+        });
     }
 
     std::span<char*> command_line_{};
@@ -5087,6 +5185,11 @@ int main(int argc, char* argv[])
             using cb::cli::parse_error_kind;
             return result.error().kind == parse_error_kind::invalid_argument ? 2 : 1;
         }
+        if(const auto problem = opts.validate())
+        {
+            notify(&observer::error, *problem);
+            return 2;
+        }
 
         auto build_system = cb::build_system{opts.build_settings()};
 
@@ -5101,11 +5204,6 @@ int main(int argc, char* argv[])
         {
             build_system.cache_invalidate();
             return 0;
-        }
-        if(opts.clean_tests_only and not opts.do_clean)
-        {
-            notify(&observer::error, "--tests requires clean");
-            return 2;
         }
         if(opts.do_clean)
         {
