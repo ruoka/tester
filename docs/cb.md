@@ -371,7 +371,7 @@ Example `profile_diff` fragment (on `profile_changed` only):
 | `cb::output::{build,compile,link,test}_scope` | RAII pairing for lifecycle events, timing and step diagnostics |
 | `cb::source::translation_unit` / `scanner` | Source identity, collection, exclusion, lexical cleaning, dependency edges and topological order |
 | `cb::flags::codec` | Symmetric whitespace-normalized conversion between flag text and `string_list` |
-| `cb::toolchain` | Module compilation mode, linkage policy and per-module linker-flag types |
+| `cb::toolchain::clang_driver` | LLVM discovery/identity, Clang/libc++ flags, compile plans and compile/link argv construction |
 | `cb::cache::storage_file` | Composed cache-file path, first-line read, atomic replacement and invalidation operations |
 | `cb::cache::profile` / `analyzer` | Profile serialization/key/diff and recursive object/BMI/header freshness analysis |
 | `cb::cache::object_store` | Object-cache path, entry snapshot, profile mismatch, persistence, status and invalidation |
@@ -382,10 +382,10 @@ Example `profile_diff` fragment (on `profile_changed` only):
 | `cb::execution::run_workers` | Shared thread-group creation and join lifecycle; callers retain scheduling and failure policy |
 | `cb::execution::worker_pool` | Bounded fixed-range job claiming with join-before-rethrow failure handling |
 | `cb::cli::options` / `parser` | Strict argv parsing, test-runner forwarding, and projection into semantic build settings |
-| `cb::build_system` | Settings-driven toolchain orchestration, including include-flag construction, module-map flags and toolchain file signatures |
+| `cb::build_system` | Settings-driven graph, artifact, cache, scheduling, execution, reporting and action orchestration |
 | `cb::detail` | Shared filesystem/path primitives: directory joining, component-aware path predicates, weak canonicalization with normalized absolute fallback, atomic replacement and remove-if-present |
 
-`build_system` consumes one `build_system::settings` value, derives its debug/test defaults, turns semantic include paths into compiler flags, and constructs toolchain commands. `cli::options::build_settings()` is the composition-layer adapter; action, output, and test-runner-only CLI state never enters the build engine. Cache maps and decisions stay in `cb::cache`, cache-file mechanics stay in composed `storage_file` values, flag conversion stays in `cb::flags`, process mechanics stay in `cb::process`, generic independent-job concurrency stays in `cb::execution`, and event pairing stays in `cb::output`. `main` registers built-in observers by name and selects one from the parsed `output_name`. Compile, link, command, cache, list, and lifecycle events all cross the same observer boundary; adding a formatter does not add format branches to `build_system`. Observers retain channel-specific `format_*` and `write_*` helpers, while shared profile-field iteration keeps diff computation and every format aligned when fields are added.
+`build_system` consumes one `build_system::settings` value and derives its orchestration defaults. `cli::options::build_settings()` is the composition-layer adapter; action, output, and test-runner-only CLI state never enters the build engine. The concrete `clang_driver` receives compiler-facing settings and owns LLVM discovery, toolchain identity, include/default/module/link flags and command construction. It returns semantic compile plans; `build_system` executes those steps, publishes provider readiness, and owns source-graph, artifact, cache and reporting policy. There is deliberately no abstract driver or virtual interface before a second compiler exists. Cache maps and decisions stay in `cb::cache`, cache-file mechanics stay in composed `storage_file` values, flag text conversion stays in `cb::flags`, process mechanics stay in `cb::process`, generic independent-job concurrency stays in `cb::execution`, and event pairing stays in `cb::output`. `main` registers built-in observers by name and selects one from the parsed `output_name`.
 
 ### Ranges idioms (`cb.c++`)
 
