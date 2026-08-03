@@ -270,9 +270,7 @@ private:
 
 namespace toolchain {
 
-// Non-owning because every convention is a program-lifetime literal selected by the concrete
-// driver. Object/executable spellings follow the driver's target convention; BMI spelling is
-// compiler-specific (`.pcm` for Clang, rather than a generic C++ module format).
+// Views refer to driver-selected, program-lifetime literals; BMI suffixes are compiler-specific.
 struct artifact_conventions
 {
     std::string_view object_extension;
@@ -498,8 +496,6 @@ translation_unit::translation_unit(const fs::path& relative,
       is_modular(kind_value == unit_kind::interface_unit or kind_value == unit_kind::partition_unit),
       last_modified(fs::last_write_time(full_path)) {}
 
-// Owns the complete source-discovery pipeline. Build-system concerns such as object, PCM and
-// executable placement remain outside; the scanner returns ordered source metadata only.
 class scanner
 {
 public:
@@ -997,8 +993,6 @@ private:
 
 namespace layout {
 
-// CB build tree: `build-<os>-{debug|release}/`. Alternatives advertise themselves:
-// Make → `build-make-<os>-<config>/`, CMake → `build-cmake-<os>-<config>/`.
 class paths
 {
 public:
@@ -1119,8 +1113,6 @@ compile_unit compile_unit_of(const source::translation_unit& tu)
             .display_path = tu.display_path};
 }
 
-// The inventory projection, the sibling of compile_unit_of: the list command reports what a
-// unit is rather than where it compiles to, so it carries its own strings.
 source_unit source_unit_of(const source::translation_unit& tu)
 {
     return {.unit = tu.unit,
@@ -1140,8 +1132,6 @@ namespace cache {
 
 class analyzer;
 
-// Common ownership and storage operations for one cache file. Cache types compose this value
-// while retaining ownership of their format and in-memory state.
 class storage_file
 {
 public:
@@ -1183,10 +1173,7 @@ private:
     std::string path_;
 };
 
-// Serialized object-cache profile: tab-delimited key=value fields. Owns the text; key() and
-// diff() operate on that value. build_system supplies ingredients; object_store owns the
-// on-disk index that embeds this text. This type does not probe the toolchain. Values must
-// not contain '\t', '\n', '\r', or '%'.
+// Tab-delimited key=value fields; values cannot contain '\t', '\n', '\r', or '%'.
 class profile
 {
 public:
@@ -1325,10 +1312,7 @@ private:
     std::string text_;
 };
 
-// Owns the object-cache index: path, current profile text, loaded entries, and the profile
-// mismatch from the last load. build_system builds the profile string and publishes events;
-// analyzer reads the loaded snapshot without locking. record() updates entries after workers
-// join — the same single-threaded window as before this extraction.
+// Analyzers read entries_ without locking; call record() only after workers join.
 class object_store
 {
 private:
@@ -1500,10 +1484,7 @@ private:
     bool missing_profile_header_ = false;
 };
 
-// Owns the executable/link-cache index: path, loaded signatures, the mutex for parallel
-// remember(), and an owned serialization of the common compile/link/module flag tail.
-// build_system gathers input paths from the TU graph, runs the linker, and publishes
-// link_end / cache_* events; this type owns link identity, reuse decisions and persistence.
+// Executable signatures and their common compile/link/module flag tail.
 class link_store
 {
 private:
@@ -1669,11 +1650,7 @@ private:
     std::mutex mutex_{};
 };
 
-// Owns the local std-module profile file and the machine-local shared std.pcm/std.o store.
-// It decides local reuse and whether a rebuild reason may hydrate; build_system supplies profile
-// text lazily, runs the compiler for misses, and publishes warnings. Paths, atomic profile I/O,
-// and shared root/slot/materialize/publish — including nonce staging and hardlink-or-copy — stay
-// here.
+// Local std-module profile and machine-wide artifact sharing.
 class standard_module_store
 {
 private:
@@ -1692,9 +1669,7 @@ public:
         bool profile_match = false;
     };
 
-    // Soft failure from hydrate/publish: ok means artefacts are in place (hydrate) or the
-    // publish attempt finished without an exception. warning is empty unless an exception
-    // escaped the shared-cache I/O — build_system turns that into the exact notify text.
+    // ok reports a completed transfer; warning is set only for caught I/O exceptions.
     struct transfer_result
     {
         bool ok = false;
@@ -1963,8 +1938,6 @@ private:
     std::string object_path_;
 };
 
-// Owns the cached compiler-version stamp path and its storage operations. build_system still
-// decides when to run the compiler probe because subprocess execution is a toolchain concern.
 class compiler_stamp
 {
 public:
@@ -1982,9 +1955,7 @@ private:
     storage_file file_;
 };
 
-// Analyzes whether an object/BMI set is reusable and returns the first rebuild reason.
-// object_store owns cache persistence; build_system owns the compiler steps taken for that
-// decision.
+// Returns the first reason an object/BMI set cannot be reused.
 class analyzer
 {
 public:
@@ -2242,8 +2213,7 @@ private:
 
 namespace execution {
 
-// Own only the common thread-group lifecycle. Each caller retains its scheduling and failure
-// policy, so worker bodies must catch exceptions that should not terminate the process.
+// Worker bodies own exception handling; this helper always joins every thread.
 template<std::copy_constructible Work>
 requires std::invocable<Work>
 void run_workers(std::size_t worker_count, Work work)
@@ -2256,8 +2226,7 @@ void run_workers(std::size_t worker_count, Work work)
         worker.join();
 }
 
-// Generic bounded parallel execution for independent jobs: nothing new starts once one fails,
-// and the first failure is rethrown after every worker has joined, so no child work is abandoned.
+// Bounded independent jobs; the first failure stops claims and is rethrown after all joins.
 class worker_pool
 {
 public:
@@ -2270,8 +2239,7 @@ public:
         static_assert(std::is_lvalue_reference_v<job_reference>);
         using job_type = std::remove_cvref_t<job_reference>;
 
-        // The decisions outlive every worker. Snapshot pointers rather than the decisions
-        // themselves: a compile decision carries a rebuild reason with several strings.
+        // Jobs outlive workers; pointers avoid copying rebuild decisions.
         auto items = std::vector<const job_type*>{};
         for(const auto& job : jobs)
             items.push_back(std::addressof(job));
@@ -2321,12 +2289,10 @@ private:
 
 namespace output {
 
-// Compiler output can run to megabytes on a template error; only the head is worth
-// putting on a JSONL line, and the full capture stays on disk for the human.
+// Keep only the diagnostic head in JSONL; the full capture remains on disk.
 inline constexpr auto diagnostics_head_limit = std::size_t{8192};
 
-// Reporting scopes use one accumulator for warnings from multi-step compilation. A failing
-// step replaces prior warnings so its error gets the full diagnostics head budget.
+// A failing step replaces prior warnings so its error gets the full diagnostic budget.
 class diagnostic_buffer
 {
 public:
@@ -2364,9 +2330,6 @@ private:
     diagnostics value_{};
 };
 
-// Shared result state for compile_scope and link_scope. The public scopes retain their distinct
-// identities and event contracts; this value keeps their hit, timing, rebuild and diagnostics
-// semantics identical.
 class step_state
 {
 public:
@@ -2406,8 +2369,7 @@ private:
     bool hit = false;
 };
 
-// One build_start, exactly one build_end, whichever way the steps end. Reporting owns this
-// pairing so every observer sees the same lifecycle.
+// Pairs one build_start with one build_end.
 class build_scope
 {
 public:
@@ -2419,7 +2381,6 @@ public:
     build_scope(const build_scope&) = delete;
     build_scope& operator=(const build_scope&) = delete;
 
-    // A build that never reports success failed, including when a step threw.
     ~build_scope() { report(false); }
 
     void succeeded() { report(true); }
@@ -2437,9 +2398,7 @@ private:
     bool reported = false;
 };
 
-// One compile_start, exactly one compile_end: build_scope's pairing one level down. A modular
-// unit compiles in two steps and either can fail. attach() collects the compiler's own output —
-// errors on failure, warnings on success — so a consumer sees the diagnostic and not silence.
+// Pairs compile events and accumulates diagnostics across multi-step module compilation.
 class compile_scope
 {
 public:
@@ -2449,8 +2408,7 @@ public:
         notify(&observer::compile_start, unit, reason);
     }
 
-    // A cache hit is the same pair with nothing in between: no reason, no duration, and ok from
-    // the start, since there is no step that could fail. Constructing one reports the hit.
+    // Cache hits have no rebuild reason or command duration.
     explicit compile_scope(const compile_unit& compiled)
         : compile_scope{compiled, rebuild_info{}}
     {
@@ -2460,7 +2418,6 @@ public:
     compile_scope(const compile_scope&) = delete;
     compile_scope& operator=(const compile_scope&) = delete;
 
-    // A compile that never reports success failed, including when a step threw.
     ~compile_scope()
     {
         notify(&observer::compile_end, unit, state.result());
@@ -2475,8 +2432,7 @@ private:
     step_state state;
 };
 
-// Linking has no start event, so this is the exit half only: exactly one link_end however the
-// link ends. The reporting scope owns the latch that prevents duplicate terminal events.
+// Emits exactly one link_end; the event contract has no link_start.
 class link_scope
 {
 public:
@@ -2484,8 +2440,7 @@ public:
         : executable_path{executable}, signature{std::move(sig)}, state{reason}
     {}
 
-    // An up-to-date executable: nothing ran, so no reason and no duration, and there is no step
-    // that could fail. Constructing one reports the hit — with the signature that made it a hit.
+    // Cache hits have no rebuild reason or command duration.
     link_scope(std::string_view executable, std::string sig)
         : link_scope{executable, rebuild_info{}, std::move(sig)}
     {
@@ -2512,15 +2467,13 @@ private:
     step_state state;
 };
 
-// What process::runner needs of a scope: somewhere to hand the child's own output — failures
-// and warnings alike — so it reaches compile_end / link_end rather than remaining only on disk.
 template <typename Scope>
 concept step_scope = requires(Scope& scope, diagnostics said) {
     scope.attach(std::move(said));
     scope.failed(std::move(said));
 };
 
-// One test_start, exactly one test_end, with the run's duration owned by the reporting scope.
+// Pairs one test_start with one test_end.
 class test_scope
 {
 public:
@@ -2532,9 +2485,7 @@ public:
     test_scope(const test_scope&) = delete;
     test_scope& operator=(const test_scope&) = delete;
 
-    // A run whose outcome was never reported did not finish: the default process_result says
-    // exit -1, what process::runner reports when the shell cannot be started. A run that ran and
-    // failed also says so as an error, but only when an outcome was reported.
+    // An unreported run retains the default failed result.
     ~test_scope()
     {
         notify(&observer::test_end, result,
@@ -2543,9 +2494,7 @@ public:
             notify(&observer::error, test_failure_message(result));
     }
 
-    // finished(), not the succeeded() / failed() of the other scopes: a test run's outcome is not
-    // a flag. test_end reports the exit code, the wait status and the signal, and a runner that
-    // fails is a normal outcome the command turns into a return value rather than an exception.
+    // Test failure is a normal process outcome, not an exception.
     void finished(process_result outcome)
     {
         result = std::move(outcome);
@@ -2562,7 +2511,7 @@ private:
 
 namespace process {
 
-// Stateless, thread-safe owner of CB's sole process boundary and capture-file decoding.
+// Thread-safe; CB's sole subprocess boundary.
 class runner
 {
 public:
@@ -2770,9 +2719,6 @@ struct compile_step
 
 using compile_plan = std::vector<compile_step>;
 
-// Concrete Clang/libc++ command policy. It discovers the installed LLVM tree and owns compiler
-// identity, default flags and argv construction; build_system retains graph, cache, execution
-// and reporting policy. There is deliberately no abstract driver until a second compiler exists.
 class clang_driver
 {
 public:
@@ -3303,8 +3249,6 @@ class build_system {
 public:
     enum class build_config { debug, release };
 
-    // Semantic build inputs, independent of argv parsing. build_system applies orchestration
-    // defaults and hands compiler-facing values to the concrete toolchain driver.
     struct settings
     {
         build_config config = build_config::debug;
@@ -3327,8 +3271,7 @@ private:
 
     std::string source_dir;
     toolchain::module_link_flags module_ldflags;
-    // Modular interfaces/partitions keyed by module name, filled after scan so each
-    // compile request can name only the BMIs that TU actually imports (transitively).
+    // Indexed after scanning for per-TU transitive BMI requests.
     std::flat_map<std::string, const source::translation_unit*, std::less<>> module_interfaces;
     mutable bool toolchain_profile_probed = false;
     source::translation_unit_list units_in_topological_order;
@@ -3350,9 +3293,7 @@ private:
         std::unreachable();
     }
 
-    // ============================================================================
-    // Initialization and Setup
-    // ============================================================================
+    // Initialization
 
     bool command_available(const std::string& candidate)
     {
@@ -3371,14 +3312,12 @@ private:
 
         fs::create_directories(artifact_paths.cache);
 
-        // Same boundary as every compile and link: argv in, stamp file out.
         const auto stamp = cache::compiler_stamp{artifact_paths.cache.string()};
         if(process_runner.invoke_shell(compiler.version_argv(), stamp.path()).ok())
         {
             compiler.set_compiler_version(stamp.read());
             const auto identity = compiler.identity();
-            // Humans only see COMMAND for the probe; echo the first line so the
-            // active toolchain is visible without opening the stamp file.
+            // Surface the probe's first line in console output.
             if(not identity.compiler_version.empty())
                 output::notify(&output::observer::info, identity.compiler_version);
         }
@@ -3413,8 +3352,6 @@ private:
         }
     }
 
-    // Index modular interfaces after scan_and_order so each compile request can carry only the
-    // semantic module/BMI pairs in that TU's import closure.
     void index_module_interfaces()
     {
         module_interfaces =
@@ -3427,8 +3364,7 @@ private:
             | std::ranges::to<std::flat_map<std::string, const source::translation_unit*, std::less<>>>();
     }
 
-    // Modules this TU needs: direct imports, their imports, and (for implementation units) the
-    // primary interface. The concrete driver decides how those semantic pairs become argv.
+    // Includes transitive imports and an implementation unit's primary interface.
     toolchain::module_file_list module_files_for(const source::translation_unit& tu) const
     {
         auto pending = string_list{};
@@ -3480,9 +3416,7 @@ private:
             throw std::logic_error{"main unit missing executable path: " + tu.filename};
     }
 
-    // ============================================================================
-    // General Utilities
-    // ============================================================================
+    // Utilities
 
     toolchain::compile_request compile_request_for(
         const source::translation_unit& tu) const
@@ -3505,8 +3439,6 @@ private:
         return argv;
     }
 
-    // The units the test runner links on top of the ordinary objects: test translation units
-    // without a main of their own. A view, because two callers want the objects and one the imports.
     auto test_units() const
     {
         return units_in_topological_order
@@ -3575,9 +3507,7 @@ private:
         return flags;
     }
 
-    // ============================================================================
-    // Cache Management
-    // ============================================================================
+    // Cache
 
     std::string cache_profile(bool include_project_includes) const {
         ensure_toolchain_profile();
@@ -3623,9 +3553,7 @@ private:
             artifact_paths.std_object()};
     }
 
-    // ============================================================================
-    // Dependency Analysis
-    // ============================================================================
+    // Dependency analysis
 
     void attach_artifact_paths(source::translation_unit_list& units)
     {
@@ -3653,9 +3581,7 @@ private:
 
         for(auto& tu : units)
         {
-            // Attach builder-managed artifact paths once we know the full configuration.
-            // Source identity remains immutable; builder-managed artifact paths are assigned once
-            // here so downstream steps have one place to read object/PCM/binary locations from.
+            // Assign artifact paths once the full configuration is known.
             const auto& source_label = tu.display_path;
             tu.object_path = artifact_paths.object(tu);
             claim(object_owners, tu.object_path, source_label, "object");
@@ -3680,14 +3606,7 @@ private:
         units_in_topological_order = std::move(units);
     }
 
-    // ============================================================================
-    // Standard Library Module Building
-    // ============================================================================
-    // The same two halves as Compilation, for the one modular unit that is not in the scan:
-    // standard_module_store::rebuild_reason_for decides reuse and build_std_module performs the
-    // compile, reporting through compile_scope like every other unit — the two most expensive
-    // steps of a cold build used to explain nothing. Shared-std persistence lives on
-    // cache::standard_module_store; this section only decides and compiles.
+    // Standard library module
 
     // Observers see what they see for a project modular unit: one source, one pcm, one object.
     // The strings are the caller's, because compile_unit holds views.
@@ -3757,13 +3676,7 @@ private:
         compile.succeeded();
     }
 
-    // ============================================================================
     // Compilation
-    // ============================================================================
-    // Two halves, mirrored by Linking below: compile_unit does one translation unit and publishes
-    // the dependency artefact as soon as it is usable; compile_units schedules consumers from
-    // those edge notifications. What both phases share sits above, in Cache Management (caches
-    // and staleness) and General Utilities (argv builders, unit projections).
 
     void compile_unit(const source::translation_unit& tu,
                       const output::rebuild_info& rebuild,
@@ -3932,12 +3845,7 @@ private:
         objects.save();
     }
 
-    // ============================================================================
     // Linking
-    // ============================================================================
-    // The same two halves as Compilation: perform_link does one executable, link_executables
-    // is the pass. Only what nothing else uses lives here — the test-runner link reads the same
-    // signature inputs and executable cache from the shared sections above.
 
     void perform_link(const source::translation_unit& main,
                       const string_list& input_paths,
@@ -4010,12 +3918,7 @@ private:
         links.save();
     }
 
-    // ============================================================================
-    // Test Support
-    // ============================================================================
-    // The same order as Linking: one executable, its signature, then the pass. test_runner_unit
-    // is the one extra — Linking filters mains inline, while here a missing or duplicate runner
-    // is an error rather than a skip.
+    // Test support
 
     // Require an exact base name: substring selection (aaa_test_runner, contest_runner) can link
     // a different bin/<name> while run_tests always executes bin/test_runner, leaving a stale
@@ -4038,9 +3941,6 @@ private:
     }
 
     void link_test_runner() {
-        // The unit carries the path, so the link, the cache key, the log and what run_tests
-        // executes cannot be spelled two ways: test_runner_unit pins the base name, and
-        // layout::paths is the only place a main's executable is sited.
         const auto& runner = test_runner_unit();
 
         auto links = make_link_store();
@@ -4061,15 +3961,10 @@ private:
         links.save();
     }
 
-    // ============================================================================
-    // Build Orchestration
-    // ============================================================================
-    // The phases above in the order a build runs them, the only place that order is written
-    // down. build() runs it alone; run_tests() follows it with the test-runner link.
+    // Build orchestration
 
     void build_steps()
     {
-        // Ensure build directories exist (they may have been removed by clean())
         fs::create_directories(artifact_paths.pcm);
         fs::create_directories(artifact_paths.obj);
         fs::create_directories(artifact_paths.bin);
@@ -4363,10 +4258,7 @@ public:
         return compiler.compile_database_argv(compile_request_for(tu));
     }
 
-    // clangd discovers how each file is built through this file. list already scanned the
-    // active TU set; writing here keeps the database aligned with that inventory without a
-    // second configuration language. Per-TU module mappings need index_module_interfaces
-    // so module_interfaces is populated before the argv builders run.
+    // Interface indexing must precede per-TU argv generation.
     void write_compile_commands() const
     {
         const auto path = detail::join_dir(source_dir, compile_commands_filename);
@@ -4440,7 +4332,6 @@ public:
 
     void list_sources() {
         scan_and_order();
-        // Same as build: per-TU module mappings need the scanned interface index.
         index_module_interfaces();
         write_compile_commands();
         auto inventory = output::source_inventory{
