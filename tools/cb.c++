@@ -373,7 +373,7 @@ private:
 };
 
 using translation_unit_list = std::vector<translation_unit>;
-using unit_index = std::flat_map<std::string, const translation_unit*, std::less<>>;
+using unit_index = std::flat_map<std::string_view, const translation_unit*, std::less<>>;
 
 std::optional<std::string_view> translation_unit::supported_suffix(std::string_view filename)
 {
@@ -3712,10 +3712,8 @@ private:
                            *objects.profile_change());
 
         auto u2tu = source::unit_index{};
-        for (auto& tu : units_in_topological_order) {
-            auto k = tu.unit;
-            u2tu[k] = &tu;
-        }
+        for(const auto& tu : units_in_topological_order)
+            u2tu.emplace(std::string_view{tu.unit}, &tu);
         const auto cache_analyzer = cache::analyzer{source_dir, artifact_paths.pcm.string()};
 
         const auto unit_count = units_in_topological_order.size();
