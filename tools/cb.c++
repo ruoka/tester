@@ -618,14 +618,45 @@ private:
     //
     // Splices inside a raw-string body go too, which [lex.pptoken] would revert before looking for
     // the closer. Honouring that means telling an `R"(` opener from the same text in a comment or
-    // another literal, which is lexical state rather than a pattern, and scanning here is
-    // regex-based on purpose. The cost is a body ending a line with `)\`, read as closing early;
+    // another literal, which requires lexical state; this pass deliberately remains lexical-state
+    // free. The cost is a body ending a line with `)\`, read as closing early;
     // deciding it the other way cost more, freezing every later splice after a fake opener.
-    inline static const std::regex line_splice_regex{R"(\\[ \t\v\f]*\r?\n)"};
-
-    static std::string splice_physical_lines(const std::string& text)
+    static std::string splice_physical_lines(std::string_view text)
     {
-        return std::regex_replace(text, line_splice_regex, "");
+        const auto is_horizontal_whitespace = [](char character)
+        {
+            return character == ' ' or character == '\t'
+                or character == '\v' or character == '\f';
+        };
+
+        auto result = std::string{};
+        result.reserve(text.size());
+        auto cursor = std::size_t{};
+        while(cursor < text.size())
+        {
+            const auto backslash = text.find('\\', cursor);
+            if(backslash == std::string_view::npos)
+            {
+                result.append(text.substr(cursor));
+                break;
+            }
+
+            result.append(text.substr(cursor, backslash - cursor));
+            auto newline = backslash + 1;
+            while(newline < text.size() and is_horizontal_whitespace(text[newline]))
+                ++newline;
+            if(newline < text.size() and text[newline] == '\r')
+                ++newline;
+
+            if(newline < text.size() and text[newline] == '\n')
+                cursor = newline + 1;
+            else
+            {
+                result.push_back('\\');
+                cursor = backslash + 1;
+            }
+        }
+        return result;
     }
 
     // One alternation over the whole preamble, because a block comment and a raw string still
