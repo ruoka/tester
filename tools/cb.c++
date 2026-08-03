@@ -3247,18 +3247,20 @@ public:
     {
         build_config config{build_config::debug};
         std::string source_dir{"."};
+        bool include_examples{};
+        bool include_tests_for_build{};
+
         std::string std_module_source{};
         string_list include_paths{};
         toolchain::module_link_flags module_link_flags{};
         toolchain::linkage linkage{toolchain::linkage::dynamic};
-        bool include_examples{};
-        bool include_tests_for_build{};
-        // Part of the object-cache profile; changing schemes rebuilds every modular unit.
+        // Changing schemes rebuilds every modular unit.
         toolchain::module_compilation module_phases{toolchain::module_compilation::two_phase};
-        // Zero requests the hardware-concurrency default.
-        int max_jobs{};
         string_list extra_compile_flags{};
         string_list extra_link_flags{};
+
+        // Zero requests the hardware-concurrency default.
+        int max_jobs{};
     };
 
 private:
@@ -4387,17 +4389,17 @@ public:
     {
         return {
             .config = config,
-            .std_module_source = std_module_source,
-            .include_paths = include_paths,
-            .linkage = linkage,
             .include_examples = include_examples,
             // Preserve action semantics: --build-tests changes an explicit build, while list,
             // cache operations and the implicit default build keep their established selection.
             .include_tests_for_build = do_build and build_tests,
+            .std_module_source = std_module_source,
+            .include_paths = include_paths,
+            .linkage = linkage,
             .module_phases = module_phases,
-            .max_jobs = max_jobs,
             .extra_compile_flags = extra_compile_flags,
-            .extra_link_flags = extra_link_flags};
+            .extra_link_flags = extra_link_flags,
+            .max_jobs = max_jobs};
     }
 
     bool has_action() const
