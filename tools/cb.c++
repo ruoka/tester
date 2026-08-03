@@ -1097,8 +1097,7 @@ private:
             [&](std::string_view suffix) { return tu.suffix.ends_with(suffix); });
         if(ending == object_stem_suffixes.end())
             throw std::logic_error{"Unsupported suffix for object file: " + tu.suffix};
-        return suffixed(tu.suffix.substr(0, tu.suffix.size() - ending->size()),
-                        naming_.object_extension);
+        return suffixed(tu.suffix.substr(0, tu.suffix.size() - ending->size()), naming_.object_extension);
     }
 
     toolchain::artifact_conventions naming_;
@@ -1245,8 +1244,7 @@ public:
         });
         auto digits = std::array<char, 16>{};
         const auto converted = std::to_chars(digits.data(), digits.data() + digits.size(), hash, 16);
-        return std::to_string(text_.size()) + '-'
-             + std::string{digits.data(), converted.ptr};
+        return std::to_string(text_.size()) + '-' + std::string{digits.data(), converted.ptr};
     }
 
     output::object_cache_profile_diff diff(const profile& newer) const
