@@ -103,6 +103,9 @@ constexpr auto compile_commands_filename = "compile_commands.json"sv;
 constexpr auto graph_filename = "graph.json"sv;
 constexpr auto std_module_name = "std"sv;
 constexpr auto test_runner_name = "test_runner"sv;
+constexpr auto depfile_suffix = ".d"sv;
+constexpr auto compile_log_suffix = ".log"sv;
+constexpr auto link_log_suffix = ".link.log"sv;
 
 // Source-scan directory names (exact path components unless noted).
 constexpr auto deps_dir_prefix = "deps/"sv;
@@ -318,7 +321,7 @@ public:
     bool is_test = false;
     bool is_modular = false;
 
-    // Metadata (artifact paths live in build_system's unit_artifacts_ side table)
+    // Metadata (artifact paths live in scanned_project::artifacts)
     fs::file_time_type last_modified{};
     int dependency_level = -1;
 
@@ -1714,11 +1717,9 @@ private:
         return flags;
     }
 
-    // Same `.d` sidecar naming as build_tree::paths::depfile — kept here so the driver
-    // can build argv without depending on build_tree.
     static string_list depfile_argv(std::string_view object_path)
     {
-        return {"-MMD", "-MF", std::string{object_path} + ".d"};
+        return {"-MMD", "-MF", std::string{object_path} + std::string{depfile_suffix}};
     }
 
     string_list std_module_source_argv() const
@@ -1830,10 +1831,6 @@ public:
     fs::path cache;
 
 private:
-    inline static constexpr auto depfile_suffix = ".d"sv;
-    inline static constexpr auto compile_log_suffix = ".log"sv;
-    inline static constexpr auto link_log_suffix = ".link.log"sv;
-
     static std::string suffixed(std::string_view stem, std::string_view suffix)
     {
         auto result = std::string{stem};
@@ -2428,13 +2425,13 @@ private:
 public:
     // What identifies a link: every input's timestamp, plus the flag sets that would change
     // the result even when no input moved. Callers differ only in the input list.
-    std::string link_signature(string_span input_paths, string_span import_flags) const
+    std::string signature_for(string_span input_paths, string_span import_flags) const
     {
-        return cache::link_signature{
+        return link_signature{
             .objects = dependency_signatures_joined(input_paths),
             .flags = flag_tail_,
             .imports = cb::flags::codec::serialize(import_flags),
-            .format = std::string{cache::link_signature::format_v2},
+            .format = std::string{link_signature::format_v2},
         }.serialize();
     }
 
@@ -3610,6 +3607,21 @@ clang_driver clang_driver::make(
 
 } // namespace toolchain
 
+// One scan's units plus every view derived from them. scan_and_order replaces the bundle as a
+// unit — never mutate `units` without rebuilding artifacts / by_unit / interfaces.
+struct scanned_project
+{
+    source::translation_unit_list units{};
+    build_tree::artifact_index artifacts{};
+    source::unit_index by_unit{};
+    toolchain::module_interface_map interfaces{};
+
+    const build_tree::unit_artifacts& artifacts_of(const source::translation_unit& tu) const
+    {
+        return artifacts.at(tu.unit);
+    }
+};
+
 class build_system {
 public:
     enum class build_config { debug, release };
@@ -3638,13 +3650,11 @@ private:
 
     std::string source_dir;
     toolchain::module_link_flags module_ldflags;
-    // Indexed after scanning for per-TU transitive BMI requests.
-    toolchain::module_interface_map module_interfaces;
     bool toolchain_profile_probed = false;
     std::string compiler_version{};
-    source::translation_unit_list units_in_topological_order;
-    // Keys are string_views into units_in_topological_order; rebuild after every scan.
-    build_tree::artifact_index unit_artifacts_{};
+    scanned_project project_{};
+    // Recreated after every scan; holds a reference into project_.artifacts.
+    std::optional<cache::analyzer> analyzer_{};
     const build_config config;
     const build_tree::paths artifact_paths;
     bool include_tests = false;
@@ -3697,26 +3707,6 @@ private:
             notify(&observer::info, "Added extra compile flags: {}", cb::flags::codec::serialize(state.extra_compile));
     }
 
-    void index_module_interfaces()
-    {
-        module_interfaces = units_in_topological_order
-            | std::views::filter([](const source::translation_unit& tu) { return tu.is_modular; })
-            | std::views::transform([&](const source::translation_unit& tu)
-            {
-                return std::pair{tu.module, toolchain::module_provider{
-                    .module = tu.module,
-                    .imports = tu.imports,
-                    .bmi_path = artifacts_of(tu).bmi,
-                }};
-            })
-            | std::ranges::to<toolchain::module_interface_map>();
-    }
-
-    const build_tree::unit_artifacts& artifacts_of(const source::translation_unit& tu) const
-    {
-        return unit_artifacts_.at(tu.unit);
-    }
-
     // Utilities
 
     string_list test_runner_argv(const std::string& runner, string_span args) const
@@ -3729,29 +3719,29 @@ private:
 
     auto test_units() const
     {
-        return units_in_topological_order
+        return project_.units
             | std::views::filter([](const source::translation_unit& tu) { return tu.is_test and not tu.has_main; });
     }
 
     string_list test_object_paths() const
     {
         return test_units()
-            | std::views::transform([&](const source::translation_unit& tu) { return artifacts_of(tu).object; })
+            | std::views::transform([&](const source::translation_unit& tu) { return project_.artifacts_of(tu).object; })
             | std::ranges::to<string_list>();
     }
 
     string_list linkable_object_paths() const
     {
-        return units_in_topological_order
+        return project_.units
             | std::views::filter([](const source::translation_unit& tu) { return not tu.has_main and not tu.is_test; })
-            | std::views::transform([&](const source::translation_unit& tu) { return artifacts_of(tu).object; })
+            | std::views::transform([&](const source::translation_unit& tu) { return project_.artifacts_of(tu).object; })
             | std::ranges::to<string_list>();
     }
 
     string_list executable_link_inputs(const source::translation_unit& main,
                                        string_span shared_objects) const
     {
-        auto inputs = string_list{artifacts_of(main).object};
+        auto inputs = string_list{project_.artifacts_of(main).object};
         inputs.append_range(shared_objects);
         inputs.push_back(artifact_paths.std_object());
         return inputs;
@@ -3759,7 +3749,7 @@ private:
 
     string_list test_runner_link_inputs(const source::translation_unit& runner) const
     {
-        auto inputs = string_list{artifacts_of(runner).object};
+        auto inputs = string_list{project_.artifacts_of(runner).object};
         inputs.append_range(linkable_object_paths());
         inputs.append_range(test_object_paths());
         inputs.push_back(artifact_paths.std_object());
@@ -3842,9 +3832,9 @@ private:
 
     // Dependency analysis
 
-    void build_unit_artifacts(const source::translation_unit_list& units)
+    void fill_project_artifacts()
     {
-        unit_artifacts_.clear();
+        project_.artifacts.clear();
         auto object_owners = std::flat_map<std::string, std::string, std::less<>>{};
         auto bmi_owners = std::flat_map<std::string, std::string, std::less<>>{};
         auto executable_owners = std::flat_map<std::string, std::string, std::less<>>{};
@@ -3867,7 +3857,7 @@ private:
                     + " (object/module names must stay unique)"};
         };
 
-        for(const auto& tu : units)
+        for(const auto& tu : project_.units)
         {
             auto artifacts = build_tree::unit_artifacts{};
             const auto& source_label = tu.display_path;
@@ -3889,17 +3879,40 @@ private:
             if(tu.kind == unit_kind::implementation_unit and tu.module.empty())
                 throw std::logic_error{"implementation unit missing module name: " + tu.filename};
 
-            unit_artifacts_.emplace(std::string_view{tu.unit}, std::move(artifacts));
+            project_.artifacts.emplace(std::string_view{tu.unit}, std::move(artifacts));
         }
+    }
+
+    void fill_project_indexes()
+    {
+        project_.by_unit.clear();
+        for(const auto& tu : project_.units)
+            project_.by_unit.emplace(std::string_view{tu.unit}, tu);
+
+        project_.interfaces = project_.units
+            | std::views::filter([](const source::translation_unit& tu) { return tu.is_modular; })
+            | std::views::transform([&](const source::translation_unit& tu)
+            {
+                return std::pair{tu.module, toolchain::module_provider{
+                    .module = tu.module,
+                    .imports = tu.imports,
+                    .bmi_path = project_.artifacts_of(tu).bmi,
+                }};
+            })
+            | std::ranges::to<toolchain::module_interface_map>();
     }
 
     void scan_and_order()
     {
-        // Artifacts keys are string_views into this vector — fill the table only after
-        // the units own their final storage.
-        units_in_topological_order = source::scanner{
-            source_dir, include_tests, include_examples}.scan();
-        build_unit_artifacts(units_in_topological_order);
+        // Drop derived views before replacing units so no alias outlives its storage.
+        analyzer_.reset();
+        project_.by_unit.clear();
+        project_.interfaces.clear();
+        project_.artifacts.clear();
+        project_.units = source::scanner{source_dir, include_tests, include_examples}.scan();
+        fill_project_artifacts();
+        fill_project_indexes();
+        analyzer_.emplace(source_dir, artifact_paths.bmi.string(), project_.artifacts);
     }
 
     // Standard library module
@@ -3931,7 +3944,10 @@ private:
         const auto display = fs::path{state.std_module_source}.filename().string();
         const auto unit = std_compile_unit(bmi, object, display);
         auto std_store = make_standard_module_store();
-        const auto freshness = cache::analyzer{source_dir, artifact_paths.bmi.string(), unit_artifacts_};
+        // Runs in parallel with scan_and_order; std policy never reads project artifacts.
+        const auto empty_artifacts = build_tree::artifact_index{};
+        const auto freshness = cache::analyzer{
+            source_dir, artifact_paths.bmi.string(), empty_artifacts};
         const auto reason = freshness.rebuild_reason_for(
             std_store, state.std_module_source, [&]() { return object_cache_profile(); });
 
@@ -4063,7 +4079,7 @@ private:
     void compile_one(const source::translation_unit& tu,
                      const output::rebuild_info& rebuild,
                      std::invocable auto&& on_dependency_ready) {
-        const auto& artifacts = artifacts_of(tu);
+        const auto& artifacts = project_.artifacts_of(tu);
         const auto unit = output::compile_unit_of(tu, artifacts);
         auto compile = output::compile_scope{unit, rebuild};
         // Two-phase: object_missing / object_stale reuse the BMI that is already there —
@@ -4073,7 +4089,7 @@ private:
         // input that can be compiled to an object — always re-read the source, as std does.
         const auto object_only = rebuild.kind == output::rebuild_kind::object_missing or rebuild.kind == output::rebuild_kind::object_stale;
         driver.compile(
-            tu, artifacts, module_interfaces, object_only,
+            tu, artifacts, project_.interfaces, object_only,
             [&](string_list argv, toolchain::compile_step step)
             {
                 process_runner.run_step(
@@ -4087,7 +4103,7 @@ private:
     }
 
     void compile_units() {
-        if (units_in_topological_order.empty()) return;
+        if (project_.units.empty()) return;
         auto objects = make_object_store();
         objects.load(object_cache_profile());
         if(objects.missing_profile_header())
@@ -4096,13 +4112,10 @@ private:
             notify(&observer::profile_changed, output::rebuild_kind::profile_change,
                    *objects.profile_change());
 
-        auto u2tu = source::unit_index{};
-        for(const auto& tu : units_in_topological_order)
-            u2tu.emplace(std::string_view{tu.unit}, tu);
-        const auto cache_analyzer = cache::analyzer{source_dir, artifact_paths.bmi.string(), unit_artifacts_};
-        auto schedule = compile_schedule{units_in_topological_order};
+        auto schedule = compile_schedule{project_.units};
         auto rebuilt = std::vector<unsigned char>(schedule.unit_count());
         auto failures = execution::failure_latch{};
+        auto& freshness = *analyzer_;
 
         execution::run_workers(
             execution::worker_count(job_limit(), schedule.unit_count()),
@@ -4112,18 +4125,18 @@ private:
                 {
                     try
                     {
-                        const auto& tu = units_in_topological_order[*index];
-                        const auto reason = cache_analyzer.rebuild_reason_for(tu, objects, u2tu);
+                        const auto& tu = project_.units[*index];
+                        const auto reason = freshness.rebuild_reason_for(tu, objects, project_.by_unit);
                         if(reason)
                         {
                             compile_one(tu, *reason, [&]() { schedule.publish(*index, failures); });
-                            cache_analyzer.artifacts_changed(tu);
+                            freshness.artifacts_changed(tu);
                             rebuilt[*index] = 1;
                         }
                         else
                         {
                             {
-                                const auto hit = output::compile_scope{output::compile_unit_of(tu, artifacts_of(tu))};
+                                const auto hit = output::compile_scope{output::compile_unit_of(tu, project_.artifacts_of(tu))};
                             }
                             schedule.publish(*index, failures);
                         }
@@ -4142,7 +4155,7 @@ private:
         for(auto index = std::size_t{0}; index < schedule.unit_count(); ++index)
             if(rebuilt[index] != 0)
             {
-                const auto& tu = units_in_topological_order[index];
+                const auto& tu = project_.units[index];
                 objects.record(tu.full_path, tu.last_modified);
             }
         objects.save();
@@ -4156,7 +4169,7 @@ private:
                       const output::rebuild_info& rebuild,
                       std::string signature)
     {
-        const auto& executable = artifacts_of(main).executable;
+        const auto& executable = project_.artifacts_of(main).executable;
         auto link = output::link_scope{executable, rebuild, std::move(signature)};
         process_runner.run_step(
             link,
@@ -4172,7 +4185,7 @@ private:
 
         // Snapshot relink decisions before workers mutate the store. Interleaving
         // analyzer reads of the loaded snapshot with parallel remember() writes is a data race.
-        const auto freshness = cache::analyzer{source_dir, artifact_paths.bmi.string(), unit_artifacts_};
+        auto& freshness = *analyzer_;
         struct link_decision {
             const source::translation_unit& tu;
             string_list input_paths{};
@@ -4180,7 +4193,7 @@ private:
             std::string signature{};
             std::optional<output::rebuild_info> reason{};
         };
-        auto decisions = units_in_topological_order
+        auto decisions = project_.units
             // Exact base name only — substring matches like contest_runner / aaa_test_runner
             // are ordinary mains and must not be excluded from normal linking.
             | std::views::filter([&](const source::translation_unit& tu) {
@@ -4188,9 +4201,9 @@ private:
             | std::views::transform([&](const source::translation_unit& tu) {
                   auto input_paths = executable_link_inputs(tu, shared_objects);
                   auto import_flags = collect_module_ldflags(tu.imports);
-                  auto signature = links.link_signature(input_paths, import_flags);
+                  auto signature = links.signature_for(input_paths, import_flags);
                   auto reason = freshness.rebuild_reason_for(
-                      links, artifacts_of(tu).executable, signature);
+                      links, project_.artifacts_of(tu).executable, signature);
                   return link_decision{
                       .tu = tu,
                       .input_paths = std::move(input_paths),
@@ -4204,7 +4217,7 @@ private:
             if(decision.reason)
                 continue;
             const auto hit = output::link_scope{
-                artifacts_of(decision.tu).executable, decision.signature};
+                project_.artifacts_of(decision.tu).executable, decision.signature};
         }
 
         execution::worker_pool{job_limit()}.run(
@@ -4218,7 +4231,7 @@ private:
                     decision.import_flags,
                     *decision.reason,
                     decision.signature);
-                links.remember(artifacts_of(decision.tu).executable, decision.signature);
+                links.remember(project_.artifacts_of(decision.tu).executable, decision.signature);
             });
         links.save();
     }
@@ -4234,12 +4247,12 @@ private:
         const auto is_runner = [](const source::translation_unit& tu) {
             return tu.has_main and tu.base_name == test_runner_name;
         };
-        if(std::ranges::count_if(units_in_topological_order, is_runner) > 1)
+        if(std::ranges::count_if(project_.units, is_runner) > 1)
             throw std::runtime_error{
                 "multiple test_runner mains found — keep a single source named test_runner"};
 
-        const auto found = std::ranges::find_if(units_in_topological_order, is_runner);
-        if(found == units_in_topological_order.end())
+        const auto found = std::ranges::find_if(project_.units, is_runner);
+        if(found == project_.units.end())
             throw std::runtime_error{
                 "test_runner not found — make sure .test.c++ files or test_runner.c++ exist"};
         return *found;
@@ -4252,19 +4265,19 @@ private:
         links.load();
         const auto input_paths = test_runner_link_inputs(runner);
         const auto import_flags = test_runner_link_flags(runner);
-        const auto signature = links.link_signature(input_paths, import_flags);
-        const auto freshness = cache::analyzer{source_dir, artifact_paths.bmi.string(), unit_artifacts_};
+        const auto signature = links.signature_for(input_paths, import_flags);
+        auto& freshness = *analyzer_;
         const auto reason = freshness.rebuild_reason_for(
-            links, artifacts_of(runner).executable, signature);
+            links, project_.artifacts_of(runner).executable, signature);
         if(not reason)
         {
-            const auto hit = output::link_scope{artifacts_of(runner).executable, signature};
+            const auto hit = output::link_scope{project_.artifacts_of(runner).executable, signature};
             return;
         }
 
         perform_link(runner, input_paths, import_flags, *reason, signature);
         notify(&observer::success, "test_runner linked with test objects");
-        links.remember(artifacts_of(runner).executable, signature);
+        links.remember(project_.artifacts_of(runner).executable, signature);
         links.save();
     }
 
@@ -4278,7 +4291,7 @@ private:
         fs::create_directories(artifact_paths.cache);
 
         // Source discovery and std compilation share no mutable build state: the scan writes
-        // units_in_topological_order while std owns only its artefacts/profile. Hide the scan
+        // project_.units while std owns only its artefacts/profile. Hide the scan
         // under the cold build's root module work, then join before module flags consume units.
         auto scan_failure = std::exception_ptr{};
         auto scan = std::jthread{[&]()
@@ -4309,10 +4322,9 @@ private:
             std::rethrow_exception(std_failure);
         if(scan_failure)
             std::rethrow_exception(scan_failure);
-        if(units_in_topological_order.empty())
+        if(project_.units.empty())
             throw std::runtime_error{"No sources found"};
 
-        index_module_interfaces();
         compile_units();
         link_executables();
     }
@@ -4379,14 +4391,14 @@ public:
                 ++removed;
         };
 
-        for(const auto& tu : units_in_topological_order)
+        for(const auto& tu : project_.units)
         {
             const auto is_runner = tu.has_main and tu.base_name == test_runner_name;
             if(not tu.is_test and not is_runner)
                 continue;
 
             dropped_sources.insert(tu.full_path);
-            const auto& art = artifacts_of(tu);
+            const auto& art = project_.artifacts_of(tu);
             if(not art.object.empty())
             {
                 try_remove(art.object);
@@ -4521,7 +4533,7 @@ public:
         notify(&observer::success, "Build completed: {}", artifact_paths.root.string());
 
         // From the unit link_test_runner just linked, so what runs is what was linked.
-        const auto& runner = artifacts_of(test_runner_unit()).executable;
+        const auto& runner = project_.artifacts_of(test_runner_unit()).executable;
 
         const auto set_env = [](std::string_view key, std::string_view value)
         {
@@ -4547,7 +4559,7 @@ public:
     // second two-phase step (BMI → object) is omitted: it has no distinct source path for clangd.
     string_list compile_argv_for_database(const source::translation_unit& tu) const
     {
-        return driver.compile_database_argv(tu, artifacts_of(tu), module_interfaces);
+        return driver.compile_database_argv(tu, project_.artifacts_of(tu), project_.interfaces);
     }
 
     // Interface indexing must precede per-TU argv generation.
@@ -4557,7 +4569,7 @@ public:
         detail::write_atomic_file(path, "compile commands database", [&](std::ostream& file) {
             file << "[\n";
             auto first = true;
-            for(const auto& tu : units_in_topological_order)
+            for(const auto& tu : project_.units)
             {
                 if(not first)
                     file << ",\n";
@@ -4571,7 +4583,7 @@ public:
             }
             file << "\n]\n";
         });
-        notify(&observer::info, "Wrote {} ({} entries)", path, units_in_topological_order.size());
+        notify(&observer::info, "Wrote {} ({} entries)", path, project_.units.size());
     }
 
     // Convenience dump of the same graph `list --jsonl` streams as `unit` events — for tools
@@ -4620,7 +4632,6 @@ public:
 
     void list_sources() {
         scan_and_order();
-        index_module_interfaces();
         write_compile_commands();
         auto inventory = output::source_inventory{
             .config = config_name(),
@@ -4628,8 +4639,8 @@ public:
             .include_examples = include_examples,
             .source_dir = source_dir,
         };
-        inventory.units.reserve(units_in_topological_order.size());
-        for(const auto& tu : units_in_topological_order)
+        inventory.units.reserve(project_.units.size());
+        for(const auto& tu : project_.units)
         {
             inventory.units.push_back(output::source_unit_of(tu));
             if(tu.has_main)
