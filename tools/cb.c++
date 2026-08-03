@@ -55,6 +55,8 @@ namespace cb {
 
 using namespace std::string_literals;
 using namespace std::string_view_literals;
+using output::notify;
+using output::observer;
 
 // ============================================================================
 // Project naming conventions — edit these for other layouts
@@ -83,8 +85,9 @@ const suffix_list supported_suffixes = {
     cpp_suffix
 };
 
-// Language extensions replaced by `.o` when naming object files (any prefix such as
-// `.test` / `.impl` is kept). Edit alongside `supported_suffixes` for other conventions.
+// Language extensions replaced by the driver object extension (`.o` / `.obj`) when naming
+// object files (any prefix such as `.test` / `.impl` is kept). Edit alongside
+// `supported_suffixes` for other conventions.
 const suffix_list object_stem_suffixes = {
     cxxm_suffix,
     cppm_suffix,
@@ -303,7 +306,7 @@ public:
     
     // Build artifacts
     std::string object_path{};
-    std::string pcm_path{};
+    std::string bmi_path{};
     std::string executable_path{};
     
     // Metadata
@@ -771,8 +774,7 @@ private:
                 }
                 catch(const std::exception& error)
                 {
-                    output::notify(&output::observer::warning,
-                                   "Skipping "s + entry.path().string() + ": " + error.what());
+                    notify(&observer::warning, "Skipping {}: {}", entry.path().string(), error.what());
                 }
             }
         }
@@ -986,11 +988,9 @@ private:
 } // namespace source
 
 
-class build_system;
-
 namespace toolchain {
 
-// How a modular interface becomes a .pcm and a .o. two_phase runs `--precompile` and then
+// How a modular interface becomes a BMI and an object. two_phase runs `--precompile` and then
 // compiles the BMI; one_phase asks for both artefacts from one `-c -fmodule-output=` read.
 // Two-phase can publish the BMI while its object still compiles; one-phase saves a second parse.
 enum class module_compilation : unsigned char { two_phase, one_phase };
@@ -1013,7 +1013,7 @@ struct compile_step
 
 using compile_plan = std::vector<compile_step>;
 
-// Filled by the concrete driver (`clang_driver::artifacts()`); layout only places them.
+// Filled by the concrete driver (`clang_driver::artifacts()`); build_tree only places them.
 struct artifact_conventions
 {
     std::string_view object_extension;
@@ -1037,7 +1037,7 @@ constexpr std::string_view host_os()
 class clang_driver
 {
 public:
-    // Clang/libc++ BMI and object naming for this host — selected with the driver, not layout.
+    // Clang/libc++ BMI and object naming for this host — selected with the driver, not build_tree.
     static constexpr artifact_conventions artifacts()
     {
 #if defined(_WIN32)
@@ -1051,18 +1051,14 @@ public:
 #endif
     }
 
-    struct identity_view
+    // Non-owning snapshot of post-construction identity and flag lists.
+    struct state
     {
         const std::string& toolchain_root;
         const std::string& compiler;
         const std::string& compiler_signature;
-        const std::string& compiler_version;
         const std::string& std_module_source;
         const std::string& std_module_profile;
-    };
-
-    struct flag_view
-    {
         const string_list& compile;
         const string_list& link;
         const string_list& cpp;
@@ -1082,13 +1078,10 @@ public:
         string_list extra_link_flags{};
     };
 
-private:
-    friend class ::cb::build_system;
-
     template <typename CommandAvailable>
     requires std::invocable<CommandAvailable&, const std::string&>
     clang_driver(settings values,
-                 std::string_view std_pcm_path,
+                 std::string_view std_bmi_path,
                  std::string_view module_cache_dir,
                  CommandAvailable command_available)
         : release_{values.release},
@@ -1106,10 +1099,9 @@ private:
             | std::views::join
             | std::ranges::to<string_list>();
         discover(command_available);
-        initialize_flags(std_pcm_path, module_cache_dir);
+        initialize_flags(std_bmi_path, module_cache_dir);
     }
 
-public:
     std::string_view module_phases_name() const
     {
         switch(module_phases_)
@@ -1121,21 +1113,14 @@ public:
     }
     bool static_linking() const { return linkage_ == linkage::static_; }
 
-    identity_view identity() const
+    state state() const
     {
         return {
             llvm_prefix_,
             compiler_,
             compiler_signature_,
-            compiler_version_,
             std_module_source_,
             std_module_profile_,
-        };
-    }
-
-    flag_view flags() const
-    {
-        return {
             compile_flags_,
             link_flags_,
             cpp_flags_,
@@ -1172,36 +1157,36 @@ public:
         }
         if(object_only)
         {
-            return {{.argv = compile_pcm_object_argv(tu, imports),
+            return {{.argv = compile_bmi_object_argv(tu.bmi_path, tu.object_path, imports),
                      .dependencies_ready = true}};
         }
         return {
-            {.argv = compile_pcm_argv(tu, imports),
+            {.argv = compile_bmi_argv(tu, imports),
              .output = compile_output::bmi,
              .writes_bmi = true,
              .dependencies_ready = true},
-            {.argv = compile_pcm_object_argv(tu, imports)},
+            {.argv = compile_bmi_object_argv(tu.bmi_path, tu.object_path, imports)},
         };
     }
 
-    compile_plan compile_standard_module(std::string_view std_pcm_path,
+    compile_plan compile_standard_module(std::string_view std_bmi_path,
                                          std::string_view std_object_path,
                                          bool object_only) const
     {
         if(module_phases_ == module_compilation::one_phase)
         {
             return {{
-                .argv = build_std_module_object_argv(std_pcm_path, std_object_path),
+                .argv = compile_std_module_object_argv(std_bmi_path, std_object_path),
                 .writes_bmi = true,
             }};
         }
         if(object_only)
-            return {{.argv = build_std_o_argv(std_pcm_path, std_object_path)}};
+            return {{.argv = compile_bmi_object_argv(std_bmi_path, std_object_path)}};
         return {
-            {.argv = build_std_pcm_argv(std_pcm_path),
+            {.argv = compile_std_bmi_argv(std_bmi_path),
              .output = compile_output::bmi,
              .writes_bmi = true},
-            {.argv = build_std_o_argv(std_pcm_path, std_object_path)},
+            {.argv = compile_bmi_object_argv(std_bmi_path, std_object_path)},
         };
     }
 
@@ -1212,7 +1197,7 @@ public:
         if(not tu.is_modular)
             return compile_source_object_argv(tu, imports);
         return module_phases_ == module_compilation::two_phase
-            ? compile_pcm_argv(tu, imports)
+            ? compile_bmi_argv(tu, imports)
             : compile_module_object_argv(tu, imports);
     }
 
@@ -1234,11 +1219,6 @@ public:
 private:
     inline static constexpr auto module_file_flag_prefix = "-fmodule-file="sv;
     inline static constexpr auto prebuilt_module_path_flag_prefix = "-fprebuilt-module-path="sv;
-
-    void set_compiler_version(std::string value)
-    {
-        compiler_version_ = std::move(value);
-    }
 
     static std::string binary_signature(const std::string& path)
     {
@@ -1321,7 +1301,7 @@ private:
         compiler_signature_ = binary_signature(compiler_);
     }
 
-    void initialize_flags(std::string_view std_pcm_path,
+    void initialize_flags(std::string_view std_bmi_path,
                           std::string_view module_cache_dir)
     {
         const auto os = host_os();
@@ -1428,12 +1408,28 @@ private:
         module_flags_ = {
             "-fno-implicit-modules",
             "-fno-implicit-module-maps",
-            module_file_flag(std_module_name, std_pcm_path),
+            module_file_flag(std_module_name, std_bmi_path),
             std::string{prebuilt_module_path_flag_prefix} + std::string{module_cache_dir},
         };
     }
 
-    string_list compile_pcm_argv(const source::translation_unit& tu,
+    static string_list with_precompile(string_list argv, std::string_view bmi_path)
+    {
+        argv.push_back("--precompile");
+        argv.push_back("-o");
+        argv.emplace_back(bmi_path);
+        return argv;
+    }
+
+    static string_list with_c_output(string_list argv, std::string_view object_path)
+    {
+        argv.push_back("-c");
+        argv.push_back("-o");
+        argv.emplace_back(object_path);
+        return argv;
+    }
+
+    string_list compile_bmi_argv(const source::translation_unit& tu,
                                  const string_list& imports) const
     {
         auto argv = base_compile_argv();
@@ -1441,24 +1437,20 @@ private:
         argv.append_range(imports);
         argv.append_range(depfile_argv(tu.object_path));
         argv.push_back(tu.full_path);
-        argv.push_back("--precompile");
-        argv.push_back("-o");
-        argv.push_back(tu.pcm_path);
-        return argv;
+        return with_precompile(std::move(argv), tu.bmi_path);
     }
 
-    string_list compile_pcm_object_argv(const source::translation_unit& tu,
-                                        const string_list& imports) const
+    // Shared by project units and std: BMI → object (omit imports for std).
+    string_list compile_bmi_object_argv(std::string_view bmi_path,
+                                        std::string_view object_path,
+                                        const string_list& imports = {}) const
     {
         auto argv = string_list{compiler_};
         argv.append_range(compile_flags_);
         argv.append_range(module_flags_);
         argv.append_range(imports);
-        argv.push_back(tu.pcm_path);
-        argv.push_back("-c");
-        argv.push_back("-o");
-        argv.push_back(tu.object_path);
-        return argv;
+        argv.emplace_back(bmi_path);
+        return with_c_output(std::move(argv), object_path);
     }
 
     string_list compile_module_object_argv(const source::translation_unit& tu,
@@ -1468,12 +1460,9 @@ private:
         argv.append_range(module_flags_);
         argv.append_range(imports);
         argv.append_range(depfile_argv(tu.object_path));
-        argv.push_back("-fmodule-output=" + tu.pcm_path);
+        argv.push_back("-fmodule-output=" + tu.bmi_path);
         argv.push_back(tu.full_path);
-        argv.push_back("-c");
-        argv.push_back("-o");
-        argv.push_back(tu.object_path);
-        return argv;
+        return with_c_output(std::move(argv), tu.object_path);
     }
 
     string_list compile_source_object_argv(const source::translation_unit& tu,
@@ -1484,43 +1473,20 @@ private:
         argv.append_range(imports);
         argv.append_range(depfile_argv(tu.object_path));
         argv.push_back(tu.full_path);
-        argv.push_back("-c");
-        argv.push_back("-o");
-        argv.push_back(tu.object_path);
-        return argv;
+        return with_c_output(std::move(argv), tu.object_path);
     }
 
-    string_list build_std_pcm_argv(std::string_view std_pcm_path) const
+    string_list compile_std_bmi_argv(std::string_view std_bmi_path) const
+    {
+        return with_precompile(std_module_source_argv(), std_bmi_path);
+    }
+
+    string_list compile_std_module_object_argv(std::string_view std_bmi_path,
+                                               std::string_view std_object_path) const
     {
         auto argv = std_module_source_argv();
-        argv.push_back("--precompile");
-        argv.push_back("-o");
-        argv.emplace_back(std_pcm_path);
-        return argv;
-    }
-
-    string_list build_std_module_object_argv(std::string_view std_pcm_path,
-                                             std::string_view std_object_path) const
-    {
-        auto argv = std_module_source_argv();
-        argv.push_back("-fmodule-output=" + std::string{std_pcm_path});
-        argv.push_back("-c");
-        argv.push_back("-o");
-        argv.emplace_back(std_object_path);
-        return argv;
-    }
-
-    string_list build_std_o_argv(std::string_view std_pcm_path,
-                                 std::string_view std_object_path) const
-    {
-        auto argv = string_list{compiler_};
-        argv.append_range(compile_flags_);
-        argv.append_range(module_flags_);
-        argv.emplace_back(std_pcm_path);
-        argv.push_back("-c");
-        argv.push_back("-o");
-        argv.emplace_back(std_object_path);
-        return argv;
+        argv.push_back("-fmodule-output=" + std::string{std_bmi_path});
+        return with_c_output(std::move(argv), std_object_path);
     }
 
     string_list base_compile_argv() const
@@ -1559,15 +1525,15 @@ private:
             if(not interfaces.contains(name))
                 continue;
             const auto* dep = interfaces.at(name);
-            flags.push_back(module_file_flag(dep->module, dep->pcm_path));
+            flags.push_back(module_file_flag(dep->module, dep->bmi_path));
             for(const auto& imp : dep->imports)
                 enqueue(imp);
         }
         return flags;
     }
 
-    // Same `.d` sidecar naming as layout::paths::depfile — kept here so the driver
-    // can build argv without depending on layout.
+    // Same `.d` sidecar naming as build_tree::paths::depfile — kept here so the driver
+    // can build argv without depending on build_tree.
     static string_list depfile_argv(std::string_view object_path)
     {
         return {"-MMD", "-MF", std::string{object_path} + ".d"};
@@ -1597,7 +1563,6 @@ private:
     std::string llvm_prefix_{};
     std::string compiler_{};
     std::string compiler_signature_{};
-    std::string compiler_version_{};
     std::string std_module_profile_{};
     string_list compile_flags_{};
     string_list link_flags_{};
@@ -1609,7 +1574,7 @@ private:
 
 } // namespace toolchain
 
-namespace layout {
+namespace build_tree {
 
 class paths
 {
@@ -1617,16 +1582,16 @@ public:
     paths(std::string_view configuration, toolchain::artifact_conventions naming)
         : root{std::string{build_root_prefix} + std::string{toolchain::host_os()} + '-'
                + std::string{configuration}},
-          pcm{root / "pcm"},
+          bmi{root / "bmi"},
           obj{root / "obj"},
           bin{root / "bin"},
           cache{root / "cache"},
           naming_{naming}
     {}
 
-    std::string std_pcm() const
+    std::string std_bmi() const
     {
-        return (pcm / suffixed(std_module_name, naming_.bmi_extension)).string();
+        return (bmi / suffixed(std_module_name, naming_.bmi_extension)).string();
     }
 
     std::string std_object() const
@@ -1640,12 +1605,12 @@ public:
         return (obj / (stem + object_suffix(tu))).string();
     }
 
-    std::string pcm_file(const source::translation_unit& tu) const
+    std::string bmi_file(const source::translation_unit& tu) const
     {
         if(tu.module.empty())
             throw std::logic_error{
-                "pcm_file called on translation unit without module: " + tu.filename};
-        return (pcm / suffixed(module_safe_name(tu.module), naming_.bmi_extension)).string();
+                "bmi_file called on translation unit without module: " + tu.filename};
+        return (bmi / suffixed(module_safe_name(tu.module), naming_.bmi_extension)).string();
     }
 
     std::string executable(const source::translation_unit& tu) const
@@ -1677,7 +1642,7 @@ public:
     }
 
     fs::path root;
-    fs::path pcm;
+    fs::path bmi;
     fs::path obj;
     fs::path bin;
     fs::path cache;
@@ -1715,18 +1680,18 @@ private:
     toolchain::artifact_conventions naming_;
 };
 
-} // namespace layout
+} // namespace build_tree
 
 namespace output {
 
 // Observers format four of a unit's fields, so they receive those four and not the unit: the
-// rest is build state, and cb-observer.h++ stays independent of the scanner. The pcm path is the
+// rest is build state, and cb-observer.h++ stays independent of the scanner. The bmi path is the
 // one derived field, and deriving it here is why compile_start and compile_end cannot disagree.
 compile_unit compile_unit_of(const source::translation_unit& tu)
 {
     return {.source = tu.full_path,
             .object = tu.object_path,
-            .pcm = tu.is_modular ? std::string_view{tu.pcm_path} : std::string_view{},
+            .bmi = tu.is_modular ? std::string_view{tu.bmi_path} : std::string_view{},
             .module = tu.module,
             .display_path = tu.display_path};
 }
@@ -1736,7 +1701,7 @@ source_unit source_unit_of(const source::translation_unit& tu)
     return {.unit = tu.unit,
             .path = tu.display_path,
             .module = tu.module,
-            .kind = std::string{tu.kind_name()},
+            .kind = tu.kind_name(),
             .imports = tu.imports,
             .level = tu.dependency_level,
             .has_main = tu.has_main,
@@ -2274,7 +2239,7 @@ private:
     struct shared_slot
     {
         fs::path directory;
-        fs::path pcm;
+        fs::path bmi;
         fs::path object;
         storage_file profile;
     };
@@ -2294,18 +2259,18 @@ public:
     };
 
     standard_module_store(std::string cache_dir,
-                          std::string pcm_path,
+                          std::string bmi_path,
                           std::string object_path)
         : profile_file_{std::move(cache_dir), profile_filename},
-          pcm_path_{std::move(pcm_path)},
+          bmi_path_{std::move(bmi_path)},
           object_path_{std::move(object_path)}
     {}
 
     const std::string& profile_path() const { return profile_file_.path(); }
 
 private:
-    // Whether std.pcm was precompiled by the profile a project unit is compiled with. The
-    // pcm's own presence is a separate question, asked by rebuild_reason_for.
+    // Whether the std BMI was precompiled by the profile a project unit is compiled with.
+    // The BMI's own presence is a separate question, asked by rebuild_reason_for.
     bool profile_matches(std::string_view object_profile) const
     {
         const auto stored = profile_file_.read_first_line();
@@ -2336,19 +2301,19 @@ public:
             return output::rebuild_info{
                 .kind = kind,
                 .module = std::string{std_module_name},
-                .pcm_path = pcm_path_};
+                .bmi_path = bmi_path_};
         };
 
-        if(not fs::exists(pcm_path_))
-            return module_of(output::rebuild_kind::own_pcm_missing);
+        if(not fs::exists(bmi_path_))
+            return module_of(output::rebuild_kind::own_bmi_missing);
         if(not profile_matches(
                std::forward<decltype(object_profile_of)>(object_profile_of)()))
             return module_of(output::rebuild_kind::profile_change);
-        if(fs::last_write_time(pcm_path_) < fs::last_write_time(source_path))
-            return module_of(output::rebuild_kind::own_pcm_stale);
+        if(fs::last_write_time(bmi_path_) < fs::last_write_time(source_path))
+            return module_of(output::rebuild_kind::own_bmi_stale);
         if(not fs::exists(object_path_))
             return module_of(output::rebuild_kind::object_missing);
-        if(fs::last_write_time(object_path_) < fs::last_write_time(pcm_path_))
+        if(fs::last_write_time(object_path_) < fs::last_write_time(bmi_path_))
             return module_of(output::rebuild_kind::object_stale);
         return std::nullopt;
     }
@@ -2377,7 +2342,7 @@ private:
         const auto directory = root / profile{std::string{shared_profile}}.key();
         return shared_slot{
             .directory = directory,
-            .pcm = directory / fs::path{pcm_path_}.filename(),
+            .bmi = directory / fs::path{bmi_path_}.filename(),
             .object = directory / fs::path{object_path_}.filename(),
             .profile = storage_file{(directory / shared_profile_filename).string()}};
     }
@@ -2388,31 +2353,31 @@ private:
         if(slot.profile.read_first_line() != shared_profile)
             return false;
         auto error = std::error_code{};
-        if(not fs::is_regular_file(slot.pcm, error) or error)
+        if(not fs::is_regular_file(slot.bmi, error) or error)
             return false;
         error.clear();
         if(not fs::is_regular_file(slot.object, error) or error)
             return false;
 
-        fs::create_directories(fs::path{pcm_path_}.parent_path());
+        fs::create_directories(fs::path{bmi_path_}.parent_path());
         fs::create_directories(fs::path{object_path_}.parent_path());
         const auto nonce = shared_nonce();
-        const auto temporary_pcm = fs::path{pcm_path_ + ".shared-" + nonce};
+        const auto temporary_bmi = fs::path{bmi_path_ + ".shared-" + nonce};
         const auto temporary_object = fs::path{object_path_ + ".shared-" + nonce};
-        if(not link_or_copy_file(slot.pcm, temporary_pcm)
+        if(not link_or_copy_file(slot.bmi, temporary_bmi)
            or not link_or_copy_file(slot.object, temporary_object))
         {
-            fs::remove(temporary_pcm, error);
+            fs::remove(temporary_bmi, error);
             fs::remove(temporary_object, error);
             return false;
         }
 
-        fs::remove(pcm_path_, error);
+        fs::remove(bmi_path_, error);
         error.clear();
-        fs::rename(temporary_pcm, pcm_path_, error);
+        fs::rename(temporary_bmi, bmi_path_, error);
         if(error)
         {
-            fs::remove(temporary_pcm, error);
+            fs::remove(temporary_bmi, error);
             fs::remove(temporary_object, error);
             return false;
         }
@@ -2421,7 +2386,7 @@ private:
         fs::rename(temporary_object, object_path_, error);
         if(error)
         {
-            fs::remove(pcm_path_, error);
+            fs::remove(bmi_path_, error);
             fs::remove(temporary_object, error);
             return false;
         }
@@ -2433,7 +2398,7 @@ public:
                                 std::invocable auto&& shared_profile_of,
                                 std::invocable auto&& object_profile_of) const
     {
-        if(reason.kind != output::rebuild_kind::own_pcm_missing)
+        if(reason.kind != output::rebuild_kind::own_bmi_missing)
             return {};
         const auto root = shared_root();
         if(not root)
@@ -2463,7 +2428,7 @@ public:
         {
             const auto slot = shared_slot_for(*root, shared_profile);
             if(slot.profile.read_first_line() == shared_profile
-               and fs::is_regular_file(slot.pcm)
+               and fs::is_regular_file(slot.bmi)
                and fs::is_regular_file(slot.object))
                 return {.ok = true};
 
@@ -2474,10 +2439,10 @@ public:
             if(not fs::create_directories(staging, error) or error)
                 return {};
 
-            const auto staged_pcm = staging / slot.pcm.filename();
+            const auto staged_bmi = staging / slot.bmi.filename();
             const auto staged_object = staging / slot.object.filename();
             const auto staged_profile = staging / shared_profile_filename;
-            if(not link_or_copy_file(pcm_path_, staged_pcm)
+            if(not link_or_copy_file(bmi_path_, staged_bmi)
                or not link_or_copy_file(object_path_, staged_object))
             {
                 fs::remove_all(staging, error);
@@ -2549,7 +2514,7 @@ private:
     }
 
     storage_file profile_file_;
-    std::string pcm_path_;
+    std::string bmi_path_;
     std::string object_path_;
 };
 
@@ -2574,9 +2539,9 @@ private:
 class analyzer
 {
 public:
-    analyzer(std::string source_root, std::string pcm_root)
+    analyzer(std::string source_root, std::string bmi_root)
         : source_root_{detail::canonical_path(source_root)},
-          pcm_root_{detail::canonical_path(pcm_root)}
+          bmi_root_{detail::canonical_path(bmi_root)}
     {}
 
     std::optional<output::rebuild_info> rebuild_reason_for(
@@ -2628,29 +2593,29 @@ public:
         if(tu.kind == unit_kind::implementation_unit and units.contains(tu.module))
         {
             const auto& interface = *units.at(tu.module);
-            if(not fs::exists(interface.pcm_path))
-                return pcm_rebuild(output::rebuild_kind::dependency_pcm_stale, interface);
-            if(fs::last_write_time(interface.pcm_path) > object_timestamp)
-                return pcm_rebuild(output::rebuild_kind::pcm_stale, interface);
+            if(not fs::exists(interface.bmi_path))
+                return bmi_rebuild(output::rebuild_kind::dependency_bmi_stale, interface);
+            if(fs::last_write_time(interface.bmi_path) > object_timestamp)
+                return bmi_rebuild(output::rebuild_kind::bmi_stale, interface);
             if(auto interface_reason = rebuild_reason_for(interface, loaded, units))
                 return attributed_to(*interface_reason, interface);
         }
 
         auto freshness_timestamp = object_timestamp;
-        auto object_stale_vs_pcm = false;
+        auto object_stale_vs_bmi = false;
         if(tu.is_modular)
         {
-            if(not fs::exists(tu.pcm_path))
-                return pcm_rebuild(output::rebuild_kind::own_pcm_missing, tu);
-            const auto pcm_timestamp = fs::last_write_time(tu.pcm_path);
-            if(pcm_timestamp < tu.last_modified)
-                return pcm_rebuild(output::rebuild_kind::own_pcm_stale, tu);
+            if(not fs::exists(tu.bmi_path))
+                return bmi_rebuild(output::rebuild_kind::own_bmi_missing, tu);
+            const auto bmi_timestamp = fs::last_write_time(tu.bmi_path);
+            if(bmi_timestamp < tu.last_modified)
+                return bmi_rebuild(output::rebuild_kind::own_bmi_stale, tu);
             if(object_absent)
-                freshness_timestamp = pcm_timestamp;
-            else if(object_timestamp < pcm_timestamp)
+                freshness_timestamp = bmi_timestamp;
+            else if(object_timestamp < bmi_timestamp)
             {
-                freshness_timestamp = pcm_timestamp;
-                object_stale_vs_pcm = true;
+                freshness_timestamp = bmi_timestamp;
+                object_stale_vs_bmi = true;
             }
 
             if(auto header_reason = stale_header(tu, freshness_timestamp))
@@ -2658,7 +2623,7 @@ public:
         }
 
         auto visited = std::flat_set<std::string>{};
-        if(auto stale = transitive_pcm_newer_than_object(
+        if(auto stale = transitive_bmi_newer_than_object(
                tu, freshness_timestamp, units, visited))
             return stale;
 
@@ -2669,9 +2634,9 @@ public:
 
             const auto& dependency = *units.at(dependency_key);
             if(dependency.is_modular
-               and (not fs::exists(dependency.pcm_path)
-                    or fs::last_write_time(dependency.pcm_path) < dependency.last_modified))
-                return pcm_rebuild(output::rebuild_kind::dependency_pcm_stale, dependency);
+               and (not fs::exists(dependency.bmi_path)
+                    or fs::last_write_time(dependency.bmi_path) < dependency.last_modified))
+                return bmi_rebuild(output::rebuild_kind::dependency_bmi_stale, dependency);
             if(auto dependency_reason = rebuild_reason_for(dependency, loaded, units))
                 return attributed_to(*dependency_reason, dependency);
         }
@@ -2680,8 +2645,8 @@ public:
             return output::rebuild_info{
                 .kind = output::rebuild_kind::object_missing,
                 .trigger_path = tu.full_path};
-        if(object_stale_vs_pcm)
-            return pcm_rebuild(output::rebuild_kind::object_stale, tu);
+        if(object_stale_vs_bmi)
+            return bmi_rebuild(output::rebuild_kind::object_stale, tu);
         if(object_timestamp < loaded.entries().at(tu.full_path))
             return output::rebuild_info{
                 .kind = output::rebuild_kind::object_stale,
@@ -2741,12 +2706,12 @@ private:
         return prerequisites;
     }
 
-    static output::rebuild_info pcm_rebuild(output::rebuild_kind kind,
+    static output::rebuild_info bmi_rebuild(output::rebuild_kind kind,
                                             const source::translation_unit& tu)
     {
         return {.kind = kind,
                 .module = tu.module,
-                .pcm_path = tu.pcm_path,
+                .bmi_path = tu.bmi_path,
                 .trigger_path = tu.full_path};
     }
 
@@ -2760,7 +2725,7 @@ private:
         return reason;
     }
 
-    std::optional<output::rebuild_info> transitive_pcm_newer_than_object(
+    std::optional<output::rebuild_info> transitive_bmi_newer_than_object(
         const source::translation_unit& tu,
         fs::file_time_type object_timestamp,
         const source::unit_index& units,
@@ -2772,14 +2737,14 @@ private:
                 continue;
 
             const auto& dependency = *units.at(dependency_key);
-            if(dependency.is_modular and fs::exists(dependency.pcm_path)
-               and fs::last_write_time(dependency.pcm_path) > object_timestamp)
-                return pcm_rebuild(output::rebuild_kind::pcm_stale, dependency);
+            if(dependency.is_modular and fs::exists(dependency.bmi_path)
+               and fs::last_write_time(dependency.bmi_path) > object_timestamp)
+                return bmi_rebuild(output::rebuild_kind::bmi_stale, dependency);
 
             if(visited.contains(dependency.unit))
                 continue;
             visited.insert(dependency.unit);
-            if(auto stale = transitive_pcm_newer_than_object(
+            if(auto stale = transitive_bmi_newer_than_object(
                    dependency, object_timestamp, units, visited))
                 return stale;
         }
@@ -2790,7 +2755,7 @@ private:
         const source::translation_unit& tu,
         fs::file_time_type freshness_timestamp) const
     {
-        const auto depfile = layout::paths::depfile(tu.object_path);
+        const auto depfile = build_tree::paths::depfile(tu.object_path);
         const auto prerequisites = parse_depfile(depfile);
         if(not prerequisites)
             return output::rebuild_info{
@@ -2803,7 +2768,7 @@ private:
             // Explicitly mapped BMIs are module-graph inputs, not textual headers.
             if(resolved == tu.full_path
                or not detail::path_at_or_under_root(resolved, source_root_)
-               or detail::path_at_or_under_root(resolved, pcm_root_))
+               or detail::path_at_or_under_root(resolved, bmi_root_))
                 continue;
 
             auto error = std::error_code{};
@@ -2821,7 +2786,7 @@ private:
     }
 
     std::string source_root_;
-    std::string pcm_root_;
+    std::string bmi_root_;
 };
 
 } // namespace cache
@@ -3005,8 +2970,7 @@ private:
     {
         if(std::exchange(reported, true))
             return;
-        notify(&observer::build_end, ok,
-               interval{started, std::chrono::steady_clock::now()});
+        notify(&observer::build_end, ok, interval{started, std::chrono::steady_clock::now()});
     }
 
     std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
@@ -3103,8 +3067,7 @@ public:
     // An unreported run retains the default failed result.
     ~test_scope()
     {
-        notify(&observer::test_end, result,
-               interval{started, std::chrono::steady_clock::now()});
+        notify(&observer::test_end, result, interval{started, std::chrono::steady_clock::now()});
         if(reported and not result.ok())
             notify(&observer::error, test_failure_message(result));
     }
@@ -3142,8 +3105,8 @@ public:
         if(not capture_path.empty())
             shell_line += " > " + shell_quote(capture_path) + " 2>&1";
 
-        output::notify(&output::observer::command, cmd_str);
-        output::notify(&output::observer::command_start, cmd_str, argv);
+        notify(&observer::command, cmd_str);
+        notify(&observer::command_start, cmd_str, argv);
 
         const auto started = std::chrono::steady_clock::now();
         // Apple's libc serializes std::system; posix_spawn does not. Still go through
@@ -3184,8 +3147,7 @@ public:
         if(not spawn_error.empty() and result.diag.head.empty())
             result.diag.head = std::move(spawn_error);
 
-        output::notify(&output::observer::command_end, cmd_str, argv, result,
-                       output::interval{started, finished});
+        notify(&observer::command_end, cmd_str, argv, result, output::interval{started, finished});
         return result;
     }
 
@@ -3321,9 +3283,10 @@ private:
     // Indexed after scanning for per-TU transitive BMI requests.
     toolchain::module_interface_map module_interfaces;
     bool toolchain_profile_probed = false;
+    std::string compiler_version{};
     source::translation_unit_list units_in_topological_order;
     const build_config config;
-    const layout::paths artifact_paths;
+    const build_tree::paths artifact_paths;
     bool include_tests = false;
     bool include_examples = false;
     const bool include_tests_for_build;
@@ -3362,40 +3325,25 @@ private:
         const auto stamp = cache::compiler_stamp{artifact_paths.cache.string()};
         if(process_runner.invoke_shell(driver.version_argv(), stamp.path()).ok())
         {
-            driver.set_compiler_version(stamp.read());
-            const auto identity = driver.identity();
+            compiler_version = stamp.read();
             // Surface the probe's first line in console output.
-            if(not identity.compiler_version.empty())
-                output::notify(&output::observer::info, identity.compiler_version);
+            if(not compiler_version.empty())
+                notify(&observer::info, compiler_version);
         }
     }
 
     void report_toolchain_configuration() const
     {
-        const auto flags = driver.flags();
+        const auto state = driver.state();
         const auto static_note = driver.static_linking() ? " (static C++ stdlib)"s : ""s;
-        output::notify(
-            &output::observer::info,
-            "Building "s + (config == build_config::release ? "RELEASE" : "DEBUG")
-                + " configuration" + static_note);
+        notify(&observer::info, "Building {} configuration{}",
+               config == build_config::release ? "RELEASE" : "DEBUG", static_note);
         for(const auto& warning : driver.warnings())
-            output::notify(
-                &output::observer::warning,
-                warning);
-        if(not flags.extra_link.empty())
-        {
-            output::notify(
-                &output::observer::info,
-                "Added extra linker flags: "s
-                    + cb::flags::codec::serialize(flags.extra_link));
-        }
-        if(not flags.extra_compile.empty())
-        {
-            output::notify(
-                &output::observer::info,
-                "Added extra compile flags: "s
-                    + cb::flags::codec::serialize(flags.extra_compile));
-        }
+            notify(&observer::warning, warning);
+        if(not state.extra_link.empty())
+            notify(&observer::info, "Added extra linker flags: {}", cb::flags::codec::serialize(state.extra_link));
+        if(not state.extra_compile.empty())
+            notify(&observer::info, "Added extra compile flags: {}", cb::flags::codec::serialize(state.extra_compile));
     }
 
     void index_module_interfaces()
@@ -3417,8 +3365,8 @@ private:
         if (tu.is_modular) {
             if (tu.module.empty())
                 throw std::logic_error{"modular unit missing module name: " + tu.filename};
-            if (tu.pcm_path.empty())
-                throw std::logic_error{"modular unit missing PCM path: " + tu.filename};
+            if (tu.bmi_path.empty())
+                throw std::logic_error{"modular unit missing BMI path: " + tu.filename};
         }
         
         if (tu.kind == unit_kind::implementation_unit and tu.module.empty())
@@ -3510,19 +3458,18 @@ private:
 
     std::string cache_profile(bool include_project_includes) {
         ensure_toolchain_profile();
-        const auto identity = driver.identity();
-        const auto flags = driver.flags();
+        const auto state = driver.state();
         return cache::profile{cache::profile::ingredients{
             .config = config_name(),
             .static_link = driver.static_linking(),
             .module_phases = driver.module_phases_name(),
-            .toolchain_root = identity.toolchain_root,
-            .compiler = identity.compiler,
-            .compiler_signature = identity.compiler_signature,
-            .compiler_version = identity.compiler_version,
-            .std_module = identity.std_module_profile,
-            .compile_flags = flags.compile,
-            .cpp_flags = include_project_includes ? &flags.cpp : nullptr,
+            .toolchain_root = state.toolchain_root,
+            .compiler = state.compiler,
+            .compiler_signature = state.compiler_signature,
+            .compiler_version = compiler_version,
+            .std_module = state.std_module_profile,
+            .compile_flags = state.compile,
+            .cpp_flags = include_project_includes ? &state.cpp : nullptr,
         }}.text();
     }
 
@@ -3536,19 +3483,19 @@ private:
 
     cache::link_store make_link_store() const
     {
-        const auto flags = driver.flags();
+        const auto state = driver.state();
         return cache::link_store{
             artifact_paths.cache.string(),
-            {.compile_flags = flags.compile,
-             .link_flags = flags.link,
-             .module_flags = flags.modules}};
+            {.compile_flags = state.compile,
+             .link_flags = state.link,
+             .module_flags = state.modules}};
     }
 
     cache::standard_module_store make_standard_module_store() const
     {
         return cache::standard_module_store{
             artifact_paths.cache.string(),
-            artifact_paths.std_pcm(),
+            artifact_paths.std_bmi(),
             artifact_paths.std_object()};
     }
 
@@ -3557,13 +3504,13 @@ private:
     void attach_artifact_paths(source::translation_unit_list& units)
     {
         auto object_owners = std::flat_map<std::string, std::string, std::less<>>{};
-        auto pcm_owners = std::flat_map<std::string, std::string, std::less<>>{};
+        auto bmi_owners = std::flat_map<std::string, std::string, std::less<>>{};
         auto executable_owners = std::flat_map<std::string, std::string, std::less<>>{};
 
         // Reserve the libc++ std module artifacts so a project TU named `std`
         // (std.c++ / export module std;) cannot silently overwrite them.
         object_owners.emplace(artifact_paths.std_object(), "reserved std module object");
-        pcm_owners.emplace(artifact_paths.std_pcm(), "reserved std module PCM");
+        bmi_owners.emplace(artifact_paths.std_bmi(), "reserved std module BMI");
 
         const auto claim = [](auto& owners,
                               const std::string& path,
@@ -3586,8 +3533,8 @@ private:
             claim(object_owners, tu.object_path, source_label, "object");
 
             if (tu.is_modular) {
-                tu.pcm_path = artifact_paths.pcm_file(tu);
-                claim(pcm_owners, tu.pcm_path, source_label, "PCM");
+                tu.bmi_path = artifact_paths.bmi_file(tu);
+                claim(bmi_owners, tu.bmi_path, source_label, "BMI");
             }
             if (tu.has_main) {
                 tu.executable_path = artifact_paths.executable(tu);
@@ -3607,15 +3554,15 @@ private:
 
     // Standard library module
 
-    // Observers see what they see for a project modular unit: one source, one pcm, one object.
+    // Observers see what they see for a project modular unit: one source, one BMI, one object.
     // The strings are the caller's, because compile_unit holds views.
-    output::compile_unit std_compile_unit(const std::string& pcm,
+    output::compile_unit std_compile_unit(const std::string& bmi,
                                           const std::string& object,
                                           const std::string& display) const
     {
-        return {.source = driver.identity().std_module_source,
+        return {.source = driver.state().std_module_source,
                 .object = object,
-                .pcm = pcm,
+                .bmi = bmi,
                 .module = std_module_name,
                 .display_path = display};
     }
@@ -3623,26 +3570,26 @@ private:
     void notify_std_cache_warning(const cache::standard_module_store::transfer_result& result) const
     {
         if(not result.warning.empty())
-            output::notify(&output::observer::warning, result.warning);
+            notify(&observer::warning, result.warning);
     }
 
     void build_std_module()
     {
-        const auto identity = driver.identity();
-        const auto pcm = artifact_paths.std_pcm();
+        const auto state = driver.state();
+        const auto bmi = artifact_paths.std_bmi();
         const auto object = artifact_paths.std_object();
-        const auto display = fs::path{identity.std_module_source}.filename().string();
-        const auto unit = std_compile_unit(pcm, object, display);
+        const auto display = fs::path{state.std_module_source}.filename().string();
+        const auto unit = std_compile_unit(bmi, object, display);
         auto std_store = make_standard_module_store();
         const auto reason = std_store.rebuild_reason_for(
-            identity.std_module_source, [&]() { return object_cache_profile(); });
+            state.std_module_source, [&]() { return object_cache_profile(); });
 
         if(not reason)
         {
             const auto hit = output::compile_scope{unit};
             return;
         }
-        // The store only attempts hydration for a missing local PCM. In particular, cache
+        // The store only attempts hydration for a missing local BMI. In particular, cache
         // invalidate removes the local profile and must continue to force a rebuild.
         const auto hydrated = std_store.hydrate_for(
             *reason,
@@ -3660,13 +3607,13 @@ private:
             reason->kind == output::rebuild_kind::object_missing
             or reason->kind == output::rebuild_kind::object_stale;
         for(const auto& step :
-            driver.compile_standard_module(pcm, object, object_only))
+            driver.compile_standard_module(bmi, object, object_only))
         {
             process_runner.run_step(
                 compile,
                 step.argv,
-                layout::paths::compile_log(
-                    step.output == toolchain::compile_output::bmi ? unit.pcm : unit.object));
+                build_tree::paths::compile_log(
+                    step.output == toolchain::compile_output::bmi ? unit.bmi : unit.object));
             if(step.writes_bmi)
                 std_store.save_profile(object_cache_profile());
         }
@@ -3682,11 +3629,11 @@ private:
                       std::invocable auto&& on_dependency_ready) {
         const auto unit = output::compile_unit_of(tu);
         auto compile = output::compile_scope{unit, rebuild};
-        // Two-phase: object_missing / object_stale reuse the pcm that is already there —
-        // same split build_std_module uses. Re-precompiling would bump the pcm mtime and
-        // force every importer through pcm_stale for no interface change.
+        // Two-phase: object_missing / object_stale reuse the BMI that is already there —
+        // same split build_std_module uses. Re-precompiling would bump the BMI mtime and
+        // force every importer through bmi_stale for no interface change.
         // One-phase: the BMI is a sibling of the object (reduced on Clang 22+), not an
-        // input that can be compiled to .o — always re-read the source, as std does.
+        // input that can be compiled to an object — always re-read the source, as std does.
         const auto object_only =
             rebuild.kind == output::rebuild_kind::object_missing
             or rebuild.kind == output::rebuild_kind::object_stale;
@@ -3695,8 +3642,8 @@ private:
             process_runner.run_step(
                 compile,
                 step.argv,
-                layout::paths::compile_log(
-                    step.output == toolchain::compile_output::bmi ? unit.pcm : unit.object));
+                build_tree::paths::compile_log(
+                    step.output == toolchain::compile_output::bmi ? unit.bmi : unit.object));
             if(step.dependencies_ready)
                 on_dependency_ready();
         }
@@ -3708,17 +3655,15 @@ private:
         auto objects = make_object_store();
         objects.load(object_cache_profile());
         if(objects.missing_profile_header())
-            output::notify(&output::observer::info,
-                           "Object cache missing profile header; ignoring"s);
+            notify(&observer::info, "Object cache missing profile header; ignoring");
         if(objects.profile_change())
-            output::notify(&output::observer::profile_changed,
-                           output::rebuild_kind::profile_change,
-                           *objects.profile_change());
+            notify(&observer::profile_changed, output::rebuild_kind::profile_change,
+                   *objects.profile_change());
 
         auto u2tu = source::unit_index{};
         for(const auto& tu : units_in_topological_order)
             u2tu.emplace(std::string_view{tu.unit}, &tu);
-        const auto cache_analyzer = cache::analyzer{source_dir, artifact_paths.pcm.string()};
+        const auto cache_analyzer = cache::analyzer{source_dir, artifact_paths.bmi.string()};
 
         const auto unit_count = units_in_topological_order.size();
         auto unit_to_index = std::flat_map<std::string, std::size_t, std::less<>>{};
@@ -3852,7 +3797,7 @@ private:
         process_runner.run_step(
             link,
             driver.link_argv(main.executable_path, input_paths, import_flags),
-            layout::paths::link_log(main.executable_path));
+            build_tree::paths::link_log(main.executable_path));
         link.succeeded();
     }
 
@@ -3951,7 +3896,7 @@ private:
         }
 
         perform_link(runner, input_paths, import_flags, *reason, signature);
-        output::notify(&output::observer::success, "test_runner linked with test objects");
+        notify(&observer::success, "test_runner linked with test objects");
         links.remember(runner.executable_path, signature);
         links.save();
     }
@@ -3960,7 +3905,7 @@ private:
 
     void build_steps()
     {
-        fs::create_directories(artifact_paths.pcm);
+        fs::create_directories(artifact_paths.bmi);
         fs::create_directories(artifact_paths.obj);
         fs::create_directories(artifact_paths.bin);
         fs::create_directories(artifact_paths.cache);
@@ -4026,8 +3971,8 @@ public:
               .include_paths = std::move(values.include_paths),
               .extra_compile_flags = std::move(values.extra_compile_flags),
               .extra_link_flags = std::move(values.extra_link_flags)},
-              artifact_paths.std_pcm(),
-              artifact_paths.pcm.string(),
+              artifact_paths.std_bmi(),
+              artifact_paths.bmi.string(),
               [this](const std::string& candidate)
               {
                   return command_available(candidate);
@@ -4040,10 +3985,9 @@ public:
         const auto& dir = artifact_paths.root;
         if (fs::exists(dir)) {
             fs::remove_all(dir);
-            output::notify(&output::observer::success, "Removed "s + dir.string());
+            notify(&observer::success, "Removed {}", dir.string());
         } else {
-            output::notify(
-                &output::observer::info, "Nothing to clean for "s + dir.string());
+            notify(&observer::info, "Nothing to clean for {}", dir.string());
         }
     }
 
@@ -4054,15 +3998,13 @@ public:
         include_tests = true;
         if(not fs::exists(artifact_paths.obj) and not fs::exists(artifact_paths.bin))
         {
-            output::notify(&output::observer::info,
-                           "Nothing to clean for test objects under "s
-                               + artifact_paths.root.string());
+            notify(&observer::info, "Nothing to clean for test objects under {}", artifact_paths.root.string());
             return;
         }
 
         scan_and_order();
 
-        // Object-cache keys are source paths (full_path), not .o paths.
+        // Object-cache keys are source paths (full_path), not object paths.
         auto dropped_sources = std::flat_set<std::string, std::less<>>{};
         auto removed = 0;
 
@@ -4081,18 +4023,18 @@ public:
             if(not tu.object_path.empty())
             {
                 try_remove(tu.object_path);
-                try_remove(layout::paths::depfile(tu.object_path));
-                try_remove(layout::paths::compile_log(tu.object_path));
+                try_remove(build_tree::paths::depfile(tu.object_path));
+                try_remove(build_tree::paths::compile_log(tu.object_path));
             }
-            if(tu.is_modular and not tu.pcm_path.empty())
+            if(tu.is_modular and not tu.bmi_path.empty())
             {
-                try_remove(tu.pcm_path);
-                try_remove(layout::paths::compile_log(tu.pcm_path));
+                try_remove(tu.bmi_path);
+                try_remove(build_tree::paths::compile_log(tu.bmi_path));
             }
             if(is_runner and not tu.executable_path.empty())
             {
                 try_remove(tu.executable_path);
-                try_remove(layout::paths::link_log(tu.executable_path));
+                try_remove(build_tree::paths::link_log(tu.executable_path));
             }
         }
 
@@ -4101,8 +4043,7 @@ public:
         {
             objects.load(object_cache_profile());
             if(objects.missing_profile_header())
-                output::notify(&output::observer::info,
-                               "Object cache missing profile header; ignoring"s);
+                notify(&observer::info, "Object cache missing profile header; ignoring");
             if(not objects.profile_change())
             {
                 auto erased = false;
@@ -4126,13 +4067,9 @@ public:
         }
 
         if(removed == 0)
-            output::notify(&output::observer::info,
-                           "No test objects to remove under "s
-                               + artifact_paths.root.string());
+            notify(&observer::info, "No test objects to remove under {}", artifact_paths.root.string());
         else
-            output::notify(&output::observer::success,
-                           "Removed " + std::to_string(removed) + " test artifact(s) under "s
-                               + artifact_paths.root.string());
+            notify(&observer::success, "Removed {} test artifact(s) under {}", removed, artifact_paths.root.string());
     }
 
     void cache_status()
@@ -4152,9 +4089,7 @@ public:
         const auto std_status = std_modules.status(current_profile);
         const auto stamp = cache::compiler_stamp{artifact_paths.cache.string()};
 
-        output::notify(
-            &output::observer::cache_status,
-            output::cache_inventory{
+        notify(&observer::cache_status, output::cache_inventory{
                 .object_cache_path = objects.path(),
                 .object_cache_exists = object_status.exists,
                 .profile_match = object_status.profile_match,
@@ -4176,7 +4111,7 @@ public:
         fs::create_directories(artifact_paths.cache);
 
         // Every file cache_status reports, so the two commands cannot disagree about what the
-        // cache is. The std module profile is the one that makes CB rebuild std.pcm.
+        // cache is. The std module profile is the one that makes CB rebuild the std BMI.
         const auto removed = output::cache_removals{
             .object_cache = make_object_store().invalidate(),
             .executable_cache = make_link_store().invalidate(),
@@ -4184,7 +4119,7 @@ public:
                 cache::compiler_stamp{artifact_paths.cache.string()}.invalidate(),
             .std_module_profile = make_standard_module_store().invalidate()};
 
-        output::notify(&output::observer::cache_invalidate_end, removed);
+        notify(&observer::cache_invalidate_end, removed);
     }
 
     std::ptrdiff_t job_limit() const {
@@ -4201,14 +4136,12 @@ public:
         build_steps();
         build.succeeded();
 
-        output::notify(
-            &output::observer::success,
-            "Build completed: "s + artifact_paths.root.string());
+        notify(&observer::success, "Build completed: {}", artifact_paths.root.string());
     }
 
     // Returns false when the test runner reports failures (normal outcome, not exceptional).
     bool run_tests(const std::vector<std::string>& args = {}) {
-        output::notify(&output::observer::info, "=== Running tests ===");
+        notify(&observer::info, "=== Running tests ===");
 
         include_tests = true;
         {
@@ -4219,9 +4152,7 @@ public:
             link_test_runner();
             build.succeeded();
         }
-        output::notify(
-            &output::observer::success,
-            "Build completed: "s + artifact_paths.root.string());
+        notify(&observer::success, "Build completed: {}", artifact_paths.root.string());
 
         // From the unit link_test_runner just linked, so what runs is what was linked.
         const auto& runner = test_runner_unit().executable_path;
@@ -4247,7 +4178,7 @@ public:
 
     // The compilation-database entry for a source is the argv that reads that source —
     // --precompile for two-phase modular interfaces/partitions, -c for everything else. The
-    // second two-phase step (pcm → .o) is omitted: it has no distinct source path for clangd.
+    // second two-phase step (BMI → object) is omitted: it has no distinct source path for clangd.
     string_list compile_argv_for_database(const source::translation_unit& tu) const
     {
         return driver.compile_database_argv(tu, module_interfaces);
@@ -4274,9 +4205,7 @@ public:
             }
             file << "\n]\n";
         });
-        output::notify(&output::observer::info,
-                       "Wrote "s + path + " (" + std::to_string(units_in_topological_order.size())
-                           + " entries)");
+        notify(&observer::info, "Wrote {} ({} entries)", path, units_in_topological_order.size());
     }
 
     // Convenience dump of the same graph `list --jsonl` streams as `unit` events — for tools
@@ -4320,9 +4249,7 @@ public:
             file << "  \"max_level\": " << inventory.max_level << "\n";
             file << "}\n";
         });
-        output::notify(&output::observer::info,
-                       "Wrote "s + path + " (" + std::to_string(inventory.units.size())
-                           + " units)");
+        notify(&observer::info, "Wrote {} ({} units)", path, inventory.units.size());
     }
 
     void list_sources() {
@@ -4330,7 +4257,7 @@ public:
         index_module_interfaces();
         write_compile_commands();
         auto inventory = output::source_inventory{
-            .config = std::string{config_name()},
+            .config = config_name(),
             .include_tests = include_tests,
             .include_examples = include_examples,
             .source_dir = source_dir,
@@ -4347,7 +4274,7 @@ public:
                 inventory.max_level = std::max(inventory.max_level, tu.dependency_level);
         }
         write_graph_json(inventory);
-        output::notify(&output::observer::source_list, inventory);
+        notify(&observer::source_list, inventory);
     }
 };
 
@@ -4664,7 +4591,7 @@ public:
             << "  --jobs=N         Cap concurrent compile/link; also forward to test_runner\n"
             << "                   (compile default: CPU count; test_runner default: 1)\n"
             << "  --modules=<two-phase|one-phase>  How modular units compile (default: two-phase)\n"
-            << "                   two-phase: --precompile to .pcm, then .pcm to .o\n"
+            << "                   two-phase: --precompile to BMI, then BMI to object\n"
             << "                   one-phase: one -c -fmodule-output= step for both\n"
             << "  -I, --include    Add include directory (can be specified multiple times)\n"
             << "  --link-flags     Add extra linker flags (e.g., --link-flags \"-lcrypto\")\n"
@@ -4726,6 +4653,9 @@ using namespace std::string_literals;
 
 int main(int argc, char* argv[])
 {
+    using cb::output::notify;
+    using cb::output::observer;
+
     auto console_observer = cb::output::console::observer{std::cerr};
     auto jsonl_observer = cb::output::jsonl::observer{std::cout};
     cb::output::register_observer("console", console_observer);
@@ -4741,6 +4671,9 @@ int main(int argc, char* argv[])
 
     try
     {
+        using cb::output::notify;
+        using cb::output::observer;
+
         // Default console until parse decides --jsonl; needed so parse/usage errors notify.
         cb::output::select_observer("console");
 
@@ -4751,8 +4684,7 @@ int main(int argc, char* argv[])
             jsonl_observer.set_mode(*opts.jsonl_mode);
         if(not cb::output::select_observer(opts.output_name))
         {
-            cb::output::notify(&cb::output::observer::error,
-                "Unknown output observer: "s + opts.output_name);
+            notify(&observer::error, "Unknown output observer: {}", opts.output_name);
             return 1;
         }
 
@@ -4763,7 +4695,7 @@ int main(int argc, char* argv[])
         }
         if(not result)
         {
-            cb::output::notify(&cb::output::observer::error, result.error().message);
+            notify(&observer::error, result.error().message);
             using cb::cli::parse_error_kind;
             return result.error().kind == parse_error_kind::invalid_argument ? 2 : 1;
         }
@@ -4784,7 +4716,7 @@ int main(int argc, char* argv[])
         }
         if(opts.clean_tests_only and not opts.do_clean)
         {
-            cb::output::notify(&cb::output::observer::error, "--tests requires clean");
+            notify(&observer::error, "--tests requires clean");
             return 2;
         }
         if(opts.do_clean)
@@ -4808,12 +4740,12 @@ int main(int argc, char* argv[])
     }
     catch (const std::exception& e)
     {
-        cb::output::notify(&cb::output::observer::error, "Fatal error: "s + e.what());
+        notify(&observer::error, "Fatal error: {}", e.what());
         return 1;
     }
     catch (...)
     {
-        cb::output::notify(&cb::output::observer::error, "Fatal error: unknown exception");
+        notify(&observer::error, "Fatal error: unknown exception");
         return 1;
     }
 }

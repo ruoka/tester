@@ -118,8 +118,8 @@ inline void write_compile_unit(std::ostream& os, const compile_unit& unit)
 {
     os << ",\"source_path\":\"" << escape(unit.source) << "\"";
     os << ",\"object_path\":\"" << escape(unit.object) << "\"";
-    if(not unit.pcm.empty())
-        os << ",\"pcm_path\":\"" << escape(unit.pcm) << "\"";
+    if(not unit.bmi.empty())
+        os << ",\"bmi_path\":\"" << escape(unit.bmi) << "\"";
     if(not unit.module.empty())
         os << ",\"module_name\":\"" << escape(unit.module) << "\"";
 }
@@ -135,7 +135,7 @@ inline void write_rebuild(std::ostream& os,
     auto first = true;
     write_rebuild_field(os, "kind", rebuild_kind_name(rebuild.kind), first);
     write_rebuild_field(os, "module", rebuild.module, first);
-    write_rebuild_field(os, "pcm_path", rebuild.pcm_path, first);
+    write_rebuild_field(os, "bmi_path", rebuild.bmi_path, first);
     write_rebuild_field(os, "object_path", object_path, first);
     write_rebuild_field(os, "trigger_path", rebuild.trigger_path, first);
     write_rebuild_field(os, "hint", rebuild_hint(rebuild.kind), first);

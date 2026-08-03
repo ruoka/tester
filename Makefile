@@ -55,7 +55,7 @@ endif
 sourcedir = ./$(project)
 exampledir = ./examples
 toolsdir = ./tools
-moduledir = $(PREFIX)/pcm
+moduledir = $(PREFIX)/bmi
 objectdir = $(PREFIX)/obj
 librarydir = $(PREFIX)/lib
 binarydir = $(PREFIX)/bin

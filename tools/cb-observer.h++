@@ -6,12 +6,15 @@
 
 #include <algorithm>
 #include <chrono>
+#include <concepts>
+#include <format>
 #include <functional>
 #include <optional>
 #include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace cb::output {
@@ -75,14 +78,15 @@ void for_each_profile_tokens(Diff& diff, Callback&& callback)
 }
 
 // Built from a translation unit by source_unit_of; see compile_unit for the compile-event
-// projection. Members default so a designated initializer can name only what it means.
+// projection. Views into the TU (and literal kind names) — valid for the list/notify call.
+// Members default so a designated initializer can name only what it means.
 struct source_unit
 {
-    std::string unit;
-    std::string path;
-    std::string module;
-    std::string kind;
-    std::vector<std::string> imports;
+    std::string_view unit;
+    std::string_view path;
+    std::string_view module;
+    std::string_view kind;
+    std::span<const std::string> imports;
     int level = -1;
     bool has_main = false;
     bool is_test = false;
@@ -91,10 +95,10 @@ struct source_unit
 
 struct source_inventory
 {
-    std::string config;
+    std::string_view config;
     bool include_tests = false;
     bool include_examples = false;
-    std::string source_dir;
+    std::string_view source_dir;
     std::vector<source_unit> units{}; // filled after construction; the rest warn if omitted
     int main_count = 0;
     int test_count = 0;
@@ -122,7 +126,7 @@ struct compile_unit
 {
     std::string_view source;
     std::string_view object;
-    std::string_view pcm;    // empty unless the unit is modular
+    std::string_view bmi;    // empty unless the unit is modular
     std::string_view module; // empty unless the unit belongs to a module
 
     // How reports name this unit: the source relative to the project root. Not written to
@@ -141,10 +145,10 @@ enum class rebuild_kind
     depfile_unusable,
     object_missing,
     object_stale,
-    own_pcm_missing,
-    own_pcm_stale,
-    pcm_stale,
-    dependency_pcm_stale,
+    own_bmi_missing,
+    own_bmi_stale,
+    bmi_stale,
+    dependency_bmi_stale,
     profile_change,
     missing_executable,
     object_changed,
@@ -164,10 +168,10 @@ constexpr std::string_view rebuild_kind_name(rebuild_kind kind)
         case rebuild_kind::depfile_unusable: return "depfile_unusable";
         case rebuild_kind::object_missing: return "object_missing";
         case rebuild_kind::object_stale: return "object_stale";
-        case rebuild_kind::own_pcm_missing: return "own_pcm_missing";
-        case rebuild_kind::own_pcm_stale: return "own_pcm_stale";
-        case rebuild_kind::pcm_stale: return "pcm_stale";
-        case rebuild_kind::dependency_pcm_stale: return "dependency_pcm_stale";
+        case rebuild_kind::own_bmi_missing: return "own_bmi_missing";
+        case rebuild_kind::own_bmi_stale: return "own_bmi_stale";
+        case rebuild_kind::bmi_stale: return "bmi_stale";
+        case rebuild_kind::dependency_bmi_stale: return "dependency_bmi_stale";
         case rebuild_kind::profile_change: return "profile_change";
         case rebuild_kind::missing_executable: return "missing_executable";
         case rebuild_kind::object_changed: return "object_changed";
@@ -198,15 +202,15 @@ constexpr std::string_view rebuild_hint(rebuild_kind kind)
         case rebuild_kind::object_missing:
             return "Object file missing on disk.";
         case rebuild_kind::object_stale:
-            return "Object file older than cached source timestamp or its module PCM.";
-        case rebuild_kind::own_pcm_missing:
-            return "Module PCM missing on disk.";
-        case rebuild_kind::own_pcm_stale:
-            return "Module PCM older than its source.";
-        case rebuild_kind::pcm_stale:
-            return "Imported PCM newer than this object; recompile follows module graph.";
-        case rebuild_kind::dependency_pcm_stale:
-            return "Imported module PCM is missing or older than its source.";
+            return "Object file older than cached source timestamp or its module BMI.";
+        case rebuild_kind::own_bmi_missing:
+            return "Module BMI missing on disk.";
+        case rebuild_kind::own_bmi_stale:
+            return "Module BMI older than its source.";
+        case rebuild_kind::bmi_stale:
+            return "Imported BMI newer than this object; recompile follows module graph.";
+        case rebuild_kind::dependency_bmi_stale:
+            return "Imported module BMI is missing or older than its source.";
         case rebuild_kind::profile_change:
             return "Object-cache toolchain profile changed; see profile_changed event.";
         case rebuild_kind::missing_executable:
@@ -267,7 +271,7 @@ struct rebuild_info
 {
     rebuild_kind kind = rebuild_kind::none;
     std::string module{};
-    std::string pcm_path{};
+    std::string bmi_path{};
     std::string trigger_path{};
 
     bool empty() const { return kind == rebuild_kind::none; }
@@ -296,20 +300,20 @@ inline std::string compile_rebuild_message(const compile_unit& unit, const rebui
             return "Rebuilding " + label + " because included header " + info.trigger_path + " is missing or unreadable";
         case rebuild_kind::depfile_unusable:
             return "Rebuilding " + label + " because depfile " + info.trigger_path + " cannot be read; its header dependencies are unknown";
-        case rebuild_kind::pcm_stale:
-            return "Rebuilding " + label + " because PCM " + info.module + " is newer than the object (import graph)";
-        case rebuild_kind::dependency_pcm_stale:
-            return "Rebuilding " + label + " because imported module " + info.module + " PCM is missing or stale";
+        case rebuild_kind::bmi_stale:
+            return "Rebuilding " + label + " because BMI " + info.module + " is newer than the object (import graph)";
+        case rebuild_kind::dependency_bmi_stale:
+            return "Rebuilding " + label + " because imported module " + info.module + " BMI is missing or stale";
         case rebuild_kind::object_missing:
             return "Rebuilding " + label + " because object file is missing";
         case rebuild_kind::object_stale:
             if(not info.module.empty())
-                return "Rebuilding " + label + " because object file is older than PCM " + info.module;
+                return "Rebuilding " + label + " because object file is older than BMI " + info.module;
             return "Rebuilding " + label + " because object file is older than the cached source timestamp";
-        case rebuild_kind::own_pcm_missing:
-            return "Rebuilding " + label + " because its PCM is missing";
-        case rebuild_kind::own_pcm_stale:
-            return "Rebuilding " + label + " because its PCM is older than the source";
+        case rebuild_kind::own_bmi_missing:
+            return "Rebuilding " + label + " because its BMI is missing";
+        case rebuild_kind::own_bmi_stale:
+            return "Rebuilding " + label + " because its BMI is older than the source";
         default:
             return "Rebuilding " + label + " (" + std::string{rebuild_kind_name(info.kind)} + ")";
     }
@@ -373,7 +377,7 @@ struct cache_inventory
     int executable_entries = 0;
     std::string_view std_module_profile_path;
     bool std_module_profile_exists = false;
-    bool std_module_profile_match = false; // std.pcm was built by this profile
+    bool std_module_profile_match = false; // std BMI was built by this profile
     std::string_view compiler_stamp_path;
     bool compiler_stamp_exists = false;
     std::string_view current_profile;
@@ -505,10 +509,22 @@ void notify(Callback&& callback)
 }
 
 template<typename Method, typename... Args>
+requires std::invocable<Method, observer&, Args...>
 void notify(Method method, Args&&... args)
 {
     for(auto target : observers)
         std::invoke(method, target.get(), args...);
+}
+
+// Format once, then fan out — virtual info/success/… stay single string_view.
+template<typename... Args>
+requires (sizeof...(Args) >= 1)
+void notify(void (observer::*method)(std::string_view),
+            std::format_string<Args...> fmt,
+            Args&&... args)
+{
+    const auto message = std::format(fmt, std::forward<Args>(args)...);
+    notify(method, std::string_view{message});
 }
 
 inline std::string_view run_id()

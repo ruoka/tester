@@ -12,13 +12,13 @@ CB is optimized for **pure C++23 module projects** that follow ruoka layout conv
 
 - **Discovery** — scans `*.c++m`, `*.cppm`, `*.c++`, `*.cpp`, `*.impl.c++`, `*.test.c++`, and `*.test.c++m` under configured include roots (`supported_suffixes` in `cb.c++`)
 - **Module graph** — scans source preambles for `import` / `export module` and builds a dependency graph (no `clang-scan-deps` in `cb.c++`, which keeps scanning compiler-independent). Continued lines are spliced first, as translation phase 2 does — one substitution over the whole preamble, raw-string bodies included — and then comments, string literals and `#if 0` bodies are stripped before matching, so a commented-out `import` does not become a graph edge and a `#if \` / `0` region is as dead here as it is to the compiler; genuine `#ifdef` branches are over-approximated (every branch contributes an edge) because resolving them would require a preprocessor
-- **Topological compile order** — compiles module interfaces and partitions before importers; emits PCM files under `build-<os>-<config>/pcm/`
-- **Incremental caching** — skips recompilation when source timestamps and transitive PCM dependencies are unchanged (`cache_hit`, `rebuild_reason` in JSONL); compile cache invalidated when the **toolchain profile** changes (flags, compiler path, `std.cppm`, …); link step skipped when object signature unchanged
+- **Topological compile order** — compiles module interfaces and partitions before importers; emits BMI files under `build-<os>-<config>/bmi/`
+- **Incremental caching** — skips recompilation when source timestamps and transitive BMI dependencies are unchanged (`cache_hit`, `rebuild_reason` in JSONL); compile cache invalidated when the **toolchain profile** changes (flags, compiler path, `std.cppm`, …); link step skipped when object signature unchanged
 - **Parallel builds** — compiles independent translation units concurrently
 - **Test integration** — auto-discovers `*.test.c++`, links `test_runner`, forwards `test` / `--tags` / `--list` to the framework
 - **JSONL telemetry** — unified summary/failures/trace modes; trace includes `compile_end` and structured `argv`
 
-Artifacts land in `build-<os>-<config>/` (`pcm/`, `obj/`, `bin/`, `cache/`). Examples: `build-linux-debug/`, `build-darwin-release/`.
+Artifacts land in `build-<os>-<config>/` (`bmi/`, `obj/`, `bin/`, `cache/`). Examples: `build-linux-debug/`, `build-darwin-release/`.
 
 On first run, **`CB.sh.core` bootstraps CB itself** — it compiles `tools/cb.c++` into `build-*/bin/cb`. No separate build-tool install beyond a capable `clang++` and `std.cppm`.
 
@@ -42,7 +42,7 @@ Condensed from the original project pitch — why teams pick CB over wiring CMak
 - **Pure C++** — build orchestration lives in `cb.c++`; no CMake scripting, Makefile generation, YAML/TOML, or helper languages
 - **Single-file transparency** — the ~3,300-line orchestrator remains in one place, with presentation split into focused console/JSONL observers
 - **Zero config** — conventions (`*.c++m`, `import` lines, co-located `*.test.c++`) replace `CMakeLists.txt`
-- **Fast incremental loops** — object timestamp cache, link signature cache, transitive PCM staleness; suited to Docker/CI where rebuild time matters
+- **Fast incremental loops** — object timestamp cache, link signature cache, transitive BMI staleness; suited to Docker/CI where rebuild time matters
 - **No extra learning curve** — if you know C++ modules and can read `cb.c++`, you understand the build; no second DSL
 - **Cross-platform** — automatic OS detection (`build-<os>-<config>/`), Linux CI on Clang 21 (minimum) and macOS on a locally built LLVM (often newer) with per-repo `CB.sh` tuning
 - **Self-contained embed** — one file to vendor; parent repos add a thin `CB.sh` config block (`tools/CB.sh.template`)
@@ -96,11 +96,11 @@ Honest positioning — each tool has a sweet spot.
 
 | Concern | **CB** | **CMake** | **Make** (this repo's alternative) | **Ninja** | **Bazel** |
 |---------|--------|-----------|------------------------|-----------|-----------|
-| **C++23 module PCM ordering** | Built-in topological sort | Possible; manual or generator-dependent | Generated rules — `clang-scan-deps` p1689 here | Backend only; needs generator | Rules + toolchains |
+| **C++23 module BMI ordering** | Built-in topological sort | Possible; manual or generator-dependent | Generated rules — `clang-scan-deps` p1689 here | Backend only; needs generator | Rules + toolchains |
 | **Zero config for this layout** | Yes — convention over configuration | No — `CMakeLists.txt` required | Partial — existing `Makefile` | No — needs build file | No — `BUILD` files |
 | **Standalone clone → build → test** | One command | Several steps + generator | `make` targets vary | Via CMake/etc. | `bazel test` setup |
 | **Submodule embed** | `CB.sh.core` wrapper pattern | Per-parent project | Per-parent project | Via parent generator | Workspace rules |
-| **Incremental compile cache** | Object + link cache, PCM staleness | ccache / compiler cache | Timestamp rules | Same as generator | Hermetic cache |
+| **Incremental compile cache** | Object + link cache, BMI staleness | ccache / compiler cache | Timestamp rules | Same as generator | Hermetic cache |
 | **Parallel compilation** | Yes | Yes (with generator) | `-j` | Yes | Yes |
 | **Test runner integration** | First-class `CB.sh test` | CTest adapter | Separate `make tests` | Via CTest | `bazel test` |
 | **Agent/CI JSONL telemetry** | `compile_end`, `list --jsonl` | Adapters / custom | None | None | Event protocol |
@@ -119,7 +119,7 @@ The `Makefile` is a supported second path, not a leftover: it orders modules wit
 | `make run_examples` | Compile and run `examples/` demos (the default goal) |
 | `make tools` | Build utilities under `${BUILD_DIR}/bin/tools/` — Linux only: it globs `tools/*.c++`, and `core_pc.c++` includes `<elf.h>` |
 | `make deps` | Regenerate the module dependency graph only |
-| `make mostlyclean` | Drop `${BUILD_DIR}/obj` and `${BUILD_DIR}/pcm`, `std.pcm` included |
+| `make mostlyclean` | Drop `${BUILD_DIR}/obj` and `${BUILD_DIR}/bmi`, `std.pcm` included |
 | `make clean` | The above plus `bin/` and `lib/` |
 | `make dump` | Print every file-scope make variable, for debugging the configuration |
 
@@ -224,7 +224,7 @@ Pass `std.cppm` as the **first** argument when auto-detection fails: `./tools/CB
 
 **`--modules=<two-phase|one-phase>`** picks how a modular interface, partition, or `std.cppm` becomes a `.pcm` and a `.o`. Default `two-phase` runs `clang++ --precompile` and then compiles the resulting BMI. Its edge-driven scheduler publishes that BMI immediately, so importers can start while clang compiles the provider object. `one-phase` asks for both artefacts from a single `-c -fmodule-output=<pcm>` read of the source: the source is parsed once instead of twice, and Clang 22+ writes a [reduced BMI](https://clang.llvm.org/docs/StandardCPlusPlusModules.html#reduced-bmi) by default (on this tree, project BMIs dropped from 38 MB to 29 MB and a cold build from 19.2 s to 17.7 s).
 
-The mode is a profile field, so switching it recompiles every unit rather than mixing BMIs the two schemes do not produce identically. Everything else is unchanged: the BMI lands at the same path, `-fmodule-file=` wiring, staleness reasons, and `clean` do not care which command wrote it. Under two-phase, `object_missing` / `object_stale` reuse the existing BMI for the object step only when that BMI is still fresh versus imports and textual headers (an import PCM newer than the unit's own PCM is `pcm_stale` and re-precompiles); one-phase has no object-only shortcut — those reasons re-read the source with `-fmodule-output=` (a reduced BMI is not a valid `pcm → .o` input).
+The mode is a profile field, so switching it recompiles every unit rather than mixing BMIs the two schemes do not produce identically. Everything else is unchanged: the BMI lands at the same path, `-fmodule-file=` wiring, staleness reasons, and `clean` do not care which command wrote it. Under two-phase, `object_missing` / `object_stale` reuse the existing BMI for the object step only when that BMI is still fresh versus imports and textual headers (an import BMI newer than the unit's own BMI is `bmi_stale` and re-precompiles); one-phase has no object-only shortcut — those reasons re-read the source with `-fmodule-output=` (a reduced BMI is not a valid `bmi → .o` input).
 
 **`--jobs=N`** bounds concurrent compile and link processes. Without it CB uses `hardware_concurrency()`; the cap exists because each `clang++` invocation on a module-heavy TU can peak at hundreds of megabytes. CB uses a bounded worker pool rather than creating one thread per translation unit. When `--jobs=` is set on a `test` invocation, CB also forwards it to `test_runner` (runner default remains `1` = sequential).
 
@@ -270,13 +270,13 @@ Prerequisites are filtered to the project tree. Toolchain headers change as a un
 
 **Inspect cache:** `./tools/CB.sh debug cache status` (human) or `… cache status --jsonl` (`cache_status` event). Both describe all four files under `cache/` — object cache, executable cache, `std-module-profile.txt`, `compiler-version.txt` — with entry counts and profile matches where those exist. `cache status` reports the compiler stamp as present even straight after an invalidate: it has to probe the compiler version to know the current profile, and that probe writes the stamp.
 
-**Invalidate indexes:** `./tools/CB.sh debug cache invalidate` removes all four files `cache status` reports — lighter than `clean`; artifacts in `obj/` / `pcm/` remain. JSONL: `cache_invalidate_end`, one flag per file. Removing `std-module-profile.txt` is what makes the next build rebuild `std.pcm`.
+**Invalidate indexes:** `./tools/CB.sh debug cache invalidate` removes all four files `cache status` reports — lighter than `clean`; artifacts in `obj/` / `bmi/` remain. JSONL: `cache_invalidate_end`, one flag per file. Removing `std-module-profile.txt` is what makes the next build rebuild `std.pcm`.
 
-**Clean test artefacts only:** `./tools/CB.sh debug clean --tests` removes test TU objects/PCMs and `bin/test_runner`, and drops their object-/executable-cache entries. App and library objects stay, so the next build recompiles tests without a full cold rebuild.
+**Clean test artefacts only:** `./tools/CB.sh debug clean --tests` removes test TU objects/BMIs and `bin/test_runner`, and drops their object-/executable-cache entries. App and library objects stay, so the next build recompiles tests without a full cold rebuild.
 
-**Std module:** `std.pcm` and `std.o` compile through the same reporting path as project units — one `compile_start` / `compile_end` pair for module `std`, with a `rebuild_reason` and a `cache_hit`, counted in `compile_total` and `rebuild_summary`. Their reasons are the ones a modular unit uses: `own_pcm_missing`, `profile_change`, `own_pcm_stale` rebuild the pcm and then the object; `object_missing` and `object_stale` (including when the object lags its own PCM after a partial two-phase compile) reuse the pcm that is already there. A failure attaches the compiler's own output as `diagnostics`, as any other compile does.
+**Std module:** `std.pcm` and `std.o` compile through the same reporting path as project units — one `compile_start` / `compile_end` pair for module `std`, with a `rebuild_reason` and a `cache_hit`, counted in `compile_total` and `rebuild_summary`. Their reasons are the ones a modular unit uses: `own_bmi_missing`, `profile_change`, `own_bmi_stale` rebuild the BMI and then the object; `object_missing` and `object_stale` (including when the object lags its own BMI after a partial two-phase compile) reuse the BMI that is already there. A failure attaches the compiler's own output as `diagnostics`, as any other compile does.
 
-Successful std artefacts are also published to a full-profile-keyed, machine-local cache (`$XDG_CACHE_HOME/cb/std-module`, or `$HOME/.cache/cb/std-module`). A build after `clean` hard-links or copies the matching pair into the local build tree and reports the std compile as a cache hit. `cache invalidate` still forces recompilation: CB only hydrates when the local PCM is missing, never when its local profile was invalidated. Set `CB_STD_CACHE_DIR` to an alternate directory; set it to an empty value to disable sharing for a truly cold benchmark. The key covers the compiler and its binary/version signature, std source signature, config, module mode, and compile flags; project include paths are intentionally excluded because std compilation does not use them.
+Successful std artefacts are also published to a full-profile-keyed, machine-local cache (`$XDG_CACHE_HOME/cb/std-module`, or `$HOME/.cache/cb/std-module`). A build after `clean` hard-links or copies the matching pair into the local build tree and reports the std compile as a cache hit. `cache invalidate` still forces recompilation: CB only hydrates when the local BMI is missing, never when its local profile was invalidated. Set `CB_STD_CACHE_DIR` to an alternate directory; set it to an empty value to disable sharing for a truly cold benchmark. The key covers the compiler and its binary/version signature, std source signature, config, module mode, and compile flags; project include paths are intentionally excluded because std compilation does not use them.
 
 **Scanner scope:** the module graph is scanned with regular expressions, so a source that needs a tokenizer to read is out of scope. The known case is [lex.pptoken]'s reversion of phase-2 splices inside a raw-string body: honouring it means deciding whether an `R"(` opens a literal or is text inside a comment, which is lexical state rather than a pattern. A raw string whose body ends a line with `)\` is therefore read as closing one line early and may contribute a phantom edge — the same over-approximation `#ifdef` branches get. A comment or literal that merely mentions `R"(` is harmless, which is the likelier text and the reason the trade goes this way.
 
@@ -296,8 +296,8 @@ Full event reference and triage workflow: [AGENTS.md](../AGENTS.md).
 
 Useful compile/link fields for debugging stale builds:
 
-- `compile_start` / `compile_end` — paired per TU. `compile_end.duration_ms` is wall time from compile start to finish (0 on cache hit). When `cache_hit: false`, both carry short `rebuild_reason` plus structured `rebuild` (`kind`, optional `module` / `pcm_path` / `object_path` / `trigger_path` / `hint` / `message` / `see_event`). `compile_start` also repeats `message` at the top level for log skimmers.
-- `build_end.rebuild_summary` — per-kind compile rebuild counts plus `top_modules` (modules most often cited by PCM reasons). Present in every JSONL mode when any TU rebuilt.
+- `compile_start` / `compile_end` — paired per TU. `compile_end.duration_ms` is wall time from compile start to finish (0 on cache hit). When `cache_hit: false`, both carry short `rebuild_reason` plus structured `rebuild` (`kind`, optional `module` / `bmi_path` / `object_path` / `trigger_path` / `hint` / `message` / `see_event`). `compile_start` also repeats `message` at the top level for log skimmers.
+- `build_end.rebuild_summary` — per-kind compile rebuild counts plus `top_modules` (modules most often cited by BMI reasons). Present in every JSONL mode when any TU rebuilt.
 - `profile_changed` — emitted **once** when the profile header mismatches (`reason: "profile_change"`, optional `profile_diff`). Scalars use `{"old":"…","new":"…"}`; `compile` / `cpp` use `{"added":[…],"removed":[…]}` (sorted token diff via `std::ranges::set_difference` on `flags::codec` tokens).
 - `cache_hit: false` + `rebuild_reason: "profile_change"` on each recompiled TU — correlate with the single `profile_changed` event (`rebuild.see_event: "profile_changed"`); do not expect `profile_diff` on each `compile_end`.
 - `link_end` — per executable after link or skip (`executable_path`, `cache_hit`, `ok`, `duration_ms`, `signature`). Skipped links emit `cache_hit: true` with `duration_ms: 0` and the same `signature` that made the link a hit. Relinks add `rebuild_reason` / `rebuild` (`missing_executable`, `not_in_cache`, `object_changed`, `link_flags_changed`, …).
@@ -306,20 +306,20 @@ Useful compile/link fields for debugging stale builds:
 - `rebuild_reason: "header_stale"` — an `#include`d project header is newer than the object; the header is in `rebuild.trigger_path` (see [Header dependencies](#header-dependencies))
 - `rebuild_reason: "header_missing"` — a project header named by the depfile is missing or unreadable; the header is in `rebuild.trigger_path`
 - `rebuild_reason: "depfile_unusable"` — the compiler `.d` is missing, unreadable, or malformed, so header freshness is unknown; the `.d` path is in `rebuild.trigger_path`
-- `rebuild_reason: "pcm_stale"` — imported PCM (including an implementation unit's implicit interface PCM) newer than this object; module and trigger source are in `rebuild`
+- `rebuild_reason: "bmi_stale"` — imported BMI (including an implementation unit's implicit interface BMI) newer than this object; module and trigger source are in `rebuild`
 
 Example rebuild object:
 
 ```json
-"rebuild_reason": "pcm_stale",
+"rebuild_reason": "bmi_stale",
 "rebuild": {
-  "kind": "pcm_stale",
+  "kind": "bmi_stale",
   "module": "sample",
-  "pcm_path": "build-darwin-debug/pcm/sample.pcm",
+  "bmi_path": "build-darwin-debug/bmi/sample.pcm",
   "object_path": "build-darwin-debug/obj/sample.impl.o",
   "trigger_path": "sample.c++m",
-  "hint": "Imported PCM newer than this object; recompile follows module graph.",
-  "message": "Rebuilding sample.impl.c++ because PCM sample is newer than the object (import graph)"
+  "hint": "Imported BMI newer than this object; recompile follows module graph.",
+  "message": "Rebuilding sample.impl.c++ because BMI sample is newer than the object (import graph)"
 }
 ```
 
@@ -372,7 +372,7 @@ Example `profile_diff` fragment (on `profile_changed` only):
 | `cb::source::translation_unit` / `scanner` | Source identity, collection, exclusion, lexical cleaning, dependency edges and topological order |
 | `cb::flags::codec` | Symmetric whitespace-normalized conversion between flag text and `string_list` |
 | `cb::toolchain::artifact_conventions` / `clang_driver` | Target artifact extensions plus LLVM discovery/identity, Clang/libc++ flags, compile plans and compile/link argv construction |
-| `cb::layout::paths` | Build-tree directories, source-to-artifact naming, and depfile/diagnostic sidecars |
+| `cb::build_tree::paths` | Build-tree directories, source-to-artifact naming, and depfile/diagnostic sidecars |
 | `cb::cache::storage_file` | Composed cache-file path, first-line read, atomic replacement and invalidation operations |
 | `cb::cache::profile` / `analyzer` | Profile serialization/key/diff and recursive object/BMI/header freshness analysis |
 | `cb::cache::object_store` | Object-cache path, entry snapshot, profile mismatch, persistence, status and invalidation |
@@ -386,7 +386,7 @@ Example `profile_diff` fragment (on `profile_changed` only):
 | `cb::build_system` | Settings-driven graph, cache, scheduling, execution, reporting and action orchestration |
 | `cb::detail` | Shared filesystem/path primitives: directory joining, component-aware path predicates, weak canonicalization with normalized absolute fallback, atomic replacement and remove-if-present |
 
-`build_system` consumes one `build_system::settings` value and derives its orchestration defaults. `cli::options::build_settings()` is the composition-layer adapter; action, output, and test-runner-only CLI state never enters the build engine. The concrete `clang_driver` receives compiler-facing settings and owns LLVM discovery, toolchain identity, target artifact extensions, include/default/module/link flags and command construction. It returns semantic compile plans; `layout::paths` applies those artifact conventions to the configured build tree, while `build_system` executes the steps, publishes provider readiness, and owns source-graph, cache and reporting policy. There is deliberately no abstract driver or virtual interface before a second compiler exists. Cache maps and decisions stay in `cb::cache`, cache-file mechanics stay in composed `storage_file` values, flag text conversion stays in `cb::flags`, process mechanics stay in `cb::process`, generic independent-job concurrency stays in `cb::execution`, and event pairing stays in `cb::output`. `main` registers built-in observers by name and selects one from the parsed `output_name`.
+`build_system` consumes one `build_system::settings` value and derives its orchestration defaults. `cli::options::build_settings()` is the composition-layer adapter; action, output, and test-runner-only CLI state never enters the build engine. The concrete `clang_driver` receives compiler-facing settings and owns LLVM discovery, toolchain identity, target artifact extensions, include/default/module/link flags and command construction. It returns semantic compile plans; `build_tree::paths` applies those artifact conventions to the configured build tree, while `build_system` executes the steps, publishes provider readiness, and owns source-graph, cache and reporting policy. There is deliberately no abstract driver or virtual interface before a second compiler exists. Cache maps and decisions stay in `cb::cache`, cache-file mechanics stay in composed `storage_file` values, flag text conversion stays in `cb::flags`, process mechanics stay in `cb::process`, generic independent-job concurrency stays in `cb::execution`, and event pairing stays in `cb::output`. `main` registers built-in observers by name and selects one from the parsed `output_name`.
 
 ### Ranges idioms (`cb.c++`)
 
@@ -407,7 +407,7 @@ CB uses C++23 range pipelines instead of hand-written accumulation loops where t
 
 1. **Convention over configuration** — file extensions and `import` lines define the graph; no generated build files to maintain.
 2. **Single-file transparency** — no hidden macros; read `cb.c++` to understand behaviour.
-3. **Modules are first-class** — PCM ordering and staleness are core, not bolted on.
+3. **Modules are first-class** — BMI ordering and staleness are core, not bolted on.
 4. **Test and build in one tool** — `CB.sh test` is the primary developer loop.
 5. **Machine-readable output** — JSONL for agents and CI; human logs on stderr.
 
