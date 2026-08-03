@@ -378,7 +378,7 @@ Example `profile_diff` fragment (on `profile_changed` only):
 | `cb::cache::object_store` | Object-cache path, entry snapshot, profile mismatch, persistence, status and invalidation |
 | `cb::cache::link_store` | Executable signatures, remembered stamps, parallel-safe updates, persistence, status and invalidation |
 | `cb::cache::standard_module_store` | Local `std` profile persistence and shared-machine-cache hydrate/publish storage |
-| `cb::cache::compiler_stamp` | Compiler-version stamp path, read, status and invalidation |
+| `cb::cache::compiler_stamp_store` | Compiler-version stamp path, read, status and invalidation |
 | `cb::process::runner` / `shell_quote` | Sole child-process boundary; shared shell quoting, argv joining, capture/status decoding and reported step execution |
 | `cb::execution::run_workers` | Shared thread-group creation and join lifecycle; callers retain scheduling and failure policy |
 | `cb::execution::worker_pool` | Bounded fixed-range job claiming with join-before-rethrow failure handling |

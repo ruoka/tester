@@ -1019,8 +1019,7 @@ enum class module_compilation : unsigned char { two_phase, one_phase };
 enum class linkage : unsigned char { dynamic, static_ };
 
 using module_link_flags = std::flat_map<std::string, std::string, std::less<>>;
-using module_interface_map =
-    std::flat_map<std::string, const source::translation_unit*, std::less<>>;
+using module_interface_map = std::flat_map<std::string, const source::translation_unit*, std::less<>>;
 
 enum class compile_output : unsigned char { bmi, object };
 
@@ -2498,10 +2497,10 @@ private:
     std::string object_path_;
 };
 
-class compiler_stamp
+class compiler_stamp_store
 {
 public:
-    explicit compiler_stamp(std::string cache_dir)
+    explicit compiler_stamp_store(std::string cache_dir)
         : file_{std::move(cache_dir), filename}
     {}
 
@@ -3372,7 +3371,7 @@ private:
 
         fs::create_directories(artifact_paths.cache);
 
-        const auto stamp = cache::compiler_stamp{artifact_paths.cache.string()};
+        const auto stamp = cache::compiler_stamp_store{artifact_paths.cache.string()};
         if(process_runner.invoke_shell(driver.version_argv(), stamp.path()).ok())
         {
             compiler_version = stamp.read();
@@ -3398,8 +3397,7 @@ private:
 
     void index_module_interfaces()
     {
-        module_interfaces =
-            units_in_topological_order
+        module_interfaces = units_in_topological_order
             | std::views::filter([](const source::translation_unit& tu) { return tu.is_modular; })
             | std::views::transform([](const source::translation_unit& tu)
             {
@@ -3654,8 +3652,7 @@ private:
         }
 
         auto compile = output::compile_scope{unit, *reason};
-        const auto object_only =
-            reason->kind == output::rebuild_kind::object_missing
+        const auto object_only = reason->kind == output::rebuild_kind::object_missing
             or reason->kind == output::rebuild_kind::object_stale;
         driver.compile_standard_module(
             bmi, object, object_only,
@@ -3686,8 +3683,7 @@ private:
         // force every importer through bmi_stale for no interface change.
         // One-phase: the BMI is a sibling of the object (reduced on Clang 22+), not an
         // input that can be compiled to an object — always re-read the source, as std does.
-        const auto object_only =
-            rebuild.kind == output::rebuild_kind::object_missing
+        const auto object_only = rebuild.kind == output::rebuild_kind::object_missing
             or rebuild.kind == output::rebuild_kind::object_stale;
         driver.compile(
             tu, module_interfaces, object_only,
@@ -4144,7 +4140,7 @@ public:
         const auto link_status = links.status();
         const auto std_modules = make_standard_module_store();
         const auto std_status = std_modules.status(current_profile);
-        const auto stamp = cache::compiler_stamp{artifact_paths.cache.string()};
+        const auto stamp = cache::compiler_stamp_store{artifact_paths.cache.string()};
 
         notify(&observer::cache_status, output::cache_inventory{
                 .object_cache_path = objects.path(),
@@ -4172,8 +4168,7 @@ public:
         const auto removed = output::cache_removals{
             .object_cache = make_object_store().invalidate(),
             .executable_cache = make_link_store().invalidate(),
-            .compiler_stamp =
-                cache::compiler_stamp{artifact_paths.cache.string()}.invalidate(),
+            .compiler_stamp = cache::compiler_stamp_store{artifact_paths.cache.string()}.invalidate(),
             .std_module_profile = make_standard_module_store().invalidate()};
 
         notify(&observer::cache_invalidate_end, removed);

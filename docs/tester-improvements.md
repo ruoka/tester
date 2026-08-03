@@ -232,7 +232,7 @@ Design rationale and comparison with CMake, Make, and other build tools: [`docs/
   `options` own strict argv parsing and test-runner forwarding.
   `cb::flags::codec` owns whitespace-normalized flag-list text conversion. Cache classes compose
   `cb::cache::storage_file`; `object_store`, `link_store`, and `standard_module_store` own
-  persistence (plus std hydrate/publish); `compiler_stamp` owns the version stamp.
+  persistence (plus std hydrate/publish); `compiler_stamp_store` owns the version stamp.
   `cb::process::runner` privately owns shell quoting/argv joining as well as spawning,
   status decoding, diagnostics capture and failed-command composition;
   `cb::execution::run_workers` owns thread-group creation/join, while `worker_pool` owns bounded
