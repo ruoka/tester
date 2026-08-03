@@ -91,6 +91,7 @@ const suffix_list object_stem_suffixes = {
     cpp_suffix
 };
 
+constexpr auto build_root_prefix = "build-"sv;
 constexpr auto compile_commands_filename = "compile_commands.json"sv;
 constexpr auto graph_filename = "graph.json"sv;
 constexpr auto std_module_name = "std"sv;
@@ -1002,7 +1003,7 @@ class paths
 {
 public:
     paths(std::string_view configuration, toolchain::artifact_conventions naming)
-        : root{"build-"s + std::string{toolchain::host_os()} + '-'
+        : root{std::string{build_root_prefix} + std::string{toolchain::host_os()} + '-'
                + std::string{configuration}},
           pcm{root / "pcm"},
           obj{root / "obj"},
