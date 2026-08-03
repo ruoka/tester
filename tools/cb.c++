@@ -66,6 +66,7 @@ using output::observer;
 
 using suffix_list = std::vector<std::string_view>;
 using string_list = std::vector<std::string>;
+using string_span = std::span<const std::string>;
 
 constexpr auto test_cxxm_suffix = ".test.c++m"sv;
 constexpr auto test_cxx_suffix = ".test.c++"sv;
@@ -255,7 +256,7 @@ public:
             | std::ranges::to<string_list>();
     }
 
-    static std::string serialize(const string_list& flags)
+    static std::string serialize(string_span flags)
     {
         return flags | std::views::join_with(" "sv) | std::ranges::to<std::string>();
     }
@@ -1164,7 +1165,7 @@ using module_link_flags = std::flat_map<std::string, std::string, std::less<>>;
 struct module_provider
 {
     std::string_view module{};
-    std::span<const std::string> imports{};
+    string_span imports{};
     std::string_view bmi_path{};
 };
 
@@ -1375,8 +1376,8 @@ public:
     }
 
     string_list link_argv(std::string_view executable_path,
-                          const string_list& input_paths,
-                          const string_list& import_flags) const
+                          string_span input_paths,
+                          string_span import_flags) const
     {
         auto argv = string_list{compiler_};
         argv.append_range(compile_flags_);
@@ -1609,7 +1610,7 @@ private:
 
     string_list compile_bmi_argv(const source::translation_unit& tu,
                                  const build_tree::unit_artifacts& artifacts,
-                                 const string_list& imports) const
+                                 string_span imports) const
     {
         auto argv = base_compile_argv();
         argv.append_range(module_flags_);
@@ -1622,7 +1623,7 @@ private:
     // Shared by project units and std: BMI → object (omit imports for std).
     string_list compile_bmi_object_argv(std::string_view bmi_path,
                                         std::string_view object_path,
-                                        const string_list& imports = {}) const
+                                        string_span imports = {}) const
     {
         auto argv = string_list{compiler_};
         argv.append_range(compile_flags_);
@@ -1634,7 +1635,7 @@ private:
 
     string_list compile_module_object_argv(const source::translation_unit& tu,
                                            const build_tree::unit_artifacts& artifacts,
-                                           const string_list& imports) const
+                                           string_span imports) const
     {
         auto argv = base_compile_argv();
         argv.append_range(module_flags_);
@@ -1647,7 +1648,7 @@ private:
 
     string_list compile_source_object_argv(const source::translation_unit& tu,
                                            const build_tree::unit_artifacts& artifacts,
-                                           const string_list& imports) const
+                                           string_span imports) const
     {
         auto argv = base_compile_argv();
         argv.append_range(module_flags_);
@@ -2414,7 +2415,7 @@ private:
         return input_path + ":" + std::to_string(timestamp);
     }
 
-    std::string dependency_signatures_joined(const string_list& paths) const
+    std::string dependency_signatures_joined(string_span paths) const
     {
         return paths
             | std::views::transform([&](const std::string& input_path) {
@@ -2427,8 +2428,7 @@ private:
 public:
     // What identifies a link: every input's timestamp, plus the flag sets that would change
     // the result even when no input moved. Callers differ only in the input list.
-    std::string link_signature(const string_list& input_paths,
-                               const string_list& import_flags) const
+    std::string link_signature(string_span input_paths, string_span import_flags) const
     {
         return cache::link_signature{
             .objects = dependency_signatures_joined(input_paths),
@@ -3431,7 +3431,7 @@ class runner
 {
 public:
     output::process_result invoke_shell(
-        const string_list& argv,
+        string_span argv,
         std::string_view capture_path = {}) const
     {
         if(argv.empty())
@@ -3506,7 +3506,7 @@ public:
     }
 
 private:
-    static std::string join_argv(const string_list& argv)
+    static std::string join_argv(string_span argv)
     {
         return argv
             | std::views::transform([](const std::string& arg) { return shell_quote(arg); })
@@ -3549,7 +3549,7 @@ private:
     }
 
     static std::string command_failure_message(
-        const string_list& argv,
+        string_span argv,
         const output::process_result& result)
     {
         auto message = "Command failed: " + join_argv(argv);
@@ -3719,7 +3719,7 @@ private:
 
     // Utilities
 
-    string_list test_runner_argv(const std::string& runner, const std::vector<std::string>& args) const
+    string_list test_runner_argv(const std::string& runner, string_span args) const
     {
         auto argv = string_list{};
         argv.push_back(runner);
@@ -3749,7 +3749,7 @@ private:
     }
 
     string_list executable_link_inputs(const source::translation_unit& main,
-                                       const string_list& shared_objects) const
+                                       string_span shared_objects) const
     {
         auto inputs = string_list{artifacts_of(main).object};
         inputs.append_range(shared_objects);
@@ -3766,7 +3766,7 @@ private:
         return inputs;
     }
 
-    string_list collect_module_ldflags(const string_list& imp) const
+    string_list collect_module_ldflags(string_span imp) const
     {
         return std::ranges::fold_left(
             imp | std::views::filter([&](const std::string& m) { return module_ldflags.contains(m); }),
@@ -4151,8 +4151,8 @@ private:
     // Linking
 
     void perform_link(const source::translation_unit& main,
-                      const string_list& input_paths,
-                      const string_list& import_flags,
+                      string_span input_paths,
+                      string_span import_flags,
                       const output::rebuild_info& rebuild,
                       std::string signature)
     {
@@ -4506,7 +4506,7 @@ public:
     }
 
     // Returns false when the test runner reports failures (normal outcome, not exceptional).
-    bool run_tests(const std::vector<std::string>& args = {}) {
+    bool run_tests(string_span args = {}) {
         notify(&observer::info, "=== Running tests ===");
 
         include_tests = true;
@@ -4753,19 +4753,24 @@ using parse_result = std::expected<parse_success, parse_error>;
 class parser
 {
 public:
-    parser(int argc, char* argv[]) : argc_{argc}, argv_{argv} {}
+    parser(int argc, char* argv[])
+        : command_line_{argv, static_cast<std::size_t>(argc)}
+    {}
 
     parse_result parse() const
     {
         auto parsed = options{};
-        auto arg_index = 1;
-        if(argc_ > 1)
+        auto arguments = command_line_.size() > 1
+            ? command_line_.subspan(1)
+            : std::span<char*>{};
+
+        if(not arguments.empty())
         {
-            const auto candidate = fs::path{argv_[1]};
+            const auto candidate = fs::path{arguments.front()};
             if(fs::exists(candidate))
             {
                 parsed.std_module_source = candidate.string();
-                ++arg_index;
+                arguments = arguments.subspan(1);
             }
             else if(candidate.extension() == ".cppm")
                 return std::unexpected{parse_error{
@@ -4773,9 +4778,15 @@ public:
                     .message = "std.cppm not found: "s + candidate.string()}};
         }
 
-        for(auto index = arg_index; index < argc_; ++index)
+        const auto take = [&] {
+            const auto value = std::string_view{arguments.front()};
+            arguments = arguments.subspan(1);
+            return value;
+        };
+
+        while(not arguments.empty())
         {
-            const auto argument = std::string_view{argv_[index]};
+            const auto argument = take();
             if(argument == "--jsonl" or argument.starts_with("--jsonl="))
             {
                 const auto mode = argument == "--jsonl"
@@ -4799,13 +4810,13 @@ public:
             if(argument == "test")
             {
                 parsed.do_run_tests = true;
-                if(index + 1 < argc_)
+                if(not arguments.empty())
                 {
-                    const auto next = std::string_view{argv_[index + 1]};
+                    const auto next = std::string_view{arguments.front()};
                     if(not is_test_runner_token(next)
                        and not is_cb_token(next)
                        and not next.starts_with("-"))
-                        parsed.test_filter = argv_[++index];
+                        parsed.test_filter = std::string{take()};
                 }
             }
             else if(argument == "release")
@@ -4825,12 +4836,12 @@ public:
                 parsed.do_list = true;
             else if(argument == "cache")
             {
-                if(index + 1 >= argc_)
+                if(arguments.empty())
                     return std::unexpected{parse_error{
                         .kind = parse_error_kind::usage,
                         .message = "Usage: cache status|invalidate",
                         .parsed = std::move(parsed)}};
-                const auto verb = std::string_view{argv_[++index]};
+                const auto verb = take();
                 if(verb == "status")
                     parsed.do_cache_status = true;
                 else if(verb == "invalidate")
@@ -4876,33 +4887,33 @@ public:
                         .parsed = std::move(parsed)}};
             }
             else if(parsed.do_run_tests and is_test_runner_token(argument))
-                parsed.test_runner_args.emplace_back(argv_[index]);
+                parsed.test_runner_args.emplace_back(argument);
             else if(argument == "-I" or argument == "--include")
             {
-                if(index + 1 >= argc_)
+                if(arguments.empty())
                     return std::unexpected{parse_error{
                         .kind = parse_error_kind::usage,
                         .message = "Missing path after -I/--include",
                         .parsed = std::move(parsed)}};
-                parsed.include_paths.emplace_back(argv_[++index]);
+                parsed.include_paths.emplace_back(take());
             }
             else if(argument == "--link-flags")
             {
-                if(index + 1 >= argc_)
+                if(arguments.empty())
                     return std::unexpected{parse_error{
                         .kind = parse_error_kind::usage,
                         .message = "Missing flags after --link-flags",
                         .parsed = std::move(parsed)}};
-                parsed.extra_link_flags = cb::flags::codec::parse(argv_[++index]);
+                parsed.extra_link_flags = cb::flags::codec::parse(take());
             }
             else if(argument == "--compile-flags" or argument == "--extra-compile-flags")
             {
-                if(index + 1 >= argc_)
+                if(arguments.empty())
                     return std::unexpected{parse_error{
                         .kind = parse_error_kind::usage,
                         .message = "Missing flags after --compile-flags",
                         .parsed = std::move(parsed)}};
-                parsed.extra_compile_flags = cb::flags::codec::parse(argv_[++index]);
+                parsed.extra_compile_flags = cb::flags::codec::parse(take());
             }
             else if(argument.starts_with("--compile-flags=")
                     or argument.starts_with("--extra-compile-flags="))
@@ -4932,7 +4943,7 @@ public:
 
     void write_help(std::ostream& out) const
     {
-        const auto program = argc_ > 0 ? argv_[0] : "cb";
+        const auto program = command_line_.empty() ? "cb" : command_line_.front();
         out << "Usage: " << program << " [std.cppm] [options]\n\n"
             << "Options:\n"
             << "  release          Build in release mode (optimized, no tests)\n"
@@ -5004,8 +5015,7 @@ private:
             or arg.starts_with("--xunit-xml=");
     }
 
-    int argc_ = 0;
-    char** argv_ = nullptr;
+    std::span<char*> command_line_{};
 };
 
 } // namespace cli
