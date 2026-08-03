@@ -3188,37 +3188,37 @@ private:
         return argv;
     }
 
-    string_list link_executable_argv(const source::translation_unit& tu, const string_list& shared_objects) const
+    string_list link_argv(const source::translation_unit& main,
+                          const string_list& input_paths) const
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
         argv.append_range(compile_flags);
-        argv.append_range(collect_module_ldflags(tu.imports));
+        argv.append_range(collect_module_ldflags(main.imports));
         argv.append_range(module_flags);
-        argv.push_back(tu.object_path);
-        argv.append_range(shared_objects);
-        argv.push_back(std_obj_path());
+        argv.append_range(input_paths);
         argv.append_range(link_flags);
         argv.push_back("-o");
-        argv.push_back(tu.executable_path);
+        argv.push_back(main.executable_path);
         return argv;
+    }
+
+    string_list link_executable_argv(const source::translation_unit& main,
+                                     const string_list& shared_objects) const
+    {
+        auto inputs = string_list{main.object_path};
+        inputs.append_range(shared_objects);
+        inputs.push_back(std_obj_path());
+        return link_argv(main, inputs);
     }
 
     string_list link_test_runner_argv(const source::translation_unit& runner) const
     {
-        auto argv = string_list{};
-        argv.push_back(llvm_cxx);
-        argv.append_range(compile_flags);
-        argv.append_range(collect_module_ldflags(runner.imports));
-        argv.append_range(module_flags);
-        argv.push_back(runner.object_path);
-        argv.append_range(linkable_object_paths());
-        argv.append_range(test_object_paths());
-        argv.push_back(std_obj_path());
-        argv.append_range(link_flags);
-        argv.push_back("-o");
-        argv.push_back(runner.executable_path);
-        return argv;
+        auto inputs = string_list{runner.object_path};
+        inputs.append_range(linkable_object_paths());
+        inputs.append_range(test_object_paths());
+        inputs.push_back(std_obj_path());
+        return link_argv(runner, inputs);
     }
 
     string_list test_runner_argv(const std::string& runner, const std::vector<std::string>& args) const
@@ -3651,18 +3651,18 @@ private:
     // ============================================================================
     // Linking
     // ============================================================================
-    // The same two halves as Compilation: link_executable does one executable, link_executables
+    // The same two halves as Compilation: perform_link does one executable, link_executables
     // is the pass. Only what nothing else uses lives here — the test-runner link reads the same
     // signature inputs and executable cache from the shared sections above.
 
-    void link_executable(const source::translation_unit& tu,
-                         const string_list& shared_objects,
-                         const output::rebuild_info& rebuild,
-                         std::string signature) {
-        if (not tu.has_main) return;
-        auto link = output::link_scope{tu.executable_path, rebuild, std::move(signature)};
+    void perform_link(const source::translation_unit& main,
+                      const output::rebuild_info& rebuild,
+                      std::string signature,
+                      string_list argv)
+    {
+        auto link = output::link_scope{main.executable_path, rebuild, std::move(signature)};
         process_runner.run_step(
-            link, link_executable_argv(tu, shared_objects), diagnostics_path_for_executable(tu));
+            link, argv, diagnostics_path_for_executable(main));
         link.succeeded();
     }
 
@@ -3714,7 +3714,11 @@ private:
             }),
             [&](const link_decision& decision) {
                 const auto& tu = *decision.tu;
-                link_executable(tu, shared_objects, *decision.reason, decision.signature);
+                perform_link(
+                    tu,
+                    *decision.reason,
+                    decision.signature,
+                    link_executable_argv(tu, shared_objects));
                 links.remember(tu.executable_path, decision.signature);
             });
         links.save();
@@ -3747,19 +3751,9 @@ private:
         return *found;
     }
 
-    void link_test_runner_executable(const source::translation_unit& runner,
-                                     const output::rebuild_info& rebuild,
-                                     std::string signature)
-    {
-        auto link = output::link_scope{runner.executable_path, rebuild, std::move(signature)};
-        process_runner.run_step(
-            link, link_test_runner_argv(runner), diagnostics_path_for_executable(runner));
-        link.succeeded();
-    }
-
     // What the runner takes in: its object, the test objects, the shared objects, the std object.
     // The flag tail covers every test unit's imports as well as the runner's — a change to any is
-    // a relink — while the argv needs only the runner's own, the split link_executable also has.
+    // a relink — while the argv needs only the runner's own, which shared link_argv also uses.
     std::string compute_test_runner_signature(const source::translation_unit& runner,
                                               const cache::link_store& links) const
     {
@@ -3788,7 +3782,7 @@ private:
             return;
         }
 
-        link_test_runner_executable(runner, *reason, signature);
+        perform_link(runner, *reason, signature, link_test_runner_argv(runner));
         output::notify(&output::observer::success, "test_runner linked with test objects");
         links.remember(runner.executable_path, signature);
         links.save();
