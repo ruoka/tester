@@ -2819,10 +2819,6 @@ public:
     }
 
     string_list version_argv() const { return {compiler_, "--version"}; }
-    void set_compiler_version(std::string value) const
-    {
-        compiler_version_ = std::move(value);
-    }
 
     compile_plan compile(const compile_request& request, bool object_only) const
     {
@@ -2899,6 +2895,11 @@ public:
 private:
     inline static constexpr auto module_file_flag_prefix = "-fmodule-file="sv;
     inline static constexpr auto prebuilt_module_path_flag_prefix = "-fprebuilt-module-path="sv;
+
+    void set_compiler_version(std::string value)
+    {
+        compiler_version_ = std::move(value);
+    }
 
     static std::string binary_signature(const std::string& path)
     {
@@ -3226,7 +3227,7 @@ private:
     std::string llvm_prefix_{};
     std::string compiler_{};
     std::string compiler_signature_{};
-    mutable std::string compiler_version_{};
+    std::string compiler_version_{};
     std::string std_module_profile_{};
     string_list compile_flags_{};
     string_list link_flags_{};
@@ -3266,7 +3267,7 @@ private:
     toolchain::module_link_flags module_ldflags;
     // Indexed after scanning for per-TU transitive BMI requests.
     std::flat_map<std::string, const source::translation_unit*, std::less<>> module_interfaces;
-    mutable bool toolchain_profile_probed = false;
+    bool toolchain_profile_probed = false;
     source::translation_unit_list units_in_topological_order;
     const build_config config;
     const layout::paths artifact_paths;
@@ -3275,7 +3276,7 @@ private:
     const bool include_tests_for_build;
     int max_jobs = 0;
     process::runner process_runner;
-    mutable toolchain::clang_driver compiler;
+    toolchain::clang_driver compiler;
     std::string_view config_name() const
     {
         switch(config)
@@ -3297,7 +3298,7 @@ private:
             candidate, (artifact_paths.cache / "command-probe.txt").string());
     }
 
-    void ensure_toolchain_profile() const
+    void ensure_toolchain_profile()
     {
         if(toolchain_profile_probed)
             return;
@@ -3501,7 +3502,7 @@ private:
 
     // Cache
 
-    std::string cache_profile(bool include_project_includes) const {
+    std::string cache_profile(bool include_project_includes) {
         ensure_toolchain_profile();
         const auto identity = compiler.identity();
         const auto flags = compiler.flags();
@@ -3519,8 +3520,8 @@ private:
         }}.text();
     }
 
-    std::string object_cache_profile() const { return cache_profile(true); }
-    std::string shared_std_cache_profile() const { return cache_profile(false); }
+    std::string object_cache_profile() { return cache_profile(true); }
+    std::string shared_std_cache_profile() { return cache_profile(false); }
 
     cache::object_store make_object_store() const
     {
@@ -4130,7 +4131,7 @@ public:
                                + artifact_paths.root.string());
     }
 
-    void cache_status() const
+    void cache_status()
     {
         ensure_toolchain_profile();
         fs::create_directories(artifact_paths.cache);
