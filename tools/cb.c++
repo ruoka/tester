@@ -987,6 +987,27 @@ private:
 
 } // namespace source
 
+namespace process {
+
+class runner;
+
+// Owned by process — used by runner argv joining and by toolchain probe argv.
+inline std::string shell_quote(std::string_view arg)
+{
+    // POSIX: wrap in single quotes; internal ' becomes '\''.
+    auto out = std::ranges::fold_left(arg, "'"s, [](std::string acc, char c)
+    {
+        if(c == '\'')
+            acc += "'\\''"sv;
+        else
+            acc += c;
+        return acc;
+    });
+    out += '\'';
+    return out;
+}
+
+} // namespace process
 
 namespace toolchain {
 
@@ -1078,28 +1099,32 @@ public:
         string_list extra_link_flags{};
     };
 
-    template <typename CommandAvailable>
-    requires std::invocable<CommandAvailable&, const std::string&>
-    clang_driver(settings values,
-                 std::string_view std_bmi_path,
-                 std::string_view module_cache_dir,
-                 CommandAvailable command_available)
-        : release_{values.release},
-          linkage_{values.link},
-          module_phases_{values.module_phases},
-          std_module_source_{std::move(values.std_module_source)},
-          extra_compile_flags_{std::move(values.extra_compile_flags)},
-          extra_link_flags_{std::move(values.extra_link_flags)}
+    // Factory: emit probe argv, let runner execute, return an immutable driver.
+    static clang_driver make(
+        settings values,
+        std::string_view std_bmi_path,
+        std::string_view module_cache_dir,
+        std::string_view probe_capture_path,
+        const process::runner& runner);
+
+    static string_list compiler_candidates(std::string_view llvm_prefix)
     {
-        cpp_flags_ = values.include_paths
-            | std::views::transform([](const auto& path)
-              {
-                  return std::array{"-I"s, path};
-              })
-            | std::views::join
-            | std::ranges::to<string_list>();
-        discover(command_available);
-        initialize_flags(std_bmi_path, module_cache_dir);
+        auto candidates = string_list{};
+        for(const auto* env_name : {"LLVM_CXX", "CXX"})
+        {
+            if(auto value = std::getenv(env_name); value and *value)
+                candidates.emplace_back(value);
+        }
+        candidates.push_back(std::string{llvm_prefix} + "/bin/clang++");
+        return candidates;
+    }
+
+    // Empty ⇒ caller checks fs::exists; otherwise a shell `command -v` probe.
+    static string_list lookup_argv(std::string_view candidate)
+    {
+        if(candidate.contains('/'))
+            return {};
+        return {"/bin/sh", "-c", "command -v " + process::shell_quote(candidate)};
     }
 
     std::string_view module_phases_name() const
@@ -1220,6 +1245,34 @@ private:
     inline static constexpr auto module_file_flag_prefix = "-fmodule-file="sv;
     inline static constexpr auto prebuilt_module_path_flag_prefix = "-fprebuilt-module-path="sv;
 
+    // Prefers `make`: std source and llvm prefix are already resolved there.
+    clang_driver(settings values,
+                 std::string_view std_bmi_path,
+                 std::string_view module_cache_dir,
+                 std::string compiler,
+                 std::string llvm_prefix)
+        : release_{values.release},
+          linkage_{values.link},
+          module_phases_{values.module_phases},
+          std_module_source_{std::move(values.std_module_source)},
+          llvm_prefix_{std::move(llvm_prefix)},
+          compiler_{std::move(compiler)},
+          extra_compile_flags_{std::move(values.extra_compile_flags)},
+          extra_link_flags_{std::move(values.extra_link_flags)}
+    {
+        cpp_flags_ = values.include_paths
+            | std::views::transform([](const auto& path)
+              {
+                  return std::array{"-I"s, path};
+              })
+            | std::views::join
+            | std::ranges::to<string_list>();
+        const auto canonical_std_module = fs::weakly_canonical(std_module_source_).string();
+        std_module_profile_ = canonical_std_module + '@' + binary_signature(canonical_std_module);
+        compiler_signature_ = binary_signature(compiler_);
+        initialize_flags(std_bmi_path, module_cache_dir);
+    }
+
     static std::string binary_signature(const std::string& path)
     {
         if(not fs::exists(path))
@@ -1253,52 +1306,27 @@ private:
 #endif
     }
 
-    void discover(std::invocable<const std::string&> auto& command_available)
+    static std::string resolve_std_module_source(std::string source)
     {
-        if(std_module_source_.empty())
+        if(source.empty())
         {
             if(auto env = std::getenv("LLVM_PATH"); env and *env)
-                std_module_source_ = env;
+                source = env;
             else
                 throw std::runtime_error{
                     "std.cppm path not provided. Pass it as the first argument or set LLVM_PATH."};
         }
+        if(not fs::exists(source))
+            throw std::runtime_error{"std.cppm not found at: " + source};
+        return source;
+    }
 
-        const auto std_module_path = fs::path{std_module_source_};
-        if(not fs::exists(std_module_path))
-            throw std::runtime_error{"std.cppm not found at: " + std_module_source_};
-
-        auto prefix_path = std_module_path;
+    static std::string llvm_prefix_for(std::string_view std_module_source)
+    {
+        auto prefix_path = fs::path{std_module_source};
         for(auto level = 0; level < 4 and prefix_path.has_parent_path(); ++level)
             prefix_path = prefix_path.parent_path();
-        llvm_prefix_ = prefix_path.string();
-
-        const auto try_env_compiler = [&]()
-        {
-            for(const auto* env_name : {"LLVM_CXX", "CXX"})
-            {
-                if(auto value = std::getenv(env_name); value and command_available(value))
-                {
-                    compiler_ = value;
-                    return true;
-                }
-            }
-            return false;
-        };
-        if(not try_env_compiler())
-        {
-            compiler_ = llvm_prefix_ + "/bin/clang++";
-            if(not command_available(compiler_))
-            {
-                throw std::runtime_error{
-                    "clang++ not found. Expected: " + compiler_
-                    + " (set LLVM_CXX to override)."};
-            }
-        }
-
-        const auto canonical_std_module = fs::weakly_canonical(std_module_path).string();
-        std_module_profile_ = canonical_std_module + '@' + binary_signature(canonical_std_module);
-        compiler_signature_ = binary_signature(compiler_);
+        return prefix_path.string();
     }
 
     void initialize_flags(std::string_view std_bmi_path,
@@ -3151,15 +3179,6 @@ public:
         return result;
     }
 
-    bool command_available(std::string_view candidate,
-                           std::string_view capture_path) const
-    {
-        // `command` is a shell builtin, so invoke an explicit shell with the candidate quoted.
-        return invoke_shell(
-            string_list{"/bin/sh", "-c", "command -v " + shell_quote(candidate)},
-            capture_path).ok();
-    }
-
     // Every toolchain command is a step of a reported build phase: its output is attached to
     // the reporting scope before a failure is thrown.
     void run_step(
@@ -3178,21 +3197,6 @@ public:
     }
 
 private:
-    static std::string shell_quote(std::string_view arg)
-    {
-        // POSIX: wrap in single quotes; internal ' becomes '\''.
-        auto out = std::ranges::fold_left(arg, "'"s, [](std::string acc, char c)
-        {
-            if(c == '\'')
-                acc += "'\\''"sv;
-            else
-                acc += c;
-            return acc;
-        });
-        out += '\'';
-        return out;
-    }
-
     static std::string join_argv(const string_list& argv)
     {
         return argv
@@ -3252,6 +3256,51 @@ private:
 
 } // namespace process
 
+namespace toolchain {
+
+clang_driver clang_driver::make(
+    settings values,
+    std::string_view std_bmi_path,
+    std::string_view module_cache_dir,
+    std::string_view probe_capture_path,
+    const process::runner& runner)
+{
+    values.std_module_source = resolve_std_module_source(std::move(values.std_module_source));
+    const auto prefix = llvm_prefix_for(values.std_module_source);
+
+    if(not probe_capture_path.empty())
+        fs::create_directories(fs::path{probe_capture_path}.parent_path());
+
+    std::string compiler;
+    for(const auto& candidate : compiler_candidates(prefix))
+    {
+        const auto argv = lookup_argv(candidate);
+        const auto ok = argv.empty()
+            ? fs::exists(candidate)
+            : runner.invoke_shell(argv, probe_capture_path).ok();
+        if(ok)
+        {
+            compiler = candidate;
+            break;
+        }
+    }
+    if(compiler.empty())
+    {
+        throw std::runtime_error{
+            "clang++ not found. Expected: " + prefix + "/bin/clang++"
+            + " (set LLVM_CXX to override)."};
+    }
+
+    return clang_driver{
+        std::move(values),
+        std_bmi_path,
+        module_cache_dir,
+        std::move(compiler),
+        prefix};
+}
+
+} // namespace toolchain
+
 class build_system {
 public:
     enum class build_config { debug, release };
@@ -3304,15 +3353,6 @@ private:
     }
 
     // Initialization
-
-    bool command_available(const std::string& candidate)
-    {
-        if(candidate.contains('/'))
-            return fs::exists(candidate);
-        fs::create_directories(artifact_paths.cache);
-        return process_runner.command_available(
-            candidate, (artifact_paths.cache / "command-probe.txt").string());
-    }
 
     void ensure_toolchain_profile()
     {
@@ -3963,20 +4003,19 @@ public:
           include_examples{values.include_examples},
           include_tests_for_build{values.include_tests_for_build},
           max_jobs{values.max_jobs},
-          driver{toolchain::clang_driver::settings{
-              .release = values.config == build_config::release,
-              .link = values.linkage,
-              .module_phases = values.module_phases,
-              .std_module_source = std::move(values.std_module_source),
-              .include_paths = std::move(values.include_paths),
-              .extra_compile_flags = std::move(values.extra_compile_flags),
-              .extra_link_flags = std::move(values.extra_link_flags)},
+          driver{toolchain::clang_driver::make(
+              toolchain::clang_driver::settings{
+                  .release = values.config == build_config::release,
+                  .link = values.linkage,
+                  .module_phases = values.module_phases,
+                  .std_module_source = std::move(values.std_module_source),
+                  .include_paths = std::move(values.include_paths),
+                  .extra_compile_flags = std::move(values.extra_compile_flags),
+                  .extra_link_flags = std::move(values.extra_link_flags)},
               artifact_paths.std_bmi(),
               artifact_paths.bmi.string(),
-              [this](const std::string& candidate)
-              {
-                  return command_available(candidate);
-              }}
+              (artifact_paths.cache / "command-probe.txt").string(),
+              process_runner)}
     {
         report_toolchain_configuration();
     }
