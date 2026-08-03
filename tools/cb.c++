@@ -2204,6 +2204,44 @@ private:
     diagnostics value_{};
 };
 
+// Shared result state for compile_scope and link_scope. The public scopes retain their distinct
+// identities and event contracts; this value keeps their hit, timing, rebuild and diagnostics
+// semantics identical.
+class step_state
+{
+public:
+    explicit step_state(const rebuild_info& reason)
+        : rebuild{reason}
+    {}
+
+    void mark_cache_hit()
+    {
+        hit = true;
+        ok = true;
+    }
+
+    void succeeded() { ok = true; }
+    void attach(diagnostics said) { diag.append(std::move(said)); }
+    void failed(diagnostics said) { diag.replace(std::move(said)); }
+
+    step_result result() const
+    {
+        const auto finished = hit ? started : std::chrono::steady_clock::now();
+        return {.ok = ok,
+                .cache_hit = hit,
+                .timing = {started, finished},
+                .rebuild = rebuild,
+                .diag = diag.value()};
+    }
+
+private:
+    rebuild_info rebuild;
+    diagnostic_buffer diag{};
+    std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+    bool ok = false;
+    bool hit = false;
+};
+
 // One build_start, exactly one build_end, whichever way the steps end. Reporting owns this
 // pairing so every observer sees the same lifecycle.
 class build_scope
@@ -2242,9 +2280,9 @@ class compile_scope
 {
 public:
     compile_scope(const compile_unit& compiled, const rebuild_info& reason)
-        : unit{compiled}, rebuild{reason}
+        : unit{compiled}, state{reason}
     {
-        notify(&observer::compile_start, unit, rebuild);
+        notify(&observer::compile_start, unit, reason);
     }
 
     // A cache hit is the same pair with nothing in between: no reason, no duration, and ok from
@@ -2252,8 +2290,7 @@ public:
     explicit compile_scope(const compile_unit& compiled)
         : compile_scope{compiled, rebuild_info{}}
     {
-        hit = true;
-        ok = true;
+        state.mark_cache_hit();
     }
 
     compile_scope(const compile_scope&) = delete;
@@ -2262,27 +2299,16 @@ public:
     // A compile that never reports success failed, including when a step threw.
     ~compile_scope()
     {
-        const auto finished = hit ? started : std::chrono::steady_clock::now();
-        notify(&observer::compile_end,
-               unit,
-               step_result{.ok = ok,
-                           .cache_hit = hit,
-                           .timing = {started, finished},
-                           .rebuild = rebuild,
-                           .diag = diag.value()});
+        notify(&observer::compile_end, unit, state.result());
     }
 
-    void succeeded() { ok = true; }
-    void attach(diagnostics said) { diag.append(std::move(said)); }
-    void failed(diagnostics said) { diag.replace(std::move(said)); }
+    void succeeded() { state.succeeded(); }
+    void attach(diagnostics said) { state.attach(std::move(said)); }
+    void failed(diagnostics said) { state.failed(std::move(said)); }
 
 private:
     compile_unit unit;
-    rebuild_info rebuild;
-    diagnostic_buffer diag{};
-    std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
-    bool ok = false;
-    bool hit = false;
+    step_state state;
 };
 
 // Linking has no start event, so this is the exit half only: exactly one link_end however the
@@ -2291,7 +2317,7 @@ class link_scope
 {
 public:
     link_scope(std::string_view executable, const rebuild_info& reason, std::string sig)
-        : executable_path{executable}, rebuild{reason}, signature{std::move(sig)}
+        : executable_path{executable}, signature{std::move(sig)}, state{reason}
     {}
 
     // An up-to-date executable: nothing ran, so no reason and no duration, and there is no step
@@ -2299,8 +2325,7 @@ public:
     link_scope(std::string_view executable, std::string sig)
         : link_scope{executable, rebuild_info{}, std::move(sig)}
     {
-        hit = true;
-        ok = true;
+        state.mark_cache_hit();
     }
 
     link_scope(const link_scope&) = delete;
@@ -2308,29 +2333,19 @@ public:
 
     ~link_scope()
     {
-        const auto finished = hit ? started : std::chrono::steady_clock::now();
-        notify(&observer::link_end,
-               executable_path,
-               step_result{.ok = ok,
-                           .cache_hit = hit,
-                           .timing = {started, finished},
-                           .rebuild = rebuild,
-                           .diag = diag.value(),
-                           .signature = signature});
+        auto result = state.result();
+        result.signature = signature;
+        notify(&observer::link_end, executable_path, result);
     }
 
-    void succeeded() { ok = true; }
-    void attach(diagnostics said) { diag.append(std::move(said)); }
-    void failed(diagnostics said) { diag.replace(std::move(said)); }
+    void succeeded() { state.succeeded(); }
+    void attach(diagnostics said) { state.attach(std::move(said)); }
+    void failed(diagnostics said) { state.failed(std::move(said)); }
 
 private:
     std::string executable_path;
-    rebuild_info rebuild;
-    diagnostic_buffer diag{};
     std::string signature{};
-    std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
-    bool ok = false;
-    bool hit = false;
+    step_state state;
 };
 
 // What process::runner needs of a scope: somewhere to hand the child's own output — failures
