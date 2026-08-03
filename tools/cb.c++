@@ -30,8 +30,10 @@
 #include <algorithm>
 #include <atomic>
 #include <exception>
+#include <functional>
 #include <iterator>
 #include <ranges>
+#include <span>
 #include <utility>
 #include <stdexcept>
 #include <system_error>
@@ -346,7 +348,7 @@ private:
 };
 
 using translation_unit_list = std::vector<translation_unit>;
-using unit_index = std::flat_map<std::string_view, const translation_unit*, std::less<>>;
+using unit_index = std::flat_map<std::string_view, std::reference_wrapper<const translation_unit>, std::less<>>;
 
 std::optional<std::string_view> translation_unit::supported_suffix(std::string_view filename)
 {
@@ -513,7 +515,7 @@ public:
 private:
     using dependency_graph = std::flat_map<std::string, string_list, std::less<>>;
     using indegree_map = std::flat_map<std::string, int, std::less<>>;
-    using unit_map = std::flat_map<std::string, translation_unit*, std::less<>>;
+    using unit_map = std::flat_map<std::string, std::reference_wrapper<translation_unit>, std::less<>>;
     using ready_queue = std::queue<std::string>;
 
     // True for `dir` or `dir/...`.
@@ -920,13 +922,13 @@ private:
         {
             if(unit_to_tu.contains(tu.unit))
             {
-                const auto& prior = *unit_to_tu.at(tu.unit);
+                const translation_unit& prior = unit_to_tu.at(tu.unit);
                 throw std::runtime_error{
                     "Duplicate translation unit key '" + tu.unit + "' from "
                     + prior.display_path + " and " + tu.display_path
                     + " (object/module names must stay unique)"};
             }
-            unit_to_tu[tu.unit] = &tu;
+            unit_to_tu.emplace(tu.unit, tu);
             indegrees[tu.unit] = 0;
         }
 
@@ -954,10 +956,10 @@ private:
                 const auto unit = ready.front();
                 ready.pop();
 
-                auto* tu = unit_to_tu.at(unit);
-                tu->dependency_level = level;
+                translation_unit& tu = unit_to_tu.at(unit);
+                tu.dependency_level = level;
                 // unit_map keys are independent string copies; each unit is dequeued once.
-                sorted.push_back(std::move(*tu));
+                sorted.push_back(std::move(tu));
 
                 for(const auto& dependent_unit : dependencies[unit])
                     if(--indegrees[dependent_unit] == 0)
@@ -1158,10 +1160,11 @@ enum class linkage : unsigned char { dynamic, static_ };
 using module_link_flags = std::flat_map<std::string, std::string, std::less<>>;
 
 // What the driver needs from a provider interface — filled by build_system from TU + artifacts.
+// imports is a span (not a reference member) so module_interface_map values stay assignable.
 struct module_provider
 {
     std::string_view module{};
-    const string_list* imports = nullptr;
+    std::span<const std::string> imports{};
     std::string_view bmi_path{};
 };
 
@@ -1704,7 +1707,7 @@ private:
                 continue;
             const auto& dep = interfaces.at(name);
             flags.push_back(module_file_flag(dep.module, dep.bmi_path));
-            for(const auto& imp : *dep.imports)
+            for(const auto& imp : dep.imports)
                 enqueue(imp);
         }
         return flags;
@@ -2866,7 +2869,7 @@ private:
         // Implementation units consume their primary interface even without an explicit import.
         if(tu.kind == unit_kind::implementation_unit and units.contains(tu.module))
         {
-            const auto& interface = *units.at(tu.module);
+            const source::translation_unit& interface = units.at(tu.module);
             const auto& interface_art = artifacts_of(interface);
             const auto interface_bmi = detail::file_time(interface_art.bmi);
             if(not interface_bmi)
@@ -2909,7 +2912,7 @@ private:
             if(not units.contains(dependency_key))
                 continue;
 
-            const auto& dependency = *units.at(dependency_key);
+            const source::translation_unit& dependency = units.at(dependency_key);
             if(dependency.is_modular)
             {
                 const auto& dependency_art = artifacts_of(dependency);
@@ -3016,7 +3019,7 @@ private:
             if(not units.contains(dependency_key))
                 continue;
 
-            const auto& dependency = *units.at(dependency_key);
+            const source::translation_unit& dependency = units.at(dependency_key);
             if(dependency.is_modular)
             {
                 const auto& dependency_art = artifacts_of(dependency);
@@ -3161,10 +3164,10 @@ public:
         static_assert(std::is_lvalue_reference_v<job_reference>);
         using job_type = std::remove_cvref_t<job_reference>;
 
-        // Jobs outlive workers; pointers avoid copying rebuild decisions.
-        auto items = std::vector<const job_type*>{};
+        // Jobs outlive workers; reference_wrappers avoid copying rebuild decisions.
+        auto items = std::vector<std::reference_wrapper<const job_type>>{};
         for(const auto& job : jobs)
-            items.push_back(std::addressof(job));
+            items.push_back(job);
         if(items.empty())
             return;
 
@@ -3184,7 +3187,7 @@ public:
                     return;
                 try
                 {
-                    work(*items[index]);
+                    work(items[index].get());
                 }
                 catch(...)
                 {
@@ -3702,7 +3705,7 @@ private:
             {
                 return std::pair{tu.module, toolchain::module_provider{
                     .module = tu.module,
-                    .imports = &tu.imports,
+                    .imports = tu.imports,
                     .bmi_path = artifacts_of(tu).bmi,
                 }};
             })
@@ -4095,7 +4098,7 @@ private:
 
         auto u2tu = source::unit_index{};
         for(const auto& tu : units_in_topological_order)
-            u2tu.emplace(std::string_view{tu.unit}, &tu);
+            u2tu.emplace(std::string_view{tu.unit}, tu);
         const auto cache_analyzer = cache::analyzer{source_dir, artifact_paths.bmi.string(), unit_artifacts_};
         auto schedule = compile_schedule{units_in_topological_order};
         auto rebuilt = std::vector<unsigned char>(schedule.unit_count());
@@ -4171,7 +4174,7 @@ private:
         // analyzer reads of the loaded snapshot with parallel remember() writes is a data race.
         const auto freshness = cache::analyzer{source_dir, artifact_paths.bmi.string(), unit_artifacts_};
         struct link_decision {
-            const source::translation_unit* tu = nullptr;
+            const source::translation_unit& tu;
             string_list input_paths{};
             string_list import_flags{};
             std::string signature{};
@@ -4189,7 +4192,7 @@ private:
                   auto reason = freshness.rebuild_reason_for(
                       links, artifacts_of(tu).executable, signature);
                   return link_decision{
-                      .tu = &tu,
+                      .tu = tu,
                       .input_paths = std::move(input_paths),
                       .import_flags = std::move(import_flags),
                       .signature = std::move(signature),
@@ -4201,7 +4204,7 @@ private:
             if(decision.reason)
                 continue;
             const auto hit = output::link_scope{
-                artifacts_of(*decision.tu).executable, decision.signature};
+                artifacts_of(decision.tu).executable, decision.signature};
         }
 
         execution::worker_pool{job_limit()}.run(
@@ -4209,14 +4212,13 @@ private:
                 return decision.reason.has_value();
             }),
             [&](const link_decision& decision) {
-                const auto& tu = *decision.tu;
                 perform_link(
-                    tu,
+                    decision.tu,
                     decision.input_paths,
                     decision.import_flags,
                     *decision.reason,
                     decision.signature);
-                links.remember(artifacts_of(tu).executable, decision.signature);
+                links.remember(artifacts_of(decision.tu).executable, decision.signature);
             });
         links.save();
     }
