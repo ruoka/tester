@@ -8,6 +8,7 @@ Wall-clock comparison of **`tools/cb`** (direct, no `CB.sh` bootstrap) against t
 ./tools/bench-cb-vs-ninja.sh --cb-only             # CB scenarios only (revision comparisons)
 ./tools/bench-cb-vs-ninja.sh --quiet-ninja        # Ninja progress only
 ./tools/bench-cb-vs-ninja.sh --modules=one-phase --jobs=4
+./tools/run-linux-bench.sh                       # two-phase in .devcontainer (from macOS host)
 ```
 
 Scenarios: cold full rebuild (after `clean` / `rm -rf` build tree), no-op rebuild,
@@ -33,30 +34,37 @@ mode is from that mode’s complete run.
 | CB | `tools/cb` with the same argv/env `CB.sh` would `exec` (absolute `-I`, `--include-examples`, `SDKROOT`, `LDFLAGS`), per-TU `-fmodule-file=` maps |
 | Ninja | `cmake --build … --verbose` → `ninja -v` (full command lines; output captured to temp files) |
 | Scope | Standalone tree, examples included (~36 TUs) |
-| Date | 2026-08-03 (two-phase, post compile-step callback); one-phase column still 2026-08-02 |
+| Date | 2026-08-04 (two-phase, after rediscovery/scan/analyzer speedups); one-phase column still 2026-08-02 |
 
 ### Results (mean wall-clock)
 
 | Scenario | CB two-phase | Ninja (paired) | ratio | CB one-phase | Ninja (paired) | ratio |
 |----------|-------------:|---------------:|------:|-------------:|---------------:|------:|
-| Cold full | 8.31 s | 9.55 s | 0.87× | 8.03 s | 7.92 s | 1.01× |
-| Cold + configure | 8.31 s | 10.33 s | 0.80× | 8.03 s | 8.60 s | 0.93× |
-| No-op | 398 ms | 61 ms | 6.50× | 299 ms | 57 ms | 5.22× |
-| Touch one test TU | 2.96 s | 2.75 s | 1.08× | 2.86 s | 2.61 s | 1.10× |
-| Touch module interface | 6.01 s | 6.82 s | 0.88× | 5.92 s | 5.57 s | 1.06× |
+| Cold full | 8.31 s | 9.56 s | 0.87× | 8.03 s | 7.92 s | 1.01× |
+| Cold + configure | 8.31 s | 10.41 s | 0.80× | 8.03 s | 8.60 s | 0.93× |
+| No-op | 108 ms | 73 ms | 1.49× | 299 ms | 57 ms | 5.22× |
+| Touch one test TU | 4.74 s | 6.12 s | 0.77× | 2.86 s | 2.61 s | 1.10× |
+| Touch module interface | 6.52 s | 7.74 s | 0.84× | 5.92 s | 5.57 s | 1.06× |
 
-Two-phase CB is ahead of this Ninja pair on cold and module-touch (0.87× / 0.88×);
-Ninja’s cold and module means are pulled up by a slow first sample (10.6 s / 8.5 s).
-Test-TU touch is within ~8%; no-op remains rediscovery-bound (~0.40 s vs ~61 ms).
-One-phase numbers were not remeasured on 2026-08-03.
+Two-phase CB leads this Ninja pair on cold, both touch scenarios, and sits near parity on
+no-op once process startup settles (samples 2–5 are 72–74 ms wall / ~30 ms inside CB; the
+108 ms mean includes a 248 ms first-sample wall outlier with the same ~30 ms internal
+`duration_ms`). One-phase numbers were not remeasured on 2026-08-04.
 
-`CB.sh` overhead on a warm no-op is ~20 ms once `tools/cb` is already built —
-negligible next to CB’s scan/cache check.
+`CB.sh` overhead on a warm no-op is ~20 ms once `tools/cb` is already built — most of the
+remaining gap to Ninja is that floor plus process startup, not rediscovery.
 
 ## Linux / Clang 21 (`.devcontainer`)
 
 Re-measured in the tester [`.devcontainer`](../.devcontainer) image (Debian trixie,
-Clang 21 + libc++, CMake from Kitware). Run from a sibling checkout:
+Clang 21 + libc++, CMake from Kitware). From a macOS host with Docker Desktop:
+
+```bash
+./tools/run-linux-bench.sh   # builds the image if needed; writes .bench-ab/cb-vs-ninja-bench-linux.*
+```
+
+Or the equivalent manual `docker run` (set `CB_BIN` to a container-local path such as
+`/tmp/cb-linux` so the Linux ELF is not overwritten by a host `tools/cb` on the bind mount):
 
 ```bash
 docker build -t tester-dev-trixie:latest -f .devcontainer/Dockerfile .devcontainer
@@ -66,6 +74,7 @@ docker run --rm -v "$PWD:/work" -w /work \
   -e CXX_COMPILER=/usr/bin/clang++-21 \
   -e STD_CPPM=/usr/lib/llvm-21/share/libc++/v1/std.cppm \
   -e LDFLAGS='-Wl,--push-state,--no-as-needed -lc++ -lc++abi -lc++experimental -Wl,--pop-state -pthread -ldl' \
+  -e CB_BIN=/tmp/cb-linux \
   tester-dev-trixie:latest \
   ./tools/bench-cb-vs-ninja.sh --jobs=4
 ```
@@ -78,27 +87,26 @@ docker run --rm -v "$PWD:/work" -w /work \
 | Config | Debug (`-O0 -g3`) |
 | Compiler | Debian Clang 21.1.8 (`clang++-21` → `/usr/lib/llvm-21`) |
 | CMake / Ninja | CMake 4.1.2 / Ninja 1.12.1 |
-| CB | `tools/cb`, direct, per-TU `-fmodule-file=` project BMI mappings |
+| CB | `tools/cb` (or `CB_BIN`), direct, per-TU `-fmodule-file=` project BMI mappings |
 | Ninja | `cmake --build … --parallel 4 --verbose` |
 | Scope | Standalone tree, examples included (36 TUs) |
-| Date | 2026-08-03 (two-phase); one-phase column still 2026-08-02 |
+| Date | 2026-08-04 (two-phase, after rediscovery/scan/analyzer speedups); one-phase column still 2026-08-02 |
 
 ### Results (mean wall-clock)
 
 | Scenario | CB two-phase | Ninja (paired) | ratio | CB one-phase | Ninja (paired) | ratio |
 |----------|-------------:|---------------:|------:|-------------:|---------------:|------:|
-| Cold full | 10.88 s | 14.58 s | 0.75× | 12.16 s | 12.00 s | 1.01× |
-| Cold + configure | 10.88 s | 15.01 s | 0.72× | 12.16 s | 12.35 s | 0.98× |
-| No-op | 357 ms | 29 ms | 12.3× | 371 ms | 29 ms | 12.8× |
-| Touch one test TU | 4.45 s | 4.81 s | 0.92× | 3.88 s | 4.01 s | 0.97× |
-| Touch module interface | 10.96 s | 9.63 s | 1.14× | 9.19 s | 8.44 s | 1.09× |
+| Cold full | 11.16 s | 12.08 s | 0.92× | 12.16 s | 12.00 s | 1.01× |
+| Cold + configure | 11.16 s | 12.45 s | 0.90× | 12.16 s | 12.35 s | 0.98× |
+| No-op | 37 ms | 31 ms | 1.18× | 371 ms | 29 ms | 12.8× |
+| Touch one test TU | 3.36 s | 4.23 s | 0.79× | 3.88 s | 4.01 s | 0.97× |
+| Touch module interface | 7.97 s | 9.43 s | 0.84× | 9.19 s | 8.44 s | 1.09× |
 
-Two-phase is ahead of verbose Ninja on cold and one-TU touch (0.75× / 0.92×); module-touch
-is behind on this sample (1.14×), with CB’s first touch slow (13.1 s). Ninja cold is also
-noisy (one 17.9 s sample). No-op is still rediscovery-bound (~0.36 s vs ~29 ms). One-phase
-was not remeasured on 2026-08-03. Clang 21 does not default to the reduced BMI path that
-Clang 22+ uses for one-phase, so module mode should be measured on the deployment
-toolchain rather than assumed universally faster.
+Two-phase leads verbose Ninja on cold and both touch scenarios (0.92× / 0.79× / 0.84×).
+No-op is within ~20% of Ninja (37 ms vs 31 ms); the old ~12× rediscovery gap is gone.
+One-phase numbers were not remeasured on 2026-08-04. Clang 21 does not default to the
+reduced BMI path that Clang 22+ uses for one-phase, so module mode should be measured on
+the deployment toolchain rather than assumed universally faster.
 
 With a machine-local std cache enabled (`CB_STD_CACHE_DIR` non-empty), a clean CB build
 can skip recompiling `std` after `clean`; that path is intentionally excluded from the
@@ -148,9 +156,9 @@ follow-up moves the serialized profile string out of a temporary instead of copy
 
 ## How to read the gap
 
-- **No-op:** Ninja checks a persistent `build.ninja` graph (mtime / dirty edges). CB rediscovers TUs, re-reads `import` lines, and consults its object cache every run. That rediscovery dominates the warm CB invocation (~0.37 s on this Linux snapshot, ~0.3–0.4 s on macOS).
-- **Cold / touch:** Both spend most of the time in `clang++`. One-phase removes CB’s second modular compile step; two-phase can publish a provider BMI before its object finishes so importers start earlier. On v2.2, two-phase is the stronger cold/module-touch shape on Linux Clang 21; macOS Clang 23 is near parity either way, with two-phase still favoured on module-touch.
+- **No-op:** Ninja checks a persistent `build.ninja` graph (mtime / dirty edges). CB still rediscovers TUs and consults its object cache every run, but after memoizing analyzer decisions, replacing `std::regex` lexical stripping, and cutting redundant filesystem work, that path is no longer the dominant cost — warm no-op is within ~1.2–1.5× of Ninja, and most of the residual is process startup. Watch CB’s own `duration_ms` on `*_detail` rows (~30 ms on macOS) when a wall-clock sample spikes.
+- **Cold / touch:** Both spend most of the time in `clang++`. One-phase removes CB’s second modular compile step; two-phase can publish a provider BMI before its object finishes so importers start earlier. On this refresh, two-phase leads the paired verbose Ninja run on cold and both touch scenarios on macOS and Linux.
 - **Ninja `-v` vs quiet:** Full command-line logging did not change wall-clock meaningfully when redirected to files. Quiet Ninja no-op was also ~56 ms on macOS.
 - **Add/delete sources:** CB always rescans. This repo’s `CMakeLists.txt` uses `GLOB … CONFIGURE_DEPENDS`, so Ninja re-checks globs and CMake regenerates the graph when matching files appear or disappear — no hand `cmake` for ordinary glob hits.
 
-Numbers are single-machine snapshots (macOS and Linux two-phase refreshed 2026-08-03; one-phase columns 2026-08-02), not a CI gate. Re-run the script after toolchain or tree changes.
+Numbers are single-machine snapshots (macOS and Linux two-phase refreshed 2026-08-04; one-phase columns 2026-08-02), not a CI gate. Re-run the script after toolchain or tree changes.

@@ -183,6 +183,16 @@ std::string canonical_path(fs::path path)
     return error ? path.lexically_normal().string() : canonical.string();
 }
 
+// One syscall for "missing or unreadable" versus exists() + last_write_time().
+std::optional<fs::file_time_type> file_time(const fs::path& path)
+{
+    auto error = std::error_code{};
+    const auto stamp = fs::last_write_time(path, error);
+    if(error)
+        return std::nullopt;
+    return stamp;
+}
+
 // A cache (or other stamped index) is replaced, never edited in place: write a sibling
 // temporary, then rename it over the target, so a build interrupted mid-write leaves the
 // previous file rather than half of the next. Callers differ only in what they write and
@@ -278,31 +288,32 @@ class scanner;
 
 class translation_unit {
 public:
-    static bool is_supported(const fs::path& file_path);
+    static bool is_supported(std::string_view filename);
     std::string_view kind_name() const;
 
     friend class scanner;
 
-    // File identity
-    const std::string filename;
-    const std::string path;
-    const std::string suffix;
-    const std::string base_name;
-    const std::string full_path;
+    // File identity. Non-const so vectors can move these through collect/order; the private
+    // constructor and friend scanner still own how a unit is born.
+    std::string filename;
+    std::string path;
+    std::string suffix;
+    std::string base_name;
+    std::string full_path;
     // How reports name this unit: the source relative to the project root. Computed once
     // because the inventory and every rebuild sentence ask for the same string.
-    const std::string display_path;
-    const std::string unit;
+    std::string display_path;
+    std::string unit;
 
     // Module information
-    const std::string module;
-    const string_list imports;
-    
+    std::string module;
+    string_list imports;
+
     // File properties
-    const unit_kind kind = unit_kind::non_module;
-    const bool has_main = false;
-    const bool is_test = false;
-    const bool is_modular = false;
+    unit_kind kind = unit_kind::non_module;
+    bool has_main = false;
+    bool is_test = false;
+    bool is_modular = false;
     
     // Build artifacts
     std::string object_path{};
@@ -357,8 +368,8 @@ std::optional<std::string_view> translation_unit::supported_suffix(std::string_v
     return *longest;
 }
 
-bool translation_unit::is_supported(const fs::path& file_path) {
-    return supported_suffix(file_path.filename().string()).has_value();
+bool translation_unit::is_supported(std::string_view filename) {
+    return supported_suffix(filename).has_value();
 }
 
 std::string_view translation_unit::kind_name() const
@@ -451,7 +462,9 @@ translation_unit::translation_unit(const fs::path& relative,
           return std::string{*matched};
       }()),
       base_name(this->filename.substr(0, this->filename.size() - this->suffix.size())),
-      full_path(detail::canonical_path(full_path)),
+      // collect() walks a weakly_canonical root, so the absolute entry path needs only
+      // lexical cleanup — not another symlink-resolving weakly_canonical per source.
+      full_path(fs::path{full_path}.lexically_normal().string()),
       display_path(make_display_path(this->path, this->filename)),
       unit(make_unit(module_value, kind_value, this->filename)),
       module(std::move(module_value)),
@@ -460,7 +473,11 @@ translation_unit::translation_unit(const fs::path& relative,
       has_main(has_main_flag),
       is_test(determine_is_test(this->path, this->filename, this->suffix)),
       is_modular(kind_value == unit_kind::interface_unit or kind_value == unit_kind::partition_unit),
-      last_modified(fs::last_write_time(full_path)) {}
+      last_modified([&] {
+          if(auto stamp = detail::file_time(full_path))
+              return *stamp;
+          throw std::runtime_error{"cannot read modification time"};
+      }()) {}
 
 class scanner
 {
@@ -627,33 +644,125 @@ private:
         return result;
     }
 
-    // One alternation over the whole preamble, because a block comment and a raw string still
-    // span lines after splicing and cannot be recognised a line at a time. Alternation also gets
-    // the interleaving right for free: whichever construct opens first wins, so `"/*"` inside a
-    // string starts no comment, and a quote inside a comment stays inert. Comments collapse to a
-    // space, since a comment separates tokens (`import/*x*/foo`); literals keep their delimiters
-    // but lose contents that may spell `import foo;`, which the unanchored matchers would find.
-    //
-    // A raw string's body has no escapes, so only `)delimiter"` closes it, matched by backreference
-    // — the one unavoidable lazy `[\s\S]*?`, and it only runs where `R"` appears. `//` comments and
-    // quoted literals end at the newline, a continued one having already been joined. The quoted
-    // branches keep `\\.` for the escapes that remain (`"\""` closes nothing) and are unrolled as a
-    // character-class run plus a group per escape (`[^"\\\n]*(?:\\.[^"\\\n]*)*`) rather than a
-    // per-character alternation: run and escape group cannot both match a backslash, which is what
-    // keeps the form linear in a pass that has dominated scan time before.
-    inline static const std::regex comment_or_literal_regex{
-        R"(//[^\n]*)"
-        R"(|/\*[^*]*\*+(?:[^/*][^*]*\*+)*/)"
-        R"(|R(")([^()\\ \t\r\n"]{0,16})\([\s\S]*?\)\2")"
-        R"(|(")[^"\\\n]*(?:\\.[^"\\\n]*)*")"
-        R"(|(')[^'\\\n]*(?:\\.[^'\\\n]*)*')"};
-
-    static std::string strip_comments_and_literals(const std::string& text)
+    // std::regex over a view of the cleaned text: views::split yields contiguous subranges, so a
+    // pointer pair matches in place instead of materialising a std::string per line.
+    static bool search(std::string_view text, const std::regex& pattern)
     {
-        // Comments collapse to a single space; a literal keeps its delimiters via whichever
-        // quote group matched, so `"import foo;"` cannot register as an edge. Exactly one of
-        // the three quote groups participates per match, so the others expand to nothing.
-        return std::regex_replace(text, comment_or_literal_regex, " $1$1$3$3$4$4");
+        return std::regex_search(text.data(), text.data() + text.size(), pattern);
+    }
+
+    static bool search(std::string_view text, std::cmatch& match, const std::regex& pattern)
+    {
+        return std::regex_search(text.data(), text.data() + text.size(), match, pattern);
+    }
+
+    // One left-to-right pass over the whole preamble, because a block comment and a raw string
+    // still span lines after splicing and cannot be recognised a line at a time. Scanning in one
+    // direction also gets the interleaving right for free: whichever construct opens first wins,
+    // so `"/*"` inside a string starts no comment, and a quote inside a comment stays inert.
+    //
+    // A raw string's body has no escapes, so only `)delimiter"` closes it. `//` comments and quoted
+    // literals end at the newline, a continued one having already been joined. Escapes still matter
+    // in the quoted forms (`"\""` closes nothing).
+    //
+    // Written as a scanner rather than one alternating std::regex: the regex form is O(n) in
+    // theory but ~170x slower here in practice (127 ms vs 0.7 ms over this project's sources),
+    // which made it the single largest CPU cost of a build, cached or not. A construct is only
+    // consumed once its closer is found, so an unterminated quote or `/*` is left as ordinary
+    // text — the same answer the alternation gave by failing to match.
+    static std::string strip_comments_and_literals(std::string_view text)
+    {
+        // Comments collapse to a single space, since a comment separates tokens
+        // (`import/*x*/foo`); a literal keeps its delimiters but loses contents that may spell
+        // `import foo;`, which the unanchored matchers would otherwise find.
+        auto result = std::string{};
+        result.reserve(text.size());
+
+        const auto is_delimiter_char = [](char character)
+        {
+            return character != '(' and character != ')' and character != '\\' and character != '"'
+                and character != ' ' and character != '\t' and character != '\r' and character != '\n';
+        };
+
+        auto cursor = std::size_t{};
+        while(cursor < text.size())
+        {
+            const auto character = text[cursor];
+            const auto next = cursor + 1 < text.size() ? text[cursor + 1] : '\0';
+
+            if(character == '/' and next == '/')
+            {
+                const auto newline = text.find('\n', cursor);
+                cursor = newline == std::string_view::npos ? text.size() : newline;
+                result.push_back(' ');
+                continue;
+            }
+            if(character == '/' and next == '*')
+            {
+                const auto close = text.find("*/"sv, cursor + 2);
+                if(close != std::string_view::npos)
+                {
+                    cursor = close + 2;
+                    result.push_back(' ');
+                    continue;
+                }
+            }
+            else if(character == 'R' and next == '"')
+            {
+                const auto opener = cursor + 2;
+                auto delimiter_end = opener;
+                while(delimiter_end < text.size() and delimiter_end - opener < 16
+                      and is_delimiter_char(text[delimiter_end]))
+                    ++delimiter_end;
+                if(delimiter_end < text.size() and text[delimiter_end] == '(')
+                {
+                    auto closer = ")"s;
+                    closer.append(text.substr(opener, delimiter_end - opener));
+                    closer.push_back('"');
+                    if(const auto close = text.find(closer, delimiter_end + 1);
+                       close != std::string_view::npos)
+                    {
+                        cursor = close + closer.size();
+                        result.append(" \"\""sv);
+                        continue;
+                    }
+                }
+            }
+            else if(character == '"' or character == '\'')
+            {
+                if(const auto close = quoted_end(text, cursor); close != std::string_view::npos)
+                {
+                    cursor = close;
+                    result.push_back(' ');
+                    result.push_back(character);
+                    result.push_back(character);
+                    continue;
+                }
+            }
+
+            result.push_back(character);
+            ++cursor;
+        }
+        return result;
+    }
+
+    // One past the closing quote, or npos when the literal does not close on its line.
+    static std::size_t quoted_end(std::string_view text, std::size_t opener)
+    {
+        const auto quote = text[opener];
+        for(auto cursor = opener + 1; cursor < text.size(); ++cursor)
+        {
+            if(text[cursor] == '\\')
+            {
+                ++cursor;
+                continue;
+            }
+            if(text[cursor] == quote)
+                return cursor + 1;
+            if(text[cursor] == '\n')
+                break;
+        }
+        return std::string_view::npos;
     }
 
     // `#if 0` is the commented-out idiom, so its body is elided wholesale — and the idiom has more
@@ -667,14 +776,14 @@ private:
     public:
         // True when a line carries no live code: a preprocessor directive, or any line
         // inside a dead `#if` region or dead `#elif` arm.
-        bool is_inactive(const std::string& line)
+        bool is_inactive(std::string_view line)
         {
             // Directives are a tiny minority of lines; the cheap check keeps the regex off
             // the hot path of a scan that runs on every build, cached or not.
             if(line.contains('#'))
             {
-                auto m = std::smatch{};
-                if(std::regex_match(line, m, directive_regex))
+                auto m = std::cmatch{};
+                if(std::regex_match(line.data(), line.data() + line.size(), m, directive_regex))
                 {
                     apply(m[1].str(), m[2].str());
                     return true;
@@ -739,16 +848,26 @@ private:
         auto units = translation_unit_list{};
         try
         {
-            const auto root = fs::path{source_root_};
-            if(not fs::exists(root) or not fs::is_directory(root))
+            // Canonicalize once so each source's absolute path is root + relative, without a
+            // weakly_canonical walk per entry.
+            const auto root = fs::path{detail::canonical_path(source_root_)};
+            auto error = std::error_code{};
+            if(not fs::is_directory(root, error) or error)
                 return units;
+
+            const auto& root_native = root.native();
+            const auto root_prefix = root_native.size() + 1; // skip the separating '/'
 
             auto entries = fs::recursive_directory_iterator{root};
             const auto end = fs::recursive_directory_iterator{};
             for(; entries != end; ++entries)
             {
                 const auto& entry = *entries;
-                const auto rel_path = entry.path().lexically_relative(root).string();
+                const auto& native = entry.path().native();
+                // Iterator yields paths under root; a bare root entry has no relative suffix.
+                const auto rel_path = native.size() > root_native.size()
+                    ? std::string_view{native}.substr(std::min(root_prefix, native.size()))
+                    : std::string_view{};
 
                 // Prune excluded trees at their directory entry instead of descending through
                 // every file and discarding it. Project test/ trees are deliberately absent:
@@ -760,14 +879,18 @@ private:
                         entries.disable_recursion_pending();
                     continue;
                 }
+                const auto slash = rel_path.rfind('/');
+                const auto filename = slash == std::string_view::npos
+                    ? rel_path
+                    : rel_path.substr(slash + 1);
                 if(not entry.is_regular_file()
                    or is_excluded_source_path(rel_path)
-                   or not translation_unit::is_supported(entry.path()))
+                   or not translation_unit::is_supported(filename))
                     continue;
 
                 try
                 {
-                    auto tu = parse(root, entry.path());
+                    auto tu = parse(rel_path, entry.path());
                     if(tu.is_test and not include_tests_)
                         continue;
                     units.push_back(std::move(tu));
@@ -838,7 +961,8 @@ private:
 
                 auto* tu = unit_to_tu.at(unit);
                 tu->dependency_level = level;
-                sorted.push_back(*tu);
+                // unit_map keys are independent string copies; each unit is dequeued once.
+                sorted.push_back(std::move(*tu));
 
                 for(const auto& dependent_unit : dependencies[unit])
                     if(--indegrees[dependent_unit] == 0)
@@ -862,12 +986,8 @@ private:
         return sorted;
     }
 
-    static translation_unit parse(const fs::path& project_root, const fs::path& file_path)
+    static translation_unit parse(std::string_view relative_path, const fs::path& file_path)
     {
-        auto relative_path = file_path.lexically_relative(project_root);
-        if(relative_path.empty() or relative_path == ".")
-            relative_path = file_path.filename();
-
         auto file = std::ifstream{file_path};
         if(not file)
             throw std::runtime_error{"cannot open file"};
@@ -901,66 +1021,74 @@ private:
 
         for(const auto part : std::views::split(cleaned, '\n'))
         {
-            const auto code_line = std::string{std::string_view{part}};
+            const auto code_line = std::string_view{part};
             if(conditionals.is_inactive(code_line))
                 continue;
             const auto trimmed = trim(code_line);
             if(trimmed.empty())
                 continue;
 
-            if(std::regex_search(code_line, translation_unit::main_regex))
+            // A line that does not spell the keyword cannot match the pattern that requires it,
+            // and a substring scan rejects the overwhelming majority for a fraction of what
+            // entering std::regex costs. Measured over this project: 61 ms down to 0.2 ms.
+            if(not has_main and code_line.contains("main"sv)
+               and search(code_line, translation_unit::main_regex))
                 has_main = true;
             if(seen_real_code)
                 continue;
 
-            auto match = std::smatch{};
-            if(std::regex_search(code_line, match, translation_unit::fragment_regex))
+            // Every preamble pattern requires one of these two keywords, so a line carrying
+            // neither cannot match any of them.
+            if(code_line.contains("module"sv) or code_line.contains("import"sv))
             {
-                if(kind == unit_kind::non_module)
-                    kind = unit_kind::global_fragment;
-            }
-            else if(std::regex_search(code_line, match, translation_unit::export_module_regex)
-                    and match.size() > 1)
-            {
-                module_name = match[1].str();
-                kind = module_name.contains(':')
-                    ? unit_kind::partition_unit
-                    : unit_kind::interface_unit;
-            }
-            else if(std::regex_search(code_line, match, translation_unit::module_regex)
-                    and match.size() > 1)
-            {
-                const auto module = match[1].str();
-                if(kind == unit_kind::non_module or kind == unit_kind::global_fragment)
+                auto match = std::cmatch{};
+                if(search(code_line, match, translation_unit::fragment_regex))
                 {
-                    module_name = module;
-                    kind = unit_kind::implementation_unit;
+                    if(kind == unit_kind::non_module)
+                        kind = unit_kind::global_fragment;
                 }
-            }
-            else if(std::regex_search(code_line, match, translation_unit::import_regex)
-                    and match.size() > 1)
-            {
-                auto imported = match[1].str();
-                if(not imported.empty() and imported[0] == ':' and not module_name.empty())
+                else if(search(code_line, match, translation_unit::export_module_regex)
+                        and match.size() > 1)
                 {
-                    const auto colon = module_name.find(':');
-                    const auto base = colon != std::string::npos
-                        ? module_name.substr(0, colon)
-                        : module_name;
-                    imported = base + imported;
+                    module_name = match[1].str();
+                    kind = module_name.contains(':')
+                        ? unit_kind::partition_unit
+                        : unit_kind::interface_unit;
                 }
-                if(not imported.empty() and imported != std_module_name)
-                    imports.push_back(std::move(imported));
+                else if(search(code_line, match, translation_unit::module_regex)
+                        and match.size() > 1)
+                {
+                    const auto module = match[1].str();
+                    if(kind == unit_kind::non_module or kind == unit_kind::global_fragment)
+                    {
+                        module_name = module;
+                        kind = unit_kind::implementation_unit;
+                    }
+                }
+                else if(search(code_line, match, translation_unit::import_regex)
+                        and match.size() > 1)
+                {
+                    auto imported = match[1].str();
+                    if(not imported.empty() and imported[0] == ':' and not module_name.empty())
+                    {
+                        const auto colon = module_name.find(':');
+                        const auto base = colon != std::string::npos
+                            ? module_name.substr(0, colon)
+                            : module_name;
+                        imported = base + imported;
+                    }
+                    if(not imported.empty() and imported != std_module_name)
+                        imports.push_back(std::move(imported));
+                }
             }
 
             // End the preamble only after recording any module/import on this line, and never
             // inside a global module fragment: it may contain declarations before export module.
             if(kind != unit_kind::global_fragment)
             {
-                const auto code = std::string{trimmed};
                 if(trimmed.contains('{')
-                   or std::regex_search(code, translation_unit::keyword_regex)
-                   or std::regex_search(code, translation_unit::using_namespace_regex))
+                   or search(trimmed, translation_unit::keyword_regex)
+                   or search(trimmed, translation_unit::using_namespace_regex))
                     seen_real_code = true;
             }
         }
@@ -972,7 +1100,7 @@ private:
             throw std::runtime_error{"implementation unit missing module name"};
 
         return translation_unit{
-            relative_path,
+            fs::path{relative_path},
             file_path,
             std::move(module_name),
             std::move(imports),
@@ -1272,12 +1400,15 @@ private:
 
     static std::string binary_signature(const std::string& path)
     {
-        if(not fs::exists(path))
+        auto error = std::error_code{};
+        const auto stamp = fs::last_write_time(path, error);
+        if(error)
             return {};
-
-        const auto size = fs::file_size(path);
+        const auto size = fs::file_size(path, error);
+        if(error)
+            return {};
         const auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            fs::last_write_time(path).time_since_epoch()).count();
+            stamp.time_since_epoch()).count();
         return std::to_string(size) + ':' + std::to_string(ticks);
     }
 
@@ -1983,7 +2114,9 @@ public:
         {
             auto entry_path = ""s;
             auto ticks = 0ll;
-            if(parse_entry(line, entry_path, ticks) and fs::exists(entry_path))
+            // Keep the entry without a filesystem probe: a missing source still produces a
+            // rebuild reason when analyzed, which is the correct outcome.
+            if(parse_entry(line, entry_path, ticks))
                 entries_[entry_path] = fs::file_time_type{std::chrono::nanoseconds{ticks}};
         }
     }
@@ -1992,10 +2125,9 @@ public:
     {
         file_.replace("object cache", [&](std::ostream& file) {
             file << profile_header_prefix << current_profile_ << "\n";
+            // Entries were recorded from units CB itself built; no need to re-stat them.
             for(const auto& [entry_path, timestamp] : entries_)
             {
-                if(not fs::exists(entry_path))
-                    continue;
                 const auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(
                     timestamp.time_since_epoch()).count();
                 file << entry_path << "\t" << ticks << "\n";
@@ -2193,10 +2325,13 @@ public:
 private:
     static std::string dependency_signature(const std::string& input_path)
     {
-        if(input_path.empty() or not fs::exists(input_path))
+        if(input_path.empty())
+            return input_path + ":missing";
+        const auto stamp = detail::file_time(input_path);
+        if(not stamp)
             return input_path + ":missing";
         const auto timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            fs::last_write_time(input_path).time_since_epoch()).count();
+            stamp->time_since_epoch()).count();
         return input_path + ":" + std::to_string(timestamp);
     }
 
@@ -2535,17 +2670,17 @@ public:
                 .bmi_path = std_modules.bmi_path()};
         };
 
-        if(not fs::exists(std_modules.bmi_path()))
+        const auto bmi_time = detail::file_time(std_modules.bmi_path());
+        if(not bmi_time)
             return module_of(output::rebuild_kind::own_bmi_missing);
-        if(not std_modules.profile_matches(
-               std::forward<decltype(object_profile_of)>(object_profile_of)()))
+        if(not std_modules.profile_matches(std::forward<decltype(object_profile_of)>(object_profile_of)()))
             return module_of(output::rebuild_kind::profile_change);
-        if(fs::last_write_time(std_modules.bmi_path()) < fs::last_write_time(source_path))
+        if(*bmi_time < fs::last_write_time(source_path))
             return module_of(output::rebuild_kind::own_bmi_stale);
-        if(not fs::exists(std_modules.object_path()))
+        const auto object_time = detail::file_time(std_modules.object_path());
+        if(not object_time)
             return module_of(output::rebuild_kind::object_missing);
-        if(fs::last_write_time(std_modules.object_path())
-           < fs::last_write_time(std_modules.bmi_path()))
+        if(*object_time < *bmi_time)
             return module_of(output::rebuild_kind::object_stale);
         return std::nullopt;
     }
@@ -2581,7 +2716,38 @@ public:
         return output::rebuild_info{.kind = output::rebuild_kind::signature_changed};
     }
 
+    // Consumers ask about the same provider once per path that reaches it, so an unmemoized
+    // walk costs the number of paths through the import DAG rather than the number of units
+    // — 2291 decisions for 36 units here, and worse as a graph deepens. A decision only
+    // changes when that unit's own artefacts change, which is what artifacts_changed reports.
     std::optional<output::rebuild_info> rebuild_reason_for(
+        const source::translation_unit& tu,
+        const object_store& loaded,
+        const source::unit_index& units) const
+    {
+        {
+            auto lock = std::lock_guard<std::mutex>{decisions_mutex_};
+            if(decisions_.contains(tu.unit))
+                return decisions_.at(tu.unit);
+        }
+        auto reason = decide_rebuild(tu, loaded, units);
+        {
+            auto lock = std::lock_guard<std::mutex>{decisions_mutex_};
+            decisions_.insert_or_assign(tu.unit, reason);
+        }
+        return reason;
+    }
+
+    // A compiled unit's object and BMI have moved, so importers must decide against the new
+    // state — the same answer an unmemoized walk would reach by re-reading the filesystem.
+    void artifacts_changed(const source::translation_unit& tu) const
+    {
+        auto lock = std::lock_guard<std::mutex>{decisions_mutex_};
+        decisions_.erase(tu.unit);
+    }
+
+private:
+    std::optional<output::rebuild_info> decide_rebuild(
         const source::translation_unit& tu,
         const object_store& loaded,
         const source::unit_index& units) const
@@ -2603,8 +2769,9 @@ public:
 
         // A modular object-only repair reuses its BMI, so validate all BMI inputs before
         // returning object_missing/object_stale. Non-modular units can decide immediately.
-        const auto object_absent = not fs::exists(tu.object_path);
-        auto object_timestamp = fs::file_time_type{};
+        const auto object_stamp = detail::file_time(tu.object_path);
+        const auto object_absent = not object_stamp.has_value();
+        auto object_timestamp = object_stamp.value_or(fs::file_time_type{});
         if(object_absent)
         {
             if(not tu.is_modular)
@@ -2612,27 +2779,24 @@ public:
                     .kind = output::rebuild_kind::object_missing,
                     .trigger_path = tu.full_path};
         }
-        else
+        else if(not tu.is_modular)
         {
-            object_timestamp = fs::last_write_time(tu.object_path);
-            if(not tu.is_modular)
-            {
-                if(object_timestamp < loaded.entries().at(tu.full_path))
-                    return output::rebuild_info{
-                        .kind = output::rebuild_kind::object_stale,
-                        .trigger_path = tu.full_path};
-                if(auto header_reason = stale_header(tu, object_timestamp))
-                    return header_reason;
-            }
+            if(object_timestamp < loaded.entries().at(tu.full_path))
+                return output::rebuild_info{
+                    .kind = output::rebuild_kind::object_stale,
+                    .trigger_path = tu.full_path};
+            if(auto header_reason = stale_header(tu, object_timestamp))
+                return header_reason;
         }
 
         // Implementation units consume their primary interface even without an explicit import.
         if(tu.kind == unit_kind::implementation_unit and units.contains(tu.module))
         {
             const auto& interface = *units.at(tu.module);
-            if(not fs::exists(interface.bmi_path))
+            const auto interface_bmi = detail::file_time(interface.bmi_path);
+            if(not interface_bmi)
                 return bmi_rebuild(output::rebuild_kind::dependency_bmi_stale, interface);
-            if(fs::last_write_time(interface.bmi_path) > object_timestamp)
+            if(*interface_bmi > object_timestamp)
                 return bmi_rebuild(output::rebuild_kind::bmi_stale, interface);
             if(auto interface_reason = rebuild_reason_for(interface, loaded, units))
                 return attributed_to(*interface_reason, interface);
@@ -2642,9 +2806,10 @@ public:
         auto object_stale_vs_bmi = false;
         if(tu.is_modular)
         {
-            if(not fs::exists(tu.bmi_path))
+            const auto bmi_stamp = detail::file_time(tu.bmi_path);
+            if(not bmi_stamp)
                 return bmi_rebuild(output::rebuild_kind::own_bmi_missing, tu);
-            const auto bmi_timestamp = fs::last_write_time(tu.bmi_path);
+            const auto bmi_timestamp = *bmi_stamp;
             if(bmi_timestamp < tu.last_modified)
                 return bmi_rebuild(output::rebuild_kind::own_bmi_stale, tu);
             if(object_absent)
@@ -2670,10 +2835,12 @@ public:
                 continue;
 
             const auto& dependency = *units.at(dependency_key);
-            if(dependency.is_modular
-               and (not fs::exists(dependency.bmi_path)
-                    or fs::last_write_time(dependency.bmi_path) < dependency.last_modified))
-                return bmi_rebuild(output::rebuild_kind::dependency_bmi_stale, dependency);
+            if(dependency.is_modular)
+            {
+                const auto dependency_bmi = detail::file_time(dependency.bmi_path);
+                if(not dependency_bmi or *dependency_bmi < dependency.last_modified)
+                    return bmi_rebuild(output::rebuild_kind::dependency_bmi_stale, dependency);
+            }
             if(auto dependency_reason = rebuild_reason_for(dependency, loaded, units))
                 return attributed_to(*dependency_reason, dependency);
         }
@@ -2691,7 +2858,6 @@ public:
         return std::nullopt;
     }
 
-private:
     // Make-style depfile (clang -MMD -MF): `target: prereq prereq \<newline> prereq`, spaces in a
     // path backslash-escaped. Returns the prerequisites only. `nullopt` when the file cannot be
     // trusted — unreadable, or lacking the `target:` every depfile has — which is not the same
@@ -2774,9 +2940,12 @@ private:
                 continue;
 
             const auto& dependency = *units.at(dependency_key);
-            if(dependency.is_modular and fs::exists(dependency.bmi_path)
-               and fs::last_write_time(dependency.bmi_path) > object_timestamp)
-                return bmi_rebuild(output::rebuild_kind::bmi_stale, dependency);
+            if(dependency.is_modular)
+            {
+                if(const auto dependency_bmi = detail::file_time(dependency.bmi_path);
+                   dependency_bmi and *dependency_bmi > object_timestamp)
+                    return bmi_rebuild(output::rebuild_kind::bmi_stale, dependency);
+            }
 
             if(visited.contains(dependency.unit))
                 continue;
@@ -2801,20 +2970,19 @@ private:
 
         for(const auto& prerequisite : *prerequisites)
         {
-            const auto resolved = detail::canonical_path(prerequisite);
+            const auto resolved = resolved_prerequisite(prerequisite);
             // Explicitly mapped BMIs are module-graph inputs, not textual headers.
             if(resolved == tu.full_path
                or not detail::path_at_or_under_root(resolved, source_root_)
                or detail::path_at_or_under_root(resolved, bmi_root_))
                 continue;
 
-            auto error = std::error_code{};
-            const auto timestamp = fs::last_write_time(resolved, error);
-            if(error)
+            const auto timestamp = detail::file_time(resolved);
+            if(not timestamp)
                 return output::rebuild_info{
                     .kind = output::rebuild_kind::header_missing,
                     .trigger_path = resolved};
-            if(timestamp > freshness_timestamp)
+            if(*timestamp > freshness_timestamp)
                 return output::rebuild_info{
                     .kind = output::rebuild_kind::header_stale,
                     .trigger_path = resolved};
@@ -2822,8 +2990,34 @@ private:
         return std::nullopt;
     }
 
+    // Project headers are shared, so the same prerequisite arrives from many depfiles.
+    // weakly_canonical stats every path component (~13.6 us here against 0.4 us for a
+    // lexical normalization), which is worth paying once per distinct path rather than
+    // per occurrence. Resolution stays canonical: these are compared against a canonical
+    // source root, and a lexical spelling would miss a symlinked header.
+    std::string resolved_prerequisite(const std::string& prerequisite) const
+    {
+        {
+            auto lock = std::lock_guard<std::mutex>{resolved_mutex_};
+            if(resolved_.contains(prerequisite))
+                return resolved_.at(prerequisite);
+        }
+        auto resolved = detail::canonical_path(prerequisite);
+        {
+            auto lock = std::lock_guard<std::mutex>{resolved_mutex_};
+            resolved_.insert_or_assign(prerequisite, resolved);
+        }
+        return resolved;
+    }
+
     std::string source_root_;
     std::string bmi_root_;
+    // Decisions and resolved paths are shared by the compile workers; the analyzer itself
+    // stays logically const, so both caches lock rather than serialize the callers.
+    mutable std::mutex decisions_mutex_{};
+    mutable std::flat_map<std::string_view, std::optional<output::rebuild_info>, std::less<>> decisions_{};
+    mutable std::mutex resolved_mutex_{};
+    mutable std::flat_map<std::string, std::string, std::less<>> resolved_{};
 };
 
 } // namespace cache
@@ -3652,8 +3846,7 @@ private:
         }
 
         auto compile = output::compile_scope{unit, *reason};
-        const auto object_only = reason->kind == output::rebuild_kind::object_missing
-            or reason->kind == output::rebuild_kind::object_stale;
+        const auto object_only = reason->kind == output::rebuild_kind::object_missing or reason->kind == output::rebuild_kind::object_stale;
         driver.compile_standard_module(
             bmi, object, object_only,
             [&](string_list argv, toolchain::compile_step step)
@@ -3683,8 +3876,7 @@ private:
         // force every importer through bmi_stale for no interface change.
         // One-phase: the BMI is a sibling of the object (reduced on Clang 22+), not an
         // input that can be compiled to an object — always re-read the source, as std does.
-        const auto object_only = rebuild.kind == output::rebuild_kind::object_missing
-            or rebuild.kind == output::rebuild_kind::object_stale;
+        const auto object_only = rebuild.kind == output::rebuild_kind::object_missing or rebuild.kind == output::rebuild_kind::object_stale;
         driver.compile(
             tu, module_interfaces, object_only,
             [&](string_list argv, toolchain::compile_step step)
@@ -3795,6 +3987,7 @@ private:
                     if(reason)
                     {
                         compile_unit(tu, *reason, [&]() { publish_dependency(index); });
+                        cache_analyzer.artifacts_changed(tu);
                         rebuilt[index] = 1;
                     }
                     else
