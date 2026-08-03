@@ -1024,15 +1024,13 @@ using module_interface_map =
 
 enum class compile_output : unsigned char { bmi, object };
 
+// Per clang invocation: which artefact the log names, and whether BMI / readiness flips.
 struct compile_step
 {
-    string_list argv;
     compile_output output = compile_output::object;
     bool writes_bmi = false;
     bool dependencies_ready = false;
 };
-
-using compile_plan = std::vector<compile_step>;
 
 // Filled by the concrete driver (`clang_driver::artifacts()`); build_tree only places them.
 struct artifact_conventions
@@ -1164,55 +1162,55 @@ public:
 
     string_list version_argv() const { return {compiler_, "--version"}; }
 
-    compile_plan compile(const source::translation_unit& tu,
-                         const module_interface_map& interfaces,
-                         bool object_only) const
+    // One or two clang invocations; argv is moved into `step` (no plan vector).
+    void compile(const source::translation_unit& tu,
+                 const module_interface_map& interfaces,
+                 bool object_only,
+                 std::invocable<string_list, compile_step> auto&& step) const
     {
         const auto imports = module_file_flags(tu, interfaces);
         if(not tu.is_modular)
         {
-            return {{.argv = compile_source_object_argv(tu, imports),
-                     .dependencies_ready = true}};
+            step(compile_source_object_argv(tu, imports),
+                 {.dependencies_ready = true});
+            return;
         }
         if(module_phases_ == module_compilation::one_phase)
         {
-            return {{.argv = compile_module_object_argv(tu, imports),
-                     .writes_bmi = true,
-                     .dependencies_ready = true}};
+            step(compile_module_object_argv(tu, imports),
+                 {.writes_bmi = true, .dependencies_ready = true});
+            return;
         }
         if(object_only)
         {
-            return {{.argv = compile_bmi_object_argv(tu.bmi_path, tu.object_path, imports),
-                     .dependencies_ready = true}};
+            step(compile_bmi_object_argv(tu.bmi_path, tu.object_path, imports),
+                 {.dependencies_ready = true});
+            return;
         }
-        return {
-            {.argv = compile_bmi_argv(tu, imports),
-             .output = compile_output::bmi,
-             .writes_bmi = true,
-             .dependencies_ready = true},
-            {.argv = compile_bmi_object_argv(tu.bmi_path, tu.object_path, imports)},
-        };
+        step(compile_bmi_argv(tu, imports),
+             {.output = compile_output::bmi, .writes_bmi = true, .dependencies_ready = true});
+        step(compile_bmi_object_argv(tu.bmi_path, tu.object_path, imports), {});
     }
 
-    compile_plan compile_standard_module(std::string_view std_bmi_path,
-                                         std::string_view std_object_path,
-                                         bool object_only) const
+    void compile_standard_module(std::string_view std_bmi_path,
+                                 std::string_view std_object_path,
+                                 bool object_only,
+                                 std::invocable<string_list, compile_step> auto&& step) const
     {
         if(module_phases_ == module_compilation::one_phase)
         {
-            return {{
-                .argv = compile_std_module_object_argv(std_bmi_path, std_object_path),
-                .writes_bmi = true,
-            }};
+            step(compile_std_module_object_argv(std_bmi_path, std_object_path),
+                 {.writes_bmi = true});
+            return;
         }
         if(object_only)
-            return {{.argv = compile_bmi_object_argv(std_bmi_path, std_object_path)}};
-        return {
-            {.argv = compile_std_bmi_argv(std_bmi_path),
-             .output = compile_output::bmi,
-             .writes_bmi = true},
-            {.argv = compile_bmi_object_argv(std_bmi_path, std_object_path)},
-        };
+        {
+            step(compile_bmi_object_argv(std_bmi_path, std_object_path), {});
+            return;
+        }
+        step(compile_std_bmi_argv(std_bmi_path),
+             {.output = compile_output::bmi, .writes_bmi = true});
+        step(compile_bmi_object_argv(std_bmi_path, std_object_path), {});
     }
 
     string_list compile_database_argv(const source::translation_unit& tu,
@@ -3180,10 +3178,10 @@ public:
     }
 
     // Every toolchain command is a step of a reported build phase: its output is attached to
-    // the reporting scope before a failure is thrown.
+    // the reporting scope before a failure is thrown. Takes argv by value so callers can move.
     void run_step(
         output::step_scope auto& scope,
-        const string_list& argv,
+        string_list argv,
         std::string_view capture) const
     {
         const auto result = invoke_shell(argv, capture);
@@ -3646,17 +3644,18 @@ private:
         const auto object_only =
             reason->kind == output::rebuild_kind::object_missing
             or reason->kind == output::rebuild_kind::object_stale;
-        for(const auto& step :
-            driver.compile_standard_module(bmi, object, object_only))
-        {
-            process_runner.run_step(
-                compile,
-                step.argv,
-                build_tree::paths::compile_log(
-                    step.output == toolchain::compile_output::bmi ? unit.bmi : unit.object));
-            if(step.writes_bmi)
-                std_store.save_profile(object_cache_profile());
-        }
+        driver.compile_standard_module(
+            bmi, object, object_only,
+            [&](string_list argv, toolchain::compile_step step)
+            {
+                process_runner.run_step(
+                    compile,
+                    std::move(argv),
+                    build_tree::paths::compile_log(
+                        step.output == toolchain::compile_output::bmi ? unit.bmi : unit.object));
+                if(step.writes_bmi)
+                    std_store.save_profile(object_cache_profile());
+            });
         notify_std_cache_warning(
             std_store.publish([&]() { return shared_std_cache_profile(); }));
         compile.succeeded();
@@ -3677,16 +3676,18 @@ private:
         const auto object_only =
             rebuild.kind == output::rebuild_kind::object_missing
             or rebuild.kind == output::rebuild_kind::object_stale;
-        for(const auto& step : driver.compile(tu, module_interfaces, object_only))
-        {
-            process_runner.run_step(
-                compile,
-                step.argv,
-                build_tree::paths::compile_log(
-                    step.output == toolchain::compile_output::bmi ? unit.bmi : unit.object));
-            if(step.dependencies_ready)
-                on_dependency_ready();
-        }
+        driver.compile(
+            tu, module_interfaces, object_only,
+            [&](string_list argv, toolchain::compile_step step)
+            {
+                process_runner.run_step(
+                    compile,
+                    std::move(argv),
+                    build_tree::paths::compile_log(
+                        step.output == toolchain::compile_output::bmi ? unit.bmi : unit.object));
+                if(step.dependencies_ready)
+                    on_dependency_ready();
+            });
         compile.succeeded();
     }
 
