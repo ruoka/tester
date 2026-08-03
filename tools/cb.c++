@@ -91,22 +91,9 @@ const suffix_list object_stem_suffixes = {
     cpp_suffix
 };
 
-// CB build tree: `build-<os>-{debug|release}/`. Alternatives advertise themselves:
-// Make → `build-make-<os>-<config>/`, CMake → `build-cmake-<os>-<config>/`.
-constexpr auto build_root_prefix = "build-"sv;
-constexpr auto debug_build_suffix = "-debug"sv;
-constexpr auto release_build_suffix = "-release"sv;
-constexpr auto pcm_dir_name = "pcm"sv;
-constexpr auto obj_dir_name = "obj"sv;
-constexpr auto bin_dir_name = "bin"sv;
-constexpr auto cache_dir_name = "cache"sv;
-constexpr auto std_pcm_filename = "std.pcm"sv;
-constexpr auto std_obj_filename = "std.o"sv;
 constexpr auto compile_commands_filename = "compile_commands.json"sv;
 constexpr auto graph_filename = "graph.json"sv;
 constexpr auto std_module_name = "std"sv;
-constexpr auto pcm_extension = ".pcm"sv;
-constexpr auto object_extension = ".o"sv;
 constexpr auto test_runner_name = "test_runner"sv;
 
 // Source-scan directory names (exact path components unless noted).
@@ -279,6 +266,46 @@ private:
 };
 
 } // namespace flags
+
+namespace toolchain {
+
+// Non-owning because every convention is a program-lifetime literal selected by the concrete
+// driver. Object/executable spellings follow the driver's target convention; BMI spelling is
+// compiler-specific (`.pcm` for Clang, rather than a generic C++ module format).
+struct artifact_conventions
+{
+    std::string_view object_extension;
+    std::string_view bmi_extension;
+    std::string_view executable_extension;
+};
+
+constexpr std::string_view host_os()
+{
+#if defined(__linux__)
+    return "linux";
+#elif defined(__APPLE__)
+    return "darwin";
+#elif defined(_WIN32)
+    return "windows";
+#else
+    return "unknown";
+#endif
+}
+
+constexpr artifact_conventions clang_artifacts()
+{
+#if defined(_WIN32)
+    return {.object_extension = ".obj",
+            .bmi_extension = ".pcm",
+            .executable_extension = ".exe"};
+#else
+    return {.object_extension = ".o",
+            .bmi_extension = ".pcm",
+            .executable_extension = ""};
+#endif
+}
+
+} // namespace toolchain
 
 namespace source {
 class scanner;
@@ -967,6 +994,124 @@ private:
 
 } // namespace source
 
+namespace layout {
+
+// CB build tree: `build-<os>-{debug|release}/`. Alternatives advertise themselves:
+// Make → `build-make-<os>-<config>/`, CMake → `build-cmake-<os>-<config>/`.
+class paths
+{
+public:
+    paths(std::string_view configuration, toolchain::artifact_conventions naming)
+        : root{"build-"s + std::string{toolchain::host_os()} + '-'
+               + std::string{configuration}},
+          pcm{root / "pcm"},
+          obj{root / "obj"},
+          bin{root / "bin"},
+          cache{root / "cache"},
+          naming_{naming}
+    {}
+
+    std::string std_pcm() const
+    {
+        return (pcm
+                / (std::string{std_module_name} + std::string{naming_.bmi_extension}))
+            .string();
+    }
+
+    std::string std_object() const
+    {
+        return (obj
+                / (std::string{std_module_name} + std::string{naming_.object_extension}))
+            .string();
+    }
+
+    std::string object(const source::translation_unit& tu) const
+    {
+        const auto stem = tu.is_modular ? module_safe_name(tu.module) : tu.base_name;
+        return (obj / (stem + object_suffix(tu))).string();
+    }
+
+    std::string pcm_file(const source::translation_unit& tu) const
+    {
+        if(tu.module.empty())
+            throw std::logic_error{
+                "pcm_file called on translation unit without module: " + tu.filename};
+        return (pcm
+                / (module_safe_name(tu.module) + std::string{naming_.bmi_extension}))
+            .string();
+    }
+
+    std::string executable(const source::translation_unit& tu) const
+    {
+        if(not tu.has_main)
+            throw std::logic_error{
+                "executable called on non-main translation unit: " + tu.filename};
+        return executable(tu.base_name);
+    }
+
+    std::string executable(std::string_view stem) const
+    {
+        return (bin
+                / (std::string{stem} + std::string{naming_.executable_extension}))
+            .string();
+    }
+
+    static std::string depfile(std::string_view object)
+    {
+        auto path = std::string{object};
+        path += depfile_suffix;
+        return path;
+    }
+
+    static std::string compile_log(std::string_view artifact)
+    {
+        auto path = std::string{artifact};
+        path += compile_log_suffix;
+        return path;
+    }
+
+    static std::string link_log(std::string_view executable)
+    {
+        auto path = std::string{executable};
+        path += link_log_suffix;
+        return path;
+    }
+
+    fs::path root;
+    fs::path pcm;
+    fs::path obj;
+    fs::path bin;
+    fs::path cache;
+
+private:
+    inline static constexpr auto depfile_suffix = ".d"sv;
+    inline static constexpr auto compile_log_suffix = ".log"sv;
+    inline static constexpr auto link_log_suffix = ".link.log"sv;
+
+    static std::string module_safe_name(std::string_view module_name)
+    {
+        auto safe = std::string{module_name};
+        std::ranges::replace(safe, ':', '-');
+        std::ranges::replace(safe, '.', '-');
+        return safe;
+    }
+
+    std::string object_suffix(const source::translation_unit& tu) const
+    {
+        const auto ending = std::ranges::find_if(
+            object_stem_suffixes,
+            [&](std::string_view suffix) { return tu.suffix.ends_with(suffix); });
+        if(ending == object_stem_suffixes.end())
+            throw std::logic_error{"Unsupported suffix for object file: " + tu.suffix};
+        return std::string{tu.suffix.substr(0, tu.suffix.size() - ending->size())}
+            + std::string{naming_.object_extension};
+    }
+
+    toolchain::artifact_conventions naming_;
+};
+
+} // namespace layout
+
 namespace output {
 
 // Observers format four of a unit's fields, so they receive those four and not the unit: the
@@ -1642,14 +1787,14 @@ private:
         return std::nullopt;
     }
 
-    static shared_slot shared_slot_for(const fs::path& root,
-                                       std::string_view shared_profile)
+    shared_slot shared_slot_for(const fs::path& root,
+                                std::string_view shared_profile) const
     {
         const auto directory = root / profile{std::string{shared_profile}}.key();
         return shared_slot{
             .directory = directory,
-            .pcm = directory / std_pcm_filename,
-            .object = directory / std_obj_filename,
+            .pcm = directory / fs::path{pcm_path_}.filename(),
+            .object = directory / fs::path{object_path_}.filename(),
             .profile = storage_file{(directory / shared_profile_filename).string()}};
     }
 
@@ -1747,8 +1892,8 @@ public:
             if(not fs::create_directories(staging, error) or error)
                 return {};
 
-            const auto staged_pcm = staging / std_pcm_filename;
-            const auto staged_object = staging / std_obj_filename;
+            const auto staged_pcm = staging / slot.pcm.filename();
+            const auto staged_object = staging / slot.object.filename();
             const auto staged_profile = staging / shared_profile_filename;
             if(not link_or_copy_file(pcm_path_, staged_pcm)
                or not link_or_copy_file(object_path_, staged_object))
@@ -1967,11 +2112,6 @@ public:
     }
 
 private:
-    static std::string depfile_path(const source::translation_unit& tu)
-    {
-        return tu.object_path + ".d";
-    }
-
     // Make-style depfile (clang -MMD -MF): `target: prereq prereq \<newline> prereq`, spaces in a
     // path backslash-escaped. Returns the prerequisites only. `nullopt` when the file cannot be
     // trusted — unreadable, or lacking the `target:` every depfile has — which is not the same
@@ -2072,7 +2212,7 @@ private:
         const source::translation_unit& tu,
         fs::file_time_type freshness_timestamp) const
     {
-        const auto depfile = depfile_path(tu);
+        const auto depfile = layout::paths::depfile(tu.object_path);
         const auto prerequisites = parse_depfile(depfile);
         if(not prerequisites)
             return output::rebuild_info{
@@ -2849,19 +2989,6 @@ private:
         return flag;
     }
 
-    static std::string_view host_os()
-    {
-#if defined(__linux__)
-        return "linux";
-#elif defined(__APPLE__)
-        return "darwin";
-#elif defined(_WIN32)
-        return "windows";
-#else
-        return "unknown";
-#endif
-    }
-
     static std::string_view linux_arch()
     {
 #if defined(__x86_64__) or defined(__amd64__)
@@ -3214,6 +3341,7 @@ private:
     mutable bool toolchain_profile_probed = false;
     source::translation_unit_list units_in_topological_order;
     const build_config config;
+    const layout::paths artifact_paths;
     bool include_tests = false;
     bool include_examples = false;
     const bool include_tests_for_build;
@@ -3238,9 +3366,9 @@ private:
     {
         if(candidate.contains('/'))
             return fs::exists(candidate);
-        fs::create_directories(cache_dir());
+        fs::create_directories(artifact_paths.cache);
         return process_runner.command_available(
-            candidate, detail::join_dir(cache_dir(), "command-probe.txt"));
+            candidate, (artifact_paths.cache / "command-probe.txt").string());
     }
 
     void ensure_toolchain_profile() const
@@ -3249,10 +3377,10 @@ private:
             return;
         toolchain_profile_probed = true;
 
-        fs::create_directories(cache_dir());
+        fs::create_directories(artifact_paths.cache);
 
         // Same boundary as every compile and link: argv in, stamp file out.
-        const auto stamp = cache::compiler_stamp{cache_dir()};
+        const auto stamp = cache::compiler_stamp{artifact_paths.cache.string()};
         if(process_runner.invoke_shell(compiler.version_argv(), stamp.path()).ok())
         {
             compiler.set_compiler_version(stamp.read());
@@ -3342,73 +3470,6 @@ private:
         return modules;
     }
 
-    // ============================================================================
-    // Platform and Path Utilities
-    // ============================================================================
-
-    std::string os_name() const {
-#if defined(__linux__)
-        return "linux";
-#elif defined(__APPLE__)
-        return "darwin";
-#elif defined(_WIN32)
-        return "windows";
-#else
-        return "unknown";
-#endif
-    }
-
-    // COMPUTED ON DEMAND — NEVER CACHED
-    std::string build_root() const {
-        return std::string{build_root_prefix} + os_name()
-            + std::string{config == build_config::release ? release_build_suffix : debug_build_suffix};
-    }
-
-    std::string module_cache_dir() const      { return detail::join_dir(build_root(), pcm_dir_name); }
-    std::string object_dir() const            { return detail::join_dir(build_root(), obj_dir_name); }
-    std::string binary_dir() const            { return detail::join_dir(build_root(), bin_dir_name); }
-    std::string cache_dir() const             { return detail::join_dir(build_root(), cache_dir_name); }
-    std::string std_pcm_path() const          { return detail::join_dir(module_cache_dir(), std_pcm_filename); }
-    std::string std_obj_path() const          { return detail::join_dir(object_dir(), std_obj_filename); }
-
-    // Artifact stems follow source naming: `foo:bar` / `foo.bar` → `foo-bar`.
-    // Keep '_' literal so `demo:part` and `demo_part` stay distinct.
-    std::string module_safe_name(std::string_view module_name) const
-    {
-        auto safe = std::string{module_name};
-        std::ranges::replace(safe, ':', '-');
-        std::ranges::replace(safe, '.', '-');
-        return safe;
-    }
-
-    std::string object_suffix(const source::translation_unit& tu) const
-    {
-        const auto ending = std::ranges::find_if(object_stem_suffixes, [&](std::string_view s)
-        {
-            return tu.suffix.ends_with(s);
-        });
-        if(ending == object_stem_suffixes.end())
-            throw std::logic_error{"Unsupported suffix for object file: " + tu.suffix};
-        return std::string{tu.suffix.substr(0, tu.suffix.size() - ending->size())} + std::string{object_extension};
-    }
-
-    std::string compute_object_path(const source::translation_unit& tu) const {
-        auto base = tu.is_modular ? module_safe_name(tu.module) : tu.base_name;
-        return object_dir() + "/" + base + object_suffix(tu);
-    }
-
-    std::string compute_pcm_path(const source::translation_unit& tu) const {
-        if (tu.module.empty())
-            throw std::logic_error{"compute_pcm_path called on translation unit without module: " + tu.filename};
-        return detail::join_dir(module_cache_dir(), module_safe_name(tu.module) + std::string{pcm_extension});
-    }
-
-    std::string compute_executable_path(const source::translation_unit& tu) const {
-        if (not tu.has_main)
-            throw std::logic_error{"compute_executable_path called on non-main translation unit: " + tu.filename};
-        return binary_dir() + "/" + tu.base_name;
-    }
-
     void validate_translation_unit(const source::translation_unit& tu) const {
         if (tu.object_path.empty())
             throw std::logic_error{"translation unit missing object path: " + tu.filename};
@@ -3431,37 +3492,6 @@ private:
     // General Utilities
     // ============================================================================
 
-    // Header dependencies live next to the object file. Written by the step that
-    // actually reads the source: --precompile for modular units, -c otherwise.
-    std::string depfile_path(const source::translation_unit& tu) const
-    {
-        return tu.object_path + ".d";
-    }
-
-    // Per-target capture files: parallel workers must not share one. A modular unit (and the
-    // std module) runs two toolchain steps that share one compile_end; each step still needs
-    // its own capture — the shell redirect truncates, so reusing the object log would wipe
-    // the precompile warnings that compile_end.diagnostics.path still names. Both name the
-    // artefact rather than a free path, so moving captures into a logs/ tree is an edit here
-    // and nowhere else. The argument type is compile_unit because the std module compiles
-    // without being a scanned unit, and that is what both compile steps report with anyway.
-    std::string diagnostics_path_for_pcm(const output::compile_unit& unit) const
-    {
-        if(unit.pcm.empty())
-            throw std::logic_error{"diagnostics_path_for_pcm: non-modular unit"};
-        return std::string{unit.pcm} + ".log";
-    }
-
-    std::string diagnostics_path_for_object(const output::compile_unit& unit) const
-    {
-        return std::string{unit.object} + ".log";
-    }
-
-    std::string diagnostics_path_for_executable(const source::translation_unit& tu) const
-    {
-        return std::string{tu.executable_path} + ".link.log";
-    }
-
     toolchain::compile_request compile_request_for(
         const source::translation_unit& tu) const
     {
@@ -3469,7 +3499,7 @@ private:
             .source = tu.full_path,
             .object = tu.object_path,
             .bmi = tu.pcm_path,
-            .depfile = depfile_path(tu),
+            .depfile = layout::paths::depfile(tu.object_path),
             .modules = module_files_for(tu),
             .modular = tu.is_modular,
         };
@@ -3511,7 +3541,7 @@ private:
     {
         auto inputs = string_list{main.object_path};
         inputs.append_range(shared_objects);
-        inputs.push_back(std_obj_path());
+        inputs.push_back(artifact_paths.std_object());
         return inputs;
     }
 
@@ -3520,7 +3550,7 @@ private:
         auto inputs = string_list{runner.object_path};
         inputs.append_range(linkable_object_paths());
         inputs.append_range(test_object_paths());
-        inputs.push_back(std_obj_path());
+        inputs.push_back(artifact_paths.std_object());
         return inputs;
     }
 
@@ -3580,14 +3610,14 @@ private:
 
     cache::object_store make_object_store() const
     {
-        return cache::object_store{cache_dir()};
+        return cache::object_store{artifact_paths.cache.string()};
     }
 
     cache::link_store make_link_store() const
     {
         const auto flags = compiler.flags();
         return cache::link_store{
-            cache_dir(),
+            artifact_paths.cache.string(),
             {.compile_flags = flags.compile,
              .link_flags = flags.link,
              .module_flags = flags.modules}};
@@ -3596,9 +3626,9 @@ private:
     cache::standard_module_store make_standard_module_store() const
     {
         return cache::standard_module_store{
-            cache_dir(),
-            std_pcm_path(),
-            std_obj_path()};
+            artifact_paths.cache.string(),
+            artifact_paths.std_pcm(),
+            artifact_paths.std_object()};
     }
 
     // ============================================================================
@@ -3613,8 +3643,8 @@ private:
 
         // Reserve the libc++ std module artifacts so a project TU named `std`
         // (std.c++ / export module std;) cannot silently overwrite them.
-        object_owners.emplace(std_obj_path(), "reserved std module object");
-        pcm_owners.emplace(std_pcm_path(), "reserved std module PCM");
+        object_owners.emplace(artifact_paths.std_object(), "reserved std module object");
+        pcm_owners.emplace(artifact_paths.std_pcm(), "reserved std module PCM");
 
         const auto claim = [](auto& owners,
                               const std::string& path,
@@ -3635,15 +3665,15 @@ private:
             // Source identity remains immutable; builder-managed artifact paths are assigned once
             // here so downstream steps have one place to read object/PCM/binary locations from.
             const auto& source_label = tu.display_path;
-            tu.object_path = compute_object_path(tu);
+            tu.object_path = artifact_paths.object(tu);
             claim(object_owners, tu.object_path, source_label, "object");
 
             if (tu.is_modular) {
-                tu.pcm_path = compute_pcm_path(tu);
+                tu.pcm_path = artifact_paths.pcm_file(tu);
                 claim(pcm_owners, tu.pcm_path, source_label, "PCM");
             }
             if (tu.has_main) {
-                tu.executable_path = compute_executable_path(tu);
+                tu.executable_path = artifact_paths.executable(tu);
                 claim(executable_owners, tu.executable_path, source_label, "executable");
             }
             validate_translation_unit(tu);
@@ -3689,8 +3719,8 @@ private:
     void build_std_module()
     {
         const auto identity = compiler.identity();
-        const auto pcm = std_pcm_path();
-        const auto object = std_obj_path();
+        const auto pcm = artifact_paths.std_pcm();
+        const auto object = artifact_paths.std_object();
         const auto display = fs::path{identity.std_module_source}.filename().string();
         const auto unit = std_compile_unit(pcm, object, display);
         auto std_store = make_standard_module_store();
@@ -3725,9 +3755,8 @@ private:
             process_runner.run_step(
                 compile,
                 step.argv,
-                step.output == toolchain::compile_output::bmi
-                    ? diagnostics_path_for_pcm(unit)
-                    : diagnostics_path_for_object(unit));
+                layout::paths::compile_log(
+                    step.output == toolchain::compile_output::bmi ? unit.pcm : unit.object));
             if(step.writes_bmi)
                 std_store.save_profile(object_cache_profile());
         }
@@ -3762,9 +3791,8 @@ private:
             process_runner.run_step(
                 compile,
                 step.argv,
-                step.output == toolchain::compile_output::bmi
-                    ? diagnostics_path_for_pcm(unit)
-                    : diagnostics_path_for_object(unit));
+                layout::paths::compile_log(
+                    step.output == toolchain::compile_output::bmi ? unit.pcm : unit.object));
             if(step.dependencies_ready)
                 on_dependency_ready();
         }
@@ -3788,7 +3816,8 @@ private:
             auto k = tu.unit;
             u2tu[k] = &tu;
         }
-        const auto cache_analyzer = cache::analyzer{source_dir, module_cache_dir()};
+        const auto cache_analyzer =
+            cache::analyzer{source_dir, artifact_paths.pcm.string()};
 
         const auto unit_count = units_in_topological_order.size();
         auto unit_to_index = std::flat_map<std::string, std::size_t, std::less<>>{};
@@ -3928,7 +3957,7 @@ private:
         process_runner.run_step(
             link,
             compiler.link_argv(main.executable_path, input_paths, import_flags),
-            diagnostics_path_for_executable(main));
+            layout::paths::link_log(main.executable_path));
         link.succeeded();
     }
 
@@ -4019,7 +4048,7 @@ private:
     void link_test_runner() {
         // The unit carries the path, so the link, the cache key, the log and what run_tests
         // executes cannot be spelled two ways: test_runner_unit pins the base name, and
-        // compute_executable_path is the only place a main's executable is sited.
+        // layout::paths is the only place a main's executable is sited.
         const auto& runner = test_runner_unit();
 
         auto links = make_link_store();
@@ -4049,10 +4078,10 @@ private:
     void build_steps()
     {
         // Ensure build directories exist (they may have been removed by clean())
-        fs::create_directories(module_cache_dir());
-        fs::create_directories(object_dir());
-        fs::create_directories(binary_dir());
-        fs::create_directories(cache_dir());
+        fs::create_directories(artifact_paths.pcm);
+        fs::create_directories(artifact_paths.obj);
+        fs::create_directories(artifact_paths.bin);
+        fs::create_directories(artifact_paths.cache);
 
         // Source discovery and std compilation share no mutable build state: the scan writes
         // units_in_topological_order while std owns only its artefacts/profile. Hide the scan
@@ -4100,6 +4129,9 @@ public:
         : source_dir{detail::canonical_path(values.source_dir)},
           module_ldflags{std::move(values.module_link_flags)},
           config{values.config},
+          artifact_paths{
+              values.config == build_config::release ? "release"sv : "debug"sv,
+              toolchain::clang_artifacts()},
           include_tests{values.config == build_config::debug},
           include_examples{values.include_examples},
           include_tests_for_build{values.include_tests_for_build},
@@ -4112,8 +4144,8 @@ public:
               .include_paths = std::move(values.include_paths),
               .extra_compile_flags = std::move(values.extra_compile_flags),
               .extra_link_flags = std::move(values.extra_link_flags)},
-              std_pcm_path(),
-              module_cache_dir(),
+              artifact_paths.std_pcm(),
+              artifact_paths.pcm.string(),
               [this](const std::string& candidate)
               {
                   return command_available(candidate);
@@ -4123,12 +4155,13 @@ public:
     }
 
     void clean() const {
-        auto dir = build_root();
+        const auto& dir = artifact_paths.root;
         if (fs::exists(dir)) {
             fs::remove_all(dir);
-            output::notify(&output::observer::success, "Removed "s + dir);
+            output::notify(&output::observer::success, "Removed "s + dir.string());
         } else {
-            output::notify(&output::observer::info, "Nothing to clean for "s + dir);
+            output::notify(
+                &output::observer::info, "Nothing to clean for "s + dir.string());
         }
     }
 
@@ -4137,10 +4170,11 @@ public:
     // release configs still see *.test.c++ even when a normal release build would not.
     void clean_tests() {
         include_tests = true;
-        if(not fs::exists(object_dir()) and not fs::exists(binary_dir()))
+        if(not fs::exists(artifact_paths.obj) and not fs::exists(artifact_paths.bin))
         {
             output::notify(&output::observer::info,
-                           "Nothing to clean for test objects under "s + build_root());
+                           "Nothing to clean for test objects under "s
+                               + artifact_paths.root.string());
             return;
         }
 
@@ -4165,18 +4199,18 @@ public:
             if(not tu.object_path.empty())
             {
                 try_remove(tu.object_path);
-                try_remove(depfile_path(tu));
-                try_remove(tu.object_path + ".log");
+                try_remove(layout::paths::depfile(tu.object_path));
+                try_remove(layout::paths::compile_log(tu.object_path));
             }
             if(tu.is_modular and not tu.pcm_path.empty())
             {
                 try_remove(tu.pcm_path);
-                try_remove(tu.pcm_path + ".log");
+                try_remove(layout::paths::compile_log(tu.pcm_path));
             }
             if(is_runner and not tu.executable_path.empty())
             {
                 try_remove(tu.executable_path);
-                try_remove(tu.executable_path + ".link.log");
+                try_remove(layout::paths::link_log(tu.executable_path));
             }
         }
 
@@ -4204,24 +4238,25 @@ public:
         if(links.exists())
         {
             links.load();
-            const auto runner_exe = detail::join_dir(binary_dir(), test_runner_name);
+            const auto runner_exe = artifact_paths.executable(test_runner_name);
             if(links.erase(runner_exe))
                 links.save();
         }
 
         if(removed == 0)
             output::notify(&output::observer::info,
-                           "No test objects to remove under "s + build_root());
+                           "No test objects to remove under "s
+                               + artifact_paths.root.string());
         else
             output::notify(&output::observer::success,
                            "Removed " + std::to_string(removed) + " test artifact(s) under "s
-                               + build_root());
+                               + artifact_paths.root.string());
     }
 
     void cache_status() const
     {
         ensure_toolchain_profile();
-        fs::create_directories(cache_dir());
+        fs::create_directories(artifact_paths.cache);
 
         const auto current_profile = object_cache_profile();
         const auto objects = make_object_store();
@@ -4233,7 +4268,7 @@ public:
         const auto link_status = links.status();
         const auto std_modules = make_standard_module_store();
         const auto std_status = std_modules.status(current_profile);
-        const auto stamp = cache::compiler_stamp{cache_dir()};
+        const auto stamp = cache::compiler_stamp{artifact_paths.cache.string()};
 
         output::notify(
             &output::observer::cache_status,
@@ -4256,14 +4291,15 @@ public:
 
     void cache_invalidate() const
     {
-        fs::create_directories(cache_dir());
+        fs::create_directories(artifact_paths.cache);
 
         // Every file cache_status reports, so the two commands cannot disagree about what the
         // cache is. The std module profile is the one that makes CB rebuild std.pcm.
         const auto removed = output::cache_removals{
             .object_cache = make_object_store().invalidate(),
             .executable_cache = make_link_store().invalidate(),
-            .compiler_stamp = cache::compiler_stamp{cache_dir()}.invalidate(),
+            .compiler_stamp =
+                cache::compiler_stamp{artifact_paths.cache.string()}.invalidate(),
             .std_module_profile = make_standard_module_store().invalidate()};
 
         output::notify(&output::observer::cache_invalidate_end, removed);
@@ -4283,7 +4319,9 @@ public:
         build_steps();
         build.succeeded();
 
-        output::notify(&output::observer::success, "Build completed: "s + build_root());
+        output::notify(
+            &output::observer::success,
+            "Build completed: "s + artifact_paths.root.string());
     }
 
     // Returns false when the test runner reports failures (normal outcome, not exceptional).
@@ -4299,7 +4337,9 @@ public:
             link_test_runner();
             build.succeeded();
         }
-        output::notify(&output::observer::success, "Build completed: "s + build_root());
+        output::notify(
+            &output::observer::success,
+            "Build completed: "s + artifact_paths.root.string());
 
         // From the unit link_test_runner just linked, so what runs is what was linked.
         const auto& runner = test_runner_unit().executable_path;

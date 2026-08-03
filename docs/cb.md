@@ -371,7 +371,8 @@ Example `profile_diff` fragment (on `profile_changed` only):
 | `cb::output::{build,compile,link,test}_scope` | RAII pairing for lifecycle events, timing and step diagnostics |
 | `cb::source::translation_unit` / `scanner` | Source identity, collection, exclusion, lexical cleaning, dependency edges and topological order |
 | `cb::flags::codec` | Symmetric whitespace-normalized conversion between flag text and `string_list` |
-| `cb::toolchain::clang_driver` | LLVM discovery/identity, Clang/libc++ flags, compile plans and compile/link argv construction |
+| `cb::toolchain::artifact_conventions` / `clang_driver` | Target artifact extensions plus LLVM discovery/identity, Clang/libc++ flags, compile plans and compile/link argv construction |
+| `cb::layout::paths` | Build-tree directories, source-to-artifact naming, and depfile/diagnostic sidecars |
 | `cb::cache::storage_file` | Composed cache-file path, first-line read, atomic replacement and invalidation operations |
 | `cb::cache::profile` / `analyzer` | Profile serialization/key/diff and recursive object/BMI/header freshness analysis |
 | `cb::cache::object_store` | Object-cache path, entry snapshot, profile mismatch, persistence, status and invalidation |
@@ -382,10 +383,10 @@ Example `profile_diff` fragment (on `profile_changed` only):
 | `cb::execution::run_workers` | Shared thread-group creation and join lifecycle; callers retain scheduling and failure policy |
 | `cb::execution::worker_pool` | Bounded fixed-range job claiming with join-before-rethrow failure handling |
 | `cb::cli::options` / `parser` | Strict argv parsing, test-runner forwarding, and projection into semantic build settings |
-| `cb::build_system` | Settings-driven graph, artifact, cache, scheduling, execution, reporting and action orchestration |
+| `cb::build_system` | Settings-driven graph, cache, scheduling, execution, reporting and action orchestration |
 | `cb::detail` | Shared filesystem/path primitives: directory joining, component-aware path predicates, weak canonicalization with normalized absolute fallback, atomic replacement and remove-if-present |
 
-`build_system` consumes one `build_system::settings` value and derives its orchestration defaults. `cli::options::build_settings()` is the composition-layer adapter; action, output, and test-runner-only CLI state never enters the build engine. The concrete `clang_driver` receives compiler-facing settings and owns LLVM discovery, toolchain identity, include/default/module/link flags and command construction. It returns semantic compile plans; `build_system` executes those steps, publishes provider readiness, and owns source-graph, artifact, cache and reporting policy. There is deliberately no abstract driver or virtual interface before a second compiler exists. Cache maps and decisions stay in `cb::cache`, cache-file mechanics stay in composed `storage_file` values, flag text conversion stays in `cb::flags`, process mechanics stay in `cb::process`, generic independent-job concurrency stays in `cb::execution`, and event pairing stays in `cb::output`. `main` registers built-in observers by name and selects one from the parsed `output_name`.
+`build_system` consumes one `build_system::settings` value and derives its orchestration defaults. `cli::options::build_settings()` is the composition-layer adapter; action, output, and test-runner-only CLI state never enters the build engine. The concrete `clang_driver` receives compiler-facing settings and owns LLVM discovery, toolchain identity, target artifact extensions, include/default/module/link flags and command construction. It returns semantic compile plans; `layout::paths` applies those artifact conventions to the configured build tree, while `build_system` executes the steps, publishes provider readiness, and owns source-graph, cache and reporting policy. There is deliberately no abstract driver or virtual interface before a second compiler exists. Cache maps and decisions stay in `cb::cache`, cache-file mechanics stay in composed `storage_file` values, flag text conversion stays in `cb::flags`, process mechanics stay in `cb::process`, generic independent-job concurrency stays in `cb::execution`, and event pairing stays in `cb::output`. `main` registers built-in observers by name and selects one from the parsed `output_name`.
 
 ### Ranges idioms (`cb.c++`)
 
