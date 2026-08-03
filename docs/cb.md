@@ -382,7 +382,7 @@ Example `profile_diff` fragment (on `profile_changed` only):
 | `cb::execution::worker_pool` | Bounded fixed-range job claiming with join-before-rethrow failure handling |
 | `cb::cli::options` / `parser` | Strict argv parsing and test-runner forwarding |
 | `cb::build_system` | Toolchain orchestration, including module-map flag construction and toolchain file signatures |
-| `cb::detail` | Shared filesystem/path primitives: directory joining, two path predicates, best-effort canonicalization, atomic replacement and remove-if-present |
+| `cb::detail` | Shared filesystem/path primitives: directory joining, component-aware path predicates, weak canonicalization with normalized absolute fallback, atomic replacement and remove-if-present |
 
 `build_system` orchestrates those classes and constructs toolchain commands; cache maps and decisions stay in `cb::cache`, cache-file mechanics stay in composed `storage_file` values, flag conversion stays in `cb::flags`, process mechanics stay in `cb::process`, generic independent-job concurrency stays in `cb::execution`, and event pairing stays in `cb::output`. `main` registers built-in observers by name and selects one from the parsed `output_name`. Compile, link, command, cache, list, and lifecycle events all cross the same observer boundary; adding a formatter does not add format branches to `build_system`. Observers retain channel-specific `format_*` and `write_*` helpers, while shared profile-field iteration keeps diff computation and every format aligned when fields are added.
 

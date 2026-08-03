@@ -261,6 +261,33 @@ test_header_stale_relative_include() {
   end_case header_stale_relative_include
 }
 
+test_header_sibling_not_project_input() {
+  should_run header_sibling_not_project_input || return 0
+  begin_case header_sibling_not_project_input
+  local fixture_root source_dir sibling_dir
+  prepare_work_dir
+  fixture_root="${LAST_WORK_DIR}"
+  source_dir="${fixture_root}/app"
+  sibling_dir="${fixture_root}/app-copy"
+  mkdir -p "${source_dir}" "${sibling_dir}"
+  mv "${fixture_root}/hello.c++" "${source_dir}/hello.c++"
+
+  # A raw source-root prefix check mistakes app-copy for a child of app. The external
+  # header remains a compiler input, but CB must not track it as project-owned freshness.
+  printf '%s\n' '#pragma once' 'inline int sibling_value() { return 1; }' > "${sibling_dir}/value.h++"
+  printf '%s\n' '#include <value.h++>' 'int main() { return sibling_value() - 1; }' > "${source_dir}/hello.c++"
+
+  run_cb_build "${source_dir}" -I "${sibling_dir}"
+  run_cb_build "${source_dir}" -I "${sibling_dir}"
+  assert_compile_cache_hits 2 "sibling_header_seed_cache_hit"
+
+  printf '%s\n' '// external sibling touched' >> "${sibling_dir}/value.h++"
+  run_cb_build "${source_dir}" -I "${sibling_dir}"
+  assert_compile_cache_hits 2 "sibling_header_remains_cache_hit"
+  assert_jsonl_not_contains '"rebuild_reason":"header_stale"' "sibling_header_not_project_owned"
+  end_case header_sibling_not_project_input
+}
+
 test_header_missing() {
   should_run header_missing || return 0
   begin_case header_missing
@@ -2047,6 +2074,7 @@ main() {
   test_source_stale
   test_header_stale
   test_header_stale_relative_include
+  test_header_sibling_not_project_input
   test_header_missing
   test_depfile_unusable
   test_strict_arguments

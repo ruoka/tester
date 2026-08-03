@@ -70,8 +70,8 @@ constexpr auto cppm_suffix = ".cppm"sv;
 constexpr auto cxx_suffix = ".c++"sv;
 constexpr auto cpp_suffix = ".cpp"sv;
 
-// Source extensions CB will scan and compile. Prefixed forms (`.test.`, `.impl.`)
-// must appear before their base extension so suffix detection selects the longest match.
+// Source extensions CB will scan and compile. Detection selects the longest matching suffix,
+// so prefixed forms (`.test.`, `.impl.`) do not depend on this list's order.
 const suffix_list supported_suffixes = {
     test_cxxm_suffix,
     test_cxx_suffix,
@@ -169,19 +169,29 @@ bool path_at_or_under_dir(std::string_view path, std::string_view dir)
         and path[path.size() - dir.size() - 1] == '/';
 }
 
+// Component-aware containment for normalized absolute roots. A raw starts_with(root) would
+// mistake siblings such as /work/app-copy for children of /work/app.
+bool path_at_or_under_root(std::string_view path, std::string_view root)
+{
+    if(path == root)
+        return true;
+    if(root == "/"sv)
+        return path.starts_with(root);
+    return path.starts_with(root)
+        and path.size() > root.size()
+        and path[root.size()] == '/';
+}
+
 // Existing paths become canonical so cache keys and dependency comparisons resolve aliases.
-// Missing paths retain a stable absolute spelling so the analyzer can report them.
+// Missing tails resolve against their existing prefix; filesystem failures retain a normalized
+// absolute spelling so the analyzer can still report the requested path.
 std::string canonical_path(fs::path path)
 {
     if(path.is_relative())
         path = fs::absolute(path);
-    try
-    {
-        path = fs::canonical(path);
-    }
-    catch(...)
-    {}
-    return path.string();
+    auto error = std::error_code{};
+    const auto canonical = fs::weakly_canonical(path, error);
+    return error ? path.lexically_normal().string() : canonical.string();
 }
 
 // A cache (or other stamped index) is replaced, never edited in place: write a sibling
@@ -345,12 +355,17 @@ using unit_index =
 
 std::optional<std::string_view> translation_unit::supported_suffix(std::string_view filename)
 {
-    const auto suffix = std::ranges::find_if(supported_suffixes, [&](std::string_view s) {
-        return filename.ends_with(s);
-    });
-    if(suffix == supported_suffixes.end())
+    auto matches = supported_suffixes
+        | std::views::filter([&](std::string_view suffix) {
+              return filename.ends_with(suffix);
+          });
+    const auto longest = std::ranges::max_element(
+        matches,
+        {},
+        [](std::string_view suffix) { return suffix.size(); });
+    if(longest == matches.end())
         return std::nullopt;
-    return *suffix;
+    return *longest;
 }
 
 bool translation_unit::is_supported(const fs::path& file_path) {
@@ -1474,6 +1489,8 @@ public:
         signature += signature_flag_tail_;
         signature += "|imports=";
         signature += cb::flags::codec::serialize(import_flags);
+        signature += "|format=";
+        signature += signature_format;
         return signature;
     }
 
@@ -1509,6 +1526,8 @@ public:
 
 private:
     inline static constexpr auto filename = "executable-cache.txt"sv;
+    // v2 records the import flags actually passed to every link, including test-unit imports.
+    inline static constexpr auto signature_format = "cb-link-v2"sv;
 
     storage_file file_;
     std::string signature_flag_tail_{};
@@ -2068,8 +2087,8 @@ private:
             const auto resolved = detail::canonical_path(prerequisite);
             // Explicitly mapped BMIs are module-graph inputs, not textual headers.
             if(resolved == tu.full_path
-               or not resolved.starts_with(source_root_)
-               or detail::path_at_or_under_dir(resolved, pcm_root_))
+               or not detail::path_at_or_under_root(resolved, source_root_)
+               or detail::path_at_or_under_root(resolved, pcm_root_))
                 continue;
 
             auto error = std::error_code{};
@@ -2097,7 +2116,7 @@ namespace execution {
 // Own only the common thread-group lifecycle. Each caller retains its scheduling and failure
 // policy, so worker bodies must catch exceptions that should not terminate the process.
 template<std::copy_constructible Work>
-requires std::invocable<Work&>
+requires std::invocable<Work>
 void run_workers(std::size_t worker_count, Work work)
 {
     auto workers = std::vector<std::jthread>{};
@@ -2234,7 +2253,11 @@ public:
 
     void succeeded() { ok = true; }
     void attach(diagnostics said) { diag.append(std::move(said)); }
-    void failed(diagnostics said) { diag.replace(std::move(said)); }
+    void failed(diagnostics said)
+    {
+        ok = false;
+        diag.replace(std::move(said));
+    }
 
     step_result result() const
     {
@@ -2576,14 +2599,8 @@ private:
 
 namespace toolchain {
 
-// Shared home for toolchain-facing types. Compiler discovery, profile identity, and command
-// construction remain in build_system until their behavior moves here.
-class driver
-{
-public:
-    using module_link_flags =
-        std::flat_map<std::string, std::string, std::less<>>;
-};
+using module_link_flags =
+    std::flat_map<std::string, std::string, std::less<>>;
 
 } // namespace toolchain
 
@@ -2602,7 +2619,7 @@ private:
 
     std::string source_dir;
     string_list compile_flags, link_flags, cpp_flags;
-    toolchain::driver::module_link_flags module_ldflags;
+    toolchain::module_link_flags module_ldflags;
     // Shared clang module switches for every compile/link: disable implicit modules,
     // map `std`, and search the BMI cache. Per-TU `-fmodule-file=` flags for project
     // modules are not stored here — see `module_file_flags_for`.
@@ -3201,36 +3218,19 @@ private:
     }
 
     string_list link_argv(const source::translation_unit& main,
-                          const string_list& input_paths) const
+                          const string_list& input_paths,
+                          const string_list& import_flags) const
     {
         auto argv = string_list{};
         argv.push_back(llvm_cxx);
         argv.append_range(compile_flags);
-        argv.append_range(collect_module_ldflags(main.imports));
+        argv.append_range(import_flags);
         argv.append_range(module_flags);
         argv.append_range(input_paths);
         argv.append_range(link_flags);
         argv.push_back("-o");
         argv.push_back(main.executable_path);
         return argv;
-    }
-
-    string_list link_executable_argv(const source::translation_unit& main,
-                                     const string_list& shared_objects) const
-    {
-        auto inputs = string_list{main.object_path};
-        inputs.append_range(shared_objects);
-        inputs.push_back(std_obj_path());
-        return link_argv(main, inputs);
-    }
-
-    string_list link_test_runner_argv(const source::translation_unit& runner) const
-    {
-        auto inputs = string_list{runner.object_path};
-        inputs.append_range(linkable_object_paths());
-        inputs.append_range(test_object_paths());
-        inputs.push_back(std_obj_path());
-        return link_argv(runner, inputs);
     }
 
     string_list test_runner_argv(const std::string& runner, const std::vector<std::string>& args) const
@@ -3264,6 +3264,24 @@ private:
             | std::ranges::to<string_list>();
     }
 
+    string_list executable_link_inputs(const source::translation_unit& main,
+                                       const string_list& shared_objects) const
+    {
+        auto inputs = string_list{main.object_path};
+        inputs.append_range(shared_objects);
+        inputs.push_back(std_obj_path());
+        return inputs;
+    }
+
+    string_list test_runner_link_inputs(const source::translation_unit& runner) const
+    {
+        auto inputs = string_list{runner.object_path};
+        inputs.append_range(linkable_object_paths());
+        inputs.append_range(test_object_paths());
+        inputs.push_back(std_obj_path());
+        return inputs;
+    }
+
     string_list collect_module_ldflags(const string_list& imp) const
     {
         return std::ranges::fold_left(
@@ -3284,6 +3302,13 @@ private:
                 flags.append_range(collect_module_ldflags(tu.imports));
                 return flags;
             });
+    }
+
+    string_list test_runner_link_flags(const source::translation_unit& runner) const
+    {
+        auto flags = collect_test_module_ldflags();
+        flags.append_range(collect_module_ldflags(runner.imports));
+        return flags;
     }
 
     // ============================================================================
@@ -3362,8 +3387,8 @@ private:
         for(auto& tu : units)
         {
             // Attach builder-managed artifact paths once we know the full configuration.
-            // Keeping them here keeps the translation unit metadata immutable while giving downstream
-            // steps a single place to read object/PCM/binary locations from.
+            // Source identity remains immutable; builder-managed artifact paths are assigned once
+            // here so downstream steps have one place to read object/PCM/binary locations from.
             const auto& source_label = tu.display_path;
             tu.object_path = compute_object_path(tu);
             claim(object_owners, tu.object_path, source_label, "object");
@@ -3668,25 +3693,17 @@ private:
     // signature inputs and executable cache from the shared sections above.
 
     void perform_link(const source::translation_unit& main,
+                      const string_list& input_paths,
+                      const string_list& import_flags,
                       const output::rebuild_info& rebuild,
-                      std::string signature,
-                      string_list argv)
+                      std::string signature)
     {
         auto link = output::link_scope{main.executable_path, rebuild, std::move(signature)};
         process_runner.run_step(
-            link, argv, diagnostics_path_for_executable(main));
+            link,
+            link_argv(main, input_paths, import_flags),
+            diagnostics_path_for_executable(main));
         link.succeeded();
-    }
-
-    // What this executable takes in: its own object, the shared objects, the std object.
-    std::string compute_link_signature(const source::translation_unit& tu,
-                                       const string_list& shared_objects,
-                                       const cache::link_store& links) const
-    {
-        auto paths = string_list{tu.object_path};
-        paths.append_range(shared_objects);
-        paths.push_back(std_obj_path());
-        return links.link_signature(paths, collect_module_ldflags(tu.imports));
     }
 
     void link_executables() {
@@ -3698,6 +3715,8 @@ private:
         // needs_relinking (unlocked reads) with parallel remember() writes is a data race.
         struct link_decision {
             const source::translation_unit* tu = nullptr;
+            string_list input_paths{};
+            string_list import_flags{};
             std::string signature{};
             std::optional<output::rebuild_info> reason{};
         };
@@ -3707,9 +3726,16 @@ private:
             | std::views::filter([&](const source::translation_unit& tu) {
                   return tu.has_main and tu.base_name != test_runner_name; })
             | std::views::transform([&](const source::translation_unit& tu) {
-                  auto signature = compute_link_signature(tu, shared_objects, links);
+                  auto input_paths = executable_link_inputs(tu, shared_objects);
+                  auto import_flags = collect_module_ldflags(tu.imports);
+                  auto signature = links.link_signature(input_paths, import_flags);
                   auto reason = links.needs_relinking(tu.executable_path, signature);
-                  return link_decision{&tu, std::move(signature), std::move(reason)}; })
+                  return link_decision{
+                      .tu = &tu,
+                      .input_paths = std::move(input_paths),
+                      .import_flags = std::move(import_flags),
+                      .signature = std::move(signature),
+                      .reason = std::move(reason)}; })
             | std::ranges::to<std::vector>();
 
         for(const auto& decision : decisions)
@@ -3728,9 +3754,10 @@ private:
                 const auto& tu = *decision.tu;
                 perform_link(
                     tu,
+                    decision.input_paths,
+                    decision.import_flags,
                     *decision.reason,
-                    decision.signature,
-                    link_executable_argv(tu, shared_objects));
+                    decision.signature);
                 links.remember(tu.executable_path, decision.signature);
             });
         links.save();
@@ -3763,21 +3790,6 @@ private:
         return *found;
     }
 
-    // What the runner takes in: its object, the test objects, the shared objects, the std object.
-    // The flag tail covers every test unit's imports as well as the runner's — a change to any is
-    // a relink — while the argv needs only the runner's own, which shared link_argv also uses.
-    std::string compute_test_runner_signature(const source::translation_unit& runner,
-                                              const cache::link_store& links) const
-    {
-        auto paths = string_list{runner.object_path};
-        paths.append_range(test_object_paths());
-        paths.append_range(linkable_object_paths());
-        paths.push_back(std_obj_path());
-        auto flags = collect_test_module_ldflags();
-        flags.append_range(collect_module_ldflags(runner.imports));
-        return links.link_signature(paths, flags);
-    }
-
     void link_test_runner() {
         // The unit carries the path, so the link, the cache key, the log and what run_tests
         // executes cannot be spelled two ways: test_runner_unit pins the base name, and
@@ -3786,7 +3798,9 @@ private:
 
         auto links = make_link_store();
         links.load();
-        const auto signature = compute_test_runner_signature(runner, links);
+        const auto input_paths = test_runner_link_inputs(runner);
+        const auto import_flags = test_runner_link_flags(runner);
+        const auto signature = links.link_signature(input_paths, import_flags);
         const auto reason = links.needs_relinking(runner.executable_path, signature);
         if(not reason)
         {
@@ -3794,7 +3808,7 @@ private:
             return;
         }
 
-        perform_link(runner, *reason, signature, link_test_runner_argv(runner));
+        perform_link(runner, input_paths, import_flags, *reason, signature);
         output::notify(&output::observer::success, "test_runner linked with test objects");
         links.remember(runner.executable_path, signature);
         links.save();
@@ -3859,7 +3873,7 @@ public:
     build_system(
         build_config cfg,
         const string_list& cpf = {},
-        const toolchain::driver::module_link_flags& mlf = {},
+        const toolchain::module_link_flags& mlf = {},
         const std::string& src = ".",
         const std::string& stdcppm = "",
         bool static_linking = false,
