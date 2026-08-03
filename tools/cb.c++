@@ -71,7 +71,7 @@ constexpr auto cxx_suffix = ".c++"sv;
 constexpr auto cpp_suffix = ".cpp"sv;
 
 // Source extensions CB will scan and compile. Prefixed forms (`.test.`, `.impl.`)
-// must appear before their base extension so `make_base_name` strips the longest match.
+// must appear before their base extension so suffix detection selects the longest match.
 const suffix_list supported_suffixes = {
     test_cxxm_suffix,
     test_cxx_suffix,
@@ -278,7 +278,6 @@ class scanner;
 
 class translation_unit {
 public:
-    static bool match_supported_suffix(std::string_view filename, std::string& out_suffix);
     static bool is_supported(const fs::path& file_path);
     std::string_view kind_name() const;
 
@@ -322,8 +321,8 @@ private:
                      unit_kind kind_value,
                      bool has_main_flag);
 
+    static std::optional<std::string_view> supported_suffix(std::string_view filename);
     static std::string normalize_relative_dir(const fs::path& dir);
-    static std::string make_base_name(std::string_view filename);
     static std::string make_display_path(std::string_view dir, std::string_view filename);
     static std::string make_unit(std::string_view module_value, unit_kind kind, std::string_view filename_value);
     static bool is_tester_framework_path(std::string_view path);
@@ -344,21 +343,18 @@ using translation_unit_list = std::vector<translation_unit>;
 using unit_index =
     std::flat_map<std::string, const translation_unit*, std::less<>>;
 
-bool translation_unit::match_supported_suffix(std::string_view filename, std::string& out_suffix)
+std::optional<std::string_view> translation_unit::supported_suffix(std::string_view filename)
 {
     const auto suffix = std::ranges::find_if(supported_suffixes, [&](std::string_view s) {
         return filename.ends_with(s);
     });
     if(suffix == supported_suffixes.end())
-        return false;
-    out_suffix.assign(*suffix);
-    return true;
+        return std::nullopt;
+    return *suffix;
 }
 
 bool translation_unit::is_supported(const fs::path& file_path) {
-    auto name = file_path.filename().string();
-    auto suffix = std::string{};
-    return match_supported_suffix(name, suffix);
+    return supported_suffix(file_path.filename().string()).has_value();
 }
 
 std::string_view translation_unit::kind_name() const
@@ -380,16 +376,6 @@ std::string translation_unit::normalize_relative_dir(const fs::path& dir)
         return "";
     auto str = dir.string();
     return str == "." ? "" : str;
-}
-
-std::string translation_unit::make_base_name(std::string_view filename)
-{
-    const auto suffix = std::ranges::find_if(supported_suffixes, [&](std::string_view s) {
-        return filename.ends_with(s);
-    });
-    if(suffix != supported_suffixes.end())
-        return std::string{filename.substr(0, filename.size() - suffix->size())};
-    return std::string{filename};
 }
 
 std::string translation_unit::make_display_path(std::string_view dir, std::string_view filename)
@@ -455,12 +441,12 @@ translation_unit::translation_unit(const fs::path& relative,
     : filename(relative.filename().string()),
       path(normalize_relative_dir(relative.parent_path())),
       suffix([&] {
-          auto matched = std::string{};
-          if(not match_supported_suffix(relative.filename().string(), matched))
+          const auto matched = supported_suffix(this->filename);
+          if(not matched)
               throw std::runtime_error{"unsupported source suffix"};
-          return matched;
+          return std::string{*matched};
       }()),
-      base_name(make_base_name(this->filename)),
+      base_name(this->filename.substr(0, this->filename.size() - this->suffix.size())),
       full_path(detail::canonical_path(full_path)),
       display_path(make_display_path(this->path, this->filename)),
       unit(make_unit(module_value, kind_value, this->filename)),
