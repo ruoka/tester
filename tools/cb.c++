@@ -1185,6 +1185,12 @@ class object_store
 private:
     using map = std::flat_map<std::string, fs::file_time_type, std::less<>>;
 
+    struct profile_header
+    {
+        bool line_present = false;
+        std::optional<std::string> value{};
+    };
+
 public:
     struct disk_status
     {
@@ -1217,23 +1223,18 @@ public:
         if(not file)
             return;
 
-        auto header = ""s;
-        if(not std::getline(file, header))
+        const auto header = read_profile_header(file);
+        if(not header.line_present)
             return;
-
-        if(header.starts_with("profile\t"))
-        {
-            const auto stored_profile = header.substr(std::string_view{"profile\t"}.size());
-            if(stored_profile != current_profile_)
-            {
-                profile_change_ =
-                    profile{stored_profile}.diff(profile{current_profile_});
-                return;
-            }
-        }
-        else
+        if(not header.value)
         {
             missing_profile_header_ = true;
+            return;
+        }
+        if(*header.value != current_profile_)
+        {
+            profile_change_ =
+                profile{*header.value}.diff(profile{current_profile_});
             return;
         }
 
@@ -1250,7 +1251,7 @@ public:
     void save() const
     {
         file_.replace("object cache", [&](std::ostream& file) {
-            file << "profile\t" << current_profile_ << "\n";
+            file << profile_header_prefix << current_profile_ << "\n";
             for(const auto& [entry_path, timestamp] : entries_)
             {
                 if(not fs::exists(entry_path))
@@ -1281,11 +1282,10 @@ public:
             return result;
 
         auto file = std::ifstream{file_.path()};
-        auto header = ""s;
-        if(std::getline(file, header) and header.starts_with("profile\t"))
+        const auto header = read_profile_header(file);
+        if(header.value)
         {
-            const auto stored_profile = header.substr(std::string_view{"profile\t"}.size());
-            result.profile_match = stored_profile == current_profile;
+            result.profile_match = *header.value == current_profile;
             count_entries(file, result.entries, result.stale_entries);
         }
         return result;
@@ -1295,12 +1295,24 @@ private:
     friend class analyzer;
 
     inline static constexpr auto filename = "object-cache.txt"sv;
+    inline static constexpr auto profile_header_prefix = "profile\t"sv;
 
     const map& entries() const { return entries_; }
 
+    static profile_header read_profile_header(std::istream& file)
+    {
+        auto line = ""s;
+        if(not std::getline(file, line))
+            return {};
+        if(not line.starts_with(profile_header_prefix))
+            return {.line_present = true};
+        return {.line_present = true,
+                .value = line.substr(profile_header_prefix.size())};
+    }
+
     static bool parse_entry(const std::string& line, std::string& path, long long& ticks)
     {
-        if(line.empty() or line.starts_with("profile\t"))
+        if(line.empty() or line.starts_with(profile_header_prefix))
             return false;
         const auto tab = line.find('\t');
         if(tab == std::string::npos)
