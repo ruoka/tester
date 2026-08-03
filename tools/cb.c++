@@ -1014,16 +1014,12 @@ public:
 
     std::string std_pcm() const
     {
-        return (pcm
-                / (std::string{std_module_name} + std::string{naming_.bmi_extension}))
-            .string();
+        return (pcm / suffixed(std_module_name, naming_.bmi_extension)).string();
     }
 
     std::string std_object() const
     {
-        return (obj
-                / (std::string{std_module_name} + std::string{naming_.object_extension}))
-            .string();
+        return (obj / suffixed(std_module_name, naming_.object_extension)).string();
     }
 
     std::string object(const source::translation_unit& tu) const
@@ -1037,9 +1033,7 @@ public:
         if(tu.module.empty())
             throw std::logic_error{
                 "pcm_file called on translation unit without module: " + tu.filename};
-        return (pcm
-                / (module_safe_name(tu.module) + std::string{naming_.bmi_extension}))
-            .string();
+        return (pcm / suffixed(module_safe_name(tu.module), naming_.bmi_extension)).string();
     }
 
     std::string executable(const source::translation_unit& tu) const
@@ -1052,30 +1046,22 @@ public:
 
     std::string executable(std::string_view stem) const
     {
-        return (bin
-                / (std::string{stem} + std::string{naming_.executable_extension}))
-            .string();
+        return (bin / suffixed(stem, naming_.executable_extension)).string();
     }
 
     static std::string depfile(std::string_view object)
     {
-        auto path = std::string{object};
-        path += depfile_suffix;
-        return path;
+        return suffixed(object, depfile_suffix);
     }
 
     static std::string compile_log(std::string_view artifact)
     {
-        auto path = std::string{artifact};
-        path += compile_log_suffix;
-        return path;
+        return suffixed(artifact, compile_log_suffix);
     }
 
     static std::string link_log(std::string_view executable)
     {
-        auto path = std::string{executable};
-        path += link_log_suffix;
-        return path;
+        return suffixed(executable, link_log_suffix);
     }
 
     fs::path root;
@@ -1088,6 +1074,13 @@ private:
     inline static constexpr auto depfile_suffix = ".d"sv;
     inline static constexpr auto compile_log_suffix = ".log"sv;
     inline static constexpr auto link_log_suffix = ".link.log"sv;
+
+    static std::string suffixed(std::string_view stem, std::string_view suffix)
+    {
+        auto result = std::string{stem};
+        result += suffix;
+        return result;
+    }
 
     static std::string module_safe_name(std::string_view module_name)
     {
@@ -1104,8 +1097,8 @@ private:
             [&](std::string_view suffix) { return tu.suffix.ends_with(suffix); });
         if(ending == object_stem_suffixes.end())
             throw std::logic_error{"Unsupported suffix for object file: " + tu.suffix};
-        return std::string{tu.suffix.substr(0, tu.suffix.size() - ending->size())}
-            + std::string{naming_.object_extension};
+        return suffixed(tu.suffix.substr(0, tu.suffix.size() - ending->size()),
+                        naming_.object_extension);
     }
 
     toolchain::artifact_conventions naming_;
