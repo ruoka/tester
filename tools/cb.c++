@@ -3360,6 +3360,19 @@ private:
         object_owners.emplace(std_obj_path(), "reserved std module object");
         pcm_owners.emplace(std_pcm_path(), "reserved std module PCM");
 
+        const auto claim = [](auto& owners,
+                              const std::string& path,
+                              const std::string& owner,
+                              std::string_view kind)
+        {
+            const auto [prior, inserted] = owners.try_emplace(path, owner);
+            if(not inserted)
+                throw std::runtime_error{
+                    "Duplicate "s + std::string{kind} + " path '" + path + "' from "
+                    + prior->second + " and " + owner
+                    + " (object/module names must stay unique)"};
+        };
+
         for(auto& tu : units)
         {
             // Attach builder-managed artifact paths once we know the full configuration.
@@ -3367,30 +3380,15 @@ private:
             // steps a single place to read object/PCM/binary locations from.
             const auto& source_label = tu.display_path;
             tu.object_path = compute_object_path(tu);
-            if(object_owners.contains(tu.object_path))
-                throw std::runtime_error{
-                    "Duplicate object path '" + tu.object_path + "' from "
-                    + object_owners.at(tu.object_path) + " and " + source_label
-                    + " (object/module names must stay unique)"};
-            object_owners.emplace(tu.object_path, source_label);
+            claim(object_owners, tu.object_path, source_label, "object");
 
             if (tu.is_modular) {
                 tu.pcm_path = compute_pcm_path(tu);
-                if(pcm_owners.contains(tu.pcm_path))
-                    throw std::runtime_error{
-                        "Duplicate PCM path '" + tu.pcm_path + "' from "
-                        + pcm_owners.at(tu.pcm_path) + " and " + source_label
-                        + " (object/module names must stay unique)"};
-                pcm_owners.emplace(tu.pcm_path, source_label);
+                claim(pcm_owners, tu.pcm_path, source_label, "PCM");
             }
             if (tu.has_main) {
                 tu.executable_path = compute_executable_path(tu);
-                if(executable_owners.contains(tu.executable_path))
-                    throw std::runtime_error{
-                        "Duplicate executable path '" + tu.executable_path + "' from "
-                        + executable_owners.at(tu.executable_path) + " and " + source_label
-                        + " (object/module names must stay unique)"};
-                executable_owners.emplace(tu.executable_path, source_label);
+                claim(executable_owners, tu.executable_path, source_label, "executable");
             }
             validate_translation_unit(tu);
         }
