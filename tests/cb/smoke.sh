@@ -55,12 +55,12 @@ test_profile_header() {
   run_cb_build "${work_dir}"
   cache_file="$(object_cache_path "${work_dir}")"
   assert_profile_header "${cache_file}"
-  assert_profile_contains "${cache_file}" 'format=cb-object-cache-v3' "profile_format_v3"
-  assert_profile_contains "${cache_file}" $'\tstd_cppm=' "profile_std_cppm"
-  assert_profile_contains "${cache_file}" '@' "profile_std_cppm_sig"
-  assert_profile_contains "${cache_file}" $'\tcxx=' "profile_cxx"
-  assert_profile_contains "${cache_file}" $'\tcxx_sig=' "profile_cxx_sig"
-  assert_profile_contains "${cache_file}" $'\tclang_ver=' "profile_clang_ver"
+  assert_profile_contains "${cache_file}" 'format=cb-object-cache-v4' "profile_format_v4"
+  assert_profile_contains "${cache_file}" $'\tstd_module=' "profile_std_module"
+  assert_profile_contains "${cache_file}" '@' "profile_std_module_sig"
+  assert_profile_contains "${cache_file}" $'\tcompiler=' "profile_compiler"
+  assert_profile_contains "${cache_file}" $'\tcompiler_signature=' "profile_compiler_signature"
+  assert_profile_contains "${cache_file}" $'\tcompiler_version=' "profile_compiler_version"
   assert_jsonl_contains '"type":"compile_end"' "compile_end_event"
   end_case profile_header
 }
@@ -621,7 +621,7 @@ test_compile_warning() {
   end_case compile_warning
 }
 
-# A modular unit runs --precompile then compiles the pcm. Those steps must not share one
+# A modular unit runs --precompile then compiles the BMI. Those steps must not share one
 # capture file: the second redirect truncates, and compile_end.diagnostics.path would name
 # an empty log while the warning text lived only in the in-memory head.
 test_modular_compile_warning() {
@@ -730,7 +730,7 @@ test_implementation_pcm() {
 
   printf '%s\n' '// interface changed' >> "${work_dir}/sample.c++m"
   run_cb_build "${work_dir}"
-  assert_compile_end "sample.impl.c++" false pcm_stale true "implementation_rebuilt_for_interface_pcm"
+  assert_compile_end "sample.impl.c++" false bmi_stale true "implementation_rebuilt_for_interface_pcm"
   assert_jsonl_contains '"module":"sample"' "implementation_rebuild_module"
   assert_jsonl_contains '"trigger_path":' "implementation_rebuild_trigger"
   end_case implementation_pcm
@@ -825,7 +825,7 @@ test_import_trailing_comment() {
 
   printf '%s\n' '// interface changed' >> "${work_dir}/sample.c++m"
   run_cb_build "${work_dir}"
-  assert_compile_end "main.c++" false pcm_stale true "import_comment_importer_rebuilt"
+  assert_compile_end "main.c++" false bmi_stale true "import_comment_importer_rebuilt"
   assert_jsonl_contains '"module":"sample"' "import_comment_rebuild_module"
   end_case import_trailing_comment
 }
@@ -1167,13 +1167,13 @@ test_module_safe_name() {
   assert_jsonl_contains 'demo-part.pcm' "partition_pcm_hyphen"
   assert_jsonl_contains 'demo_part.pcm' "flat_pcm_underscore"
   assert_jsonl_contains 'demo-app.pcm' "dotted_pcm_hyphen"
-  assert_jsonl_not_contains "-fmodule-file=demo:part=${BUILD_DIR}/pcm/demo_part.pcm" "partition_not_collapsed"
+  assert_jsonl_not_contains "-fmodule-file=demo:part=${BUILD_DIR}/bmi/demo_part.pcm" "partition_not_collapsed"
 
   TESTS_RUN=$((TESTS_RUN + 1))
-  if [[ -f "${work_dir}/${BUILD_DIR}/pcm/demo-part.pcm" && -f "${work_dir}/${BUILD_DIR}/pcm/demo_part.pcm" ]]; then
-    jsonl_emit '{"type":"smoke_assert_passed","matcher":"distinct_pcm_files"}'
+  if [[ -f "${work_dir}/${BUILD_DIR}/bmi/demo-part.pcm" && -f "${work_dir}/${BUILD_DIR}/bmi/demo_part.pcm" ]]; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"distinct_bmi_files"}'
   else
-    fail "expected distinct pcm files for demo:part and demo_part under ${BUILD_DIR}/pcm"
+    fail "expected distinct pcm files for demo:part and demo_part under ${BUILD_DIR}/bmi"
   fi
   end_case module_safe_name
 }
@@ -1397,7 +1397,7 @@ test_rebuild_summary() {
   printf '%s\n' '// interface changed for summary' >> "${work_dir}/sample.c++m"
   run_cb_build "${work_dir}"
   assert_rebuild_summary source_stale 1 "" "summary_source_stale"
-  assert_rebuild_summary pcm_stale 1 sample "summary_pcm_stale_top_module"
+  assert_rebuild_summary bmi_stale 1 sample "summary_bmi_stale_top_module"
   assert_jsonl_contains '"top_modules":["sample"]' "summary_top_modules_exact"
   end_case rebuild_summary
 }
@@ -1502,7 +1502,7 @@ test_profile_change() {
   local work_dir first_jsonl std_pcm std_profile before_pcm_mtime after_pcm_mtime
   prepare_work_dir
   work_dir="${LAST_WORK_DIR}"
-  std_pcm="${work_dir}/${BUILD_DIR}/pcm/std.pcm"
+  std_pcm="${work_dir}/${BUILD_DIR}/bmi/std.pcm"
   std_profile="${work_dir}/${BUILD_DIR}/cache/std-module-profile.txt"
 
   run_cb_build "${work_dir}"
@@ -1526,7 +1526,7 @@ test_profile_change() {
   assert_jsonl_contains '"rebuild_reason":"profile_change"' "compile_end_profile_change"
   assert_compile_end_has_no_profile_diff
   assert_jsonl_contains '"cache_hit":false' "recompile_after_profile_change"
-  assert_jsonl_contains 'std.cppm' "std_cppm_command_after_profile_change"
+  assert_jsonl_contains 'std.cppm' "std_module_command_after_profile_change"
   assert_jsonl_contains '--precompile' "std_precompile_after_profile_change"
   after_pcm_mtime="$(stat -c %Y "${std_pcm}" 2>/dev/null || stat -f %m "${std_pcm}")"
   if [[ "${after_pcm_mtime}" -gt "${before_pcm_mtime}" ]]; then
@@ -1577,7 +1577,7 @@ test_cache_status() {
   run_cb_cache_status "${work_dir}"
   assert_jsonl_contains '"type":"cache_status"' "cache_status_event"
   assert_jsonl_contains '"profile_match":true' "cache_status_profile_match"
-  assert_jsonl_contains 'format=cb-object-cache-v3' "cache_status_current_profile"
+  assert_jsonl_contains 'format=cb-object-cache-v4' "cache_status_current_profile"
 
   # All four files under cache/, not the two the report used to describe. The std module
   # profile was the gap that mattered: `cache invalidate` deletes it — that is what makes CB
@@ -1603,7 +1603,7 @@ test_std_module_reported() {
   # scan. It used to build through execute_system_command, so the two most expensive steps of
   # a cold build were the only ones reporting no compile_end, no reason and no cache hit.
   run_cb_build "${work_dir}"
-  assert_compile_end "std.cppm" false own_pcm_missing true "std_module_cold_build_reason"
+  assert_compile_end "std.cppm" false own_bmi_missing true "std_module_cold_build_reason"
 
   run_cb_build "${work_dir}"
   assert_compile_end "std.cppm" true "" true "std_module_cache_hit"
@@ -1627,7 +1627,7 @@ test_shared_std_cache() {
   export CB_STD_CACHE_DIR="${work_dir}/shared-std-cache"
 
   run_cb_build "${work_dir}"
-  assert_compile_end "std.cppm" false own_pcm_missing true "shared_std_cache_seed"
+  assert_compile_end "std.cppm" false own_bmi_missing true "shared_std_cache_seed"
 
   run_cb_clean "${work_dir}"
   run_cb_build "${work_dir}"
@@ -1667,7 +1667,7 @@ test_modular_object_stale() {
   assert_jsonl_event_value build_end ok true "modular_object_stale_seed"
 
   sleep 1
-  touch "${work_dir}/${BUILD_DIR}/pcm/skew.pcm"
+  touch "${work_dir}/${BUILD_DIR}/bmi/skew.pcm"
   run_cb_build "${work_dir}"
   assert_compile_end "skew.c++m" false object_stale true "modular_own_pcm_newer_rebuilds_object"
   # Object-only: reuse the pcm that is already there (no --precompile).
@@ -1686,7 +1686,7 @@ test_modular_one_phase_object_missing() {
 
   # One-phase BMIs are not inputs for a pcm→.o step (Clang 22+ writes reduced BMIs).
   # object_missing / object_stale must re-read the source with -fmodule-output=, matching
-  # build_std_module — not compile_pcm_object_argv.
+  # build_std_module — not compile_bmi_object_argv.
   printf '%s\n' \
     'export module oneshot;' \
     'export int value() { return 3; }' > "${work_dir}/oneshot.c++m"
@@ -1742,7 +1742,7 @@ test_modular_object_missing_import_stale() {
     jsonl_emit '{"type":"smoke_assert_passed","matcher":"object_missing_import_stale_seed_run"}'
   fi
 
-  local mid_pcm="${work_dir}/${BUILD_DIR}/pcm/mid.pcm"
+  local mid_pcm="${work_dir}/${BUILD_DIR}/bmi/mid.pcm"
   cp -a "${mid_pcm}" "${work_dir}/mid.pcm.before"
   rm -f "${work_dir}/${BUILD_DIR}/obj/mid.o"
   sleep 1
@@ -1758,7 +1758,7 @@ test_modular_object_missing_import_stale() {
     '}' > "${work_dir}/main.c++"
 
   run_cb_build "${work_dir}"
-  assert_compile_end "mid.c++m" false pcm_stale true "object_missing_import_stale_reprecompiles_mid"
+  assert_compile_end "mid.c++m" false bmi_stale true "object_missing_import_stale_reprecompiles_mid"
   assert_jsonl_contains '"--precompile"' "object_missing_import_stale_runs_precompile"
   assert_jsonl_event_value build_end ok true "object_missing_import_stale_build_ok"
   TESTS_RUN=$((TESTS_RUN + 1))
@@ -1803,7 +1803,7 @@ test_modular_object_stale_import_stale() {
   run_cb_build "${work_dir}"
   assert_jsonl_event_value build_end ok true "object_stale_import_stale_seed"
 
-  local mid_pcm="${work_dir}/${BUILD_DIR}/pcm/mid.pcm"
+  local mid_pcm="${work_dir}/${BUILD_DIR}/bmi/mid.pcm"
   cp -a "${mid_pcm}" "${work_dir}/mid.pcm.before"
   sleep 1
   touch "${mid_pcm}"
@@ -1820,7 +1820,7 @@ test_modular_object_stale_import_stale() {
     '}' > "${work_dir}/main.c++"
 
   run_cb_build "${work_dir}"
-  assert_compile_end "mid.c++m" false pcm_stale true "object_stale_import_stale_reprecompiles_mid"
+  assert_compile_end "mid.c++m" false bmi_stale true "object_stale_import_stale_reprecompiles_mid"
   assert_jsonl_event_value build_end ok true "object_stale_import_stale_build_ok"
   TESTS_RUN=$((TESTS_RUN + 1))
   if cmp -s "${work_dir}/mid.pcm.before" "${mid_pcm}"; then
@@ -1862,7 +1862,7 @@ test_modular_object_missing_header_stale() {
   run_cb_build "${work_dir}"
   assert_jsonl_event_value build_end ok true "object_missing_header_stale_seed"
 
-  local mid_pcm="${work_dir}/${BUILD_DIR}/pcm/header_mid.pcm"
+  local mid_pcm="${work_dir}/${BUILD_DIR}/bmi/header_mid.pcm"
   cp -a "${mid_pcm}" "${work_dir}/mid.pcm.before"
   rm -f "${work_dir}/${BUILD_DIR}/obj/header_mid.o"
   sleep 1
@@ -1913,7 +1913,7 @@ test_module_phases() {
   assert_jsonl_event_value build_end ok true "two_phase_build"
   assert_jsonl_contains '"--precompile"' "two_phase_precompiles"
   assert_jsonl_not_contains '-fmodule-output=' "two_phase_no_module_output"
-  assert_file_exists "${work_dir}/${BUILD_DIR}/pcm/phases.pcm" "two_phase_pcm"
+  assert_file_exists "${work_dir}/${BUILD_DIR}/bmi/phases.pcm" "two_phase_pcm"
   cache_file="$(object_cache_path "${work_dir}")"
   assert_profile_contains "${cache_file}" $'\tmodule_phases=two-phase' "two_phase_profile"
 
@@ -1927,7 +1927,7 @@ test_module_phases() {
   # One command per modular unit, and it still publishes the BMI importers read.
   assert_jsonl_contains '-fmodule-output=' "one_phase_module_output"
   assert_jsonl_not_contains '"--precompile"' "one_phase_no_precompile"
-  assert_file_exists "${work_dir}/${BUILD_DIR}/pcm/phases.pcm" "one_phase_pcm"
+  assert_file_exists "${work_dir}/${BUILD_DIR}/bmi/phases.pcm" "one_phase_pcm"
   assert_file_exists "${work_dir}/${BUILD_DIR}/obj/phases.o" "one_phase_object"
   assert_compile_start_end_pairs "one_phase_compile_pairs"
 

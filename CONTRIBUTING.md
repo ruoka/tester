@@ -190,6 +190,10 @@ with these deviations and additions:
 **Formatting** — 4 spaces, no tabs. Prefer the spelled operators `not`, `and`, `or` over
 `!`, `&&`, `||` in new code.
 
+There is no maximum line length. Do not wrap declarations or expressions merely to satisfy an
+80- or 100-column convention; split lines only when the structure is clearer, such as
+initializers, object literals, lambdas, range pipelines, or genuinely complex conditions.
+
 **Standard library first** — the project targets C++23 and prefers standard algorithms and
 views over hand-rolled loops: `contains` over `find(...) != end()`, `views::join_with` over
 index loops with delimiter checks, `views::split` over ad-hoc parsers.
