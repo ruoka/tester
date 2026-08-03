@@ -314,13 +314,8 @@ public:
     bool has_main = false;
     bool is_test = false;
     bool is_modular = false;
-    
-    // Build artifacts
-    std::string object_path{};
-    std::string bmi_path{};
-    std::string executable_path{};
-    
-    // Metadata
+
+    // Metadata (artifact paths live in build_system's unit_artifacts_ side table)
     fs::file_time_type last_modified{};
     int dependency_level = -1;
 
@@ -1137,6 +1132,20 @@ inline std::string shell_quote(std::string_view arg)
 
 } // namespace process
 
+namespace build_tree {
+
+// Object / BMI / executable paths for one scanned unit. Owned by build_system, not the TU.
+struct unit_artifacts
+{
+    std::string object{};
+    std::string bmi{};
+    std::string executable{};
+};
+
+using artifact_index = std::flat_map<std::string_view, unit_artifacts, std::less<>>;
+
+} // namespace build_tree
+
 namespace toolchain {
 
 // How a modular interface becomes a BMI and an object. two_phase runs `--precompile` and then
@@ -1147,7 +1156,16 @@ enum class module_compilation : unsigned char { two_phase, one_phase };
 enum class linkage : unsigned char { dynamic, static_ };
 
 using module_link_flags = std::flat_map<std::string, std::string, std::less<>>;
-using module_interface_map = std::flat_map<std::string, const source::translation_unit*, std::less<>>;
+
+// What the driver needs from a provider interface — filled by build_system from TU + artifacts.
+struct module_provider
+{
+    std::string_view module{};
+    const string_list* imports = nullptr;
+    std::string_view bmi_path{};
+};
+
+using module_interface_map = std::flat_map<std::string, module_provider, std::less<>>;
 
 enum class compile_output : unsigned char { bmi, object };
 
@@ -1291,6 +1309,7 @@ public:
 
     // One or two clang invocations; argv is moved into `step` (no plan vector).
     void compile(const source::translation_unit& tu,
+                 const build_tree::unit_artifacts& artifacts,
                  const module_interface_map& interfaces,
                  bool object_only,
                  std::invocable<string_list, compile_step> auto&& step) const
@@ -1298,25 +1317,25 @@ public:
         const auto imports = module_file_flags(tu, interfaces);
         if(not tu.is_modular)
         {
-            step(compile_source_object_argv(tu, imports),
+            step(compile_source_object_argv(tu, artifacts, imports),
                  {.dependencies_ready = true});
             return;
         }
         if(module_phases_ == module_compilation::one_phase)
         {
-            step(compile_module_object_argv(tu, imports),
+            step(compile_module_object_argv(tu, artifacts, imports),
                  {.writes_bmi = true, .dependencies_ready = true});
             return;
         }
         if(object_only)
         {
-            step(compile_bmi_object_argv(tu.bmi_path, tu.object_path, imports),
+            step(compile_bmi_object_argv(artifacts.bmi, artifacts.object, imports),
                  {.dependencies_ready = true});
             return;
         }
-        step(compile_bmi_argv(tu, imports),
+        step(compile_bmi_argv(tu, artifacts, imports),
              {.output = compile_output::bmi, .writes_bmi = true, .dependencies_ready = true});
-        step(compile_bmi_object_argv(tu.bmi_path, tu.object_path, imports), {});
+        step(compile_bmi_object_argv(artifacts.bmi, artifacts.object, imports), {});
     }
 
     void compile_standard_module(std::string_view std_bmi_path,
@@ -1341,14 +1360,15 @@ public:
     }
 
     string_list compile_database_argv(const source::translation_unit& tu,
+                                      const build_tree::unit_artifacts& artifacts,
                                       const module_interface_map& interfaces) const
     {
         const auto imports = module_file_flags(tu, interfaces);
         if(not tu.is_modular)
-            return compile_source_object_argv(tu, imports);
+            return compile_source_object_argv(tu, artifacts, imports);
         return module_phases_ == module_compilation::two_phase
-            ? compile_bmi_argv(tu, imports)
-            : compile_module_object_argv(tu, imports);
+            ? compile_bmi_argv(tu, artifacts, imports)
+            : compile_module_object_argv(tu, artifacts, imports);
     }
 
     string_list link_argv(std::string_view executable_path,
@@ -1407,8 +1427,7 @@ private:
         const auto size = fs::file_size(path, error);
         if(error)
             return {};
-        const auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            stamp.time_since_epoch()).count();
+        const auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(stamp.time_since_epoch()).count();
         return std::to_string(size) + ':' + std::to_string(ticks);
     }
 
@@ -1586,14 +1605,15 @@ private:
     }
 
     string_list compile_bmi_argv(const source::translation_unit& tu,
+                                 const build_tree::unit_artifacts& artifacts,
                                  const string_list& imports) const
     {
         auto argv = base_compile_argv();
         argv.append_range(module_flags_);
         argv.append_range(imports);
-        argv.append_range(depfile_argv(tu.object_path));
+        argv.append_range(depfile_argv(artifacts.object));
         argv.push_back(tu.full_path);
-        return with_precompile(std::move(argv), tu.bmi_path);
+        return with_precompile(std::move(argv), artifacts.bmi);
     }
 
     // Shared by project units and std: BMI → object (omit imports for std).
@@ -1610,26 +1630,28 @@ private:
     }
 
     string_list compile_module_object_argv(const source::translation_unit& tu,
+                                           const build_tree::unit_artifacts& artifacts,
                                            const string_list& imports) const
     {
         auto argv = base_compile_argv();
         argv.append_range(module_flags_);
         argv.append_range(imports);
-        argv.append_range(depfile_argv(tu.object_path));
-        argv.push_back("-fmodule-output=" + tu.bmi_path);
+        argv.append_range(depfile_argv(artifacts.object));
+        argv.push_back("-fmodule-output=" + artifacts.bmi);
         argv.push_back(tu.full_path);
-        return with_c_output(std::move(argv), tu.object_path);
+        return with_c_output(std::move(argv), artifacts.object);
     }
 
     string_list compile_source_object_argv(const source::translation_unit& tu,
+                                           const build_tree::unit_artifacts& artifacts,
                                            const string_list& imports) const
     {
         auto argv = base_compile_argv();
         argv.append_range(module_flags_);
         argv.append_range(imports);
-        argv.append_range(depfile_argv(tu.object_path));
+        argv.append_range(depfile_argv(artifacts.object));
         argv.push_back(tu.full_path);
-        return with_c_output(std::move(argv), tu.object_path);
+        return with_c_output(std::move(argv), artifacts.object);
     }
 
     string_list compile_std_bmi_argv(std::string_view std_bmi_path) const
@@ -1680,9 +1702,9 @@ private:
             const auto name = pending[i];
             if(not interfaces.contains(name))
                 continue;
-            const auto* dep = interfaces.at(name);
-            flags.push_back(module_file_flag(dep->module, dep->bmi_path));
-            for(const auto& imp : dep->imports)
+            const auto& dep = interfaces.at(name);
+            flags.push_back(module_file_flag(dep.module, dep.bmi_path));
+            for(const auto& imp : *dep.imports)
                 enqueue(imp);
         }
         return flags;
@@ -1843,11 +1865,12 @@ namespace output {
 // Observers format four of a unit's fields, so they receive those four and not the unit: the
 // rest is build state, and cb-observer.h++ stays independent of the scanner. The bmi path is the
 // one derived field, and deriving it here is why compile_start and compile_end cannot disagree.
-compile_unit compile_unit_of(const source::translation_unit& tu)
+compile_unit compile_unit_of(const source::translation_unit& tu,
+                             const build_tree::unit_artifacts& artifacts)
 {
     return {.source = tu.full_path,
-            .object = tu.object_path,
-            .bmi = tu.is_modular ? std::string_view{tu.bmi_path} : std::string_view{},
+            .object = artifacts.object,
+            .bmi = tu.is_modular ? std::string_view{artifacts.bmi} : std::string_view{},
             .module = tu.module,
             .display_path = tu.display_path};
 }
@@ -2128,8 +2151,7 @@ public:
             // Entries were recorded from units CB itself built; no need to re-stat them.
             for(const auto& [entry_path, timestamp] : entries_)
             {
-                const auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    timestamp.time_since_epoch()).count();
+                const auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(timestamp.time_since_epoch()).count();
                 file << entry_path << "\t" << ticks << "\n";
             }
         });
@@ -2223,6 +2245,62 @@ private:
     bool missing_profile_header_ = false;
 };
 
+// Wire format for a link cache entry: objects|flags=…|link=…|modules=…|imports=…|format=…
+// Writer and reader share this type so field order cannot silently degrade telemetry.
+class link_signature
+{
+public:
+    std::string objects{};
+    // Body after "|flags=" and before "|imports=": compile|link=…|modules=…
+    std::string flags{};
+    std::string imports{};
+    std::string format{};
+
+    inline static constexpr auto format_v2 = "cb-link-v2"sv;
+
+    std::string serialize() const
+    {
+        return objects + "|flags=" + flags + "|imports=" + imports + "|format=" + format;
+    }
+
+    static std::optional<link_signature> parse(std::string_view text)
+    {
+        constexpr auto flags_mark = "|flags="sv;
+        constexpr auto imports_mark = "|imports="sv;
+        constexpr auto format_mark = "|format="sv;
+        const auto flags_at = text.find(flags_mark);
+        if(flags_at == std::string_view::npos)
+            return std::nullopt;
+        const auto imports_at = text.find(imports_mark, flags_at + flags_mark.size());
+        if(imports_at == std::string_view::npos)
+            return std::nullopt;
+        const auto format_at = text.find(format_mark, imports_at + imports_mark.size());
+        if(format_at == std::string_view::npos)
+            return std::nullopt;
+
+        auto parsed = link_signature{};
+        parsed.objects = std::string{text.substr(0, flags_at)};
+        parsed.flags = std::string{text.substr(
+            flags_at + flags_mark.size(),
+            imports_at - (flags_at + flags_mark.size()))};
+        parsed.imports = std::string{text.substr(
+            imports_at + imports_mark.size(),
+            format_at - (imports_at + imports_mark.size()))};
+        parsed.format = std::string{text.substr(format_at + format_mark.size())};
+        return parsed;
+    }
+
+    // nullopt when identical; otherwise which part of the stamp moved.
+    std::optional<output::rebuild_kind> compare(const link_signature& other) const
+    {
+        if(objects != other.objects)
+            return output::rebuild_kind::object_changed;
+        if(flags != other.flags or imports != other.imports or format != other.format)
+            return output::rebuild_kind::link_flags_changed;
+        return std::nullopt;
+    }
+};
+
 // Executable signatures and their common compile/link/module flag tail.
 class link_store
 {
@@ -2246,12 +2324,11 @@ public:
     link_store(std::string cache_dir, flag_ingredients flags)
         : file_{std::move(cache_dir), filename}
     {
-        signature_flag_tail_ = "|flags=";
-        signature_flag_tail_ += cb::flags::codec::serialize(flags.compile_flags);
-        signature_flag_tail_ += "|link=";
-        signature_flag_tail_ += cb::flags::codec::serialize(flags.link_flags);
-        signature_flag_tail_ += "|modules=";
-        signature_flag_tail_ += cb::flags::codec::serialize(flags.module_flags);
+        flag_tail_ = cb::flags::codec::serialize(flags.compile_flags);
+        flag_tail_ += "|link=";
+        flag_tail_ += cb::flags::codec::serialize(flags.link_flags);
+        flag_tail_ += "|modules=";
+        flag_tail_ += cb::flags::codec::serialize(flags.module_flags);
     }
 
     const std::string& path() const { return file_.path(); }
@@ -2330,8 +2407,7 @@ private:
         const auto stamp = detail::file_time(input_path);
         if(not stamp)
             return input_path + ":missing";
-        const auto timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            stamp->time_since_epoch()).count();
+        const auto timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(stamp->time_since_epoch()).count();
         return input_path + ":" + std::to_string(timestamp);
     }
 
@@ -2351,22 +2427,19 @@ public:
     std::string link_signature(const string_list& input_paths,
                                const string_list& import_flags) const
     {
-        auto signature = dependency_signatures_joined(input_paths);
-        signature += signature_flag_tail_;
-        signature += "|imports=";
-        signature += cb::flags::codec::serialize(import_flags);
-        signature += "|format=";
-        signature += signature_format;
-        return signature;
+        return cache::link_signature{
+            .objects = dependency_signatures_joined(input_paths),
+            .flags = flag_tail_,
+            .imports = cb::flags::codec::serialize(import_flags),
+            .format = std::string{cache::link_signature::format_v2},
+        }.serialize();
     }
 
 private:
     inline static constexpr auto filename = "executable-cache.txt"sv;
-    // v2 records the import flags actually passed to every link, including test-unit imports.
-    inline static constexpr auto signature_format = "cb-link-v2"sv;
 
     storage_file file_;
-    std::string signature_flag_tail_{};
+    std::string flag_tail_{};
     map entries_{};
     std::mutex mutex_{};
 };
@@ -2611,8 +2684,7 @@ private:
 
     static std::string shared_nonce()
     {
-        auto value = static_cast<std::uint64_t>(
-            std::chrono::steady_clock::now().time_since_epoch().count());
+        auto value = static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
         try
         {
             auto entropy = std::random_device{};
@@ -2653,10 +2725,18 @@ private:
 class analyzer
 {
 public:
-    analyzer(std::string source_root, std::string bmi_root)
+    analyzer(std::string source_root,
+             std::string bmi_root,
+             const build_tree::artifact_index& unit_artifacts)
         : source_root_{detail::canonical_path(source_root)},
-          bmi_root_{detail::canonical_path(bmi_root)}
+          bmi_root_{detail::canonical_path(bmi_root)},
+          unit_artifacts_{unit_artifacts}
     {}
+
+    const build_tree::unit_artifacts& artifacts_of(const source::translation_unit& tu) const
+    {
+        return unit_artifacts_.at(tu.unit);
+    }
 
     std::optional<output::rebuild_info> rebuild_reason_for(
         const standard_module_store& std_modules,
@@ -2700,20 +2780,13 @@ public:
         if(*previous == signature)
             return std::nullopt;
 
-        const auto flag_marker = "|flags="sv;
-        const auto previous_flags = previous->find(flag_marker);
-        const auto current_flags = signature.find(flag_marker);
-        if(previous_flags != std::string::npos and current_flags != std::string::npos)
-        {
-            const auto previous_objects = previous->substr(0, previous_flags);
-            const auto current_objects = signature.substr(0, current_flags);
-            if(previous_objects != current_objects)
-                return output::rebuild_info{.kind = output::rebuild_kind::object_changed};
-            if(previous->substr(previous_flags) != signature.substr(current_flags))
-                return output::rebuild_info{.kind = output::rebuild_kind::link_flags_changed};
-        }
-
-        return output::rebuild_info{.kind = output::rebuild_kind::signature_changed};
+        const auto previous_sig = link_signature::parse(*previous);
+        const auto current_sig = link_signature::parse(signature);
+        if(not previous_sig or not current_sig)
+            return output::rebuild_info{.kind = output::rebuild_kind::signature_changed};
+        if(auto kind = previous_sig->compare(*current_sig))
+            return output::rebuild_info{.kind = *kind};
+        return std::nullopt;
     }
 
     // Consumers ask about the same provider once per path that reaches it, so an unmemoized
@@ -2752,6 +2825,7 @@ private:
         const object_store& loaded,
         const source::unit_index& units) const
     {
+        const auto& art = artifacts_of(tu);
         if(not loaded.entries().contains(tu.full_path))
         {
             if(loaded.profile_change())
@@ -2769,7 +2843,7 @@ private:
 
         // A modular object-only repair reuses its BMI, so validate all BMI inputs before
         // returning object_missing/object_stale. Non-modular units can decide immediately.
-        const auto object_stamp = detail::file_time(tu.object_path);
+        const auto object_stamp = detail::file_time(art.object);
         const auto object_absent = not object_stamp.has_value();
         auto object_timestamp = object_stamp.value_or(fs::file_time_type{});
         if(object_absent)
@@ -2785,7 +2859,7 @@ private:
                 return output::rebuild_info{
                     .kind = output::rebuild_kind::object_stale,
                     .trigger_path = tu.full_path};
-            if(auto header_reason = stale_header(tu, object_timestamp))
+            if(auto header_reason = stale_header(tu, art, object_timestamp))
                 return header_reason;
         }
 
@@ -2793,11 +2867,12 @@ private:
         if(tu.kind == unit_kind::implementation_unit and units.contains(tu.module))
         {
             const auto& interface = *units.at(tu.module);
-            const auto interface_bmi = detail::file_time(interface.bmi_path);
+            const auto& interface_art = artifacts_of(interface);
+            const auto interface_bmi = detail::file_time(interface_art.bmi);
             if(not interface_bmi)
-                return bmi_rebuild(output::rebuild_kind::dependency_bmi_stale, interface);
+                return bmi_rebuild(output::rebuild_kind::dependency_bmi_stale, interface, interface_art);
             if(*interface_bmi > object_timestamp)
-                return bmi_rebuild(output::rebuild_kind::bmi_stale, interface);
+                return bmi_rebuild(output::rebuild_kind::bmi_stale, interface, interface_art);
             if(auto interface_reason = rebuild_reason_for(interface, loaded, units))
                 return attributed_to(*interface_reason, interface);
         }
@@ -2806,12 +2881,12 @@ private:
         auto object_stale_vs_bmi = false;
         if(tu.is_modular)
         {
-            const auto bmi_stamp = detail::file_time(tu.bmi_path);
+            const auto bmi_stamp = detail::file_time(art.bmi);
             if(not bmi_stamp)
-                return bmi_rebuild(output::rebuild_kind::own_bmi_missing, tu);
+                return bmi_rebuild(output::rebuild_kind::own_bmi_missing, tu, art);
             const auto bmi_timestamp = *bmi_stamp;
             if(bmi_timestamp < tu.last_modified)
-                return bmi_rebuild(output::rebuild_kind::own_bmi_stale, tu);
+                return bmi_rebuild(output::rebuild_kind::own_bmi_stale, tu, art);
             if(object_absent)
                 freshness_timestamp = bmi_timestamp;
             else if(object_timestamp < bmi_timestamp)
@@ -2820,7 +2895,7 @@ private:
                 object_stale_vs_bmi = true;
             }
 
-            if(auto header_reason = stale_header(tu, freshness_timestamp))
+            if(auto header_reason = stale_header(tu, art, freshness_timestamp))
                 return header_reason;
         }
 
@@ -2837,9 +2912,10 @@ private:
             const auto& dependency = *units.at(dependency_key);
             if(dependency.is_modular)
             {
-                const auto dependency_bmi = detail::file_time(dependency.bmi_path);
+                const auto& dependency_art = artifacts_of(dependency);
+                const auto dependency_bmi = detail::file_time(dependency_art.bmi);
                 if(not dependency_bmi or *dependency_bmi < dependency.last_modified)
-                    return bmi_rebuild(output::rebuild_kind::dependency_bmi_stale, dependency);
+                    return bmi_rebuild(output::rebuild_kind::dependency_bmi_stale, dependency, dependency_art);
             }
             if(auto dependency_reason = rebuild_reason_for(dependency, loaded, units))
                 return attributed_to(*dependency_reason, dependency);
@@ -2850,7 +2926,7 @@ private:
                 .kind = output::rebuild_kind::object_missing,
                 .trigger_path = tu.full_path};
         if(object_stale_vs_bmi)
-            return bmi_rebuild(output::rebuild_kind::object_stale, tu);
+            return bmi_rebuild(output::rebuild_kind::object_stale, tu, art);
         if(object_timestamp < loaded.entries().at(tu.full_path))
             return output::rebuild_info{
                 .kind = output::rebuild_kind::object_stale,
@@ -2910,11 +2986,12 @@ private:
     }
 
     static output::rebuild_info bmi_rebuild(output::rebuild_kind kind,
-                                            const source::translation_unit& tu)
+                                            const source::translation_unit& tu,
+                                            const build_tree::unit_artifacts& artifacts)
     {
         return {.kind = kind,
                 .module = tu.module,
-                .bmi_path = tu.bmi_path,
+                .bmi_path = artifacts.bmi,
                 .trigger_path = tu.full_path};
     }
 
@@ -2942,9 +3019,10 @@ private:
             const auto& dependency = *units.at(dependency_key);
             if(dependency.is_modular)
             {
-                if(const auto dependency_bmi = detail::file_time(dependency.bmi_path);
+                const auto& dependency_art = artifacts_of(dependency);
+                if(const auto dependency_bmi = detail::file_time(dependency_art.bmi);
                    dependency_bmi and *dependency_bmi > object_timestamp)
-                    return bmi_rebuild(output::rebuild_kind::bmi_stale, dependency);
+                    return bmi_rebuild(output::rebuild_kind::bmi_stale, dependency, dependency_art);
             }
 
             if(visited.contains(dependency.unit))
@@ -2959,9 +3037,10 @@ private:
 
     std::optional<output::rebuild_info> stale_header(
         const source::translation_unit& tu,
+        const build_tree::unit_artifacts& artifacts,
         fs::file_time_type freshness_timestamp) const
     {
-        const auto depfile = build_tree::paths::depfile(tu.object_path);
+        const auto depfile = build_tree::paths::depfile(artifacts.object);
         const auto prerequisites = parse_depfile(depfile);
         if(not prerequisites)
             return output::rebuild_info{
@@ -3012,6 +3091,7 @@ private:
 
     std::string source_root_;
     std::string bmi_root_;
+    const build_tree::artifact_index& unit_artifacts_;
     // Decisions and resolved paths are shared by the compile workers; the analyzer itself
     // stays logically const, so both caches lock rather than serialize the callers.
     mutable std::mutex decisions_mutex_{};
@@ -3037,6 +3117,37 @@ void run_workers(std::size_t worker_count, Work work)
         worker.join();
 }
 
+inline std::size_t worker_count(std::ptrdiff_t job_limit, std::size_t job_count)
+{
+    return std::min(job_count, static_cast<std::size_t>(std::max<std::ptrdiff_t>(1, job_limit)));
+}
+
+// First exception wins; peers stop claiming once failed() is set. Rethrow after joins.
+class failure_latch
+{
+public:
+    bool failed() const { return failed_.load(std::memory_order_relaxed); }
+
+    void capture()
+    {
+        failed_.store(true, std::memory_order_relaxed);
+        auto lock = std::lock_guard<std::mutex>{mutex_};
+        if(not failure_)
+            failure_ = std::current_exception();
+    }
+
+    void rethrow() const
+    {
+        if(failure_)
+            std::rethrow_exception(failure_);
+    }
+
+private:
+    std::atomic_bool failed_{false};
+    std::exception_ptr failure_{};
+    mutable std::mutex mutex_{};
+};
+
 // Bounded independent jobs; the first failure stops claims and is rethrown after all joins.
 class worker_pool
 {
@@ -3057,23 +3168,19 @@ public:
         if(items.empty())
             return;
 
-        const auto worker_count = std::min(
-            items.size(),
-            static_cast<std::size_t>(std::max<std::ptrdiff_t>(1, limit)));
+        const auto workers = worker_count(limit, items.size());
         auto next = std::atomic_size_t{0};
-        auto failed = std::atomic_bool{false};
-        auto failure = std::exception_ptr{};
-        auto failure_mutex = std::mutex{};
+        auto failures = failure_latch{};
 
-        run_workers(worker_count, [&]()
+        run_workers(workers, [&]()
         {
-            while(not failed.load(std::memory_order_relaxed))
+            while(not failures.failed())
             {
                 const auto index = next.fetch_add(1, std::memory_order_relaxed);
                 if(index >= items.size())
                     return;
                 // A peer may have failed while this worker claimed the next index.
-                if(failed.load(std::memory_order_relaxed))
+                if(failures.failed())
                     return;
                 try
                 {
@@ -3081,15 +3188,11 @@ public:
                 }
                 catch(...)
                 {
-                    failed.store(true, std::memory_order_relaxed);
-                    auto lock = std::lock_guard<std::mutex>{failure_mutex};
-                    if(not failure)
-                        failure = std::current_exception();
+                    failures.capture();
                 }
             }
         });
-        if(failure)
-            std::rethrow_exception(failure);
+        failures.rethrow();
     }
 
 private:
@@ -3537,6 +3640,8 @@ private:
     bool toolchain_profile_probed = false;
     std::string compiler_version{};
     source::translation_unit_list units_in_topological_order;
+    // Keys are string_views into units_in_topological_order; rebuild after every scan.
+    build_tree::artifact_index unit_artifacts_{};
     const build_config config;
     const build_tree::paths artifact_paths;
     bool include_tests = false;
@@ -3593,29 +3698,20 @@ private:
     {
         module_interfaces = units_in_topological_order
             | std::views::filter([](const source::translation_unit& tu) { return tu.is_modular; })
-            | std::views::transform([](const source::translation_unit& tu)
+            | std::views::transform([&](const source::translation_unit& tu)
             {
-                return std::pair{tu.module, &tu};
+                return std::pair{tu.module, toolchain::module_provider{
+                    .module = tu.module,
+                    .imports = &tu.imports,
+                    .bmi_path = artifacts_of(tu).bmi,
+                }};
             })
             | std::ranges::to<toolchain::module_interface_map>();
     }
 
-    void validate_translation_unit(const source::translation_unit& tu) const {
-        if (tu.object_path.empty())
-            throw std::logic_error{"translation unit missing object path: " + tu.filename};
-        
-        if (tu.is_modular) {
-            if (tu.module.empty())
-                throw std::logic_error{"modular unit missing module name: " + tu.filename};
-            if (tu.bmi_path.empty())
-                throw std::logic_error{"modular unit missing BMI path: " + tu.filename};
-        }
-        
-        if (tu.kind == unit_kind::implementation_unit and tu.module.empty())
-            throw std::logic_error{"implementation unit missing module name: " + tu.filename};
-        
-        if (tu.has_main and tu.executable_path.empty())
-            throw std::logic_error{"main unit missing executable path: " + tu.filename};
+    const build_tree::unit_artifacts& artifacts_of(const source::translation_unit& tu) const
+    {
+        return unit_artifacts_.at(tu.unit);
     }
 
     // Utilities
@@ -3637,7 +3733,7 @@ private:
     string_list test_object_paths() const
     {
         return test_units()
-            | std::views::transform([](const source::translation_unit& tu) { return tu.object_path; })
+            | std::views::transform([&](const source::translation_unit& tu) { return artifacts_of(tu).object; })
             | std::ranges::to<string_list>();
     }
 
@@ -3645,14 +3741,14 @@ private:
     {
         return units_in_topological_order
             | std::views::filter([](const source::translation_unit& tu) { return not tu.has_main and not tu.is_test; })
-            | std::views::transform([](const source::translation_unit& tu) { return tu.object_path; })
+            | std::views::transform([&](const source::translation_unit& tu) { return artifacts_of(tu).object; })
             | std::ranges::to<string_list>();
     }
 
     string_list executable_link_inputs(const source::translation_unit& main,
                                        const string_list& shared_objects) const
     {
-        auto inputs = string_list{main.object_path};
+        auto inputs = string_list{artifacts_of(main).object};
         inputs.append_range(shared_objects);
         inputs.push_back(artifact_paths.std_object());
         return inputs;
@@ -3660,7 +3756,7 @@ private:
 
     string_list test_runner_link_inputs(const source::translation_unit& runner) const
     {
-        auto inputs = string_list{runner.object_path};
+        auto inputs = string_list{artifacts_of(runner).object};
         inputs.append_range(linkable_object_paths());
         inputs.append_range(test_object_paths());
         inputs.push_back(artifact_paths.std_object());
@@ -3743,8 +3839,9 @@ private:
 
     // Dependency analysis
 
-    void attach_artifact_paths(source::translation_unit_list& units)
+    void build_unit_artifacts(const source::translation_unit_list& units)
     {
+        unit_artifacts_.clear();
         auto object_owners = std::flat_map<std::string, std::string, std::less<>>{};
         auto bmi_owners = std::flat_map<std::string, std::string, std::less<>>{};
         auto executable_owners = std::flat_map<std::string, std::string, std::less<>>{};
@@ -3767,31 +3864,39 @@ private:
                     + " (object/module names must stay unique)"};
         };
 
-        for(auto& tu : units)
+        for(const auto& tu : units)
         {
-            // Assign artifact paths once the full configuration is known.
+            auto artifacts = build_tree::unit_artifacts{};
             const auto& source_label = tu.display_path;
-            tu.object_path = artifact_paths.object(tu);
-            claim(object_owners, tu.object_path, source_label, "object");
+            artifacts.object = artifact_paths.object(tu);
+            claim(object_owners, artifacts.object, source_label, "object");
 
-            if (tu.is_modular) {
-                tu.bmi_path = artifact_paths.bmi_file(tu);
-                claim(bmi_owners, tu.bmi_path, source_label, "BMI");
+            if(tu.is_modular)
+            {
+                if(tu.module.empty())
+                    throw std::logic_error{"modular unit missing module name: " + tu.filename};
+                artifacts.bmi = artifact_paths.bmi_file(tu);
+                claim(bmi_owners, artifacts.bmi, source_label, "BMI");
             }
-            if (tu.has_main) {
-                tu.executable_path = artifact_paths.executable(tu);
-                claim(executable_owners, tu.executable_path, source_label, "executable");
+            if(tu.has_main)
+            {
+                artifacts.executable = artifact_paths.executable(tu);
+                claim(executable_owners, artifacts.executable, source_label, "executable");
             }
-            validate_translation_unit(tu);
+            if(tu.kind == unit_kind::implementation_unit and tu.module.empty())
+                throw std::logic_error{"implementation unit missing module name: " + tu.filename};
+
+            unit_artifacts_.emplace(std::string_view{tu.unit}, std::move(artifacts));
         }
     }
 
     void scan_and_order()
     {
-        auto units = source::scanner{
+        // Artifacts keys are string_views into this vector — fill the table only after
+        // the units own their final storage.
+        units_in_topological_order = source::scanner{
             source_dir, include_tests, include_examples}.scan();
-        attach_artifact_paths(units);
-        units_in_topological_order = std::move(units);
+        build_unit_artifacts(units_in_topological_order);
     }
 
     // Standard library module
@@ -3823,7 +3928,7 @@ private:
         const auto display = fs::path{state.std_module_source}.filename().string();
         const auto unit = std_compile_unit(bmi, object, display);
         auto std_store = make_standard_module_store();
-        const auto freshness = cache::analyzer{source_dir, artifact_paths.bmi.string()};
+        const auto freshness = cache::analyzer{source_dir, artifact_paths.bmi.string(), unit_artifacts_};
         const auto reason = freshness.rebuild_reason_for(
             std_store, state.std_module_source, [&]() { return object_cache_profile(); });
 
@@ -3854,8 +3959,7 @@ private:
                 process_runner.run_step(
                     compile,
                     std::move(argv),
-                    build_tree::paths::compile_log(
-                        step.output == toolchain::compile_output::bmi ? unit.bmi : unit.object));
+                    build_tree::paths::compile_log(step.output == toolchain::compile_output::bmi ? unit.bmi : unit.object));
                 if(step.writes_bmi)
                     std_store.save_profile(object_cache_profile());
             });
@@ -3866,10 +3970,98 @@ private:
 
     // Compilation
 
-    void compile_unit(const source::translation_unit& tu,
-                      const output::rebuild_info& rebuild,
-                      std::invocable auto&& on_dependency_ready) {
-        const auto unit = output::compile_unit_of(tu);
+    // Edge-driven readiness: a unit is claimable once every provider has published.
+    // Two-phase modular units publish after --precompile; everything else publishes when done.
+    class compile_schedule
+    {
+    public:
+        explicit compile_schedule(const source::translation_unit_list& units)
+            : unit_count_{units.size()},
+              dependents_(unit_count_),
+              dependencies_remaining_(unit_count_),
+              published_(unit_count_)
+        {
+            auto unit_to_index = std::flat_map<std::string, std::size_t, std::less<>>{};
+            for(auto index = std::size_t{0}; index < unit_count_; ++index)
+                unit_to_index[units[index].unit] = index;
+
+            for(auto index = std::size_t{0}; index < unit_count_; ++index)
+            {
+                source::scanner::for_each_provider(
+                    units[index], unit_to_index, [&](const std::string& provider)
+                {
+                    dependents_[unit_to_index.at(provider)].push_back(index);
+                    ++dependencies_remaining_[index];
+                });
+            }
+
+            for(auto index = std::size_t{0}; index < unit_count_; ++index)
+                if(dependencies_remaining_[index] == 0)
+                    ready_.push(index);
+            if(ready_.empty())
+                throw std::runtime_error{"No dependency-free translation unit"};
+        }
+
+        std::optional<std::size_t> claim(const execution::failure_latch& failures)
+        {
+            auto lock = std::unique_lock<std::mutex>{mutex_};
+            changed_.wait(lock, [&] {
+                return failures.failed() or not ready_.empty() or completed_ == unit_count_;
+            });
+            if(failures.failed() or completed_ == unit_count_)
+                return std::nullopt;
+            const auto index = ready_.front();
+            ready_.pop();
+            return index;
+        }
+
+        void publish(std::size_t provider, const execution::failure_latch& failures)
+        {
+            {
+                auto lock = std::lock_guard<std::mutex>{mutex_};
+                if(published_[provider] != 0)
+                    return;
+                published_[provider] = 1;
+                if(failures.failed())
+                    return;
+                for(const auto dependent : dependents_[provider])
+                {
+                    if(--dependencies_remaining_[dependent] == 0)
+                        ready_.push(dependent);
+                }
+            }
+            changed_.notify_all();
+        }
+
+        void complete_one()
+        {
+            {
+                auto lock = std::lock_guard<std::mutex>{mutex_};
+                ++completed_;
+            }
+            changed_.notify_all();
+        }
+
+        void wake() { changed_.notify_all(); }
+
+        std::size_t unit_count() const { return unit_count_; }
+
+    private:
+        std::size_t unit_count_ = 0;
+        std::vector<std::vector<std::size_t>> dependents_{};
+        std::vector<std::size_t> dependencies_remaining_{};
+        std::queue<std::size_t> ready_{};
+        std::vector<unsigned char> published_{};
+        std::size_t completed_ = 0;
+        std::mutex mutex_{};
+        std::condition_variable changed_{};
+    };
+
+    void compile_one(const source::translation_unit& tu,
+                     const output::rebuild_info& rebuild,
+                     std::invocable auto&& on_dependency_ready) {
+        const auto& artifacts = artifacts_of(tu);
+        const auto unit = output::compile_unit_of(tu, artifacts);
         auto compile = output::compile_scope{unit, rebuild};
         // Two-phase: object_missing / object_stale reuse the BMI that is already there —
         // same split build_std_module uses. Re-precompiling would bump the BMI mtime and
@@ -3878,14 +4070,13 @@ private:
         // input that can be compiled to an object — always re-read the source, as std does.
         const auto object_only = rebuild.kind == output::rebuild_kind::object_missing or rebuild.kind == output::rebuild_kind::object_stale;
         driver.compile(
-            tu, module_interfaces, object_only,
+            tu, artifacts, module_interfaces, object_only,
             [&](string_list argv, toolchain::compile_step step)
             {
                 process_runner.run_step(
                     compile,
                     std::move(argv),
-                    build_tree::paths::compile_log(
-                        step.output == toolchain::compile_output::bmi ? unit.bmi : unit.object));
+                    build_tree::paths::compile_log(step.output == toolchain::compile_output::bmi ? unit.bmi : unit.object));
                 if(step.dependencies_ready)
                     on_dependency_ready();
             });
@@ -3905,121 +4096,47 @@ private:
         auto u2tu = source::unit_index{};
         for(const auto& tu : units_in_topological_order)
             u2tu.emplace(std::string_view{tu.unit}, &tu);
-        const auto cache_analyzer = cache::analyzer{source_dir, artifact_paths.bmi.string()};
+        const auto cache_analyzer = cache::analyzer{source_dir, artifact_paths.bmi.string(), unit_artifacts_};
+        auto schedule = compile_schedule{units_in_topological_order};
+        auto rebuilt = std::vector<unsigned char>(schedule.unit_count());
+        auto failures = execution::failure_latch{};
 
-        const auto unit_count = units_in_topological_order.size();
-        auto unit_to_index = std::flat_map<std::string, std::size_t, std::less<>>{};
-        for(auto index = std::size_t{0}; index < unit_count; ++index)
-            unit_to_index[units_in_topological_order[index].unit] = index;
-
-        // The same provider rule drives inventory levels and compile readiness.
-        auto dependents = std::vector<std::vector<std::size_t>>(unit_count);
-        auto dependencies_remaining = std::vector<std::size_t>(unit_count);
-        for(auto index = std::size_t{0}; index < unit_count; ++index)
-        {
-            const auto& tu = units_in_topological_order[index];
-            source::scanner::for_each_provider(
-                tu, unit_to_index, [&](const std::string& provider)
+        execution::run_workers(
+            execution::worker_count(job_limit(), schedule.unit_count()),
+            [&]()
             {
-                dependents[unit_to_index.at(provider)].push_back(index);
-                ++dependencies_remaining[index];
-            });
-        }
-
-        auto ready = std::queue<std::size_t>{};
-        for(auto index = std::size_t{0}; index < unit_count; ++index)
-            if(dependencies_remaining[index] == 0)
-                ready.push(index);
-        if(ready.empty())
-            throw std::runtime_error{"No dependency-free translation unit"};
-
-        auto scheduler_mutex = std::mutex{};
-        auto scheduler_changed = std::condition_variable{};
-        auto failure = std::exception_ptr{};
-        auto completed = std::size_t{0};
-        auto published = std::vector<unsigned char>(unit_count);
-        auto rebuilt = std::vector<unsigned char>(unit_count);
-
-        // Publish once. For two-phase modular units this runs after --precompile; for one-phase,
-        // object-only repairs, non-modular units and hits it runs when the whole unit is ready.
-        const auto publish_dependency = [&](std::size_t provider)
-        {
-            {
-                auto lock = std::lock_guard<std::mutex>{scheduler_mutex};
-                if(published[provider] != 0)
-                    return;
-                published[provider] = 1;
-                if(failure)
-                    return;
-                for(const auto dependent : dependents[provider])
+                while(auto index = schedule.claim(failures))
                 {
-                    if(--dependencies_remaining[dependent] == 0)
-                        ready.push(dependent);
-                }
-            }
-            scheduler_changed.notify_all();
-        };
-
-        const auto worker_count = std::min(
-            unit_count,
-            static_cast<std::size_t>(std::max<std::ptrdiff_t>(1, job_limit())));
-        execution::run_workers(worker_count, [&]()
-        {
-            while(true)
-            {
-                auto index = std::size_t{};
-                {
-                    auto lock = std::unique_lock<std::mutex>{scheduler_mutex};
-                    scheduler_changed.wait(lock, [&]()
+                    try
                     {
-                        return failure or not ready.empty() or completed == unit_count;
-                    });
-                    if(failure or completed == unit_count)
-                        return;
-                    index = ready.front();
-                    ready.pop();
-                }
-
-                try
-                {
-                    const auto& tu = units_in_topological_order[index];
-                    const auto reason = cache_analyzer.rebuild_reason_for(tu, objects, u2tu);
-                    if(reason)
-                    {
-                        compile_unit(tu, *reason, [&]() { publish_dependency(index); });
-                        cache_analyzer.artifacts_changed(tu);
-                        rebuilt[index] = 1;
-                    }
-                    else
-                    {
+                        const auto& tu = units_in_topological_order[*index];
+                        const auto reason = cache_analyzer.rebuild_reason_for(tu, objects, u2tu);
+                        if(reason)
                         {
-                            const auto hit = output::compile_scope{output::compile_unit_of(tu)};
+                            compile_one(tu, *reason, [&]() { schedule.publish(*index, failures); });
+                            cache_analyzer.artifacts_changed(tu);
+                            rebuilt[*index] = 1;
                         }
-                        publish_dependency(index);
+                        else
+                        {
+                            {
+                                const auto hit = output::compile_scope{output::compile_unit_of(tu, artifacts_of(tu))};
+                            }
+                            schedule.publish(*index, failures);
+                        }
                     }
-                }
-                catch(...)
-                {
+                    catch(...)
                     {
-                        auto lock = std::lock_guard<std::mutex>{scheduler_mutex};
-                        if(not failure)
-                            failure = std::current_exception();
+                        failures.capture();
+                        schedule.wake();
+                        return;
                     }
-                    scheduler_changed.notify_all();
-                    return;
+                    schedule.complete_one();
                 }
+            });
+        failures.rethrow();
 
-                {
-                    auto lock = std::lock_guard<std::mutex>{scheduler_mutex};
-                    ++completed;
-                }
-                scheduler_changed.notify_all();
-            }
-        });
-        if(failure)
-            std::rethrow_exception(failure);
-
-        for(auto index = std::size_t{0}; index < unit_count; ++index)
+        for(auto index = std::size_t{0}; index < schedule.unit_count(); ++index)
             if(rebuilt[index] != 0)
             {
                 const auto& tu = units_in_topological_order[index];
@@ -4036,11 +4153,12 @@ private:
                       const output::rebuild_info& rebuild,
                       std::string signature)
     {
-        auto link = output::link_scope{main.executable_path, rebuild, std::move(signature)};
+        const auto& executable = artifacts_of(main).executable;
+        auto link = output::link_scope{executable, rebuild, std::move(signature)};
         process_runner.run_step(
             link,
-            driver.link_argv(main.executable_path, input_paths, import_flags),
-            build_tree::paths::link_log(main.executable_path));
+            driver.link_argv(executable, input_paths, import_flags),
+            build_tree::paths::link_log(executable));
         link.succeeded();
     }
 
@@ -4051,7 +4169,7 @@ private:
 
         // Snapshot relink decisions before workers mutate the store. Interleaving
         // analyzer reads of the loaded snapshot with parallel remember() writes is a data race.
-        const auto freshness = cache::analyzer{source_dir, artifact_paths.bmi.string()};
+        const auto freshness = cache::analyzer{source_dir, artifact_paths.bmi.string(), unit_artifacts_};
         struct link_decision {
             const source::translation_unit* tu = nullptr;
             string_list input_paths{};
@@ -4069,7 +4187,7 @@ private:
                   auto import_flags = collect_module_ldflags(tu.imports);
                   auto signature = links.link_signature(input_paths, import_flags);
                   auto reason = freshness.rebuild_reason_for(
-                      links, tu.executable_path, signature);
+                      links, artifacts_of(tu).executable, signature);
                   return link_decision{
                       .tu = &tu,
                       .input_paths = std::move(input_paths),
@@ -4083,7 +4201,7 @@ private:
             if(decision.reason)
                 continue;
             const auto hit = output::link_scope{
-                decision.tu->executable_path, decision.signature};
+                artifacts_of(*decision.tu).executable, decision.signature};
         }
 
         execution::worker_pool{job_limit()}.run(
@@ -4098,7 +4216,7 @@ private:
                     decision.import_flags,
                     *decision.reason,
                     decision.signature);
-                links.remember(tu.executable_path, decision.signature);
+                links.remember(artifacts_of(tu).executable, decision.signature);
             });
         links.save();
     }
@@ -4133,18 +4251,18 @@ private:
         const auto input_paths = test_runner_link_inputs(runner);
         const auto import_flags = test_runner_link_flags(runner);
         const auto signature = links.link_signature(input_paths, import_flags);
-        const auto freshness = cache::analyzer{source_dir, artifact_paths.bmi.string()};
+        const auto freshness = cache::analyzer{source_dir, artifact_paths.bmi.string(), unit_artifacts_};
         const auto reason = freshness.rebuild_reason_for(
-            links, runner.executable_path, signature);
+            links, artifacts_of(runner).executable, signature);
         if(not reason)
         {
-            const auto hit = output::link_scope{runner.executable_path, signature};
+            const auto hit = output::link_scope{artifacts_of(runner).executable, signature};
             return;
         }
 
         perform_link(runner, input_paths, import_flags, *reason, signature);
         notify(&observer::success, "test_runner linked with test objects");
-        links.remember(runner.executable_path, signature);
+        links.remember(artifacts_of(runner).executable, signature);
         links.save();
     }
 
@@ -4266,21 +4384,22 @@ public:
                 continue;
 
             dropped_sources.insert(tu.full_path);
-            if(not tu.object_path.empty())
+            const auto& art = artifacts_of(tu);
+            if(not art.object.empty())
             {
-                try_remove(tu.object_path);
-                try_remove(build_tree::paths::depfile(tu.object_path));
-                try_remove(build_tree::paths::compile_log(tu.object_path));
+                try_remove(art.object);
+                try_remove(build_tree::paths::depfile(art.object));
+                try_remove(build_tree::paths::compile_log(art.object));
             }
-            if(tu.is_modular and not tu.bmi_path.empty())
+            if(tu.is_modular and not art.bmi.empty())
             {
-                try_remove(tu.bmi_path);
-                try_remove(build_tree::paths::compile_log(tu.bmi_path));
+                try_remove(art.bmi);
+                try_remove(build_tree::paths::compile_log(art.bmi));
             }
-            if(is_runner and not tu.executable_path.empty())
+            if(is_runner and not art.executable.empty())
             {
-                try_remove(tu.executable_path);
-                try_remove(build_tree::paths::link_log(tu.executable_path));
+                try_remove(art.executable);
+                try_remove(build_tree::paths::link_log(art.executable));
             }
         }
 
@@ -4400,7 +4519,7 @@ public:
         notify(&observer::success, "Build completed: {}", artifact_paths.root.string());
 
         // From the unit link_test_runner just linked, so what runs is what was linked.
-        const auto& runner = test_runner_unit().executable_path;
+        const auto& runner = artifacts_of(test_runner_unit()).executable;
 
         const auto set_env = [](std::string_view key, std::string_view value)
         {
@@ -4426,7 +4545,7 @@ public:
     // second two-phase step (BMI → object) is omitted: it has no distinct source path for clangd.
     string_list compile_argv_for_database(const source::translation_unit& tu) const
     {
-        return driver.compile_database_argv(tu, module_interfaces);
+        return driver.compile_database_argv(tu, artifacts_of(tu), module_interfaces);
     }
 
     // Interface indexing must precede per-TU argv generation.
@@ -4580,9 +4699,9 @@ public:
         if(not test_filter.empty())
             args.push_back(test_filter);
 
-        const auto has_jsonl_mode = std::ranges::any_of(
-            test_runner_args,
-            [](const auto& arg) { return arg == "--jsonl" or arg.starts_with("--jsonl="); });
+        const auto has_jsonl_mode = std::ranges::any_of(test_runner_args, [](const auto& arg) {
+            return arg == "--jsonl" or arg.starts_with("--jsonl=");
+        });
         if(output_name == "jsonl" and not has_jsonl_mode)
         {
             const auto mode = jsonl_mode.value_or(output::jsonl::jsonl_mode::failures);
@@ -4595,9 +4714,9 @@ public:
 
         if(jobs_explicit)
         {
-            const auto already = std::ranges::any_of(
-                test_runner_args,
-                [](const auto& arg) { return arg.starts_with("--jobs="); });
+            const auto already = std::ranges::any_of(test_runner_args, [](const auto& arg) {
+                return arg.starts_with("--jobs=");
+            });
             if(not already)
                 args.emplace_back("--jobs=" + std::to_string(max_jobs));
         }
@@ -4732,13 +4851,11 @@ public:
             {
                 const auto text = argument.substr(std::string_view{"--jobs="}.size());
                 auto value = 0;
-                const auto [_, error] = std::from_chars(
-                    text.data(), text.data() + text.size(), value);
+                const auto [_, error] = std::from_chars(text.data(), text.data() + text.size(), value);
                 if(error != std::errc{} or value < 1)
                     return std::unexpected{parse_error{
                         .kind = parse_error_kind::invalid_argument,
-                        .message = "--jobs expects a positive integer, got: "s
-                            + std::string{text},
+                        .message = "--jobs expects a positive integer, got: "s + std::string{text},
                         .parsed = std::move(parsed)}};
                 parsed.max_jobs = value;
                 parsed.jobs_explicit = true;
@@ -4753,8 +4870,7 @@ public:
                 else
                     return std::unexpected{parse_error{
                         .kind = parse_error_kind::invalid_argument,
-                        .message = "--modules expects one-phase or two-phase, got: "s
-                            + std::string{text},
+                        .message = "--modules expects one-phase or two-phase, got: "s + std::string{text},
                         .parsed = std::move(parsed)}};
             }
             else if(parsed.do_run_tests and is_test_runner_token(argument))
