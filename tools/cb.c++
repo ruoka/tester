@@ -3245,18 +3245,18 @@ public:
 
     struct settings
     {
-        build_config config = build_config::debug;
-        std::string source_dir = ".";
+        build_config config{build_config::debug};
+        std::string source_dir{"."};
         std::string std_module_source{};
         string_list include_paths{};
         toolchain::module_link_flags module_link_flags{};
-        toolchain::linkage linkage = toolchain::linkage::dynamic;
-        bool include_examples = false;
-        bool include_tests_for_build = false;
+        toolchain::linkage linkage{toolchain::linkage::dynamic};
+        bool include_examples{};
+        bool include_tests_for_build{};
         // Part of the object-cache profile; changing schemes rebuilds every modular unit.
-        toolchain::module_compilation module_phases = toolchain::module_compilation::two_phase;
+        toolchain::module_compilation module_phases{toolchain::module_compilation::two_phase};
         // Zero requests the hardware-concurrency default.
-        int max_jobs = 0;
+        int max_jobs{};
         string_list extra_compile_flags{};
         string_list extra_link_flags{};
     };
