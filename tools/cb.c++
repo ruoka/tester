@@ -169,6 +169,21 @@ bool path_at_or_under_dir(std::string_view path, std::string_view dir)
         and path[path.size() - dir.size() - 1] == '/';
 }
 
+// Existing paths become canonical so cache keys and dependency comparisons resolve aliases.
+// Missing paths retain a stable absolute spelling so the analyzer can report them.
+std::string canonical_path(fs::path path)
+{
+    if(path.is_relative())
+        path = fs::absolute(path);
+    try
+    {
+        path = fs::canonical(path);
+    }
+    catch(...)
+    {}
+    return path.string();
+}
+
 // A cache (or other stamped index) is replaced, never edited in place: write a sibling
 // temporary, then rename it over the target, so a build interrupted mid-write leaves the
 // previous file rather than half of the next. Callers differ only in what they write and
@@ -310,7 +325,6 @@ private:
     static std::string normalize_relative_dir(const fs::path& dir);
     static std::string make_base_name(std::string_view filename);
     static std::string make_display_path(std::string_view dir, std::string_view filename);
-    static std::string make_full_path(const fs::path& file_path);
     static std::string make_unit(std::string_view module_value, unit_kind kind, std::string_view filename_value);
     static bool is_tester_framework_path(std::string_view path);
     static bool path_has_test_segment(std::string_view path);
@@ -383,22 +397,6 @@ std::string translation_unit::make_display_path(std::string_view dir, std::strin
     return dir.empty() ? std::string{filename} : std::string{dir} + "/" + std::string{filename};
 }
 
-std::string translation_unit::make_full_path(const fs::path& file_path)
-{
-    auto absolute = file_path;
-    if(absolute.is_relative())
-        absolute = fs::absolute(absolute);
-    try
-    {
-        absolute = fs::canonical(absolute);
-    }
-    catch(...)
-    {
-        absolute = fs::absolute(absolute);
-    }
-    return absolute.string();
-}
-
 std::string translation_unit::make_unit(std::string_view module_value, unit_kind kind, std::string_view filename_value)
 {
     switch(kind)
@@ -463,7 +461,7 @@ translation_unit::translation_unit(const fs::path& relative,
           return matched;
       }()),
       base_name(make_base_name(this->filename)),
-      full_path(make_full_path(full_path)),
+      full_path(detail::canonical_path(full_path)),
       display_path(make_display_path(this->path, this->filename)),
       unit(make_unit(module_value, kind_value, this->filename)),
       module(std::move(module_value)),
@@ -1840,8 +1838,8 @@ class analyzer
 {
 public:
     analyzer(std::string source_root, std::string pcm_root)
-        : source_root_{normalize_path(source_root)},
-          pcm_root_{normalize_path(pcm_root)}
+        : source_root_{detail::canonical_path(source_root)},
+          pcm_root_{detail::canonical_path(pcm_root)}
     {}
 
     std::optional<output::rebuild_info> rebuild_reason_for(
@@ -1955,20 +1953,6 @@ public:
     }
 
 private:
-    static std::string normalize_path(std::string_view text)
-    {
-        auto path = fs::path{text};
-        if(path.is_relative())
-            path = fs::absolute(path);
-        try
-        {
-            path = fs::canonical(path);
-        }
-        catch(...)
-        {}
-        return path.string();
-    }
-
     static std::string depfile_path(const source::translation_unit& tu)
     {
         return tu.object_path + ".d";
@@ -2083,7 +2067,7 @@ private:
 
         for(const auto& prerequisite : *prerequisites)
         {
-            const auto resolved = normalize_path(prerequisite);
+            const auto resolved = detail::canonical_path(prerequisite);
             // Explicitly mapped BMIs are module-graph inputs, not textual headers.
             if(resolved == tu.full_path
                or not resolved.starts_with(source_root_)
@@ -2984,17 +2968,6 @@ private:
     std::string std_pcm_path() const          { return detail::join_dir(module_cache_dir(), std_pcm_filename); }
     std::string std_obj_path() const          { return detail::join_dir(object_dir(), std_obj_filename); }
 
-    // ============================================================================
-    // Path Computation Utilities
-    // ============================================================================
-
-    std::string normalize_path(std::string_view p) const {
-        auto path = fs::path{p};
-        if (path.is_relative()) path = fs::absolute(path);
-        try { path = fs::canonical(path); } catch(...) {}
-        return path.string();
-    }
-
     // Artifact stems follow source naming: `foo:bar` / `foo.bar` → `foo-bar`.
     // Keep '_' literal so `demo:part` and `demo_part` stay distinct.
     std::string module_safe_name(std::string_view module_name) const
@@ -3887,7 +3860,7 @@ public:
         const string_list& extra_compile_flags_param = {},
         const string_list& extra_link_flags_param = {}
     ) : config(cfg), static_link(static_linking), source_dir(src), cpp_flags(cpf), module_ldflags(mlf), std_module_source(stdcppm), include_tests(config == build_config::debug), include_examples(include_examples_flag), extra_compile_flag_tokens(extra_compile_flags_param), extra_link_flag_tokens(extra_link_flags_param) {
-        source_dir = normalize_path(source_dir);
+        source_dir = detail::canonical_path(source_dir);
 
         // Detect and setup LLVM environment (std.cppm location, LLVM prefix, compiler path)
         detect_llvm_environment();
