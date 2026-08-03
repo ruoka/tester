@@ -1177,18 +1177,18 @@ private:
 class profile
 {
 public:
-    static constexpr std::string_view format_id = "cb-object-cache-v3";
+    static constexpr std::string_view format_id = "cb-object-cache-v4";
 
     struct ingredients
     {
         std::string_view config;
         bool static_link = false;
         std::string_view module_phases;
-        std::string_view llvm;
-        std::string_view cxx;
-        std::string_view cxx_sig;
-        std::string_view clang_ver;
-        std::string_view std_cppm;
+        std::string_view toolchain_root;
+        std::string_view compiler;
+        std::string_view compiler_signature;
+        std::string_view compiler_version;
+        std::string_view std_module;
         const string_list& compile_flags;
         const string_list* cpp_flags = nullptr; // null → shared-std profile (omit cpp)
     };
@@ -1200,12 +1200,12 @@ public:
         append("config", facts.config);
         append("static_link", facts.static_link ? "1" : "0");
         append("module_phases", facts.module_phases);
-        append("llvm", facts.llvm);
-        append("cxx", facts.cxx);
-        append("cxx_sig", facts.cxx_sig);
-        if(not facts.clang_ver.empty())
-            append("clang_ver", facts.clang_ver);
-        append("std_cppm", facts.std_cppm);
+        append("toolchain_root", facts.toolchain_root);
+        append("compiler", facts.compiler);
+        append("compiler_signature", facts.compiler_signature);
+        if(not facts.compiler_version.empty())
+            append("compiler_version", facts.compiler_version);
+        append("std_module", facts.std_module);
         append("compile", cb::flags::codec::serialize(facts.compile_flags));
         if(facts.cpp_flags != nullptr)
             append("cpp", cb::flags::codec::serialize(*facts.cpp_flags));
@@ -2724,7 +2724,7 @@ class clang_driver
 public:
     struct identity_view
     {
-        const std::string& llvm_prefix;
+        const std::string& toolchain_root;
         const std::string& compiler;
         const std::string& compiler_signature;
         const std::string& compiler_version;
@@ -3517,11 +3517,11 @@ private:
             .config = config_name(),
             .static_link = compiler.static_linking(),
             .module_phases = compiler.module_phases_name(),
-            .llvm = identity.llvm_prefix,
-            .cxx = identity.compiler,
-            .cxx_sig = identity.compiler_signature,
-            .clang_ver = identity.compiler_version,
-            .std_cppm = identity.std_module_profile,
+            .toolchain_root = identity.toolchain_root,
+            .compiler = identity.compiler,
+            .compiler_signature = identity.compiler_signature,
+            .compiler_version = identity.compiler_version,
+            .std_module = identity.std_module_profile,
             .compile_flags = flags.compile,
             .cpp_flags = include_project_includes ? &flags.cpp : nullptr,
         }}.text();
@@ -4369,7 +4369,7 @@ struct parse_error
 class options
 {
 public:
-    std::string std_cppm{};
+    std::string std_module_source{};
     build_system::build_config config = build_system::build_config::debug;
     toolchain::module_compilation module_phases =
         toolchain::module_compilation::two_phase;
@@ -4397,7 +4397,7 @@ public:
     {
         return {
             .config = config,
-            .std_module_source = std_cppm,
+            .std_module_source = std_module_source,
             .include_paths = include_paths,
             .linkage = linkage,
             .include_examples = include_examples,
@@ -4470,7 +4470,7 @@ public:
             const auto candidate = fs::path{argv_[1]};
             if(fs::exists(candidate))
             {
-                parsed.std_cppm = candidate.string();
+                parsed.std_module_source = candidate.string();
                 ++arg_index;
             }
             else if(candidate.extension() == ".cppm")

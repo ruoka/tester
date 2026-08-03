@@ -36,18 +36,19 @@ struct object_cache_profile_diff
     std::optional<profile_scalar_change> config;
     std::optional<profile_scalar_change> static_link;
     std::optional<profile_scalar_change> module_phases;
-    std::optional<profile_scalar_change> llvm;
-    std::optional<profile_scalar_change> cxx;
-    std::optional<profile_scalar_change> cxx_sig;
-    std::optional<profile_scalar_change> clang_ver;
-    std::optional<profile_scalar_change> std_cppm;
+    std::optional<profile_scalar_change> toolchain_root;
+    std::optional<profile_scalar_change> compiler;
+    std::optional<profile_scalar_change> compiler_signature;
+    std::optional<profile_scalar_change> compiler_version;
+    std::optional<profile_scalar_change> std_module;
     std::optional<profile_token_change> compile;
     std::optional<profile_token_change> cpp;
 
     bool empty() const
     {
         return not format and not config and not static_link and not module_phases
-            and not llvm and not cxx and not cxx_sig and not clang_ver and not std_cppm
+            and not toolchain_root and not compiler and not compiler_signature
+            and not compiler_version and not std_module
             and not compile and not cpp;
     }
 };
@@ -59,11 +60,11 @@ void for_each_profile_scalar(Diff& diff, Callback&& callback)
     callback("config", diff.config);
     callback("static_link", diff.static_link);
     callback("module_phases", diff.module_phases);
-    callback("llvm", diff.llvm);
-    callback("cxx", diff.cxx);
-    callback("cxx_sig", diff.cxx_sig);
-    callback("clang_ver", diff.clang_ver);
-    callback("std_cppm", diff.std_cppm);
+    callback("toolchain_root", diff.toolchain_root);
+    callback("compiler", diff.compiler);
+    callback("compiler_signature", diff.compiler_signature);
+    callback("compiler_version", diff.compiler_version);
+    callback("std_module", diff.std_module);
 }
 
 template<typename Diff, typename Callback>

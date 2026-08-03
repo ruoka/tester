@@ -238,18 +238,18 @@ Environment variables for **bootstrap** (not test output): `LLVM_PATH`, `CXX`, `
 
 `build-<os>-<config>/cache/object-cache.txt` starts with a readable **profile header** (not a hash). `cb::cache::profile` owns its byte-stable serialization, shared-`std` key and field diff; `cb::cache::object_store` owns the path, loaded entries, persistence, status and invalidation. It compares the full profile string on load; a mismatch clears the in-memory object cache and sets `rebuild_reason: "profile_change"` on every recompiled TU.
 
-**Format:** `format=cb-object-cache-v3` (tab-separated `key=value` fields after the `profile\t` prefix).
+**Format:** `format=cb-object-cache-v4` (tab-separated `key=value` fields after the `profile\t` prefix).
 
 | Field | Meaning |
 |-------|---------|
 | `config` | `debug` or `release` |
 | `static_link` | `0` / `1` |
 | `module_phases` | `two-phase` / `one-phase` (see `--modules=`) |
-| `llvm` | LLVM prefix derived from `std.cppm` |
-| `cxx` | Resolved `clang++` path (`LLVM_CXX` / `CXX` override or `llvm/bin/clang++`) |
-| `cxx_sig` | Compiler binary `size:mtime_ns` (detects toolchain binary swaps) |
-| `clang_ver` | First line of `clang++ --version` (probed once per CB run through `process::runner`, with `cache::compiler_stamp` composing `storage_file` for the write/read path) |
-| `std_cppm` | Canonical path to `std.cppm` with content signature (`path@size:mtime_ns`) |
+| `toolchain_root` | Root selected by the concrete toolchain driver |
+| `compiler` | Resolved compiler path |
+| `compiler_signature` | Compiler binary `size:mtime_ns` (detects binary swaps) |
+| `compiler_version` | First line of the compiler version probe |
+| `std_module` | Canonical standard-module source path with content signature (`path@size:mtime_ns`) |
 | `compile` / `cpp` | Effective compile / per-TU C++ flags (includes `--compile-flags`) |
 
 Legacy caches without a `profile\t` header still load; the header is rewritten on the next save. Bumping `format` or adding fields intentionally invalidates old caches once.
@@ -264,11 +264,11 @@ The object cache tracks module imports and source mtimes, neither of which sees 
 
 A depfile that cannot be read — missing, unreadable, or lacking the `target:` prefix — yields `rebuild_reason: "depfile_unusable"` with the `.d` path in `rebuild.trigger_path`. It is the only record of a unit's textual includes, so "no parseable prerequisites" cannot be read as "no headers": that would hold a cache hit while ignoring every header edit until the source itself changed. Since `-MMD` writes a depfile even for a unit that includes nothing, this fires once after an upgrade or a wiped `obj/` and then settles.
 
-Prerequisites are filtered to the project tree. Toolchain headers change as a unit and are already covered by the `cxx_sig` and `clang_ver` profile fields, so scanning them would add thousands of `stat` calls per build for no additional coverage.
+Prerequisites are filtered to the project tree. Toolchain headers change as a unit and are already covered by the `compiler_signature` and `compiler_version` profile fields, so scanning them would add thousands of `stat` calls per build for no additional coverage.
 
 **Human logs** (stderr, non-JSONL): `Object cache profile changed; invalidating compile cache (compile: + -DFOO)`.
 
-**Inspect cache:** `./tools/CB.sh debug cache status` (human) or `… cache status --jsonl` (`cache_status` event). Both describe all four files under `cache/` — object cache, executable cache, `std-module-profile.txt`, `compiler-version.txt` — with entry counts and profile matches where those exist. `cache status` reports the compiler stamp as present even straight after an invalidate: it has to probe `clang++ --version` to know the current profile, and that probe is what writes the stamp.
+**Inspect cache:** `./tools/CB.sh debug cache status` (human) or `… cache status --jsonl` (`cache_status` event). Both describe all four files under `cache/` — object cache, executable cache, `std-module-profile.txt`, `compiler-version.txt` — with entry counts and profile matches where those exist. `cache status` reports the compiler stamp as present even straight after an invalidate: it has to probe the compiler version to know the current profile, and that probe writes the stamp.
 
 **Invalidate indexes:** `./tools/CB.sh debug cache invalidate` removes all four files `cache status` reports — lighter than `clean`; artifacts in `obj/` / `pcm/` remain. JSONL: `cache_invalidate_end`, one flag per file. Removing `std-module-profile.txt` is what makes the next build rebuild `std.pcm`.
 

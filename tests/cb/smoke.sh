@@ -55,12 +55,12 @@ test_profile_header() {
   run_cb_build "${work_dir}"
   cache_file="$(object_cache_path "${work_dir}")"
   assert_profile_header "${cache_file}"
-  assert_profile_contains "${cache_file}" 'format=cb-object-cache-v3' "profile_format_v3"
-  assert_profile_contains "${cache_file}" $'\tstd_cppm=' "profile_std_cppm"
-  assert_profile_contains "${cache_file}" '@' "profile_std_cppm_sig"
-  assert_profile_contains "${cache_file}" $'\tcxx=' "profile_cxx"
-  assert_profile_contains "${cache_file}" $'\tcxx_sig=' "profile_cxx_sig"
-  assert_profile_contains "${cache_file}" $'\tclang_ver=' "profile_clang_ver"
+  assert_profile_contains "${cache_file}" 'format=cb-object-cache-v4' "profile_format_v4"
+  assert_profile_contains "${cache_file}" $'\tstd_module=' "profile_std_module"
+  assert_profile_contains "${cache_file}" '@' "profile_std_module_sig"
+  assert_profile_contains "${cache_file}" $'\tcompiler=' "profile_compiler"
+  assert_profile_contains "${cache_file}" $'\tcompiler_signature=' "profile_compiler_signature"
+  assert_profile_contains "${cache_file}" $'\tcompiler_version=' "profile_compiler_version"
   assert_jsonl_contains '"type":"compile_end"' "compile_end_event"
   end_case profile_header
 }
@@ -1526,7 +1526,7 @@ test_profile_change() {
   assert_jsonl_contains '"rebuild_reason":"profile_change"' "compile_end_profile_change"
   assert_compile_end_has_no_profile_diff
   assert_jsonl_contains '"cache_hit":false' "recompile_after_profile_change"
-  assert_jsonl_contains 'std.cppm' "std_cppm_command_after_profile_change"
+  assert_jsonl_contains 'std.cppm' "std_module_command_after_profile_change"
   assert_jsonl_contains '--precompile' "std_precompile_after_profile_change"
   after_pcm_mtime="$(stat -c %Y "${std_pcm}" 2>/dev/null || stat -f %m "${std_pcm}")"
   if [[ "${after_pcm_mtime}" -gt "${before_pcm_mtime}" ]]; then
@@ -1577,7 +1577,7 @@ test_cache_status() {
   run_cb_cache_status "${work_dir}"
   assert_jsonl_contains '"type":"cache_status"' "cache_status_event"
   assert_jsonl_contains '"profile_match":true' "cache_status_profile_match"
-  assert_jsonl_contains 'format=cb-object-cache-v3' "cache_status_current_profile"
+  assert_jsonl_contains 'format=cb-object-cache-v4' "cache_status_current_profile"
 
   # All four files under cache/, not the two the report used to describe. The std module
   # profile was the gap that mattered: `cache invalidate` deletes it — that is what makes CB
