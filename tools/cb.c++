@@ -2599,6 +2599,13 @@ private:
 
 namespace toolchain {
 
+// How a modular interface becomes a .pcm and a .o. two_phase runs `--precompile` and then
+// compiles the BMI; one_phase asks for both artefacts from one `-c -fmodule-output=` read.
+// Two-phase can publish the BMI while its object still compiles; one-phase saves a second parse.
+enum class module_compilation : unsigned char { two_phase, one_phase };
+
+enum class linkage : unsigned char { dynamic, static_ };
+
 using module_link_flags =
     std::flat_map<std::string, std::string, std::less<>>;
 
@@ -2607,13 +2614,6 @@ using module_link_flags =
 class build_system {
 public:
     enum class build_config { debug, release };
-
-    // How a modular interface becomes a .pcm and a .o. two_phase runs `--precompile` and then
-    // compiles the BMI; one_phase asks for both artefacts from one `-c -fmodule-output=` read of
-    // the source. Two-phase only pays off when the BMI is published to dependents while the .o
-    // still compiles; the edge-driven scheduler does that. One-phase saves the second parse and
-    // (Clang 22+) gets reduced BMIs by default.
-    enum class module_compilation { two_phase, one_phase };
 
     // Semantic build inputs, independent of argv parsing. build_system turns paths into compiler
     // flags, applies configuration defaults and owns the state those inputs initialize.
@@ -2624,11 +2624,11 @@ public:
         std::string std_module_source{};
         string_list include_paths{};
         toolchain::module_link_flags module_link_flags{};
-        bool static_link = false;
+        toolchain::linkage linkage = toolchain::linkage::dynamic;
         bool include_examples = false;
         bool include_tests_for_build = false;
         // Part of the object-cache profile; changing schemes rebuilds every modular unit.
-        module_compilation module_phases = module_compilation::two_phase;
+        toolchain::module_compilation module_phases = toolchain::module_compilation::two_phase;
         // Zero requests the hardware-concurrency default.
         int max_jobs = 0;
         string_list extra_compile_flags{};
@@ -2667,11 +2667,11 @@ private:
     mutable bool toolchain_profile_probed = false;
     source::translation_unit_list units_in_topological_order;
     const build_config config;
-    const bool static_link;
+    const toolchain::linkage linkage;
     bool include_tests = false;
     bool include_examples = false;
     const bool include_tests_for_build;
-    module_compilation module_phases = module_compilation::two_phase;
+    toolchain::module_compilation module_phases = toolchain::module_compilation::two_phase;
     int max_jobs = 0;
     string_list extra_compile_flag_tokens;
     string_list extra_link_flag_tokens;
@@ -2690,8 +2690,8 @@ private:
     {
         switch(module_phases)
         {
-            case module_compilation::two_phase: return "two-phase";
-            case module_compilation::one_phase: return "one-phase";
+            case toolchain::module_compilation::two_phase: return "two-phase";
+            case toolchain::module_compilation::one_phase: return "one-phase";
         }
         std::unreachable();
     }
@@ -2806,6 +2806,7 @@ private:
         const auto os = os_name();
         const auto is_darwin = (os == "darwin");
         const auto is_linux = (os == "linux");
+        const auto static_link = linkage == toolchain::linkage::static_;
 
         compile_flags = {
             "-B" + llvm_prefix + "/bin",
@@ -3351,7 +3352,7 @@ private:
         ensure_toolchain_profile();
         return cache::profile{cache::profile::ingredients{
             .config = config_name(),
-            .static_link = static_link,
+            .static_link = linkage == toolchain::linkage::static_,
             .module_phases = module_phases_name(),
             .llvm = llvm_prefix,
             .cxx = llvm_cxx,
@@ -3502,7 +3503,7 @@ private:
         }
 
         auto compile = output::compile_scope{unit, *reason};
-        if(module_phases == module_compilation::one_phase)
+        if(module_phases == toolchain::module_compilation::one_phase)
         {
             // One step emits both artefacts, so there is no object-only shortcut to take: a
             // missing std.o re-reads std.cppm. Rare, and the cold build is a whole parse cheaper.
@@ -3549,10 +3550,10 @@ private:
         // force every importer through pcm_stale for no interface change.
         // One-phase: the BMI is a sibling of the object (reduced on Clang 22+), not an
         // input that can be compiled to .o — always re-read the source, as std does.
-        const auto object_only = module_phases == module_compilation::two_phase
+        const auto object_only = module_phases == toolchain::module_compilation::two_phase
                               and (rebuild.kind == output::rebuild_kind::object_missing
                                    or rebuild.kind == output::rebuild_kind::object_stale);
-        if (tu.is_modular and module_phases == module_compilation::two_phase) {
+        if (tu.is_modular and module_phases == toolchain::module_compilation::two_phase) {
             if(not object_only)
             {
                 process_runner.run_step(
@@ -3908,7 +3909,7 @@ public:
           module_ldflags{std::move(values.module_link_flags)},
           std_module_source{std::move(values.std_module_source)},
           config{values.config},
-          static_link{values.static_link},
+          linkage{values.linkage},
           include_tests{values.config == build_config::debug},
           include_examples{values.include_examples},
           include_tests_for_build{values.include_tests_for_build},
@@ -4131,7 +4132,7 @@ public:
     string_list compile_argv_for_database(const source::translation_unit& tu) const
     {
         if(tu.is_modular)
-            return module_phases == module_compilation::two_phase
+            return module_phases == toolchain::module_compilation::two_phase
                 ? compile_pcm_argv(tu)
                 : compile_module_object_argv(tu);
         return compile_source_object_argv(tu);
@@ -4254,8 +4255,8 @@ class options
 public:
     std::string std_cppm{};
     build_system::build_config config = build_system::build_config::debug;
-    build_system::module_compilation module_phases =
-        build_system::module_compilation::two_phase;
+    toolchain::module_compilation module_phases =
+        toolchain::module_compilation::two_phase;
     bool do_clean = false;
     bool do_list = false;
     bool do_build = false;
@@ -4263,7 +4264,7 @@ public:
     bool do_cache_status = false;
     bool do_cache_invalidate = false;
     bool clean_tests_only = false;
-    bool static_linking = false;
+    toolchain::linkage linkage = toolchain::linkage::dynamic;
     bool include_examples = false;
     bool build_tests = false;
     bool jobs_explicit = false;
@@ -4282,7 +4283,7 @@ public:
             .config = config,
             .std_module_source = std_cppm,
             .include_paths = include_paths,
-            .static_link = static_linking,
+            .linkage = linkage,
             .include_examples = include_examples,
             // Preserve action semantics: --build-tests changes an explicit build, while list,
             // cache operations and the implicit default build keep their established selection.
@@ -4421,7 +4422,7 @@ public:
                     return failure(1, "Usage: cache status|invalidate", std::move(parsed));
             }
             else if(argument == "static")
-                parsed.static_linking = true;
+                parsed.linkage = toolchain::linkage::static_;
             else if(argument == "--include-examples")
                 parsed.include_examples = true;
             else if(argument == "--build-tests")
@@ -4446,9 +4447,9 @@ public:
             {
                 const auto text = argument.substr(std::string_view{"--modules="}.size());
                 if(text == "two-phase")
-                    parsed.module_phases = build_system::module_compilation::two_phase;
+                    parsed.module_phases = toolchain::module_compilation::two_phase;
                 else if(text == "one-phase")
-                    parsed.module_phases = build_system::module_compilation::one_phase;
+                    parsed.module_phases = toolchain::module_compilation::one_phase;
                 else
                     return failure(
                         2,

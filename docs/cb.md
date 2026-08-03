@@ -371,6 +371,7 @@ Example `profile_diff` fragment (on `profile_changed` only):
 | `cb::output::{build,compile,link,test}_scope` | RAII pairing for lifecycle events, timing and step diagnostics |
 | `cb::source::translation_unit` / `scanner` | Source identity, collection, exclusion, lexical cleaning, dependency edges and topological order |
 | `cb::flags::codec` | Symmetric whitespace-normalized conversion between flag text and `string_list` |
+| `cb::toolchain` | Module compilation mode, linkage policy and per-module linker-flag types |
 | `cb::cache::storage_file` | Composed cache-file path, first-line read, atomic replacement and invalidation operations |
 | `cb::cache::profile` / `analyzer` | Profile serialization/key/diff and recursive object/BMI/header freshness analysis |
 | `cb::cache::object_store` | Object-cache path, entry snapshot, profile mismatch, persistence, status and invalidation |
