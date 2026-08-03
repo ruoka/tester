@@ -373,8 +373,7 @@ private:
 };
 
 using translation_unit_list = std::vector<translation_unit>;
-using unit_index =
-    std::flat_map<std::string, const translation_unit*, std::less<>>;
+using unit_index = std::flat_map<std::string, const translation_unit*, std::less<>>;
 
 std::optional<std::string_view> translation_unit::supported_suffix(std::string_view filename)
 {
@@ -1366,8 +1365,7 @@ public:
         }
         if(*header.value != current_profile_)
         {
-            profile_change_ =
-                profile{*header.value}.diff(profile{current_profile_});
+            profile_change_ = profile{*header.value}.diff(profile{current_profile_});
             return;
         }
 
@@ -1821,8 +1819,7 @@ public:
         const auto root = shared_root();
         if(not root)
             return {};
-        const auto shared_profile =
-            std::forward<decltype(shared_profile_of)>(shared_profile_of)();
+        const auto shared_profile = std::forward<decltype(shared_profile_of)>(shared_profile_of)();
         try
         {
             const auto slot = shared_slot_for(*root, shared_profile);
@@ -1842,8 +1839,7 @@ public:
         const auto root = shared_root();
         if(not root)
             return {};
-        const auto shared_profile =
-            std::forward<decltype(shared_profile_of)>(shared_profile_of)();
+        const auto shared_profile = std::forward<decltype(shared_profile_of)>(shared_profile_of)();
         try
         {
             const auto slot = shared_slot_for(*root, shared_profile);
@@ -2646,8 +2642,8 @@ private:
         if(not file)
             return {};
 
-        auto text =
-            std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+        auto text = std::string{
+            std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
         auto diag = output::diagnostics{.path = std::string{path}, .bytes = text.size()};
         if(text.size() > output::diagnostics_head_limit)
         {
@@ -2686,8 +2682,7 @@ enum class module_compilation : unsigned char { two_phase, one_phase };
 
 enum class linkage : unsigned char { dynamic, static_ };
 
-using module_link_flags =
-    std::flat_map<std::string, std::string, std::less<>>;
+using module_link_flags = std::flat_map<std::string, std::string, std::less<>>;
 
 struct module_file
 {
@@ -2903,8 +2898,7 @@ public:
 
 private:
     inline static constexpr auto module_file_flag_prefix = "-fmodule-file="sv;
-    inline static constexpr auto prebuilt_module_path_flag_prefix =
-        "-fprebuilt-module-path="sv;
+    inline static constexpr auto prebuilt_module_path_flag_prefix = "-fprebuilt-module-path="sv;
 
     static std::string binary_signature(const std::string& path)
     {
@@ -2983,8 +2977,7 @@ private:
         }
 
         const auto canonical_std_module = fs::weakly_canonical(std_module_path).string();
-        std_module_profile_ =
-            canonical_std_module + '@' + binary_signature(canonical_std_module);
+        std_module_profile_ = canonical_std_module + '@' + binary_signature(canonical_std_module);
         compiler_signature_ = binary_signature(compiler_);
     }
 
@@ -3326,8 +3319,7 @@ private:
     void report_toolchain_configuration() const
     {
         const auto flags = compiler.flags();
-        const auto static_note =
-            compiler.static_linking() ? " (static C++ stdlib)"s : ""s;
+        const auto static_note = compiler.static_linking() ? " (static C++ stdlib)"s : ""s;
         output::notify(
             &output::observer::info,
             "Building "s + (config == build_config::release ? "RELEASE" : "DEBUG")
@@ -3721,8 +3713,7 @@ private:
             auto k = tu.unit;
             u2tu[k] = &tu;
         }
-        const auto cache_analyzer =
-            cache::analyzer{source_dir, artifact_paths.pcm.string()};
+        const auto cache_analyzer = cache::analyzer{source_dir, artifact_paths.pcm.string()};
 
         const auto unit_count = units_in_topological_order.size();
         auto unit_to_index = std::flat_map<std::string, std::size_t, std::less<>>{};
@@ -3800,8 +3791,7 @@ private:
                 try
                 {
                     const auto& tu = units_in_topological_order[index];
-                    const auto reason =
-                        cache_analyzer.rebuild_reason_for(tu, objects, u2tu);
+                    const auto reason = cache_analyzer.rebuild_reason_for(tu, objects, u2tu);
                     if(reason)
                     {
                         compile_unit(tu, *reason, [&]() { publish_dependency(index); });
@@ -3897,8 +3887,8 @@ private:
         {
             if(decision.reason)
                 continue;
-            const auto hit =
-                output::link_scope{decision.tu->executable_path, decision.signature};
+            const auto hit = output::link_scope{
+                decision.tu->executable_path, decision.signature};
         }
 
         execution::worker_pool{job_limit()}.run(
@@ -4371,8 +4361,7 @@ class options
 public:
     std::string std_module_source{};
     build_system::build_config config = build_system::build_config::debug;
-    toolchain::module_compilation module_phases =
-        toolchain::module_compilation::two_phase;
+    toolchain::module_compilation module_phases = toolchain::module_compilation::two_phase;
     bool do_clean = false;
     bool do_list = false;
     bool do_build = false;
@@ -4549,8 +4538,8 @@ public:
             {
                 const auto text = argument.substr(std::string_view{"--jobs="}.size());
                 auto value = 0;
-                const auto [_, error] =
-                    std::from_chars(text.data(), text.data() + text.size(), value);
+                const auto [_, error] = std::from_chars(
+                    text.data(), text.data() + text.size(), value);
                 if(error != std::errc{} or value < 1)
                     return failure(
                         2,
@@ -4600,8 +4589,7 @@ public:
                     or argument.starts_with("--extra-compile-flags="))
             {
                 const auto equals = argument.find('=');
-                parsed.extra_compile_flags =
-                    cb::flags::codec::parse(argument.substr(equals + 1));
+                parsed.extra_compile_flags = cb::flags::codec::parse(argument.substr(equals + 1));
             }
             else if(argument == "help" or argument == "-h" or argument == "--help")
                 return {.status = parse_status::help, .parsed = std::move(parsed)};
