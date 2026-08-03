@@ -2721,7 +2721,36 @@ private:
     storage_file file_;
 };
 
-// Rebuild policy for project TUs, std, and links. Stores persist; this class only decides.
+// Std BMI/object freshness — no project artifact index or memo state. Safe to call while a
+// scan rebuilds scanned_project / analyzer on another thread.
+std::optional<output::rebuild_info> rebuild_reason_for_standard_module(
+    const standard_module_store& std_modules,
+    std::string_view source_path,
+    std::invocable auto&& object_profile_of)
+{
+    const auto module_of = [&](output::rebuild_kind kind) {
+        return output::rebuild_info{
+            .kind = kind,
+            .module = std::string{std_module_name},
+            .bmi_path = std_modules.bmi_path()};
+    };
+
+    const auto bmi_time = detail::file_time(std_modules.bmi_path());
+    if(not bmi_time)
+        return module_of(output::rebuild_kind::own_bmi_missing);
+    if(not std_modules.profile_matches(std::forward<decltype(object_profile_of)>(object_profile_of)()))
+        return module_of(output::rebuild_kind::profile_change);
+    if(*bmi_time < fs::last_write_time(source_path))
+        return module_of(output::rebuild_kind::own_bmi_stale);
+    const auto object_time = detail::file_time(std_modules.object_path());
+    if(not object_time)
+        return module_of(output::rebuild_kind::object_missing);
+    if(*object_time < *bmi_time)
+        return module_of(output::rebuild_kind::object_stale);
+    return std::nullopt;
+}
+
+// Project-TU freshness (memoized) and link stamp compare. Needs the artifact index.
 class analyzer
 {
 public:
@@ -2736,33 +2765,6 @@ public:
     const build_tree::unit_artifacts& artifacts_of(const source::translation_unit& tu) const
     {
         return unit_artifacts_.at(tu.unit);
-    }
-
-    std::optional<output::rebuild_info> rebuild_reason_for(
-        const standard_module_store& std_modules,
-        std::string_view source_path,
-        std::invocable auto&& object_profile_of) const
-    {
-        const auto module_of = [&](output::rebuild_kind kind) {
-            return output::rebuild_info{
-                .kind = kind,
-                .module = std::string{std_module_name},
-                .bmi_path = std_modules.bmi_path()};
-        };
-
-        const auto bmi_time = detail::file_time(std_modules.bmi_path());
-        if(not bmi_time)
-            return module_of(output::rebuild_kind::own_bmi_missing);
-        if(not std_modules.profile_matches(std::forward<decltype(object_profile_of)>(object_profile_of)()))
-            return module_of(output::rebuild_kind::profile_change);
-        if(*bmi_time < fs::last_write_time(source_path))
-            return module_of(output::rebuild_kind::own_bmi_stale);
-        const auto object_time = detail::file_time(std_modules.object_path());
-        if(not object_time)
-            return module_of(output::rebuild_kind::object_missing);
-        if(*object_time < *bmi_time)
-            return module_of(output::rebuild_kind::object_stale);
-        return std::nullopt;
     }
 
     // Reads the loaded link snapshot only — call before parallel remember(), or single-threaded.
@@ -3709,6 +3711,13 @@ private:
 
     // Utilities
 
+    cache::analyzer& freshness()
+    {
+        if(not analyzer_)
+            throw std::logic_error{"analyzer requested before scan"};
+        return *analyzer_;
+    }
+
     string_list test_runner_argv(const std::string& runner, string_span args) const
     {
         auto argv = string_list{};
@@ -3944,11 +3953,7 @@ private:
         const auto display = fs::path{state.std_module_source}.filename().string();
         const auto unit = std_compile_unit(bmi, object, display);
         auto std_store = make_standard_module_store();
-        // Runs in parallel with scan_and_order; std policy never reads project artifacts.
-        const auto empty_artifacts = build_tree::artifact_index{};
-        const auto freshness = cache::analyzer{
-            source_dir, artifact_paths.bmi.string(), empty_artifacts};
-        const auto reason = freshness.rebuild_reason_for(
+        const auto reason = cache::rebuild_reason_for_standard_module(
             std_store, state.std_module_source, [&]() { return object_cache_profile(); });
 
         if(not reason)
@@ -4115,7 +4120,7 @@ private:
         auto schedule = compile_schedule{project_.units};
         auto rebuilt = std::vector<unsigned char>(schedule.unit_count());
         auto failures = execution::failure_latch{};
-        auto& freshness = *analyzer_;
+        auto& decisions = freshness();
 
         execution::run_workers(
             execution::worker_count(job_limit(), schedule.unit_count()),
@@ -4126,11 +4131,11 @@ private:
                     try
                     {
                         const auto& tu = project_.units[*index];
-                        const auto reason = freshness.rebuild_reason_for(tu, objects, project_.by_unit);
+                        const auto reason = decisions.rebuild_reason_for(tu, objects, project_.by_unit);
                         if(reason)
                         {
                             compile_one(tu, *reason, [&]() { schedule.publish(*index, failures); });
-                            freshness.artifacts_changed(tu);
+                            decisions.artifacts_changed(tu);
                             rebuilt[*index] = 1;
                         }
                         else
@@ -4185,7 +4190,7 @@ private:
 
         // Snapshot relink decisions before workers mutate the store. Interleaving
         // analyzer reads of the loaded snapshot with parallel remember() writes is a data race.
-        auto& freshness = *analyzer_;
+        auto& oracle = freshness();
         struct link_decision {
             const source::translation_unit& tu;
             string_list input_paths{};
@@ -4202,7 +4207,7 @@ private:
                   auto input_paths = executable_link_inputs(tu, shared_objects);
                   auto import_flags = collect_module_ldflags(tu.imports);
                   auto signature = links.signature_for(input_paths, import_flags);
-                  auto reason = freshness.rebuild_reason_for(
+                  auto reason = oracle.rebuild_reason_for(
                       links, project_.artifacts_of(tu).executable, signature);
                   return link_decision{
                       .tu = tu,
@@ -4266,8 +4271,7 @@ private:
         const auto input_paths = test_runner_link_inputs(runner);
         const auto import_flags = test_runner_link_flags(runner);
         const auto signature = links.signature_for(input_paths, import_flags);
-        auto& freshness = *analyzer_;
-        const auto reason = freshness.rebuild_reason_for(
+        const auto reason = freshness().rebuild_reason_for(
             links, project_.artifacts_of(runner).executable, signature);
         if(not reason)
         {
@@ -4562,7 +4566,7 @@ public:
         return driver.compile_database_argv(tu, project_.artifacts_of(tu), project_.interfaces);
     }
 
-    // Interface indexing must precede per-TU argv generation.
+    // Requires a completed scan_and_order — interfaces live on scanned_project.
     void write_compile_commands() const
     {
         const auto path = detail::join_dir(source_dir, compile_commands_filename);
