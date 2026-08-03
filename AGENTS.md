@@ -150,6 +150,8 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 
 Prefer the **standard library** over hand-rolled loops and iterator idioms. The project targets **C++23**. Follow [C++ Core Guidelines](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines) for best practices except project naming/style — see [CONTRIBUTING.md — Code Style](CONTRIBUTING.md#code-style).
 
+**No line-length limit** — do not wrap declarations or expressions merely for an 80- or 100-column convention. Split lines only when doing so exposes useful structure, such as initializers, object literals, lambdas, range pipelines, or genuinely complex conditions.
+
 ### Implementation policy (standard C++ only)
 
 Code under `tools/` (CB) and `tester/` must use **ISO C++ and the standard library** — not POSIX-specific APIs — except where noted below.
