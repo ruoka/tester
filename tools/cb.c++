@@ -2615,7 +2615,38 @@ public:
     // (Clang 22+) gets reduced BMIs by default.
     enum class module_compilation { two_phase, one_phase };
 
+    // Semantic build inputs, independent of argv parsing. build_system turns paths into compiler
+    // flags, applies configuration defaults and owns the state those inputs initialize.
+    struct settings
+    {
+        build_config config = build_config::debug;
+        std::string source_dir = ".";
+        std::string std_module_source{};
+        string_list include_paths{};
+        toolchain::module_link_flags module_link_flags{};
+        bool static_link = false;
+        bool include_examples = false;
+        bool include_tests_for_build = false;
+        // Part of the object-cache profile; changing schemes rebuilds every modular unit.
+        module_compilation module_phases = module_compilation::two_phase;
+        // Zero requests the hardware-concurrency default.
+        int max_jobs = 0;
+        string_list extra_compile_flags{};
+        string_list extra_link_flags{};
+    };
+
 private:
+
+    static string_list include_flags(const string_list& include_paths)
+    {
+        return include_paths
+            | std::views::transform([](const auto& path)
+              {
+                  return std::array{"-I"s, path};
+              })
+            | std::views::join
+            | std::ranges::to<string_list>();
+    }
 
     std::string source_dir;
     string_list compile_flags, link_flags, cpp_flags;
@@ -2639,6 +2670,7 @@ private:
     const bool static_link;
     bool include_tests = false;
     bool include_examples = false;
+    const bool include_tests_for_build;
     module_compilation module_phases = module_compilation::two_phase;
     int max_jobs = 0;
     string_list extra_compile_flag_tokens;
@@ -3870,19 +3902,21 @@ private:
 
 public:
 
-    build_system(
-        build_config cfg,
-        const string_list& cpf = {},
-        const toolchain::module_link_flags& mlf = {},
-        const std::string& src = ".",
-        const std::string& stdcppm = "",
-        bool static_linking = false,
-        bool include_examples_flag = false,
-        const string_list& extra_compile_flags_param = {},
-        const string_list& extra_link_flags_param = {}
-    ) : config(cfg), static_link(static_linking), source_dir(src), cpp_flags(cpf), module_ldflags(mlf), std_module_source(stdcppm), include_tests(config == build_config::debug), include_examples(include_examples_flag), extra_compile_flag_tokens(extra_compile_flags_param), extra_link_flag_tokens(extra_link_flags_param) {
-        source_dir = detail::canonical_path(source_dir);
-
+    explicit build_system(settings values)
+        : source_dir{detail::canonical_path(values.source_dir)},
+          cpp_flags{include_flags(values.include_paths)},
+          module_ldflags{std::move(values.module_link_flags)},
+          std_module_source{std::move(values.std_module_source)},
+          config{values.config},
+          static_link{values.static_link},
+          include_tests{values.config == build_config::debug},
+          include_examples{values.include_examples},
+          include_tests_for_build{values.include_tests_for_build},
+          module_phases{values.module_phases},
+          max_jobs{values.max_jobs},
+          extra_compile_flag_tokens{std::move(values.extra_compile_flags)},
+          extra_link_flag_tokens{std::move(values.extra_link_flags)}
+    {
         // Detect and setup LLVM environment (std.cppm location, LLVM prefix, compiler path)
         detect_llvm_environment();
 
@@ -4037,21 +4071,6 @@ public:
         output::notify(&output::observer::cache_invalidate_end, removed);
     }
 
-    void set_include_tests(bool value) {
-        include_tests = value;
-    }
-
-    // Recorded in the object-cache profile, so flipping it rebuilds every modular unit rather
-    // than mixing BMIs the two schemes do not produce identically.
-    void set_module_phases(module_compilation value) {
-        module_phases = value;
-    }
-
-    // 0 requests the hardware default.
-    void set_max_jobs(int value) {
-        max_jobs = value;
-    }
-
     std::ptrdiff_t job_limit() const {
         if(max_jobs > 0)
             return max_jobs;
@@ -4060,6 +4079,8 @@ public:
     }
 
     void build() {
+        if(include_tests_for_build)
+            include_tests = true;
         auto build = output::build_scope{config_name(), include_tests, include_examples};
         build_steps();
         build.succeeded();
@@ -4255,15 +4276,21 @@ public:
     std::string output_name = "console";
     std::optional<output::jsonl::jsonl_mode> jsonl_mode{};
 
-    string_list include_flags() const
+    build_system::settings build_settings() const
     {
-        return include_paths
-            | std::views::transform([](const auto& path)
-              {
-                  return std::array{"-I"s, path};
-              })
-            | std::views::join
-            | std::ranges::to<string_list>();
+        return {
+            .config = config,
+            .std_module_source = std_cppm,
+            .include_paths = include_paths,
+            .static_link = static_linking,
+            .include_examples = include_examples,
+            // Preserve action semantics: --build-tests changes an explicit build, while list,
+            // cache operations and the implicit default build keep their established selection.
+            .include_tests_for_build = do_build and build_tests,
+            .module_phases = module_phases,
+            .max_jobs = max_jobs,
+            .extra_compile_flags = extra_compile_flags,
+            .extra_link_flags = extra_link_flags};
     }
 
     bool has_action() const
@@ -4610,18 +4637,7 @@ int main(int argc, char* argv[])
             return result.error->exit_code;
         }
 
-        auto build_system = cb::build_system{
-            opts.config,
-            opts.include_flags(),
-            {},
-            ".",
-            opts.std_cppm,
-            opts.static_linking,
-            opts.include_examples,
-            opts.extra_compile_flags,
-            opts.extra_link_flags};
-        build_system.set_max_jobs(opts.max_jobs);
-        build_system.set_module_phases(opts.module_phases);
+        auto build_system = cb::build_system{opts.build_settings()};
 
         if(opts.do_list)
             build_system.list_sources();
@@ -4648,11 +4664,7 @@ int main(int argc, char* argv[])
                 build_system.clean();
         }
         if(opts.do_build)
-        {
-            if(opts.build_tests)
-                build_system.set_include_tests(true);
             build_system.build();
-        }
         if(opts.do_run_tests)
         {
             if(not build_system.run_tests(opts.runner_arguments()))
