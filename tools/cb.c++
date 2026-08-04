@@ -3864,29 +3864,6 @@ private:
     std::string object_cache_profile() { return cache_profile(true); }
     std::string shared_std_cache_profile() { return cache_profile(false); }
 
-    cache::object_store make_object_store() const
-    {
-        return cache::object_store{artifact_paths.cache.string()};
-    }
-
-    cache::link_store make_link_store() const
-    {
-        const auto state = driver.state();
-        return cache::link_store{
-            artifact_paths.cache.string(),
-            {.compile_flags = state.compile,
-             .link_flags = state.link,
-             .module_flags = state.modules}};
-    }
-
-    cache::standard_module_store make_standard_module_store() const
-    {
-        return cache::standard_module_store{
-            artifact_paths.cache.string(),
-            artifact_paths.std_bmi(),
-            artifact_paths.std_object()};
-    }
-
     // Dependency analysis
 
     void fill_project_artifacts()
@@ -4000,7 +3977,7 @@ private:
         const auto object = artifact_paths.std_object();
         const auto display = fs::path{state.std_module_source}.filename().string();
         const auto unit = std_compile_unit(bmi, object, display);
-        auto std_store = make_standard_module_store();
+        auto std_store = cache().make_standard_module_store();
         const auto reason = cache::rebuild_reason_for_standard_module(
             std_store, state.std_module_source, [&]() { return object_cache_profile(); });
 
@@ -4157,7 +4134,7 @@ private:
 
     void compile_units() {
         if (project_.units.empty()) return;
-        auto objects = make_object_store();
+        auto objects = cache().make_object_store();
         objects.load(object_cache_profile());
         if(objects.missing_profile_header())
             notify(&observer::info, "Object cache missing profile header; ignoring");
@@ -4233,7 +4210,7 @@ private:
 
     void link_executables() {
         auto shared_objects = linkable_object_paths();
-        auto links = make_link_store();
+        auto links = cache().make_link_store();
         links.load();
 
         // Snapshot relink decisions before workers mutate the store. Interleaving
@@ -4320,7 +4297,7 @@ private:
     void link_test_runner() {
         const auto& runner = test_runner_unit();
 
-        auto links = make_link_store();
+        auto links = cache().make_link_store();
         links.load();
         const auto input_paths = test_runner_link_inputs(runner);
         const auto import_flags = test_runner_link_flags(runner);
@@ -4417,143 +4394,187 @@ public:
         report_toolchain_configuration();
     }
 
-    void clean() const {
-        const auto& dir = artifact_paths.root;
-        if (fs::exists(dir)) {
-            fs::remove_all(dir);
-            notify(&observer::success, "Removed {}", dir.string());
-        } else {
-            notify(&observer::info, "Nothing to clean for {}", dir.string());
-        }
-    }
-
-    // Drop only test TU artefacts and the test_runner binary — leave library/app objects so the
-    // next build recompiles tests without a full cold rebuild. Scans with include_tests on so
-    // release configs still see *.test.c++ even when a normal release build would not.
-    void clean_tests() {
-        include_tests = true;
-        if(not fs::exists(artifact_paths.obj) and not fs::exists(artifact_paths.bin))
+    // Cache administration: store factories, status/invalidate, and clean. Build orchestration
+    // asks for stores through cache(); it does not construct them itself.
+    class cache_admin
+    {
+    public:
+        cache::object_store make_object_store() const
         {
-            notify(&observer::info, "Nothing to clean for test objects under {}", artifact_paths.root.string());
-            return;
+            return cache::object_store{system_.artifact_paths.cache.string()};
         }
 
-        scan_and_order();
-
-        // Object-cache keys are source paths (full_path), not object paths.
-        auto dropped_sources = std::flat_set<std::string, std::less<>>{};
-        auto removed = 0;
-
-        const auto try_remove = [&](const std::string& path) {
-            if(detail::remove_if_exists(path))
-                ++removed;
-        };
-
-        for(const auto& tu : project_.units)
+        cache::link_store make_link_store() const
         {
-            if(not tu.is_test and not is_test_runner(tu))
-                continue;
-
-            dropped_sources.insert(tu.full_path);
-            const auto& art = project_.artifacts_of(tu);
-            if(not art.object.empty())
-            {
-                try_remove(art.object);
-                try_remove(build_tree::paths::depfile(art.object));
-                try_remove(build_tree::paths::compile_log(art.object));
-            }
-            if(tu.is_modular and not art.bmi.empty())
-            {
-                try_remove(art.bmi);
-                try_remove(build_tree::paths::compile_log(art.bmi));
-            }
-            if(is_test_runner(tu) and not art.executable.empty())
-            {
-                try_remove(art.executable);
-                try_remove(build_tree::paths::link_log(art.executable));
-            }
+            const auto state = system_.driver.state();
+            return cache::link_store{
+                system_.artifact_paths.cache.string(),
+                {.compile_flags = state.compile,
+                 .link_flags = state.link,
+                 .module_flags = state.modules}};
         }
 
-        auto objects = make_object_store();
-        if(not dropped_sources.empty() and objects.exists())
+        cache::standard_module_store make_standard_module_store() const
         {
-            objects.load(object_cache_profile());
-            if(objects.missing_profile_header())
-                notify(&observer::info, "Object cache missing profile header; ignoring");
-            if(not objects.profile_change())
+            return cache::standard_module_store{
+                system_.artifact_paths.cache.string(),
+                system_.artifact_paths.std_bmi(),
+                system_.artifact_paths.std_object()};
+        }
+
+        void clean() const
+        {
+            const auto& dir = system_.artifact_paths.root;
+            if(fs::exists(dir))
             {
-                auto erased = false;
-                for(const auto& path : dropped_sources)
+                fs::remove_all(dir);
+                notify(&observer::success, "Removed {}", dir.string());
+            }
+            else
+                notify(&observer::info, "Nothing to clean for {}", dir.string());
+        }
+
+        // Drop only test TU artefacts and the test_runner binary — leave library/app objects so the
+        // next build recompiles tests without a full cold rebuild. Scans with include_tests on so
+        // release configs still see *.test.c++ even when a normal release build would not.
+        void clean_tests()
+        {
+            system_.include_tests = true;
+            if(not fs::exists(system_.artifact_paths.obj)
+               and not fs::exists(system_.artifact_paths.bin))
+            {
+                notify(&observer::info, "Nothing to clean for test objects under {}",
+                       system_.artifact_paths.root.string());
+                return;
+            }
+
+            system_.scan_and_order();
+
+            // Object-cache keys are source paths (full_path), not object paths.
+            auto dropped_sources = std::flat_set<std::string, std::less<>>{};
+            auto removed = 0;
+
+            const auto try_remove = [&](const std::string& path) {
+                if(detail::remove_if_exists(path))
+                    ++removed;
+            };
+
+            for(const auto& tu : system_.project_.units)
+            {
+                if(not tu.is_test and not is_test_runner(tu))
+                    continue;
+
+                dropped_sources.insert(tu.full_path);
+                const auto& art = system_.project_.artifacts_of(tu);
+                if(not art.object.empty())
                 {
-                    if(objects.erase(path))
-                        erased = true;
+                    try_remove(art.object);
+                    try_remove(build_tree::paths::depfile(art.object));
+                    try_remove(build_tree::paths::compile_log(art.object));
                 }
-                if(erased)
-                    objects.save();
+                if(tu.is_modular and not art.bmi.empty())
+                {
+                    try_remove(art.bmi);
+                    try_remove(build_tree::paths::compile_log(art.bmi));
+                }
+                if(is_test_runner(tu) and not art.executable.empty())
+                {
+                    try_remove(art.executable);
+                    try_remove(build_tree::paths::link_log(art.executable));
+                }
             }
+
+            auto objects = make_object_store();
+            if(not dropped_sources.empty() and objects.exists())
+            {
+                objects.load(system_.object_cache_profile());
+                if(objects.missing_profile_header())
+                    notify(&observer::info, "Object cache missing profile header; ignoring");
+                if(not objects.profile_change())
+                {
+                    auto erased = false;
+                    for(const auto& path : dropped_sources)
+                    {
+                        if(objects.erase(path))
+                            erased = true;
+                    }
+                    if(erased)
+                        objects.save();
+                }
+            }
+
+            auto links = make_link_store();
+            if(links.exists())
+            {
+                links.load();
+                if(links.erase(system_.test_runner_executable()))
+                    links.save();
+            }
+
+            if(removed == 0)
+                notify(&observer::info, "No test objects to remove under {}",
+                       system_.artifact_paths.root.string());
+            else
+                notify(&observer::success, "Removed {} test artifact(s) under {}", removed,
+                       system_.artifact_paths.root.string());
         }
 
-        auto links = make_link_store();
-        if(links.exists())
+        void status()
         {
-            links.load();
-            if(links.erase(test_runner_executable()))
-                links.save();
+            system_.ensure_toolchain_profile();
+            fs::create_directories(system_.artifact_paths.cache);
+
+            const auto current_profile = system_.object_cache_profile();
+            const auto objects = make_object_store();
+            const auto object_status = objects.status(current_profile);
+
+            // Paths outlive the notify: cache_inventory holds views, so the strings they point at
+            // are named here rather than built inside the aggregate.
+            const auto links = make_link_store();
+            const auto link_status = links.status();
+            const auto std_modules = make_standard_module_store();
+            const auto std_status = std_modules.status(current_profile);
+            const auto stamp = cache::compiler_stamp_store{system_.artifact_paths.cache.string()};
+
+            notify(&observer::cache_status, output::cache_inventory{
+                    .object = {.path = objects.path(),
+                               .exists = object_status.exists,
+                               .profile_match = object_status.profile_match,
+                               .entries = object_status.entries,
+                               .stale_entries = object_status.stale_entries},
+                    .executable = {.path = links.path(),
+                                   .exists = link_status.exists,
+                                   .entries = link_status.entries},
+                    .std_module_profile = {.path = std_modules.profile_path(),
+                                           .exists = std_status.exists,
+                                           .profile_match = std_status.profile_match},
+                    .compiler_stamp = {.path = stamp.path(), .exists = stamp.exists()},
+                    .current_profile = current_profile});
         }
 
-        if(removed == 0)
-            notify(&observer::info, "No test objects to remove under {}", artifact_paths.root.string());
-        else
-            notify(&observer::success, "Removed {} test artifact(s) under {}", removed, artifact_paths.root.string());
-    }
+        void invalidate() const
+        {
+            fs::create_directories(system_.artifact_paths.cache);
 
-    void cache_status()
-    {
-        ensure_toolchain_profile();
-        fs::create_directories(artifact_paths.cache);
+            // Every file status() reports, so the two commands cannot disagree about what the
+            // cache is. The std module profile is the one that makes CB rebuild the std BMI.
+            const auto removed = output::cache_removals{
+                .object = make_object_store().invalidate(),
+                .executable = make_link_store().invalidate(),
+                .compiler_stamp =
+                    cache::compiler_stamp_store{system_.artifact_paths.cache.string()}.invalidate(),
+                .std_module_profile = make_standard_module_store().invalidate()};
 
-        const auto current_profile = object_cache_profile();
-        const auto objects = make_object_store();
-        const auto object_status = objects.status(current_profile);
+            notify(&observer::cache_invalidate_end, removed);
+        }
 
-        // Paths outlive the notify: cache_inventory holds views, so the strings they point at
-        // are named here rather than built inside the aggregate.
-        const auto links = make_link_store();
-        const auto link_status = links.status();
-        const auto std_modules = make_standard_module_store();
-        const auto std_status = std_modules.status(current_profile);
-        const auto stamp = cache::compiler_stamp_store{artifact_paths.cache.string()};
+    private:
+        friend class build_system;
+        build_system& system_;
+        explicit cache_admin(build_system& system) : system_{system} {}
+    };
 
-        notify(&observer::cache_status, output::cache_inventory{
-                .object = {.path = objects.path(),
-                           .exists = object_status.exists,
-                           .profile_match = object_status.profile_match,
-                           .entries = object_status.entries,
-                           .stale_entries = object_status.stale_entries},
-                .executable = {.path = links.path(),
-                               .exists = link_status.exists,
-                               .entries = link_status.entries},
-                .std_module_profile = {.path = std_modules.profile_path(),
-                                       .exists = std_status.exists,
-                                       .profile_match = std_status.profile_match},
-                .compiler_stamp = {.path = stamp.path(), .exists = stamp.exists()},
-                .current_profile = current_profile});
-    }
-
-    void cache_invalidate() const
-    {
-        fs::create_directories(artifact_paths.cache);
-
-        // Every file cache_status reports, so the two commands cannot disagree about what the
-        // cache is. The std module profile is the one that makes CB rebuild the std BMI.
-        const auto removed = output::cache_removals{
-            .object = make_object_store().invalidate(),
-            .executable = make_link_store().invalidate(),
-            .compiler_stamp = cache::compiler_stamp_store{artifact_paths.cache.string()}.invalidate(),
-            .std_module_profile = make_standard_module_store().invalidate()};
-
-        notify(&observer::cache_invalidate_end, removed);
-    }
+    cache_admin cache() { return cache_admin{*this}; }
 
     std::ptrdiff_t job_limit() const {
         if(max_jobs > 0)
@@ -4858,158 +4879,156 @@ public:
             return value;
         };
 
+        const auto fail = [&](parse_error_kind kind, std::string message) -> parse_result {
+            return std::unexpected{parse_error{
+                .kind = kind, .message = std::move(message), .parsed = std::move(parsed)}};
+        };
+
         while(not arguments.empty())
         {
             const auto argument = take();
-            if(argument == "--jsonl" or argument.starts_with("--jsonl="))
+            const auto* token = find_known_token(argument);
+
+            // Test-runner-only vocabulary is forwarded after `test`; elsewhere it is unknown.
+            if(token and token->owner == token_owner::test_runner)
             {
-                const auto mode = argument == "--jsonl"
-                    ? "failures"sv
-                    : argument.substr(std::string_view{"--jsonl="}.size());
-                if(mode == "summary")
-                    parsed.jsonl_mode = output::jsonl::jsonl_mode::summary;
-                else if(mode == "failures")
-                    parsed.jsonl_mode = output::jsonl::jsonl_mode::failures;
-                else if(mode == "trace")
-                    parsed.jsonl_mode = output::jsonl::jsonl_mode::trace;
-                else
-                    return std::unexpected{parse_error{
-                        .kind = parse_error_kind::usage,
-                        .message = "Unknown JSONL mode: "s + std::string{mode},
-                        .parsed = std::move(parsed)}};
-                parsed.output_name = "jsonl";
-                continue;
+                if(parsed.do_run_tests)
+                {
+                    parsed.test_runner_args.emplace_back(argument);
+                    continue;
+                }
+                token = nullptr;
             }
 
-            if(argument == "test")
+            if(token) switch(token->action)
             {
-                parsed.do_run_tests = true;
-                if(not arguments.empty())
+                case token_action::classify_only:
+                    break;
+                case token_action::set_test:
+                    parsed.do_run_tests = true;
+                    if(not arguments.empty())
+                    {
+                        const auto next = std::string_view{arguments.front()};
+                        if(not is_test_runner_token(next)
+                           and not is_cb_token(next)
+                           and not next.starts_with("-"))
+                            parsed.test_filter = std::string{take()};
+                    }
+                    continue;
+                case token_action::set_release:
+                    parsed.config = build_system::build_config::release;
+                    continue;
+                case token_action::set_debug:
+                    parsed.config = build_system::build_config::debug;
+                    continue;
+                case token_action::set_ci:
+                    parsed.do_clean = true;
+                    parsed.do_run_tests = true;
+                    continue;
+                case token_action::set_clean:
+                    parsed.do_clean = true;
+                    continue;
+                case token_action::set_build:
+                    parsed.do_build = true;
+                    continue;
+                case token_action::set_list:
+                    parsed.do_list = true;
+                    continue;
+                case token_action::set_cache:
                 {
-                    const auto next = std::string_view{arguments.front()};
-                    if(not is_test_runner_token(next)
-                       and not is_cb_token(next)
-                       and not next.starts_with("-"))
-                        parsed.test_filter = std::string{take()};
+                    if(arguments.empty())
+                        return fail(parse_error_kind::usage, "Usage: cache status|invalidate");
+                    const auto verb = take();
+                    if(verb == "status")
+                        parsed.do_cache_status = true;
+                    else if(verb == "invalidate")
+                        parsed.do_cache_invalidate = true;
+                    else
+                        return fail(parse_error_kind::usage, "Usage: cache status|invalidate");
+                    continue;
                 }
+                case token_action::set_static:
+                    parsed.linkage = toolchain::linkage::static_;
+                    continue;
+                case token_action::set_include_examples:
+                    parsed.include_examples = true;
+                    continue;
+                case token_action::set_build_tests:
+                    parsed.build_tests = true;
+                    continue;
+                case token_action::set_clean_tests_only:
+                    parsed.clean_tests_only = true;
+                    continue;
+                case token_action::set_jobs:
+                {
+                    const auto text = argument.substr("--jobs="sv.size());
+                    auto value = 0;
+                    const auto [_, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+                    if(error != std::errc{} or value < 1)
+                        return fail(parse_error_kind::invalid_argument,
+                                    "--jobs expects a positive integer, got: "s + std::string{text});
+                    parsed.max_jobs = value;
+                    parsed.jobs_explicit = true;
+                    continue;
+                }
+                case token_action::set_modules:
+                {
+                    const auto text = argument.substr("--modules="sv.size());
+                    if(text == "two-phase")
+                        parsed.module_phases = toolchain::module_compilation::two_phase;
+                    else if(text == "one-phase")
+                        parsed.module_phases = toolchain::module_compilation::one_phase;
+                    else
+                        return fail(parse_error_kind::invalid_argument,
+                                    "--modules expects one-phase or two-phase, got: "s + std::string{text});
+                    continue;
+                }
+                case token_action::set_jsonl:
+                {
+                    const auto mode = argument == "--jsonl"
+                        ? "failures"sv
+                        : argument.substr("--jsonl="sv.size());
+                    if(mode == "summary")
+                        parsed.jsonl_mode = output::jsonl::jsonl_mode::summary;
+                    else if(mode == "failures")
+                        parsed.jsonl_mode = output::jsonl::jsonl_mode::failures;
+                    else if(mode == "trace")
+                        parsed.jsonl_mode = output::jsonl::jsonl_mode::trace;
+                    else
+                        return fail(parse_error_kind::usage, "Unknown JSONL mode: "s + std::string{mode});
+                    parsed.output_name = "jsonl";
+                    continue;
+                }
+                case token_action::take_include:
+                    if(arguments.empty())
+                        return fail(parse_error_kind::usage, "Missing path after -I/--include");
+                    parsed.include_paths.emplace_back(take());
+                    continue;
+                case token_action::take_link_flags:
+                    if(arguments.empty())
+                        return fail(parse_error_kind::usage, "Missing flags after --link-flags");
+                    parsed.extra_link_flags = cb::flags::codec::parse(take());
+                    continue;
+                case token_action::take_compile_flags:
+                    if(arguments.empty())
+                        return fail(parse_error_kind::usage, "Missing flags after --compile-flags");
+                    parsed.extra_compile_flags = cb::flags::codec::parse(take());
+                    continue;
+                case token_action::compile_flags_eq:
+                    parsed.extra_compile_flags = cb::flags::codec::parse(
+                        argument.substr(argument.find('=') + 1));
+                    continue;
+                case token_action::show_help:
+                    return parse_success{
+                        .disposition = parse_success::disposition::help,
+                        .parsed = std::move(parsed)};
             }
-            else if(argument == "release")
-                parsed.config = build_system::build_config::release;
-            else if(argument == "debug")
-                parsed.config = build_system::build_config::debug;
-            else if(argument == "ci")
-            {
-                parsed.do_clean = true;
-                parsed.do_run_tests = true;
-            }
-            else if(argument == "clean")
-                parsed.do_clean = true;
-            else if(argument == "build")
-                parsed.do_build = true;
-            else if(argument == "list")
-                parsed.do_list = true;
-            else if(argument == "cache")
-            {
-                if(arguments.empty())
-                    return std::unexpected{parse_error{
-                        .kind = parse_error_kind::usage,
-                        .message = "Usage: cache status|invalidate",
-                        .parsed = std::move(parsed)}};
-                const auto verb = take();
-                if(verb == "status")
-                    parsed.do_cache_status = true;
-                else if(verb == "invalidate")
-                    parsed.do_cache_invalidate = true;
-                else
-                    return std::unexpected{parse_error{
-                        .kind = parse_error_kind::usage,
-                        .message = "Usage: cache status|invalidate",
-                        .parsed = std::move(parsed)}};
-            }
-            else if(argument == "static")
-                parsed.linkage = toolchain::linkage::static_;
-            else if(argument == "--include-examples")
-                parsed.include_examples = true;
-            else if(argument == "--build-tests")
-                parsed.build_tests = true;
-            else if(argument == "--tests")
-                parsed.clean_tests_only = true;
-            else if(argument.starts_with("--jobs="))
-            {
-                const auto text = argument.substr(std::string_view{"--jobs="}.size());
-                auto value = 0;
-                const auto [_, error] = std::from_chars(text.data(), text.data() + text.size(), value);
-                if(error != std::errc{} or value < 1)
-                    return std::unexpected{parse_error{
-                        .kind = parse_error_kind::invalid_argument,
-                        .message = "--jobs expects a positive integer, got: "s + std::string{text},
-                        .parsed = std::move(parsed)}};
-                parsed.max_jobs = value;
-                parsed.jobs_explicit = true;
-            }
-            else if(argument.starts_with("--modules="))
-            {
-                const auto text = argument.substr(std::string_view{"--modules="}.size());
-                if(text == "two-phase")
-                    parsed.module_phases = toolchain::module_compilation::two_phase;
-                else if(text == "one-phase")
-                    parsed.module_phases = toolchain::module_compilation::one_phase;
-                else
-                    return std::unexpected{parse_error{
-                        .kind = parse_error_kind::invalid_argument,
-                        .message = "--modules expects one-phase or two-phase, got: "s + std::string{text},
-                        .parsed = std::move(parsed)}};
-            }
-            else if(parsed.do_run_tests and is_test_runner_token(argument))
-                parsed.test_runner_args.emplace_back(argument);
-            else if(argument == "-I" or argument == "--include")
-            {
-                if(arguments.empty())
-                    return std::unexpected{parse_error{
-                        .kind = parse_error_kind::usage,
-                        .message = "Missing path after -I/--include",
-                        .parsed = std::move(parsed)}};
-                parsed.include_paths.emplace_back(take());
-            }
-            else if(argument == "--link-flags")
-            {
-                if(arguments.empty())
-                    return std::unexpected{parse_error{
-                        .kind = parse_error_kind::usage,
-                        .message = "Missing flags after --link-flags",
-                        .parsed = std::move(parsed)}};
-                parsed.extra_link_flags = cb::flags::codec::parse(take());
-            }
-            else if(argument == "--compile-flags" or argument == "--extra-compile-flags")
-            {
-                if(arguments.empty())
-                    return std::unexpected{parse_error{
-                        .kind = parse_error_kind::usage,
-                        .message = "Missing flags after --compile-flags",
-                        .parsed = std::move(parsed)}};
-                parsed.extra_compile_flags = cb::flags::codec::parse(take());
-            }
-            else if(argument.starts_with("--compile-flags=")
-                    or argument.starts_with("--extra-compile-flags="))
-            {
-                const auto equals = argument.find('=');
-                parsed.extra_compile_flags = cb::flags::codec::parse(argument.substr(equals + 1));
-            }
-            else if(argument == "help" or argument == "-h" or argument == "--help")
-                return parse_success{
-                    .disposition = parse_success::disposition::help,
-                    .parsed = std::move(parsed)};
-            else
-            {
-                auto message = "Unknown argument: "s + std::string{argument};
-                if(argument.starts_with("--tag") and not argument.starts_with("--tags="))
-                    message += " (did you mean --tags=<filter>?)";
-                message += "\nRun with --help for usage.";
-                return std::unexpected{parse_error{
-                    .kind = parse_error_kind::invalid_argument,
-                    .message = std::move(message),
-                    .parsed = std::move(parsed)}};
-            }
+
+            auto message = "Unknown argument: "s + std::string{argument};
+            if(argument.starts_with("--tag") and not argument.starts_with("--tags="))
+                message += " (did you mean --tags=<filter>?)";
+            message += "\nRun with --help for usage.";
+            return fail(parse_error_kind::invalid_argument, std::move(message));
         }
 
         return parse_success{.parsed = std::move(parsed)};
@@ -5066,56 +5085,91 @@ public:
 private:
     enum class token_owner : unsigned char { cb, test_runner, both };
 
+    // Parse dispatches through this; classify_only rows exist only so filter peek / unknown
+    // classification agree with the cache subcommand vocabulary.
+    enum class token_action : unsigned char
+    {
+        classify_only,
+        set_test,
+        set_release,
+        set_debug,
+        set_ci,
+        set_clean,
+        set_build,
+        set_list,
+        set_cache,
+        set_static,
+        set_include_examples,
+        set_build_tests,
+        set_clean_tests_only,
+        set_jobs,
+        set_modules,
+        set_jsonl,
+        take_include,
+        take_link_flags,
+        take_compile_flags,
+        compile_flags_eq,
+        show_help,
+    };
+
     struct known_token
     {
         std::string_view text{};
         bool prefix = false; // starts_with vs exact
         token_owner owner = token_owner::cb;
+        token_action action = token_action::classify_only;
     };
 
-    // Single vocabulary for CB words, test_runner forwards, and shared flags. Parse still
-    // owns action semantics; these helpers only classify tokens for filter vs forward.
+    // Single vocabulary: classifiers and parse dispatch share these rows.
     static constexpr known_token known_tokens[] = {
-        {"release", false, token_owner::cb},
-        {"debug", false, token_owner::cb},
-        {"ci", false, token_owner::cb},
-        {"clean", false, token_owner::cb},
-        {"build", false, token_owner::cb},
-        {"list", false, token_owner::cb},
-        {"test", false, token_owner::cb},
-        {"cache", false, token_owner::cb},
-        {"status", false, token_owner::cb},
-        {"invalidate", false, token_owner::cb},
-        {"static", false, token_owner::cb},
-        {"help", false, token_owner::cb},
-        {"-h", false, token_owner::cb},
-        {"--help", false, token_owner::both},
-        {"--include-examples", false, token_owner::cb},
-        {"--build-tests", false, token_owner::cb},
-        {"--tests", false, token_owner::cb},
-        {"-I", false, token_owner::cb},
-        {"--include", false, token_owner::cb},
-        {"--link-flags", false, token_owner::cb},
-        {"--compile-flags", false, token_owner::cb},
-        {"--compile-flags=", true, token_owner::cb},
-        {"--extra-compile-flags", false, token_owner::cb},
-        {"--extra-compile-flags=", true, token_owner::cb},
-        {"--modules=", true, token_owner::cb},
-        {"--list", false, token_owner::test_runner},
-        {"--result", false, token_owner::test_runner},
-        {"--tags=", true, token_owner::test_runner},
-        {"--slowest=", true, token_owner::test_runner},
-        {"--jsonl-output-max-bytes=", true, token_owner::test_runner},
-        {"--junit=", true, token_owner::test_runner},
-        {"--xunit-xml=", true, token_owner::test_runner},
-        {"--jsonl", false, token_owner::both},
-        {"--jsonl=", true, token_owner::both},
-        {"--jobs=", true, token_owner::both},
+        {"release", false, token_owner::cb, token_action::set_release},
+        {"debug", false, token_owner::cb, token_action::set_debug},
+        {"ci", false, token_owner::cb, token_action::set_ci},
+        {"clean", false, token_owner::cb, token_action::set_clean},
+        {"build", false, token_owner::cb, token_action::set_build},
+        {"list", false, token_owner::cb, token_action::set_list},
+        {"test", false, token_owner::cb, token_action::set_test},
+        {"cache", false, token_owner::cb, token_action::set_cache},
+        {"status", false, token_owner::cb, token_action::classify_only},
+        {"invalidate", false, token_owner::cb, token_action::classify_only},
+        {"static", false, token_owner::cb, token_action::set_static},
+        {"help", false, token_owner::cb, token_action::show_help},
+        {"-h", false, token_owner::cb, token_action::show_help},
+        {"--help", false, token_owner::both, token_action::show_help},
+        {"--include-examples", false, token_owner::cb, token_action::set_include_examples},
+        {"--build-tests", false, token_owner::cb, token_action::set_build_tests},
+        {"--tests", false, token_owner::cb, token_action::set_clean_tests_only},
+        {"-I", false, token_owner::cb, token_action::take_include},
+        {"--include", false, token_owner::cb, token_action::take_include},
+        {"--link-flags", false, token_owner::cb, token_action::take_link_flags},
+        {"--compile-flags", false, token_owner::cb, token_action::take_compile_flags},
+        {"--compile-flags=", true, token_owner::cb, token_action::compile_flags_eq},
+        {"--extra-compile-flags", false, token_owner::cb, token_action::take_compile_flags},
+        {"--extra-compile-flags=", true, token_owner::cb, token_action::compile_flags_eq},
+        {"--modules=", true, token_owner::cb, token_action::set_modules},
+        {"--list", false, token_owner::test_runner, token_action::classify_only},
+        {"--result", false, token_owner::test_runner, token_action::classify_only},
+        {"--tags=", true, token_owner::test_runner, token_action::classify_only},
+        {"--slowest=", true, token_owner::test_runner, token_action::classify_only},
+        {"--jsonl-output-max-bytes=", true, token_owner::test_runner, token_action::classify_only},
+        {"--junit=", true, token_owner::test_runner, token_action::classify_only},
+        {"--xunit-xml=", true, token_owner::test_runner, token_action::classify_only},
+        {"--jsonl", false, token_owner::both, token_action::set_jsonl},
+        {"--jsonl=", true, token_owner::both, token_action::set_jsonl},
+        {"--jobs=", true, token_owner::both, token_action::set_jobs},
     };
 
     static bool token_matches(std::string_view arg, const known_token& token)
     {
         return token.prefix ? arg.starts_with(token.text) : arg == token.text;
+    }
+
+    static const known_token* find_known_token(std::string_view arg)
+    {
+        const auto found = std::ranges::find_if(known_tokens, [&](const known_token& token) {
+            return token_matches(arg, token);
+        });
+        return found == std::end(known_tokens) ? nullptr : &*found;
     }
 
     static bool is_cb_token(std::string_view arg)
@@ -5201,20 +5255,20 @@ int main(int argc, char* argv[])
             build_system.list_sources();
         if(opts.do_cache_status)
         {
-            build_system.cache_status();
+            build_system.cache().status();
             return 0;
         }
         if(opts.do_cache_invalidate)
         {
-            build_system.cache_invalidate();
+            build_system.cache().invalidate();
             return 0;
         }
         if(opts.do_clean)
         {
             if(opts.clean_tests_only)
-                build_system.clean_tests();
+                build_system.cache().clean_tests();
             else
-                build_system.clean();
+                build_system.cache().clean();
         }
         if(opts.do_build)
             build_system.build();
