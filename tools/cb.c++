@@ -311,7 +311,6 @@ public:
     // How reports name this unit: the source relative to the project root. Computed once
     // because the inventory and every rebuild sentence ask for the same string.
     std::string display_path;
-    std::string unit;
 
     // Module information
     std::string module;
@@ -327,6 +326,10 @@ public:
     fs::file_time_type last_modified{};
     int dependency_level = -1;
 
+    // Graph / cache key: module name for interfaces and partitions, otherwise the filename.
+    // View into `module` or `filename` — not a stored duplicate.
+    std::string_view unit() const { return is_modular ? std::string_view{module} : std::string_view{filename}; }
+
 private:
     translation_unit(const fs::path& relative,
                      const fs::path& full_path,
@@ -338,7 +341,6 @@ private:
     static std::optional<std::string_view> supported_suffix(std::string_view filename);
     static std::string normalize_relative_dir(const fs::path& dir);
     static std::string make_display_path(std::string_view dir, std::string_view filename);
-    static std::string make_unit(std::string_view module_value, unit_kind kind, std::string_view filename_value);
     static bool is_tester_framework_path(std::string_view path);
     static bool path_has_test_segment(std::string_view path);
     static bool determine_is_test(std::string_view rel_dir, std::string_view name, std::string_view suffix_value);
@@ -401,21 +403,6 @@ std::string translation_unit::make_display_path(std::string_view dir, std::strin
     return dir.empty() ? std::string{filename} : std::string{dir} + "/" + std::string{filename};
 }
 
-std::string translation_unit::make_unit(std::string_view module_value, unit_kind kind, std::string_view filename_value)
-{
-    switch(kind)
-    {
-        case unit_kind::interface_unit:
-        case unit_kind::partition_unit:
-            return std::string{module_value};
-        case unit_kind::implementation_unit:
-        case unit_kind::non_module:
-        case unit_kind::global_fragment:
-            return std::string{filename_value};
-    }
-    return std::string{filename_value};
-}
-
 bool translation_unit::is_tester_framework_path(std::string_view path)
 {
     // Nested or top-level tester library trees (not *.test.c++ sources).
@@ -469,7 +456,6 @@ translation_unit::translation_unit(const fs::path& relative,
       // lexical cleanup — not another symlink-resolving weakly_canonical per source.
       full_path(fs::path{full_path}.lexically_normal().string()),
       display_path(make_display_path(this->path, this->filename)),
-      unit(make_unit(module_value, kind_value, this->filename)),
       module(std::move(module_value)),
       imports(std::move(imports_value)),
       kind(kind_value),
@@ -1025,7 +1011,7 @@ private:
         // name the earlier-scanned unit first (unstable sort-by-key alone can swap them).
         auto keys = std::views::iota(std::size_t{0}, units.size())
             | std::views::transform([&](std::size_t i) {
-                  return std::pair{std::string_view{units[i].unit}, i};
+                  return std::pair{units[i].unit(), i};
               })
             | std::ranges::to<std::vector>();
         std::ranges::sort(keys);
@@ -1088,9 +1074,14 @@ private:
         if(topological.size() != units.size())
         {
             auto message = "Cyclic dependency detected between units:"s;
-            for(auto index = std::size_t{0}; index < units.size(); ++index)
-                if(indegree[index] > 0)
-                    message += " " + units[index].unit;
+            for(auto i = std::size_t{0}; i < units.size(); ++i)
+            {
+                if(indegree[i] > 0)
+                {
+                    message += ' ';
+                    message += units[i].unit();
+                }
+            }
             throw std::runtime_error{message};
         }
 
@@ -2030,7 +2021,7 @@ compile_unit compile_unit_of(const source::translation_unit& tu,
 
 source_unit source_unit_of(const source::translation_unit& tu)
 {
-    return {.unit = tu.unit,
+    return {.unit = tu.unit(),
             .path = tu.display_path,
             .module = tu.module,
             .kind = tu.kind_name(),
@@ -2968,7 +2959,7 @@ public:
 
     const artifacts::of_unit& artifacts_of(const source::translation_unit& tu) const
     {
-        return unit_artifacts_.at(tu.unit);
+        return unit_artifacts_.at(tu.unit());
     }
 
     // Consumers ask about the same provider once per path that reaches it, so an unmemoized
@@ -2982,13 +2973,13 @@ public:
     {
         {
             auto lock = std::lock_guard<std::mutex>{decisions_mutex_};
-            if(decisions_.contains(tu.unit))
-                return decisions_.at(tu.unit);
+            if(decisions_.contains(tu.unit()))
+                return decisions_.at(tu.unit());
         }
         auto reason = decide_rebuild(tu, loaded, units);
         {
             auto lock = std::lock_guard<std::mutex>{decisions_mutex_};
-            decisions_.insert_or_assign(tu.unit, reason);
+            decisions_.insert_or_assign(tu.unit(), reason);
         }
         return reason;
     }
@@ -2998,7 +2989,7 @@ public:
     void artifacts_changed(const source::translation_unit& tu) const
     {
         auto lock = std::lock_guard<std::mutex>{decisions_mutex_};
-        decisions_.erase(tu.unit);
+        decisions_.erase(tu.unit());
     }
 
 private:
@@ -3081,7 +3072,7 @@ private:
                 return header_reason;
         }
 
-        auto visited = std::flat_set<std::string>{};
+        auto visited = std::flat_set<std::string, std::less<>>{};
         if(auto stale = transitive_bmi_newer_than_object(
                tu, freshness_timestamp, units, visited))
             return stale;
@@ -3196,7 +3187,7 @@ private:
         const source::translation_unit& tu,
         fs::file_time_type object_timestamp,
         const source::unit_index& units,
-        std::flat_set<std::string>& visited) const
+        std::flat_set<std::string, std::less<>>& visited) const
     {
         for(const auto& dependency_key : tu.imports)
         {
@@ -3212,9 +3203,9 @@ private:
                     return bmi_rebuild(output::rebuild_kind::bmi_stale, dependency, dependency_art);
             }
 
-            if(visited.contains(dependency.unit))
+            if(visited.contains(dependency.unit()))
                 continue;
-            visited.insert(dependency.unit);
+            visited.emplace(dependency.unit());
             if(auto stale = transitive_bmi_newer_than_object(
                    dependency, object_timestamp, units, visited))
                 return stale;
@@ -3819,7 +3810,7 @@ struct scanned_project
 
     const artifacts::of_unit& artifacts_of(const source::translation_unit& tu) const
     {
-        return artifacts.at(tu.unit);
+        return artifacts.at(tu.unit());
     }
 };
 
@@ -4022,7 +4013,7 @@ private:
             }
             if(tu.has_main)
                 art.executable = artifact_paths.executable(tu);
-            entries.emplace_back(std::string_view{tu.unit}, std::move(art));
+            entries.emplace_back(tu.unit(), std::move(art));
         }
 
         // Claim paths via sorted views into the artifact strings — not n flat_map mid-inserts.
@@ -4082,7 +4073,7 @@ private:
         project_.by_unit = project_.units
             | std::views::transform([](const source::translation_unit& tu) {
                   return std::pair{
-                      std::string_view{tu.unit},
+                      tu.unit(),
                       std::cref(tu)};
               })
             | std::ranges::to<source::unit_index>();
@@ -4210,7 +4201,7 @@ private:
         {
             auto keys = std::views::iota(std::size_t{0}, unit_count_)
                 | std::views::transform([&](std::size_t i) {
-                      return std::pair{std::string_view{units[i].unit}, i};
+                      return std::pair{units[i].unit(), i};
                   })
                 | std::ranges::to<std::vector>();
             std::ranges::sort(keys);
