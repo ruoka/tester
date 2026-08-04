@@ -502,8 +502,9 @@ test_source_list() {
 }
 
 # list writes compile_commands.json for the active TU set so clangd can see the real argv
-# builders (including per-TU -fmodule-file= after update_module_flags). One entry per source:
-# the step that reads that file — --precompile for modular interfaces, -c otherwise.
+# builders (std + -fprebuilt-module-path; project BMIs resolve by Clang's on-disk name).
+# One entry per source: the step that reads that file — --precompile for modular interfaces,
+# -c otherwise.
 test_compile_commands() {
   should_run compile_commands || return 0
   begin_case compile_commands
@@ -552,8 +553,12 @@ if "--precompile" not in mod:
     raise SystemExit("modular entry must use --precompile")
 if "-c" not in src:
     raise SystemExit("non-modular entry must use -c")
-if not any(a.startswith("-fmodule-file=counter=") for a in src):
-    raise SystemExit(f"importer missing -fmodule-file=counter=: {src}")
+if not any(a.startswith("-fmodule-file=std=") for a in src):
+    raise SystemExit(f"importer missing -fmodule-file=std=: {src}")
+if not any(a.startswith("-fprebuilt-module-path=") for a in src):
+    raise SystemExit(f"importer missing -fprebuilt-module-path=: {src}")
+if any(a.startswith("-fmodule-file=counter=") for a in src):
+    raise SystemExit(f"project BMIs must resolve via prebuilt path, not -fmodule-file=: {src}")
 print("ok")
 PY
   then
@@ -1193,9 +1198,8 @@ test_module_safe_name() {
   rm -f "${work_dir}/hello.c++"
 
   # Partition demo:part and flat module demo_part must keep distinct artifacts.
-  # Convention: ':' / '.' fold to '-', while '_' stays literal.
-  # -fmodule-file= is per-TU now, so an importer is required for those flags to
-  # appear on any compile argv (leaf interfaces only map std + prebuilt path).
+  # Convention: only ':' folds to '-'; dots and '_' stay literal (Clang's BMI lookup).
+  # Project modules resolve via -fprebuilt-module-path — no per-TU -fmodule-file= map.
   printf '%s\n' \
     'export module demo:part;' \
     'export int part_value() { return 1; }' > "${work_dir}/demo-part.c++m"
@@ -1216,18 +1220,21 @@ test_module_safe_name() {
 
   run_cb_build "${work_dir}"
   assert_jsonl_event_value build_end ok true "module_safe_name_build_ok"
-  assert_jsonl_contains '-fmodule-file=demo:part=' "module_flag_partition"
-  assert_jsonl_contains '-fmodule-file=demo_part=' "module_flag_flat"
+  assert_jsonl_contains '-fmodule-file=std=' "module_flag_std"
+  assert_jsonl_contains '-fprebuilt-module-path=' "prebuilt_module_path"
+  assert_jsonl_not_contains '-fmodule-file=demo:part=' "no_project_module_file_partition"
+  assert_jsonl_not_contains '-fmodule-file=demo_part=' "no_project_module_file_flat"
   assert_jsonl_contains 'demo-part.pcm' "partition_pcm_hyphen"
   assert_jsonl_contains 'demo_part.pcm' "flat_pcm_underscore"
-  assert_jsonl_contains 'demo-app.pcm' "dotted_pcm_hyphen"
-  assert_jsonl_not_contains "-fmodule-file=demo:part=${BUILD_DIR}/bmi/demo_part.pcm" "partition_not_collapsed"
+  assert_jsonl_contains 'demo.app.pcm' "dotted_pcm_keeps_dot"
 
   TESTS_RUN=$((TESTS_RUN + 1))
-  if [[ -f "${work_dir}/${BUILD_DIR}/bmi/demo-part.pcm" && -f "${work_dir}/${BUILD_DIR}/bmi/demo_part.pcm" ]]; then
+  if [[ -f "${work_dir}/${BUILD_DIR}/bmi/demo-part.pcm" \
+     && -f "${work_dir}/${BUILD_DIR}/bmi/demo_part.pcm" \
+     && -f "${work_dir}/${BUILD_DIR}/bmi/demo.app.pcm" ]]; then
     jsonl_emit '{"type":"smoke_assert_passed","matcher":"distinct_bmi_files"}'
   else
-    fail "expected distinct pcm files for demo:part and demo_part under ${BUILD_DIR}/bmi"
+    fail "expected distinct pcm files for demo:part, demo_part, and demo.app under ${BUILD_DIR}/bmi"
   fi
   end_case module_safe_name
 }

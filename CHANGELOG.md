@@ -10,6 +10,17 @@ tag; cutting a release renames that section.
 
 ## Unreleased
 
+### Changed
+
+- **Project BMI filenames match Clang's `-fprebuilt-module-path` lookup** — only
+  `:` becomes `-`; dots stay (`demo.app.pcm`). Compile and `compile_commands.json`
+  argv no longer expand a transitive `-fmodule-file=` closure for project modules
+  (`std` remains explicit). Existing trees rebuild modular units against the new
+  names on the next build (orphan `*-` dotted BMIs under `bmi/` are harmless).
+- **Two-phase modular rebuilds enqueue `pcm→.o` as a separate ready job** after BMI
+  publish, so a worker can claim an importer instead of finishing the provider
+  object on the same claim.
+
 ## [3.0.0] — 2026-08-04
 
 ### Breaking

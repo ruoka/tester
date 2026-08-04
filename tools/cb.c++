@@ -484,10 +484,14 @@ translation_unit::translation_unit(const fs::path& relative,
 class scanner
 {
 public:
-    scanner(std::string source_root, bool include_tests, bool include_examples)
+    scanner(std::string source_root,
+            bool include_tests,
+            bool include_examples,
+            std::ptrdiff_t job_limit = 1)
         : source_root_{std::move(source_root)},
           include_tests_{include_tests},
-          include_examples_{include_examples}
+          include_examples_{include_examples},
+          job_limit_{job_limit}
     {}
 
     translation_unit_list scan() const
@@ -503,7 +507,8 @@ public:
                                   const KnownUnits& known,
                                   Visit&& visit)
     {
-        auto seen = std::flat_set<std::string, std::less<>>{};
+        // Names are owned by the TU; the set only deduplicates for this call.
+        auto seen = std::flat_set<std::string_view, std::less<>>{};
         const auto consider = [&](const std::string& key)
         {
             if(not known.contains(key) or not seen.insert(key).second)
@@ -518,10 +523,6 @@ public:
     }
 
 private:
-    using dependency_graph = std::flat_map<std::string, string_list, std::less<>>;
-    using indegree_map = std::flat_map<std::string, int, std::less<>>;
-    using unit_map = std::flat_map<std::string, std::reference_wrapper<translation_unit>, std::less<>>;
-    using ready_queue = std::queue<std::string>;
 
     // True for `dir` or `dir/...`.
     static bool is_dir_or_under(std::string_view path, std::string_view dir)
@@ -860,6 +861,8 @@ private:
             const auto& root_native = root.native();
             const auto root_prefix = root_native.size() + 1; // skip the separating '/'
 
+            // Directory walk stays serial (recursion prune); parse is embarrassingly parallel.
+            auto candidates = std::vector<std::pair<std::string, fs::path>>{};
             auto entries = fs::recursive_directory_iterator{root};
             const auto end = fs::recursive_directory_iterator{};
             for(; entries != end; ++entries)
@@ -889,18 +892,53 @@ private:
                    or is_excluded_source_path(rel_path)
                    or not translation_unit::is_supported(filename))
                     continue;
+                candidates.emplace_back(std::string{rel_path}, entry.path());
+            }
+            if(candidates.empty())
+                return units;
 
-                try
+            auto parsed = std::vector<std::optional<translation_unit>>(candidates.size());
+            const auto workers = static_cast<std::size_t>(std::max<std::ptrdiff_t>(
+                1,
+                std::min(job_limit_, static_cast<std::ptrdiff_t>(candidates.size()))));
+            auto next = std::atomic_size_t{0};
+            auto parse_one = [&]()
+            {
+                for(auto i = next.fetch_add(1, std::memory_order_relaxed);
+                    i < candidates.size();
+                    i = next.fetch_add(1, std::memory_order_relaxed))
                 {
-                    auto tu = parse(rel_path, entry.path());
-                    if(tu.is_test and not include_tests_)
-                        continue;
-                    units.push_back(std::move(tu));
+                    try
+                    {
+                        parsed[i] = parse(candidates[i].first, candidates[i].second);
+                    }
+                    catch(const std::exception& parse_error)
+                    {
+                        notify(&observer::warning,
+                               "Skipping {}: {}",
+                               candidates[i].second.string(),
+                               parse_error.what());
+                    }
                 }
-                catch(const std::exception& error)
-                {
-                    notify(&observer::warning, "Skipping {}: {}", entry.path().string(), error.what());
-                }
+            };
+            if(workers <= 1)
+                parse_one();
+            else
+            {
+                auto threads = std::vector<std::jthread>{};
+                threads.reserve(workers);
+                for(auto worker = std::size_t{0}; worker < workers; ++worker)
+                    threads.emplace_back(parse_one);
+            }
+
+            units.reserve(candidates.size());
+            for(auto& tu : parsed)
+            {
+                if(not tu)
+                    continue;
+                if(tu->is_test and not include_tests_)
+                    continue;
+                units.push_back(std::move(*tu));
             }
         }
         catch(const std::exception& error)
@@ -919,71 +957,90 @@ private:
         if(units.empty())
             return units;
 
-        auto dependencies = dependency_graph{};
-        auto indegrees = indegree_map{};
-        auto unit_to_tu = unit_map{};
-
-        for(auto& tu : units)
+        // One sorted index over borrowed keys — O(n log n) — instead of n midpoint inserts
+        // into flat_map (O(n²) string moves).
+        auto keys = std::views::iota(std::size_t{0}, units.size())
+            | std::views::transform([&](std::size_t i) {
+                  return std::pair{std::string_view{units[i].unit}, i};
+              })
+            | std::ranges::to<std::vector>();
+        std::ranges::sort(keys, {}, &std::pair<std::string_view, std::size_t>::first);
+        if(const auto clash = std::ranges::adjacent_find(
+               keys, {}, &std::pair<std::string_view, std::size_t>::first);
+           clash != keys.end())
         {
-            if(unit_to_tu.contains(tu.unit))
-            {
-                const translation_unit& prior = unit_to_tu.at(tu.unit);
-                throw std::runtime_error{
-                    "Duplicate translation unit key '" + tu.unit + "' from "
-                    + prior.display_path + " and " + tu.display_path
-                    + " (object/module names must stay unique)"};
-            }
-            unit_to_tu.emplace(tu.unit, tu);
-            indegrees[tu.unit] = 0;
+            const auto other = std::next(clash);
+            throw std::runtime_error{
+                "Duplicate translation unit key '" + std::string{clash->first} + "' from "
+                + units[clash->second].display_path + " and " + units[other->second].display_path
+                + " (object/module names must stay unique)"};
         }
 
-        for(const auto& tu : units)
+        const auto index_of = [&](std::string_view key) -> std::optional<std::size_t>
         {
-            for_each_provider(tu, unit_to_tu, [&](const std::string& provider)
+            const auto found = std::ranges::lower_bound(
+                keys, key, {}, &std::pair<std::string_view, std::size_t>::first);
+            if(found == keys.end() or found->first != key)
+                return std::nullopt;
+            return found->second;
+        };
+        struct known_units
+        {
+            decltype(index_of) const& index_of;
+            bool contains(std::string_view key) const { return index_of(key).has_value(); }
+        } const known{index_of};
+
+        auto dependents = std::vector<std::vector<std::uint32_t>>(units.size());
+        auto indegree = std::vector<std::uint32_t>(units.size());
+        for(auto index = std::size_t{0}; index < units.size(); ++index)
+        {
+            for_each_provider(units[index], known, [&](const std::string& provider)
             {
-                dependencies[provider].push_back(tu.unit);
-                ++indegrees[tu.unit];
+                dependents[*index_of(provider)].push_back(static_cast<std::uint32_t>(index));
+                ++indegree[index];
             });
         }
 
-        auto ready = ready_queue{};
-        for(const auto& [unit, degree] : indegrees)
-            if(degree == 0)
-                ready.push(unit);
+        auto ready = std::queue<std::uint32_t>{};
+        for(auto index = std::uint32_t{0}; index < units.size(); ++index)
+            if(indegree[index] == 0)
+                ready.push(index);
 
-        auto sorted = translation_unit_list{};
+        auto topological = std::vector<std::uint32_t>{};
+        topological.reserve(units.size());
+        auto level_of = std::vector<int>(units.size());
         auto level = 0;
         while(not ready.empty())
         {
             const auto batch_size = ready.size();
-            for(auto index = std::size_t{0}; index < batch_size; ++index)
+            for(auto batch = std::size_t{0}; batch < batch_size; ++batch)
             {
-                const auto unit = ready.front();
+                const auto index = ready.front();
                 ready.pop();
-
-                translation_unit& tu = unit_to_tu.at(unit);
-                tu.dependency_level = level;
-                // unit_map keys are independent string copies; each unit is dequeued once.
-                sorted.push_back(std::move(tu));
-
-                for(const auto& dependent_unit : dependencies[unit])
-                    if(--indegrees[dependent_unit] == 0)
-                        ready.push(dependent_unit);
+                level_of[index] = level;
+                topological.push_back(index);
+                for(const auto dependent : dependents[index])
+                    if(--indegree[dependent] == 0)
+                        ready.push(dependent);
             }
             ++level;
         }
 
-        auto cyclic_units = string_list{};
-        for(const auto& [unit, degree] : indegrees)
-            if(degree > 0)
-                cyclic_units.push_back(unit);
-
-        if(not cyclic_units.empty())
+        if(topological.size() != units.size())
         {
             auto message = "Cyclic dependency detected between units:"s;
-            for(const auto& unit : cyclic_units)
-                message += " " + unit;
+            for(auto index = std::size_t{0}; index < units.size(); ++index)
+                if(indegree[index] > 0)
+                    message += " " + units[index].unit;
             throw std::runtime_error{message};
+        }
+
+        auto sorted = translation_unit_list{};
+        sorted.reserve(units.size());
+        for(const auto index : topological)
+        {
+            units[index].dependency_level = level_of[index];
+            sorted.push_back(std::move(units[index]));
         }
         return sorted;
     }
@@ -1017,7 +1074,9 @@ private:
             raw += line;
             raw += '\n';
         }
-        const auto cleaned = strip_comments_and_literals(splice_physical_lines(raw));
+        // Splice only when a backslash is present — the common case is a no-op copy avoided.
+        const auto spliced = raw.contains('\\') ? splice_physical_lines(raw) : std::string{};
+        const auto cleaned = strip_comments_and_literals(raw.contains('\\') ? spliced : raw);
         auto conditionals = conditional_filter{};
         auto seen_real_code = false;
 
@@ -1113,6 +1172,7 @@ private:
     std::string source_root_;
     bool include_tests_ = false;
     bool include_examples_ = false;
+    std::ptrdiff_t job_limit_ = 1;
 };
 
 } // namespace source
@@ -1707,39 +1767,14 @@ private:
         return argv;
     }
 
-    // Transitive imports (+ implementation unit's primary interface) → -fmodule-file=.
-    // Walks names already owned by the TUs; no string copies of module/BMI paths.
-    string_list module_file_flags(const source::translation_unit& tu,
-                                  const module_interface_map& interfaces) const
+    // Project BMIs live under `-fprebuilt-module-path` with Clang's on-disk naming
+    // (`module_safe_name` keeps dots; only `:` → `-`). `std` is already on `module_flags_`.
+    // Explicit `-fmodule-file=` for every transitive import used to be required when dots were
+    // folded to hyphens — that walk was O(Σ closure) string work per consumer.
+    string_list module_file_flags(const source::translation_unit&,
+                                  const module_interface_map&) const
     {
-        auto pending = std::vector<std::string_view>{};
-        auto seen = std::flat_set<std::string_view, std::less<>>{};
-        auto enqueue = [&](std::string_view module_name)
-        {
-            if(module_name.empty() or module_name == std_module_name)
-                return;
-            if(not seen.insert(module_name).second)
-                return;
-            pending.push_back(module_name);
-        };
-
-        for(const auto& imp : tu.imports)
-            enqueue(imp);
-        if(tu.kind == unit_kind::implementation_unit)
-            enqueue(tu.module);
-
-        auto flags = string_list{};
-        for(std::size_t i = 0; i < pending.size(); ++i)
-        {
-            const auto name = pending[i];
-            if(not interfaces.contains(name))
-                continue;
-            const auto& dep = interfaces.at(name);
-            flags.push_back(module_file_flag(dep.module, dep.bmi_path));
-            for(const auto& imp : dep.imports)
-                enqueue(imp);
-        }
-        return flags;
+        return {};
     }
 
     static string_list depfile_argv(std::string_view object_path)
@@ -1892,11 +1927,13 @@ private:
         return result;
     }
 
+    // Clang resolves `<module>.pcm` under `-fprebuilt-module-path`, converting only `:` to `-`
+    // for partitions. Matching that convention lets direct and transitive imports resolve by
+    // name — no per-TU `-fmodule-file=` closure. Dots stay literal (`demo.app.pcm`).
     static std::string module_safe_name(std::string_view module_name)
     {
         auto safe = std::string{module_name};
         std::ranges::replace(safe, ':', '-');
-        std::ranges::replace(safe, '.', '-');
         return safe;
     }
 
@@ -3016,7 +3053,12 @@ private:
         if(not file)
             return std::nullopt;
 
-        auto text = std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+        file.seekg(0, std::ios::end);
+        const auto size = static_cast<std::size_t>(std::max<std::streamoff>(0, file.tellg()));
+        file.seekg(0);
+        auto text = std::string(size, '\0');
+        file.read(text.data(), static_cast<std::streamsize>(size));
+        text.resize(static_cast<std::size_t>(file.gcount()));
         if(const auto colon = text.find(':'); colon != std::string::npos)
             text.erase(0, colon + 1);
         else
@@ -3123,42 +3165,50 @@ private:
         {
             const auto resolved = resolved_prerequisite(prerequisite);
             // Explicitly mapped BMIs are module-graph inputs, not textual headers.
-            if(resolved == tu.full_path
-               or not detail::path_at_or_under_root(resolved, source_root_)
-               or detail::path_at_or_under_root(resolved, bmi_root_))
+            if(resolved.path == tu.full_path
+               or not detail::path_at_or_under_root(resolved.path, source_root_)
+               or detail::path_at_or_under_root(resolved.path, bmi_root_))
                 continue;
 
-            const auto timestamp = detail::file_time(resolved);
-            if(not timestamp)
+            if(not resolved.stamp)
                 return output::rebuild_info{
                     .kind = output::rebuild_kind::header_missing,
-                    .trigger_path = resolved};
-            if(*timestamp > freshness_timestamp)
+                    .trigger_path = resolved.path};
+            if(*resolved.stamp > freshness_timestamp)
                 return output::rebuild_info{
                     .kind = output::rebuild_kind::header_stale,
-                    .trigger_path = resolved};
+                    .trigger_path = resolved.path};
         }
         return std::nullopt;
     }
 
+    struct resolved_prerequisite_info
+    {
+        std::string path;
+        std::optional<fs::file_time_type> stamp;
+    };
+
     // Project headers are shared, so the same prerequisite arrives from many depfiles.
     // weakly_canonical stats every path component (~13.6 us here against 0.4 us for a
     // lexical normalization), which is worth paying once per distinct path rather than
-    // per occurrence. Resolution stays canonical: these are compared against a canonical
-    // source root, and a lexical spelling would miss a symlinked header.
-    std::string resolved_prerequisite(const std::string& prerequisite) const
+    // per occurrence — and the mtime is memoized with the path so a warm no-op does not
+    // re-stat the same header hundreds of times. Returned by value so concurrent inserts
+    // into the flat_map cannot invalidate a live reference. Resolution stays canonical.
+    resolved_prerequisite_info resolved_prerequisite(const std::string& prerequisite) const
     {
         {
             auto lock = std::lock_guard<std::mutex>{resolved_mutex_};
             if(resolved_.contains(prerequisite))
                 return resolved_.at(prerequisite);
         }
-        auto resolved = detail::canonical_path(prerequisite);
+        auto path = detail::canonical_path(prerequisite);
+        auto stamp = detail::file_time(path);
+        auto info = resolved_prerequisite_info{.path = std::move(path), .stamp = stamp};
         {
             auto lock = std::lock_guard<std::mutex>{resolved_mutex_};
-            resolved_.insert_or_assign(prerequisite, resolved);
+            const auto [it, inserted] = resolved_.emplace(prerequisite, info);
+            return inserted ? info : it->second;
         }
-        return resolved;
     }
 
     std::string source_root_;
@@ -3169,7 +3219,7 @@ private:
     mutable std::mutex decisions_mutex_{};
     mutable std::flat_map<std::string_view, std::optional<output::rebuild_info>, std::less<>> decisions_{};
     mutable std::mutex resolved_mutex_{};
-    mutable std::flat_map<std::string, std::string, std::less<>> resolved_{};
+    mutable std::flat_map<std::string, resolved_prerequisite_info, std::less<>> resolved_{};
 };
 
 } // namespace cache
@@ -3875,59 +3925,76 @@ private:
     void fill_project_artifacts()
     {
         project_.artifacts.clear();
-        auto object_owners = std::flat_map<std::string, std::string, std::less<>>{};
-        auto bmi_owners = std::flat_map<std::string, std::string, std::less<>>{};
-        auto executable_owners = std::flat_map<std::string, std::string, std::less<>>{};
-
-        // Reserve the libc++ std module artifacts so a project TU named `std`
-        // (std.c++ / export module std;) cannot silently overwrite them.
-        object_owners.emplace(artifact_paths.std_object(), "reserved std module object");
-        bmi_owners.emplace(artifact_paths.std_bmi(), "reserved std module BMI");
-
-        const auto claim = [](auto& owners,
-                              const std::string& path,
-                              const std::string& owner,
-                              std::string_view kind)
-        {
-            const auto [prior, inserted] = owners.try_emplace(path, owner);
-            if(not inserted)
-                throw std::runtime_error{
-                    "Duplicate "s + std::string{kind} + " path '" + path + "' from "
-                    + prior->second + " and " + owner
-                    + " (object/module names must stay unique)"};
-        };
+        auto entries = std::vector<std::pair<std::string_view, artifacts::of_unit>>{};
+        entries.reserve(project_.units.size());
 
         for(const auto& tu : project_.units)
         {
-            auto artifacts = artifacts::of_unit{};
-            const auto& source_label = tu.display_path;
-            artifacts.object = artifact_paths.object(tu);
-            claim(object_owners, artifacts.object, source_label, "object");
+            if(tu.kind == unit_kind::implementation_unit and tu.module.empty())
+                throw std::logic_error{"implementation unit missing module name: " + tu.filename};
 
+            auto art = artifacts::of_unit{};
+            art.object = artifact_paths.object(tu);
             if(tu.is_modular)
             {
                 if(tu.module.empty())
                     throw std::logic_error{"modular unit missing module name: " + tu.filename};
-                artifacts.bmi = artifact_paths.bmi_file(tu);
-                claim(bmi_owners, artifacts.bmi, source_label, "BMI");
+                art.bmi = artifact_paths.bmi_file(tu);
             }
             if(tu.has_main)
-            {
-                artifacts.executable = artifact_paths.executable(tu);
-                claim(executable_owners, artifacts.executable, source_label, "executable");
-            }
-            if(tu.kind == unit_kind::implementation_unit and tu.module.empty())
-                throw std::logic_error{"implementation unit missing module name: " + tu.filename};
-
-            project_.artifacts.emplace(std::string_view{tu.unit}, std::move(artifacts));
+                art.executable = artifact_paths.executable(tu);
+            entries.emplace_back(std::string_view{tu.unit}, std::move(art));
         }
+
+        // Claim paths via sorted views into the artifact strings — not n flat_map mid-inserts.
+        // Views must be taken after `entries` owns the strings, and checked before `entries` sorts.
+        struct claim
+        {
+            std::string_view path;
+            std::string_view owner;
+            std::string_view kind;
+        };
+        const auto std_object = artifact_paths.std_object();
+        const auto std_bmi = artifact_paths.std_bmi();
+        auto claims = std::vector<claim>{};
+        claims.reserve(entries.size() * 2 + 2);
+        claims.push_back({std_object, "reserved std module object", "object"});
+        claims.push_back({std_bmi, "reserved std module BMI", "BMI"});
+        for(std::size_t i = 0; i < entries.size(); ++i)
+        {
+            const auto& tu = project_.units[i];
+            const auto& art = entries[i].second;
+            claims.push_back({art.object, tu.display_path, "object"});
+            if(not art.bmi.empty())
+                claims.push_back({art.bmi, tu.display_path, "BMI"});
+            if(not art.executable.empty())
+                claims.push_back({art.executable, tu.display_path, "executable"});
+        }
+
+        std::ranges::sort(claims, {}, &claim::path);
+        if(const auto clash = std::ranges::adjacent_find(claims, {}, &claim::path);
+           clash != claims.end())
+        {
+            const auto other = std::next(clash);
+            throw std::runtime_error{
+                "Duplicate "s + std::string{clash->kind} + " path '" + std::string{clash->path}
+                + "' from " + std::string{clash->owner} + " and " + std::string{other->owner}
+                + " (object/module names must stay unique)"};
+        }
+
+        std::ranges::sort(entries, {}, &std::pair<std::string_view, artifacts::of_unit>::first);
+        project_.artifacts = std::move(entries) | std::ranges::to<artifacts::index>();
     }
 
     void fill_project_indexes()
     {
-        project_.by_unit.clear();
-        for(const auto& tu : project_.units)
-            project_.by_unit.emplace(std::string_view{tu.unit}, tu);
+        project_.by_unit = project_.units
+            | std::views::transform([](const source::translation_unit& tu) {
+                  return std::pair{
+                      std::string_view{tu.unit},
+                      std::cref(tu)};
+              })
+            | std::ranges::to<source::unit_index>();
 
         project_.interfaces = project_.units
             | std::views::filter([](const source::translation_unit& tu) { return tu.is_modular; })
@@ -3949,7 +4016,8 @@ private:
         project_.by_unit.clear();
         project_.interfaces.clear();
         project_.artifacts.clear();
-        project_.units = source::scanner{source_dir, include_tests, include_examples}.scan();
+        project_.units = source::scanner{
+            source_dir, include_tests, include_examples, job_limit()}.scan();
         fill_project_artifacts();
         fill_project_indexes();
         analyzer_.emplace(source_dir, artifact_paths.bmi.string(), project_.artifacts);
@@ -4049,16 +4117,33 @@ private:
               dependencies_remaining_(unit_count_),
               published_(unit_count_)
         {
-            auto unit_to_index = std::flat_map<std::string, std::size_t, std::less<>>{};
-            for(auto index = std::size_t{0}; index < unit_count_; ++index)
-                unit_to_index[units[index].unit] = index;
+            auto keys = std::views::iota(std::size_t{0}, unit_count_)
+                | std::views::transform([&](std::size_t i) {
+                      return std::pair{std::string_view{units[i].unit}, i};
+                  })
+                | std::ranges::to<std::vector>();
+            std::ranges::sort(keys, {}, &std::pair<std::string_view, std::size_t>::first);
+
+            const auto index_of = [&](std::string_view key) -> std::optional<std::size_t>
+            {
+                const auto found = std::ranges::lower_bound(
+                    keys, key, {}, &std::pair<std::string_view, std::size_t>::first);
+                if(found == keys.end() or found->first != key)
+                    return std::nullopt;
+                return found->second;
+            };
+            struct known_units
+            {
+                decltype(index_of) const& index_of;
+                bool contains(std::string_view key) const { return index_of(key).has_value(); }
+            } const known{index_of};
 
             for(auto index = std::size_t{0}; index < unit_count_; ++index)
             {
                 source::scanner::for_each_provider(
-                    units[index], unit_to_index, [&](const std::string& provider)
+                    units[index], known, [&](const std::string& provider)
                 {
-                    dependents_[unit_to_index.at(provider)].push_back(index);
+                    dependents_[*index_of(provider)].push_back(index);
                     ++dependencies_remaining_[index];
                 });
             }

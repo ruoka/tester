@@ -34,7 +34,7 @@ Use **`--jsonl=failures`**. Parse **stdout only** (one JSON object per line, `sc
 
 **Unknown arguments are fatal.** CB exits `2` on an argument it does not recognise, so a typo such as `--tag=` (for `--tags=`) fails loudly instead of silently running the whole suite. Add `--jobs=N` to cap concurrent compile/link processes (default: CPU count); when set, CB also forwards `--jobs=N` to `test_runner` (runner default remains `1` = sequential).
 
-**Module compilation:** `--modules=two-phase` (default) precompiles a `.pcm` and then compiles it to a `.o` — after publish, `pcm→.o` is a separate ready job so a worker can claim an importer instead of finishing the provider object on the same claim; `--modules=one-phase` emits both from one `-c -fmodule-output=` step (one parse, reduced BMIs on Clang 22+). The mode is part of the object-cache profile, so switching it triggers `profile_change` on every unit. See [docs/cb.md](docs/cb.md).
+**Module compilation:** `--modules=two-phase` (default) precompiles a `.pcm` and then compiles it to a `.o` — after publish, `pcm→.o` is a separate ready job so a worker can claim an importer instead of finishing the provider object on the same claim; `--modules=one-phase` emits both from one `-c -fmodule-output=` step (one parse, reduced BMIs on Clang 22+). Project BMIs keep dots in the filename (only `:` → `-`) so Clang finds them under `-fprebuilt-module-path` without a per-TU `-fmodule-file=` map. The mode is part of the object-cache profile, so switching it triggers `profile_change` on every unit. See [docs/cb.md](docs/cb.md).
 
 **Hidden tags:** bracket tags starting with `.` (Catch2-style, e.g. `[.demo]`, `[.jsonl-probe]`) are **skipped on unfiltered runs**. Select explicitly: `--tags='\[.demo\]'`.
 
