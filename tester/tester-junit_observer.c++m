@@ -178,6 +178,27 @@ auto test_failed(const data::test_result& r)
     return not r.success || r.assertions_ok < r.assertions_total;
 }
 
+// Peel an absolute (or ../-escaped) path down to a stable project-tree relative
+// form. CMake runs test_runner with cwd=build-*/, so filesystem::relative would
+// otherwise yield ../tester/… or leave the absolute runner path in the XML.
+auto project_tree_path(const std::filesystem::path& path)
+{
+    const auto text = path.generic_string();
+    for(const auto marker : {"/tester/"sv, "/examples/"sv, "/tests/"sv})
+    {
+        if(const auto pos = text.rfind(marker); pos != std::string_view::npos)
+            return std::string{text.substr(pos + 1)};
+    }
+
+    auto view = std::string_view{text};
+    while(view.starts_with("../"))
+        view.remove_prefix(3);
+    if(view.starts_with("tester/"sv) or view.starts_with("examples/"sv) or view.starts_with("tests/"sv))
+        return std::string{view};
+
+    return path.filename().generic_string();
+}
+
 // CI summaries (GitHub Actions test-summary, Jenkins, …) show classname as the
 // suite column and name as the case. Dumping demangled lambdas /
 // "test_case -> …" there is unreadable — map to project-relative path + title.
@@ -194,13 +215,25 @@ auto display_path(std::string_view file_name, const std::filesystem::path& cwd)
         if(not ec and not relative.empty())
         {
             const auto text = relative.generic_string();
-            // Prefer a path still under the project; otherwise keep the original.
             if(not text.starts_with(".."))
-                path = relative;
+                return text;
         }
+        return project_tree_path(path);
     }
 
-    return path.generic_string();
+    const auto text = path.generic_string();
+    if(text.starts_with(".."))
+        return project_tree_path(path);
+    return text;
+}
+
+// test-summary/action renders "name: classname" and ignores the line attribute —
+// put :line on classname so the job Summary shows where to look.
+auto display_classname(std::string_view file, std::uint_least32_t line)
+{
+    if(line == 0)
+        return std::string{file};
+    return std::string{file} + ':' + std::to_string(line);
 }
 
 // "test_case -> description" / "given -> …" → a flat CI title. Suite cases drop the
@@ -465,8 +498,9 @@ private:
                 nav_line = events->errors.front().line;
             }
 
+            const auto classname_with_line = display_classname(nav_file, nav_line);
             xml_body << "    <testcase"
-                     << " classname=\"" << escape(classname) << '"'
+                     << " classname=\"" << escape(classname_with_line) << '"'
                      << " name=\"" << escape(case_name) << '"'
                      << " time=\"" << seconds_string(result.duration) << '"'
                      << " file=\"" << escape(nav_file) << '"'

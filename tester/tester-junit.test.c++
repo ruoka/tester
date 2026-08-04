@@ -95,11 +95,13 @@ auto register_tests()
         require_true(xml.contains("name=\"tags\""));
 
         // CI summaries group by classname/name — keep those human-readable, not the
-        // demangled registering lambda / "test_case -> …" display id.
-        require_true(xml.contains("classname=\"") && xml.contains("tester-junit.test.c++"));
+        // demangled registering lambda / "test_case -> …" display id. test-summary
+        // ignores the line attribute, so classname carries path:line.
+        require_true(xml.contains("classname=\"tester/tester-junit.test.c++:"));
         require_true(xml.contains("name=\"test_case [self] junit report writes alongside jsonl\""));
         require_false(xml.contains("classname=\"auto "));
         require_false(xml.contains("name=\"test_case -&gt;"));
+        require_false(xml.contains("/home/"));
     };
 
     test_case("test_case [self] junit maps assertion failures and errors") = []
@@ -132,9 +134,9 @@ auto register_tests()
         require_true(xml.contains("name=\"test_case [.junit-probe] assertion failure\""));
         require_true(xml.contains("name=\"test_case [.junit-probe] uncaught exception\""));
 
-        // CI links <testcase file/line> — those must be the assertion call site
-        // (relative path), not the test_case(…) registration line and not an
-        // absolute runner path buried in the failure body.
+        // CI links <testcase file/line> and shows classname as path:line in the
+        // job Summary — those must be the assertion call site (project-relative),
+        // not the test_case(…) registration line and not an absolute runner path.
         require_true(xml.contains("check_eq at tester/tester-junit.test.c++:"));
         require_false(xml.contains("/home/"));
         const auto marker = std::string{"check_eq at tester/tester-junit.test.c++:"};
@@ -145,6 +147,7 @@ auto register_tests()
         require_true(line_end != std::string::npos);
         const auto assert_line = xml.substr(line_start, line_end - line_start);
         require_true(xml.contains("file=\"tester/tester-junit.test.c++\" line=\"" + assert_line + "\""));
+        require_true(xml.contains("classname=\"tester/tester-junit.test.c++:" + assert_line + "\""));
     };
 
     test_case("test_case [.junit-probe] assertion failure") = []
