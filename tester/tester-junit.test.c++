@@ -131,6 +131,20 @@ auto register_tests()
         require_true(xml.contains("errors=\"1\""));
         require_true(xml.contains("name=\"test_case [.junit-probe] assertion failure\""));
         require_true(xml.contains("name=\"test_case [.junit-probe] uncaught exception\""));
+
+        // CI links <testcase file/line> — those must be the assertion call site
+        // (relative path), not the test_case(…) registration line and not an
+        // absolute runner path buried in the failure body.
+        require_true(xml.contains("check_eq at tester/tester-junit.test.c++:"));
+        require_false(xml.contains("/home/"));
+        const auto marker = std::string{"check_eq at tester/tester-junit.test.c++:"};
+        const auto at = xml.find(marker);
+        require_true(at != std::string::npos);
+        const auto line_start = at + marker.size();
+        const auto line_end = xml.find(':', line_start);
+        require_true(line_end != std::string::npos);
+        const auto assert_line = xml.substr(line_start, line_end - line_start);
+        require_true(xml.contains("file=\"tester/tester-junit.test.c++\" line=\"" + assert_line + "\""));
     };
 
     test_case("test_case [.junit-probe] assertion failure") = []

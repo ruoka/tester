@@ -18,7 +18,9 @@ tag; cutting a release renames that section.
   `given:` / `when:` / `then:`), and the suite is labeled `tester` plus the tag
   filter when one was set. Suite `failures` / `errors` count failed cases, not
   soft-assertion rows — so GitHub Actions `test-summary` and similar UIs show what
-  was tested and what failed.
+  was tested and what failed. On a failing case, `<testcase file>` / `line` navigate
+  to the first assertion call site (project-relative), not the `test_case(…)`
+  registration line; failure bodies use the same relative paths.
 - **Project BMI filenames match Clang's `-fprebuilt-module-path` lookup** — only
   `:` becomes `-`; dots stay (`demo.app.pcm`). Compile and `compile_commands.json`
   argv no longer expand a transitive `-fmodule-file=` closure for project modules

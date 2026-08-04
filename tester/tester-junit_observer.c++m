@@ -248,6 +248,10 @@ struct failure_detail
     std::string type;
     std::string message;
     std::string body;
+    // Assertion / throw site for CI navigation — not the test_case registration line.
+    std::string file;
+    std::uint_least32_t line = 0;
+    std::uint_least32_t column = 0;
 };
 
 struct test_events
@@ -300,6 +304,8 @@ export struct observer final : tester::output::observer
         if(event.ok)
             return;
 
+        auto lock = std::lock_guard{mutex};
+        const auto site = display_path(event.file, run_cwd);
         auto detail = failure_detail{
             .type = event.matcher.empty() ? "assertion"s : event.matcher,
             .message = event.message.empty()
@@ -307,11 +313,13 @@ export struct observer final : tester::output::observer
                 : event.message,
             .body = std::format("{} at {}:{}:{}\nactual: {}\nexpected: {}",
                 event.matcher,
-                event.file, event.line, event.column,
+                site, event.line, event.column,
                 event.actual.display.empty() ? event.actual.value : event.actual.display,
-                event.expected.display.empty() ? event.expected.value : event.expected.display)};
+                event.expected.display.empty() ? event.expected.value : event.expected.display),
+            .file = site,
+            .line = event.line,
+            .column = event.column};
 
-        auto lock = std::lock_guard{mutex};
         by_test[event.test_id].failures.push_back(std::move(detail));
     }
 
@@ -322,15 +330,19 @@ export struct observer final : tester::output::observer
         if(dynamic_cast<const assertions::assertion_failure*>(&ex) != nullptr)
             return;
 
+        auto lock = std::lock_guard{mutex};
+        const auto site = display_path(tc.file_name, run_cwd);
         auto detail = failure_detail{
             .type = exception_type_name(ex),
             .message = ex.what(),
             .body = std::format("{}: {}\n{}:{}:{}",
                 exception_type_name(ex),
                 ex.what(),
-                tc.file_name, tc.line, tc.column)};
+                site, tc.line, tc.column),
+            .file = site,
+            .line = tc.line,
+            .column = tc.column};
 
-        auto lock = std::lock_guard{mutex};
         by_test[tc.test_id].errors.push_back(std::move(detail));
     }
 
@@ -430,19 +442,35 @@ private:
         {
             const auto classname = display_path(result.file_name, run_cwd);
             const auto case_name = display_case_name(result.test_name);
-            xml_body << "    <testcase"
-                     << " classname=\"" << escape(classname) << '"'
-                     << " name=\"" << escape(case_name) << '"'
-                     << " time=\"" << seconds_string(result.duration) << '"'
-                     << " file=\"" << escape(classname) << '"'
-                     << " line=\"" << result.line << "\"";
-
             const auto* events = by_test.contains(result.test_id)
                 ? &by_test.at(result.test_id)
                 : nullptr;
             const auto has_failures = events != nullptr and not events->failures.empty();
             const auto has_errors = events != nullptr and not events->errors.empty();
             const auto failed = test_failed(result) or has_failures or has_errors;
+
+            // classname groups by the suite file; file/line navigate to the first
+            // failing assertion (or error site) when the case failed — CI summaries
+            // link those attributes, not the registration line of test_case(…).
+            auto nav_file = classname;
+            auto nav_line = result.line;
+            if(has_failures)
+            {
+                nav_file = events->failures.front().file;
+                nav_line = events->failures.front().line;
+            }
+            else if(has_errors)
+            {
+                nav_file = events->errors.front().file;
+                nav_line = events->errors.front().line;
+            }
+
+            xml_body << "    <testcase"
+                     << " classname=\"" << escape(classname) << '"'
+                     << " name=\"" << escape(case_name) << '"'
+                     << " time=\"" << seconds_string(result.duration) << '"'
+                     << " file=\"" << escape(nav_file) << '"'
+                     << " line=\"" << nav_line << "\"";
 
             if(not failed and result.output.empty())
             {
@@ -462,7 +490,10 @@ private:
                 auto detail = failure_detail{
                     .type = "test_failed"s,
                     .message = result.output.empty() ? "test failed"s : result.output,
-                    .body = result.output};
+                    .body = result.output,
+                    .file = classname,
+                    .line = result.line,
+                    .column = result.column};
                 write_element(xml_body, "failure", detail);
             }
 
