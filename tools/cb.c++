@@ -4888,7 +4888,7 @@ public:
         while(not arguments.empty())
         {
             const auto argument = take();
-            const auto* token = find_known_token(argument);
+            auto token = find_known_token(argument);
 
             // Test-runner-only vocabulary is forwarded after `test`; elsewhere it is unknown.
             if(token and token->owner == token_owner::test_runner)
@@ -4898,7 +4898,7 @@ public:
                     parsed.test_runner_args.emplace_back(argument);
                     continue;
                 }
-                token = nullptr;
+                token.reset();
             }
 
             if(token)
@@ -5178,12 +5178,14 @@ private:
         return token.prefix ? arg.starts_with(token.text) : arg == token.text;
     }
 
-    static const known_token* find_known_token(std::string_view arg)
+    static std::optional<known_token> find_known_token(std::string_view arg)
     {
         const auto found = std::ranges::find_if(known_tokens, [&](const known_token& token) {
             return token_matches(arg, token);
         });
-        return found == std::end(known_tokens) ? nullptr : &*found;
+        if(found == std::end(known_tokens))
+            return std::nullopt;
+        return *found;
     }
 
     static bool is_cb_token(std::string_view arg)
