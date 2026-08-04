@@ -424,6 +424,60 @@ test_strict_arguments() {
   # A valid job cap still builds.
   run_cb_build "${work_dir}" --jobs=2
   assert_jsonl_event_value build_end ok true "jobs_flag_builds"
+
+  # `cb test --help` is CB help (exit 0, no build) — not forwarded to test_runner.
+  status=0
+  output="$(cd "${work_dir}" && "${CB_BIN}" "${STD_CPPM}" test --help 2>&1)" || status=$?
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ "${status}" -eq 0 ]] \
+       && printf '%s' "${output}" | grep -Fq "Usage:" \
+       && printf '%s' "${output}" | grep -Fq "test [filter]" \
+       && ! printf '%s' "${output}" | grep -Eqi 'Building|Running tests'; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"test_help_is_cb_usage"}'
+  else
+    fail "expected CB usage for test --help (status=${status}): ${output}"
+  fi
+
+  # Runner-only flags without `test` are unknown (exit 2).
+  status=0
+  output="$(cd "${work_dir}" && "${CB_BIN}" "${STD_CPPM}" debug build --tags=x 2>&1)" || status=$?
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ "${status}" -eq 2 ]] && printf '%s' "${output}" | grep -Fq "Unknown argument: --tags="; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"tags_without_test_rejected"}'
+  else
+    fail "expected exit 2 for --tags= without test (status=${status}): ${output}"
+  fi
+
+  # After `test`, --tags= is forwarded (parse must not reject it).
+  status=0
+  output="$(cd "${work_dir}" && "${CB_BIN}" "${STD_CPPM}" debug test --tags=x 2>&1)" || status=$?
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ "${status}" -eq 2 ]] || printf '%s' "${output}" | grep -Fq "Unknown argument: --tags="; then
+    fail "CB should forward --tags= after test (status=${status}): ${output}"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"forwards_tags_after_test"}'
+  fi
+
+  # Bare word after test is a filter, not an unknown CB verb.
+  status=0
+  output="$(cd "${work_dir}" && "${CB_BIN}" "${STD_CPPM}" debug test smoke_filter_token 2>&1)" || status=$?
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ "${status}" -eq 2 ]] || printf '%s' "${output}" | grep -Fq "Unknown argument: smoke_filter_token"; then
+    fail "bare word after test should be a filter (status=${status}): ${output}"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"test_bare_word_is_filter"}'
+  fi
+
+  # CB-owned flags after test are consumed, not forwarded-as-unknown.
+  status=0
+  output="$(cd "${work_dir}" && "${CB_BIN}" "${STD_CPPM}" debug test --compile-flags=-O2 2>&1)" || status=$?
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ "${status}" -eq 2 ]] || printf '%s' "${output}" | grep -Fq "Unknown argument: --compile-flags="; then
+    fail "CB should accept --compile-flags= after test (status=${status}): ${output}"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"compile_flags_after_test"}'
+  fi
+
   end_case strict_arguments
 }
 

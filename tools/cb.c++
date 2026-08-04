@@ -3977,7 +3977,7 @@ private:
         const auto object = artifact_paths.std_object();
         const auto display = fs::path{state.std_module_source}.filename().string();
         const auto unit = std_compile_unit(bmi, object, display);
-        auto std_store = cache().make_standard_module_store();
+        auto std_store = caches().make_standard_module_store();
         const auto reason = cache::rebuild_reason_for_standard_module(
             std_store, state.std_module_source, [&]() { return object_cache_profile(); });
 
@@ -4134,7 +4134,7 @@ private:
 
     void compile_units() {
         if (project_.units.empty()) return;
-        auto objects = cache().make_object_store();
+        auto objects = caches().make_object_store();
         objects.load(object_cache_profile());
         if(objects.missing_profile_header())
             notify(&observer::info, "Object cache missing profile header; ignoring");
@@ -4210,7 +4210,7 @@ private:
 
     void link_executables() {
         auto shared_objects = linkable_object_paths();
-        auto links = cache().make_link_store();
+        auto links = caches().make_link_store();
         links.load();
 
         // Snapshot relink decisions before workers mutate the store. Interleaving
@@ -4297,7 +4297,7 @@ private:
     void link_test_runner() {
         const auto& runner = test_runner_unit();
 
-        auto links = cache().make_link_store();
+        auto links = caches().make_link_store();
         links.load();
         const auto input_paths = test_runner_link_inputs(runner);
         const auto import_flags = test_runner_link_flags(runner);
@@ -4394,21 +4394,22 @@ public:
         report_toolchain_configuration();
     }
 
-    // Cache administration: store factories, status/invalidate, and clean. Build orchestration
-    // asks for stores through cache(); it does not construct them itself.
+    // Store factories, status/invalidate/clean, and cache-index eviction. Paths and driver are
+    // injected; system_ remains only for profile/probe helpers. Which TUs are tests — and deleting
+    // their artefacts — stays on build_system (see clean_tests).
     class cache_admin
     {
     public:
         cache::object_store make_object_store() const
         {
-            return cache::object_store{system_.artifact_paths.cache.string()};
+            return cache::object_store{paths_.cache.string()};
         }
 
         cache::link_store make_link_store() const
         {
-            const auto state = system_.driver.state();
+            const auto state = driver_.state();
             return cache::link_store{
-                system_.artifact_paths.cache.string(),
+                paths_.cache.string(),
                 {.compile_flags = state.compile,
                  .link_flags = state.link,
                  .module_flags = state.modules}};
@@ -4417,14 +4418,12 @@ public:
         cache::standard_module_store make_standard_module_store() const
         {
             return cache::standard_module_store{
-                system_.artifact_paths.cache.string(),
-                system_.artifact_paths.std_bmi(),
-                system_.artifact_paths.std_object()};
+                paths_.cache.string(), paths_.std_bmi(), paths_.std_object()};
         }
 
         void clean() const
         {
-            const auto& dir = system_.artifact_paths.root;
+            const auto& dir = paths_.root;
             if(fs::exists(dir))
             {
                 fs::remove_all(dir);
@@ -4434,56 +4433,10 @@ public:
                 notify(&observer::info, "Nothing to clean for {}", dir.string());
         }
 
-        // Drop only test TU artefacts and the test_runner binary — leave library/app objects so the
-        // next build recompiles tests without a full cold rebuild. Scans with include_tests on so
-        // release configs still see *.test.c++ even when a normal release build would not.
-        void clean_tests()
+        // Drop object/link cache rows for sources/executables already removed from the tree.
+        void evict(const std::flat_set<std::string, std::less<>>& dropped_sources,
+                   std::string_view runner_executable)
         {
-            system_.include_tests = true;
-            if(not fs::exists(system_.artifact_paths.obj)
-               and not fs::exists(system_.artifact_paths.bin))
-            {
-                notify(&observer::info, "Nothing to clean for test objects under {}",
-                       system_.artifact_paths.root.string());
-                return;
-            }
-
-            system_.scan_and_order();
-
-            // Object-cache keys are source paths (full_path), not object paths.
-            auto dropped_sources = std::flat_set<std::string, std::less<>>{};
-            auto removed = 0;
-
-            const auto try_remove = [&](const std::string& path) {
-                if(detail::remove_if_exists(path))
-                    ++removed;
-            };
-
-            for(const auto& tu : system_.project_.units)
-            {
-                if(not tu.is_test and not is_test_runner(tu))
-                    continue;
-
-                dropped_sources.insert(tu.full_path);
-                const auto& art = system_.project_.artifacts_of(tu);
-                if(not art.object.empty())
-                {
-                    try_remove(art.object);
-                    try_remove(build_tree::paths::depfile(art.object));
-                    try_remove(build_tree::paths::compile_log(art.object));
-                }
-                if(tu.is_modular and not art.bmi.empty())
-                {
-                    try_remove(art.bmi);
-                    try_remove(build_tree::paths::compile_log(art.bmi));
-                }
-                if(is_test_runner(tu) and not art.executable.empty())
-                {
-                    try_remove(art.executable);
-                    try_remove(build_tree::paths::link_log(art.executable));
-                }
-            }
-
             auto objects = make_object_store();
             if(not dropped_sources.empty() and objects.exists())
             {
@@ -4507,22 +4460,15 @@ public:
             if(links.exists())
             {
                 links.load();
-                if(links.erase(system_.test_runner_executable()))
+                if(links.erase(runner_executable))
                     links.save();
             }
-
-            if(removed == 0)
-                notify(&observer::info, "No test objects to remove under {}",
-                       system_.artifact_paths.root.string());
-            else
-                notify(&observer::success, "Removed {} test artifact(s) under {}", removed,
-                       system_.artifact_paths.root.string());
         }
 
         void status()
         {
             system_.ensure_toolchain_profile();
-            fs::create_directories(system_.artifact_paths.cache);
+            fs::create_directories(paths_.cache);
 
             const auto current_profile = system_.object_cache_profile();
             const auto objects = make_object_store();
@@ -4534,7 +4480,7 @@ public:
             const auto link_status = links.status();
             const auto std_modules = make_standard_module_store();
             const auto std_status = std_modules.status(current_profile);
-            const auto stamp = cache::compiler_stamp_store{system_.artifact_paths.cache.string()};
+            const auto stamp = cache::compiler_stamp_store{paths_.cache.string()};
 
             notify(&observer::cache_status, output::cache_inventory{
                     .object = {.path = objects.path(),
@@ -4554,15 +4500,14 @@ public:
 
         void invalidate() const
         {
-            fs::create_directories(system_.artifact_paths.cache);
+            fs::create_directories(paths_.cache);
 
             // Every file status() reports, so the two commands cannot disagree about what the
             // cache is. The std module profile is the one that makes CB rebuild the std BMI.
             const auto removed = output::cache_removals{
                 .object = make_object_store().invalidate(),
                 .executable = make_link_store().invalidate(),
-                .compiler_stamp =
-                    cache::compiler_stamp_store{system_.artifact_paths.cache.string()}.invalidate(),
+                .compiler_stamp = cache::compiler_stamp_store{paths_.cache.string()}.invalidate(),
                 .std_module_profile = make_standard_module_store().invalidate()};
 
             notify(&observer::cache_invalidate_end, removed);
@@ -4571,10 +4516,73 @@ public:
     private:
         friend class build_system;
         build_system& system_;
-        explicit cache_admin(build_system& system) : system_{system} {}
+        const build_tree::paths& paths_;
+        const toolchain::clang_driver& driver_;
+        explicit cache_admin(build_system& system)
+            : system_{system}, paths_{system.artifact_paths}, driver_{system.driver}
+        {}
     };
 
-    cache_admin cache() { return cache_admin{*this}; }
+    // Named caches() so it does not collide with the cb::cache namespace at call sites.
+    cache_admin caches() { return cache_admin{*this}; }
+
+    // Drop only test TU artefacts and the test_runner binary — leave library/app objects so the
+    // next build recompiles tests without a full cold rebuild. Scans with include_tests on so
+    // release configs still see *.test.c++ even when a normal release build would not.
+    void clean_tests()
+    {
+        include_tests = true;
+        if(not fs::exists(artifact_paths.obj) and not fs::exists(artifact_paths.bin))
+        {
+            notify(&observer::info, "Nothing to clean for test objects under {}",
+                   artifact_paths.root.string());
+            return;
+        }
+
+        scan_and_order();
+
+        // Object-cache keys are source paths (full_path), not object paths.
+        auto dropped_sources = std::flat_set<std::string, std::less<>>{};
+        auto removed = 0;
+
+        const auto try_remove = [&](const std::string& path) {
+            if(detail::remove_if_exists(path))
+                ++removed;
+        };
+
+        for(const auto& tu : project_.units)
+        {
+            if(not tu.is_test and not is_test_runner(tu))
+                continue;
+
+            dropped_sources.insert(tu.full_path);
+            const auto& art = project_.artifacts_of(tu);
+            if(not art.object.empty())
+            {
+                try_remove(art.object);
+                try_remove(build_tree::paths::depfile(art.object));
+                try_remove(build_tree::paths::compile_log(art.object));
+            }
+            if(tu.is_modular and not art.bmi.empty())
+            {
+                try_remove(art.bmi);
+                try_remove(build_tree::paths::compile_log(art.bmi));
+            }
+            if(is_test_runner(tu) and not art.executable.empty())
+            {
+                try_remove(art.executable);
+                try_remove(build_tree::paths::link_log(art.executable));
+            }
+        }
+
+        caches().evict(dropped_sources, test_runner_executable());
+
+        if(removed == 0)
+            notify(&observer::info, "No test objects to remove under {}", artifact_paths.root.string());
+        else
+            notify(&observer::success, "Removed {} test artifact(s) under {}", removed,
+                   artifact_paths.root.string());
+    }
 
     std::ptrdiff_t job_limit() const {
         if(max_jobs > 0)
@@ -4790,16 +4798,15 @@ public:
         return std::nullopt;
     }
 
+    // Resynthesize CB-owned flags the runner also understands. Parse consumes --jsonl / --jobs=
+    // as CB actions, so they never appear in test_runner_args — emit them here when set.
     std::vector<std::string> runner_arguments() const
     {
         auto args = std::vector<std::string>{};
         if(not test_filter.empty())
             args.push_back(test_filter);
 
-        const auto has_jsonl_mode = std::ranges::any_of(test_runner_args, [](const auto& arg) {
-            return arg == "--jsonl" or arg.starts_with("--jsonl=");
-        });
-        if(output_name == "jsonl" and not has_jsonl_mode)
+        if(output_name == "jsonl")
         {
             const auto mode = jsonl_mode.value_or(output::jsonl::jsonl_mode::failures);
             args.emplace_back(mode == output::jsonl::jsonl_mode::summary
@@ -4810,13 +4817,7 @@ public:
         }
 
         if(jobs_explicit)
-        {
-            const auto already = std::ranges::any_of(test_runner_args, [](const auto& arg) {
-                return arg.starts_with("--jobs=");
-            });
-            if(not already)
-                args.emplace_back("--jobs=" + std::to_string(max_jobs));
-        }
+            args.emplace_back("--jobs=" + std::to_string(max_jobs));
 
         args.append_range(test_runner_args);
         return args;
@@ -4900,8 +4901,13 @@ public:
                 token = nullptr;
             }
 
-            if(token) switch(token->action)
+            if(token)
             {
+                switch(token->action)
+                {
+                // Vocabulary-only rows (cache verbs, runner forwards): fall through to unknown
+                // unless the forward path above already handled them. Use continue in every
+                // other case — a bare break here is the intentional path to the error below.
                 case token_action::classify_only:
                     break;
                 case token_action::set_test:
@@ -5019,9 +5025,11 @@ public:
                         argument.substr(argument.find('=') + 1));
                     continue;
                 case token_action::show_help:
+                    // Intentional: `cb test --help` shows CB usage (does not forward to the runner).
                     return parse_success{
                         .disposition = parse_success::disposition::help,
                         .parsed = std::move(parsed)};
+                }
             }
 
             auto message = "Unknown argument: "s + std::string{argument};
@@ -5049,7 +5057,8 @@ public:
             << "  cache status     Inspect object-cache profile and entry counts\n"
             << "  cache invalidate Remove object/link cache indexes (lighter than clean)\n"
             << "  test [filter]  Build and run tests (optional substring filter)\n"
-            << "                 Forward test_runner flags directly (e.g. --tags=, --list, --result)\n"
+            << "                 Forward test_runner flags (e.g. --tags=, --list, --result);\n"
+            << "                 --help / --jsonl / --jobs= stay with CB (see runner_arguments)\n"
             << "  static           Enable static linking (C++ stdlib static)\n"
             << "  --include-examples Include examples directory in build (excluded by default)\n"
             << "  --build-tests    Build tests in release mode (useful for CI to verify compilation)\n"
@@ -5063,7 +5072,7 @@ public:
             << "  -I, --include    Add include directory (can be specified multiple times)\n"
             << "  --link-flags     Add extra linker flags (e.g., --link-flags \"-lcrypto\")\n"
             << "  --compile-flags  Add extra compiler flags\n"
-            << "  help, -h, --help Show this help message\n\n"
+            << "  help, -h, --help Show this help message (also after test; not test_runner --help)\n\n"
             << "Examples:\n"
             << "  " << program << " debug build\n"
             << "  " << program << " release build\n"
@@ -5083,7 +5092,10 @@ public:
     }
 
 private:
-    enum class token_owner : unsigned char { cb, test_runner, both };
+    // cb = parse action / filter peek; test_runner = forward after `test` only.
+    // Flags the runner also understands (--jsonl, --jobs=) are cb-owned and resynthesized
+    // by options::runner_arguments — they are not dual-forwarded.
+    enum class token_owner : unsigned char { cb, test_runner };
 
     // Parse dispatches through this; classify_only rows exist only so filter peek / unknown
     // classification agree with the cache subcommand vocabulary.
@@ -5120,7 +5132,9 @@ private:
         token_action action = token_action::classify_only;
     };
 
-    // Single vocabulary: classifiers and parse dispatch share these rows.
+    // First match wins (exact and prefix rows share one list). Put a longer / more specific
+    // prefix above a shorter neighbour so it is not shadowed — e.g. --jsonl-output-max-bytes=
+    // before a hypothetical --jsonl-output= row.
     static constexpr known_token known_tokens[] = {
         {"release", false, token_owner::cb, token_action::set_release},
         {"debug", false, token_owner::cb, token_action::set_debug},
@@ -5135,7 +5149,7 @@ private:
         {"static", false, token_owner::cb, token_action::set_static},
         {"help", false, token_owner::cb, token_action::show_help},
         {"-h", false, token_owner::cb, token_action::show_help},
-        {"--help", false, token_owner::both, token_action::show_help},
+        {"--help", false, token_owner::cb, token_action::show_help},
         {"--include-examples", false, token_owner::cb, token_action::set_include_examples},
         {"--build-tests", false, token_owner::cb, token_action::set_build_tests},
         {"--tests", false, token_owner::cb, token_action::set_clean_tests_only},
@@ -5147,16 +5161,16 @@ private:
         {"--extra-compile-flags", false, token_owner::cb, token_action::take_compile_flags},
         {"--extra-compile-flags=", true, token_owner::cb, token_action::compile_flags_eq},
         {"--modules=", true, token_owner::cb, token_action::set_modules},
+        {"--jsonl-output-max-bytes=", true, token_owner::test_runner, token_action::classify_only},
         {"--list", false, token_owner::test_runner, token_action::classify_only},
         {"--result", false, token_owner::test_runner, token_action::classify_only},
         {"--tags=", true, token_owner::test_runner, token_action::classify_only},
         {"--slowest=", true, token_owner::test_runner, token_action::classify_only},
-        {"--jsonl-output-max-bytes=", true, token_owner::test_runner, token_action::classify_only},
         {"--junit=", true, token_owner::test_runner, token_action::classify_only},
         {"--xunit-xml=", true, token_owner::test_runner, token_action::classify_only},
-        {"--jsonl", false, token_owner::both, token_action::set_jsonl},
-        {"--jsonl=", true, token_owner::both, token_action::set_jsonl},
-        {"--jobs=", true, token_owner::both, token_action::set_jobs},
+        {"--jsonl", false, token_owner::cb, token_action::set_jsonl},
+        {"--jsonl=", true, token_owner::cb, token_action::set_jsonl},
+        {"--jobs=", true, token_owner::cb, token_action::set_jobs},
     };
 
     static bool token_matches(std::string_view arg, const known_token& token)
@@ -5175,14 +5189,14 @@ private:
     static bool is_cb_token(std::string_view arg)
     {
         return std::ranges::any_of(known_tokens, [&](const known_token& token) {
-            return token.owner != token_owner::test_runner and token_matches(arg, token);
+            return token.owner == token_owner::cb and token_matches(arg, token);
         });
     }
 
     static bool is_test_runner_token(std::string_view arg)
     {
         return std::ranges::any_of(known_tokens, [&](const known_token& token) {
-            return token.owner != token_owner::cb and token_matches(arg, token);
+            return token.owner == token_owner::test_runner and token_matches(arg, token);
         });
     }
 
@@ -5255,20 +5269,20 @@ int main(int argc, char* argv[])
             build_system.list_sources();
         if(opts.do_cache_status)
         {
-            build_system.cache().status();
+            build_system.caches().status();
             return 0;
         }
         if(opts.do_cache_invalidate)
         {
-            build_system.cache().invalidate();
+            build_system.caches().invalidate();
             return 0;
         }
         if(opts.do_clean)
         {
             if(opts.clean_tests_only)
-                build_system.cache().clean_tests();
+                build_system.clean_tests();
             else
-                build_system.cache().clean();
+                build_system.caches().clean();
         }
         if(opts.do_build)
             build_system.build();
