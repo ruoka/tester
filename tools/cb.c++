@@ -304,7 +304,8 @@ public:
     // constructor and friend scanner still own how a unit is born.
     std::string filename;
     std::string path;
-    std::string suffix;
+    // Points at a namespace-scope `supported_suffixes` literal — not into this object.
+    std::string_view suffix;
     std::string base_name;
     std::string full_path;
     // How reports name this unit: the source relative to the project root. Computed once
@@ -461,7 +462,7 @@ translation_unit::translation_unit(const fs::path& relative,
           const auto matched = supported_suffix(this->filename);
           if(not matched)
               throw std::runtime_error{"unsupported source suffix"};
-          return std::string{*matched};
+          return *matched;
       }()),
       base_name(this->filename.substr(0, this->filename.size() - this->suffix.size())),
       // collect() walks a weakly_canonical root, so the absolute entry path needs only
@@ -2003,7 +2004,7 @@ private:
             object_stem_suffixes,
             [&](std::string_view suffix) { return tu.suffix.ends_with(suffix); });
         if(ending == object_stem_suffixes.end())
-            throw std::logic_error{"Unsupported suffix for object file: " + tu.suffix};
+            throw std::logic_error{"Unsupported suffix for object file: " + std::string{tu.suffix}};
         return suffixed(tu.suffix.substr(0, tu.suffix.size() - ending->size()), naming_.object_extension);
     }
 
@@ -2154,8 +2155,8 @@ public:
         const auto new_fields = newer.fields();
         auto result = output::object_cache_profile_diff{};
 
-        // Named, because `return {}` has nothing to deduce from.
-        const auto field_value = [](const field_map& map, std::string_view key) -> std::string {
+        // Views into `text_` / `newer.text_`, which outlive this comparison.
+        const auto field_value = [](const field_map& map, std::string_view key) -> std::string_view {
             if(map.contains(key))
                 return map.at(key);
             return {};
@@ -2165,7 +2166,7 @@ public:
             const auto old_value = field_value(old_fields, key);
             const auto new_value = field_value(new_fields, key);
             if(old_value != new_value)
-                out = output::profile_scalar_change{old_value, new_value};
+                out = output::profile_scalar_change{std::string{old_value}, std::string{new_value}};
         };
 
         output::for_each_profile_scalar(result, diff_scalar);
@@ -2183,7 +2184,7 @@ public:
     bool operator==(const profile&) const = default;
 
 private:
-    using field_map = std::flat_map<std::string, std::string, std::less<>>;
+    using field_map = std::flat_map<std::string_view, std::string_view, std::less<>>;
 
     void append(std::string_view key, std::string_view value)
     {
@@ -2194,12 +2195,12 @@ private:
         text_ += value;
     }
 
-    static std::pair<std::string, std::string> parse_field(std::string_view segment)
+    static std::pair<std::string_view, std::string_view> parse_field(std::string_view segment)
     {
         const auto eq = segment.find('=');
-        return {
-            std::string{segment.substr(0, eq)},
-            std::string{segment.substr(eq + 1)}};
+        if(eq == std::string_view::npos)
+            return {segment, {}};
+        return {segment.substr(0, eq), segment.substr(eq + 1)};
     }
 
     field_map fields() const
@@ -2287,12 +2288,12 @@ public:
         auto line = ""s;
         while(std::getline(file, line))
         {
-            auto entry_path = ""s;
+            auto entry_path = std::string_view{};
             auto ticks = 0ll;
             // Keep the entry without a filesystem probe: a missing source still produces a
             // rebuild reason when analyzed, which is the correct outcome.
             if(parse_entry(line, entry_path, ticks))
-                entries_[entry_path] = fs::file_time_type{std::chrono::nanoseconds{ticks}};
+                entries_[std::string{entry_path}] = fs::file_time_type{std::chrono::nanoseconds{ticks}};
         }
     }
 
@@ -2316,7 +2317,7 @@ public:
 
     bool erase(std::string_view source_path)
     {
-        return entries_.erase(std::string{source_path}) != 0;
+        return entries_.erase(source_path) != 0;
     }
 
     bool invalidate() const { return file_.invalidate(); }
@@ -2356,22 +2357,20 @@ private:
                 .value = line.substr(profile_header_prefix.size())};
     }
 
-    static bool parse_entry(const std::string& line, std::string& path, long long& ticks)
+    static bool parse_entry(std::string_view line, std::string_view& path, long long& ticks)
     {
         if(line.empty() or line.starts_with(profile_header_prefix))
             return false;
         const auto tab = line.find('\t');
-        if(tab == std::string::npos)
+        if(tab == std::string_view::npos)
             return false;
         path = line.substr(0, tab);
-        try
-        {
-            ticks = std::stoll(line.substr(tab + 1));
-        }
-        catch(...)
-        {
+        const auto ticks_text = line.substr(tab + 1);
+        const auto* const begin = ticks_text.data();
+        const auto* const end = begin + ticks_text.size();
+        const auto parsed = std::from_chars(begin, end, ticks);
+        if(parsed.ec != std::errc{} or parsed.ptr != end)
             return false;
-        }
         return not path.empty();
     }
 
@@ -2380,7 +2379,7 @@ private:
         auto line = ""s;
         while(std::getline(file, line))
         {
-            auto entry_path = ""s;
+            auto entry_path = std::string_view{};
             auto ticks = 0ll;
             if(not parse_entry(line, entry_path, ticks))
                 continue;
@@ -2399,20 +2398,30 @@ private:
 
 // Wire format for a link cache entry: objects|flags=…|link=…|modules=…|imports=…|format=…
 // Writer and reader share this type so field order cannot silently degrade telemetry.
+// Fields are views into a stamp string the caller keeps alive across compare/serialize.
 class link_signature
 {
 public:
-    std::string objects{};
+    std::string_view objects{};
     // Body after "|flags=" and before "|imports=": compile|link=…|modules=…
-    std::string flags{};
-    std::string imports{};
-    std::string format{};
+    std::string_view flags{};
+    std::string_view imports{};
+    std::string_view format{};
 
     inline static constexpr auto format_v2 = "cb-link-v2"sv;
 
     std::string serialize() const
     {
-        return objects + "|flags=" + flags + "|imports=" + imports + "|format=" + format;
+        auto out = std::string{};
+        out.reserve(objects.size() + flags.size() + imports.size() + format.size() + 24);
+        out += objects;
+        out += "|flags=";
+        out += flags;
+        out += "|imports=";
+        out += imports;
+        out += "|format=";
+        out += format;
+        return out;
     }
 
     static std::optional<link_signature> parse(std::string_view text)
@@ -2430,16 +2439,16 @@ public:
         if(format_at == std::string_view::npos)
             return std::nullopt;
 
-        auto parsed = link_signature{};
-        parsed.objects = std::string{text.substr(0, flags_at)};
-        parsed.flags = std::string{text.substr(
-            flags_at + flags_mark.size(),
-            imports_at - (flags_at + flags_mark.size()))};
-        parsed.imports = std::string{text.substr(
-            imports_at + imports_mark.size(),
-            format_at - (imports_at + imports_mark.size()))};
-        parsed.format = std::string{text.substr(format_at + format_mark.size())};
-        return parsed;
+        return link_signature{
+            .objects = text.substr(0, flags_at),
+            .flags = text.substr(
+                flags_at + flags_mark.size(),
+                imports_at - (flags_at + flags_mark.size())),
+            .imports = text.substr(
+                imports_at + imports_mark.size(),
+                format_at - (imports_at + imports_mark.size())),
+            .format = text.substr(format_at + format_mark.size()),
+        };
     }
 
     // nullopt when identical; otherwise which part of the stamp moved.
@@ -2517,16 +2526,17 @@ public:
     }
 
     // Loaded snapshot only — call before parallel remember(), or on a single-threaded path.
-    std::optional<std::string> remembered(std::string_view executable) const
+    // View into `entries_`; keep the store alive across the parse/compare that uses it.
+    std::optional<std::string_view> remembered(std::string_view executable) const
     {
         if(not entries_.contains(executable))
             return std::nullopt;
-        return entries_.at(executable);
+        return std::string_view{entries_.at(executable)};
     }
 
     bool erase(std::string_view executable)
     {
-        return entries_.erase(std::string{executable}) != 0;
+        return entries_.erase(executable) != 0;
     }
 
     bool invalidate() const { return file_.invalidate(); }
@@ -2552,11 +2562,14 @@ public:
     // the result even when no input moved. Callers differ only in the input list.
     std::string signature_for(string_span input_paths, string_span import_flags) const
     {
+        // Locals keep the joined strings alive for the view-based stamp.
+        const auto objects = dependency_signatures_joined(input_paths);
+        const auto imports = cb::flags::codec::serialize(import_flags);
         return link_signature{
-            .objects = dependency_signatures_joined(input_paths),
+            .objects = objects,
             .flags = flag_tail_,
-            .imports = cb::flags::codec::serialize(import_flags),
-            .format = std::string{link_signature::format_v2},
+            .imports = imports,
+            .format = link_signature::format_v2,
         }.serialize();
     }
 
