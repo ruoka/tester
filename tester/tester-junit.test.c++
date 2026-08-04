@@ -162,6 +162,7 @@ auto register_tests()
         require_true(xml.contains("no tests matched filter"));
         require_true(xml.contains("failures=\"1\""));
         require_true(xml.contains("type=\"empty_filter\""));
+        require_true(xml.contains("name=\"tester [.junit-no-such-tag-xyz]\""));
     };
 
     test_case("test_case [self] xunit-xml alias writes the same report") = []

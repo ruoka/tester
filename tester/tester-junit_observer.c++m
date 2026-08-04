@@ -224,7 +224,19 @@ auto suite_label(std::string_view tags)
 {
     if(tags.empty())
         return "tester"s;
-    return "tester " + std::string{tags};
+
+    // CB documents `--tags='\[self\]'` for the shell; the runner then sees the
+    // backslashes. Strip only those escapes so the CI suite title reads
+    // `tester [self]` rather than `tester \[self\]`.
+    auto label = std::string{tags};
+    for(auto pos = label.find('\\'); pos != std::string::npos; pos = label.find('\\', pos))
+    {
+        if(pos + 1 < label.size() and (label[pos + 1] == '[' or label[pos + 1] == ']'))
+            label.erase(pos, 1);
+        else
+            ++pos;
+    }
+    return "tester " + label;
 }
 
 } // namespace
