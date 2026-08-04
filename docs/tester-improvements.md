@@ -184,7 +184,7 @@ Machine-parseable test and build output for CI and automation. Human output rema
 ### 3.9 Output performance & shared code
 
 - ✅ One JSONL implementation shared by both sides: `jsonl::escape` and the envelope helpers live in `tester/details/jsonl.h++`, included by `tester-jsonl_observer.c++m`, `test_runner.c++` and `tools/cb-jsonl_observer.h++`.
-- 🔶 CB joins JSON string arrays through `join_json_strings`, but `tester-jsonl_observer.c++m` still hand-rolls index loops with `if(i) os << ','` in `write_string_array`, `write_string_map` and `write_failed_test_ids` — the pattern `AGENTS.md` explicitly prohibits. `write_failed_test_ids` also duplicates `write_string_array`.
+- ✅ CB streams JSON string arrays through `write_json_strings` / `escape_to` into the sink ostream (no intermediate array string). `tester-jsonl_observer.c++m` still hand-rolls index loops with `if(i) os << ','` in `write_string_array`, `write_string_map` and `write_failed_test_ids` — the pattern `AGENTS.md` explicitly prohibits. `write_failed_test_ids` also duplicates `write_string_array`.
 - 📋 Batch the per-event `std::flush` in `trace` mode.
 
 ---

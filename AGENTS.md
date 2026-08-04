@@ -206,11 +206,13 @@ return argv
     | std::views::join_with(" "sv)
     | std::ranges::to<std::string>();
 
-// JSON string arrays: cb::output::jsonl::join_json_strings (transform(escape) + join_with(','))
-os << '[' << cb::output::jsonl::join_json_strings(values) << ']';
+// JSON string arrays into an ostream: stream quoted elements (no intermediate array string)
+os << '[';
+cb::output::jsonl::write_json_strings(os, values);  // escape_to per element
+os << ']';
 ```
 
-Prefer **`views::join_with` / `ranges::to`** for delimiter joins (including the private `process::runner::join_argv`: `transform(process::shell_quote)` then `join_with(' ')`; **`join_json_strings`**: `transform(quote)` then `join_with(',')`). Use **`fold_left`** only when accumulation is not a plain per-element transform + join (e.g. the private whitespace normalization in `flags::codec`). Not ad-hoc index loops or one-off join helpers.
+Prefer **`views::join_with` / `ranges::to`** for delimiter joins (including the private `process::runner::join_argv`: `transform(process::shell_quote)` then `join_with(' ')`). JSON string arrays go through **`write_json_strings`** / **`escape_to`** into the sink ostream — do not materialize them with `ranges::to<std::string>`. Use **`fold_left`** only when accumulation is not a plain per-element transform + join (e.g. the private whitespace normalization in `flags::codec`). Not ad-hoc index loops or one-off join helpers.
 
 **Splitting / parsing** — prefer **`std::views::split`** + **`std::views::transform`** + **`std::ranges::to<Container>`** for delimited fields CB owns. Pair symmetric readers and writers (for example, `cache::profile::append` / `parse_field`) rather than adding ad-hoc parsers with silent `continue` on every segment:
 
@@ -272,7 +274,7 @@ Smoke: `./tests/mcp/smoke.sh --jsonl`.
 - Use an unfiltered full-suite run as the default fix loop — scope with `--tags='\[self\]'` for framework work
 - Expect `summary.passed: true` on standalone `./tools/CB.sh debug test` (demo failures are `[.demo]` hidden tags)
 - Run `[.tag]` probe fixtures unless explicitly selected (they are hidden by default)
-- Use index loops to join/format delimited strings — use `std::views::join_with` + `std::ranges::to<std::string>`, `std::ranges::fold_left` (when fold state is not transform-then-join), or `join_json_strings`
+- Use index loops to join/format delimited strings — use `std::views::join_with` + `std::ranges::to<std::string>`, `std::ranges::fold_left` (when fold state is not transform-then-join), or `write_json_strings` / `escape_to` for JSON arrays into an ostream
 - Multiply one-off helper functions when a std algorithm or existing join helper already covers the case
 - Reimplement std join/parse/search when this section already covers the case
 

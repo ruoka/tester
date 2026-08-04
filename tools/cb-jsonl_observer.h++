@@ -23,36 +23,53 @@ namespace cb::output::jsonl {
 enum class jsonl_mode { summary, failures, trace };
 
 using ::jsonl::escape;
+using ::jsonl::escape_to;
 
-inline std::string join_json_strings(std::span<const std::string> values)
+// Quoted JSON strings streamed into `os` — no intermediate array string.
+inline void write_json_strings(std::ostream& os, std::span<const std::string> values)
 {
-    return values
-        | std::views::transform([](const std::string& value) {
-            return '"' + escape(value) + '"';
-        })
-        | std::views::join_with(',')
-        | std::ranges::to<std::string>();
+    auto first = true;
+    for(const auto& value : values)
+    {
+        if(not first)
+            os << ',';
+        first = false;
+        os << '"';
+        escape_to(os, value);
+        os << '"';
+    }
 }
 
 inline void write_argv(std::ostream& os, std::span<const std::string> argv)
 {
-    os << ",\"argv\":[" << join_json_strings(argv) << ']';
+    os << ",\"argv\":[";
+    write_json_strings(os, argv);
+    os << ']';
 }
 
 inline void write_string_array(std::ostream& os, std::string_view field, std::span<const std::string> values)
 {
-    os << ",\"" << field << "\":[" << join_json_strings(values) << ']';
+    os << ",\"" << field << "\":[";
+    write_json_strings(os, values);
+    os << ']';
 }
 
 inline void write_profile_diff_scalar(std::ostream& os, const profile_scalar_change& change)
 {
-    os << "{\"old\":\"" << escape(change.old_value) << "\",\"new\":\"" << escape(change.new_value) << "\"}";
+    os << "{\"old\":\"";
+    escape_to(os, change.old_value);
+    os << "\",\"new\":\"";
+    escape_to(os, change.new_value);
+    os << "\"}";
 }
 
 inline void write_profile_diff_tokens(std::ostream& os, const profile_token_change& change)
 {
-    os << "{\"added\":[" << join_json_strings(change.added)
-       << "],\"removed\":[" << join_json_strings(change.removed) << "]}";
+    os << "{\"added\":[";
+    write_json_strings(os, change.added);
+    os << "],\"removed\":[";
+    write_json_strings(os, change.removed);
+    os << "]}";
 }
 
 inline void write_profile_diff(std::ostream& os, const object_cache_profile_diff& diff)

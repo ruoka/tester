@@ -16,8 +16,10 @@
 #include <format>
 #include <iostream>
 #include <chrono>
+#include <ostream>
 #include <random>
 #include <ranges>
+#include <sstream>
 #include <type_traits>
 #include <unistd.h>
 
@@ -60,63 +62,80 @@ inline std::size_t utf8_sequence_length(std::string_view sv, std::size_t index)
     return length;
 }
 
-// JSON requires valid UTF-8. Test data is arbitrary bytes, so invalid sequences are
-// replaced with U+FFFD rather than passed through — a single stray byte otherwise
-// makes the whole line unparseable for every downstream consumer.
-inline std::string escape(std::string_view sv)
+inline bool needs_json_escape(std::string_view sv)
 {
-    // Paths, module names, and kinds are almost always clean ASCII — copy once and return.
-    const auto needs_escape = std::ranges::any_of(sv, [](unsigned char ch) {
+    return std::ranges::any_of(sv, [](unsigned char ch) {
         return ch < 0x20 or ch >= 0x80 or ch == '"' or ch == '\\';
     });
-    if(not needs_escape)
-        return std::string{sv};
+}
+
+// Stream a JSON string body (no surrounding quotes). Prefer this when the sink is
+// already an ostream — `escape` materializes a temporary for the same work.
+inline void escape_to(std::ostream& os, std::string_view sv)
+{
+    if(not needs_json_escape(sv))
+    {
+        os.write(sv.data(), static_cast<std::streamsize>(sv.size()));
+        return;
+    }
 
     constexpr auto replacement_character = "\xef\xbf\xbd";
 
-    auto out = std::string{};
-    out.reserve(sv.size() + 16);
     for(std::size_t index = 0; index < sv.size();)
     {
         const auto ch = static_cast<unsigned char>(sv[index]);
         switch(ch)
         {
-            case '\\': out += "\\\\"; ++index; continue;
-            case '"':  out += "\\\""; ++index; continue;
-            case '\b': out += "\\b"; ++index; continue;
-            case '\f': out += "\\f"; ++index; continue;
-            case '\n': out += "\\n"; ++index; continue;
-            case '\r': out += "\\r"; ++index; continue;
-            case '\t': out += "\\t"; ++index; continue;
+            case '\\': os << "\\\\"; ++index; continue;
+            case '"':  os << "\\\""; ++index; continue;
+            case '\b': os << "\\b"; ++index; continue;
+            case '\f': os << "\\f"; ++index; continue;
+            case '\n': os << "\\n"; ++index; continue;
+            case '\r': os << "\\r"; ++index; continue;
+            case '\t': os << "\\t"; ++index; continue;
             default: break;
         }
 
         if(ch < 0x20)
         {
-            out += std::format("\\u{:04x}", static_cast<unsigned int>(ch));
+            os << std::format("\\u{:04x}", static_cast<unsigned int>(ch));
             ++index;
             continue;
         }
 
         if(ch < 0x80)
         {
-            out.push_back(static_cast<char>(ch));
+            os.put(static_cast<char>(ch));
             ++index;
             continue;
         }
 
         if(const auto length = utf8_sequence_length(sv, index); length > 0)
         {
-            out.append(sv.substr(index, length));
+            os.write(sv.data() + static_cast<std::ptrdiff_t>(index),
+                     static_cast<std::streamsize>(length));
             index += length;
             continue;
         }
 
         // Invalid byte: emit one replacement character and resynchronise by one byte.
-        out += replacement_character;
+        os << replacement_character;
         ++index;
     }
-    return out;
+}
+
+// JSON requires valid UTF-8. Test data is arbitrary bytes, so invalid sequences are
+// replaced with U+FFFD rather than passed through — a single stray byte otherwise
+// makes the whole line unparseable for every downstream consumer.
+inline std::string escape(std::string_view sv)
+{
+    // Paths, module names, and kinds are almost always clean ASCII — copy once and return.
+    if(not needs_json_escape(sv))
+        return std::string{sv};
+
+    auto out = std::ostringstream{};
+    escape_to(out, sv);
+    return std::move(out).str();
 }
 
 inline std::chrono::milliseconds unix_ms_now()

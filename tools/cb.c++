@@ -24,6 +24,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <thread>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <chrono>
@@ -145,12 +146,17 @@ bool path_under_dir(std::string_view path, std::string_view dir)
 {
     if(path.starts_with(dir) and path.size() > dir.size() and path[dir.size()] == '/')
         return true;
-    auto needle = std::string{};
-    needle.reserve(dir.size() + 2);
-    needle.push_back('/');
-    needle.append(dir);
-    needle.push_back('/');
-    return path.contains(needle);
+    // Scan for `/dir/` without allocating a needle string.
+    for(auto i = std::size_t{1}; i + dir.size() < path.size(); ++i)
+    {
+        if(path[i - 1] != '/')
+            continue;
+        if(path.compare(i, dir.size(), dir) != 0)
+            continue;
+        if(path[i + dir.size()] == '/')
+            return true;
+    }
+    return false;
 }
 
 // True when `dir` is a complete component anywhere in path, including the path's leaf.
@@ -331,15 +337,15 @@ public:
     std::string_view unit() const { return is_modular ? std::string_view{module} : std::string_view{filename}; }
 
 private:
-    translation_unit(const fs::path& relative,
-                     const fs::path& full_path,
+    translation_unit(std::string_view relative_path,
+                     std::string_view absolute_path,
                      std::string module,
                      string_list imports,
                      unit_kind kind_value,
                      bool has_main_flag);
 
     static std::optional<std::string_view> supported_suffix(std::string_view filename);
-    static std::string normalize_relative_dir(const fs::path& dir);
+    static std::string normalize_relative_dir(std::string_view dir);
     static std::string make_display_path(std::string_view dir, std::string_view filename);
     static bool is_tester_framework_path(std::string_view path);
     static bool path_has_test_segment(std::string_view path);
@@ -390,12 +396,11 @@ std::string_view translation_unit::kind_name() const
     return "unknown";
 }
 
-std::string translation_unit::normalize_relative_dir(const fs::path& dir)
+std::string translation_unit::normalize_relative_dir(std::string_view dir)
 {
-    if(dir.empty())
-        return "";
-    auto str = dir.string();
-    return str == "." ? "" : str;
+    if(dir.empty() or dir == ".")
+        return {};
+    return std::string{dir};
 }
 
 std::string translation_unit::make_display_path(std::string_view dir, std::string_view filename)
@@ -437,14 +442,23 @@ bool translation_unit::determine_is_test(std::string_view rel_dir, std::string_v
     return path_has_test_segment(combined);
 }
 
-translation_unit::translation_unit(const fs::path& relative,
-                                          const fs::path& full_path,
+translation_unit::translation_unit(std::string_view relative_path,
+                                          std::string_view absolute_path,
                                           std::string module_value,
                                           string_list imports_value,
                                           unit_kind kind_value,
                                           bool has_main_flag)
-    : filename(relative.filename().string()),
-      path(normalize_relative_dir(relative.parent_path())),
+    : filename([&] {
+          const auto slash = relative_path.rfind('/');
+          return std::string{
+              slash == std::string_view::npos ? relative_path : relative_path.substr(slash + 1)};
+      }()),
+      path([&] {
+          const auto slash = relative_path.rfind('/');
+          if(slash == std::string_view::npos)
+              return std::string{};
+          return normalize_relative_dir(relative_path.substr(0, slash));
+      }()),
       suffix([&] {
           const auto matched = supported_suffix(this->filename);
           if(not matched)
@@ -452,9 +466,8 @@ translation_unit::translation_unit(const fs::path& relative,
           return *matched;
       }()),
       base_name(this->filename.substr(0, this->filename.size() - this->suffix.size())),
-      // collect() walks a weakly_canonical root, so the absolute entry path needs only
-      // lexical cleanup — not another symlink-resolving weakly_canonical per source.
-      full_path(fs::path{full_path}.lexically_normal().string()),
+      // collect() walks a weakly_canonical root; entry paths are already absolute and clean.
+      full_path(std::string{absolute_path}),
       display_path(make_display_path(this->path, this->filename)),
       module(std::move(module_value)),
       imports(std::move(imports_value)),
@@ -463,7 +476,7 @@ translation_unit::translation_unit(const fs::path& relative,
       is_test(determine_is_test(this->path, this->filename, this->suffix)),
       is_modular(kind_value == unit_kind::interface_unit or kind_value == unit_kind::partition_unit),
       last_modified([&] {
-          if(auto stamp = detail::file_time(full_path))
+          if(auto stamp = detail::file_time(absolute_path))
               return *stamp;
           throw std::runtime_error{"cannot read modification time"};
       }()) {}
@@ -1097,17 +1110,18 @@ private:
 
     static translation_unit parse(std::string_view relative_path, const fs::path& file_path)
     {
-        auto file = std::ifstream{file_path};
+        auto file = std::ifstream{file_path, std::ios::binary};
         if(not file)
             throw std::runtime_error{"cannot open file"};
 
-        auto line = std::string{};
         auto module_name = std::string{};
         auto imports = string_list{};
         auto kind = unit_kind::non_module;
         auto has_main = false;
-        auto lines_scanned = 0;
         constexpr auto max_lines = 1000;
+        // Cap the prefix read so a huge source does not enter the scanner whole; 512 KiB
+        // covers max_lines of ordinary code with room to spare.
+        constexpr auto max_prefix_bytes = std::size_t{512 * 1024};
 
         const auto trim = [](std::string_view text)
         {
@@ -1118,11 +1132,23 @@ private:
             return text.substr(start, end - start + 1);
         };
 
-        auto raw = std::string{};
-        while(lines_scanned++ < max_lines and std::getline(file, line))
+        file.seekg(0, std::ios::end);
+        const auto file_size = static_cast<std::size_t>(std::max<std::streamoff>(0, file.tellg()));
+        file.seekg(0);
+        const auto to_read = std::min(file_size, max_prefix_bytes);
+        auto raw = std::string(to_read, '\0');
+        file.read(raw.data(), static_cast<std::streamsize>(to_read));
+        raw.resize(static_cast<std::size_t>(file.gcount()));
+        auto newlines = std::size_t{0};
+        for(auto i = std::size_t{0}; i < raw.size(); ++i)
         {
-            raw += line;
-            raw += '\n';
+            if(raw[i] != '\n')
+                continue;
+            if(++newlines == max_lines)
+            {
+                raw.resize(i + 1);
+                break;
+            }
         }
         // Splice only when a backslash is present — the common case is a no-op copy avoided.
         const auto spliced = raw.contains('\\') ? splice_physical_lines(raw) : std::string{};
@@ -1211,8 +1237,8 @@ private:
             throw std::runtime_error{"implementation unit missing module name"};
 
         return translation_unit{
-            fs::path{relative_path},
-            file_path,
+            relative_path,
+            file_path.native(),
             std::move(module_name),
             std::move(imports),
             kind,
@@ -2565,25 +2591,38 @@ public:
     }
 
 private:
-    static std::string dependency_signature(const std::string& input_path)
+    static void append_dependency_signature(std::string& out, const std::string& input_path)
     {
+        out += input_path;
+        out += ':';
         if(input_path.empty())
-            return input_path + ":missing";
+        {
+            out += "missing";
+            return;
+        }
         const auto stamp = detail::file_time(input_path);
         if(not stamp)
-            return input_path + ":missing";
+        {
+            out += "missing";
+            return;
+        }
         const auto timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(stamp->time_since_epoch()).count();
-        return input_path + ":" + std::to_string(timestamp);
+        out += std::to_string(timestamp);
     }
 
     std::string dependency_signatures_joined(string_span paths) const
     {
-        return paths
-            | std::views::transform([&](const std::string& input_path) {
-                  return dependency_signature(input_path);
-              })
-            | std::views::join_with("|"sv)
-            | std::ranges::to<std::string>();
+        auto out = std::string{};
+        out.reserve(paths.size() * 64);
+        auto first = true;
+        for(const auto& input_path : paths)
+        {
+            if(not first)
+                out += '|';
+            first = false;
+            append_dependency_signature(out, input_path);
+        }
+        return out;
     }
 
     using map = std::flat_map<std::string, std::string, std::less<>>;
@@ -3227,7 +3266,7 @@ private:
 
         for(const auto& prerequisite : *prerequisites)
         {
-            const auto resolved = resolved_prerequisite(prerequisite);
+            const auto& resolved = resolved_prerequisite(prerequisite);
             // Explicitly mapped BMIs are module-graph inputs, not textual headers.
             if(resolved.path == tu.full_path
                or not detail::path_at_or_under_root(resolved.path, source_root_)
@@ -3256,22 +3295,26 @@ private:
     // weakly_canonical stats every path component (~13.6 us here against 0.4 us for a
     // lexical normalization), which is worth paying once per distinct path rather than
     // per occurrence — and the mtime is memoized with the path so a warm no-op does not
-    // re-stat the same header hundreds of times. Returned by value so concurrent inserts
-    // into the flat_map cannot invalidate a live reference. Resolution stays canonical.
-    resolved_prerequisite_info resolved_prerequisite(const std::string& prerequisite) const
+    // re-stat the same header hundreds of times. Arena storage keeps references stable
+    // across concurrent inserts (flat_map alone would invalidate them). Resolution stays
+    // canonical.
+    const resolved_prerequisite_info& resolved_prerequisite(const std::string& prerequisite) const
     {
         {
             auto lock = std::lock_guard<std::mutex>{resolved_mutex_};
-            if(resolved_.contains(prerequisite))
-                return resolved_.at(prerequisite);
+            if(resolved_index_.contains(prerequisite))
+                return resolved_arena_.at(resolved_index_.at(prerequisite));
         }
         auto path = detail::canonical_path(prerequisite);
         auto stamp = detail::file_time(path);
         auto info = resolved_prerequisite_info{.path = std::move(path), .stamp = stamp};
         {
             auto lock = std::lock_guard<std::mutex>{resolved_mutex_};
-            const auto [it, inserted] = resolved_.emplace(prerequisite, info);
-            return inserted ? info : it->second;
+            if(resolved_index_.contains(prerequisite))
+                return resolved_arena_.at(resolved_index_.at(prerequisite));
+            resolved_index_.emplace(prerequisite, resolved_arena_.size());
+            resolved_arena_.push_back(std::move(info));
+            return resolved_arena_.back();
         }
     }
 
@@ -3283,7 +3326,8 @@ private:
     mutable std::mutex decisions_mutex_{};
     mutable std::flat_map<std::string_view, std::optional<output::rebuild_info>, std::less<>> decisions_{};
     mutable std::mutex resolved_mutex_{};
-    mutable std::flat_map<std::string, resolved_prerequisite_info, std::less<>> resolved_{};
+    mutable std::deque<resolved_prerequisite_info> resolved_arena_{};
+    mutable std::flat_map<std::string, std::size_t, std::less<>> resolved_index_{};
 };
 
 } // namespace cache
@@ -3725,14 +3769,15 @@ private:
         if(not file)
             return {};
 
-        auto text = std::string{
-            std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
-        auto diag = output::diagnostics{.path = std::string{path}, .bytes = text.size()};
-        if(text.size() > output::diagnostics_head_limit)
-        {
-            text.resize(output::diagnostics_head_limit);
-            diag.truncated = true;
-        }
+        file.seekg(0, std::ios::end);
+        const auto bytes = static_cast<std::size_t>(std::max<std::streamoff>(0, file.tellg()));
+        file.seekg(0);
+        auto diag = output::diagnostics{.path = std::string{path}, .bytes = bytes};
+        const auto head = std::min(bytes, output::diagnostics_head_limit);
+        auto text = std::string(head, '\0');
+        file.read(text.data(), static_cast<std::streamsize>(head));
+        text.resize(static_cast<std::size_t>(file.gcount()));
+        diag.truncated = bytes > output::diagnostics_head_limit;
         diag.head = std::move(text);
         return diag;
     }
@@ -4911,6 +4956,7 @@ public:
     {
         const auto path = detail::join_dir(source_dir, compile_commands_filename);
         detail::write_atomic_file(path, "compile commands database", [&](std::ostream& file) {
+            const auto escaped_dir = output::jsonl::escape(source_dir);
             file << "[\n";
             auto first = true;
             for(const auto& tu : project_.units)
@@ -4920,9 +4966,11 @@ public:
                 first = false;
                 const auto arguments = compile_argv_for_database(tu);
                 file << "  {\n";
-                file << "    \"directory\": \"" << output::jsonl::escape(source_dir) << "\",\n";
+                file << "    \"directory\": \"" << escaped_dir << "\",\n";
                 file << "    \"file\": \"" << output::jsonl::escape(tu.full_path) << "\",\n";
-                file << "    \"arguments\": [" << output::jsonl::join_json_strings(arguments) << "]\n";
+                file << "    \"arguments\": [";
+                output::jsonl::write_json_strings(file, arguments);
+                file << "]\n";
                 file << "  }";
             }
             file << "\n]\n";
@@ -4956,7 +5004,9 @@ public:
                 if(not unit.module.empty())
                     file << "      \"module\": \"" << output::jsonl::escape(unit.module) << "\",\n";
                 file << "      \"kind\": \"" << output::jsonl::escape(unit.kind) << "\",\n";
-                file << "      \"imports\": [" << output::jsonl::join_json_strings(unit.imports) << "],\n";
+                file << "      \"imports\": [";
+                output::jsonl::write_json_strings(file, unit.imports);
+                file << "],\n";
                 if(unit.level >= 0)
                     file << "      \"level\": " << unit.level << ",\n";
                 file << "      \"has_main\": " << (unit.has_main ? "true" : "false") << ",\n";
