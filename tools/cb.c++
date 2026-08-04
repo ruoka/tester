@@ -1142,14 +1142,14 @@ inline std::string shell_quote(std::string_view arg)
 // without opening build_tree (paths) early.
 namespace artifacts {
 
-struct unit_artifacts
+struct of_unit
 {
     std::string object{};
     std::string bmi{};
     std::string executable{};
 };
 
-using artifact_index = std::flat_map<std::string_view, unit_artifacts, std::less<>>;
+using index = std::flat_map<std::string_view, of_unit, std::less<>>;
 
 } // namespace artifacts
 
@@ -1193,6 +1193,22 @@ struct artifact_conventions
     std::string_view executable_extension;
 };
 
+// Non-owning snapshot of post-construction identity and flag lists — driver-neutral shape.
+struct driver_state
+{
+    const std::string& toolchain_root;
+    const std::string& compiler;
+    const std::string& compiler_signature;
+    const std::string& std_module_source;
+    const std::string& std_module_profile;
+    const string_list& compile;
+    const string_list& link;
+    const string_list& cpp;
+    const string_list& modules;
+    const string_list& extra_compile;
+    const string_list& extra_link;
+};
+
 constexpr std::string_view host_os()
 {
 #if defined(__linux__)
@@ -1222,22 +1238,6 @@ public:
                 .executable_extension = ""};
 #endif
     }
-
-    // Non-owning snapshot of post-construction identity and flag lists.
-    struct state
-    {
-        const std::string& toolchain_root;
-        const std::string& compiler;
-        const std::string& compiler_signature;
-        const std::string& std_module_source;
-        const std::string& std_module_profile;
-        const string_list& compile;
-        const string_list& link;
-        const string_list& cpp;
-        const string_list& modules;
-        const string_list& extra_compile;
-        const string_list& extra_link;
-    };
 
     struct settings
     {
@@ -1289,7 +1289,7 @@ public:
     }
     bool static_linking() const { return linkage_ == linkage::static_; }
 
-    state state() const
+    driver_state state() const
     {
         return {
             llvm_prefix_,
@@ -1317,7 +1317,7 @@ public:
 
     // One or two clang invocations; argv is moved into `step` (no plan vector).
     void compile(const source::translation_unit& tu,
-                 const artifacts::unit_artifacts& artifacts,
+                 const artifacts::of_unit& artifacts,
                  const module_interface_map& interfaces,
                  bool object_only,
                  std::invocable<string_list, compile_step> auto&& step) const
@@ -1368,7 +1368,7 @@ public:
     }
 
     string_list compile_database_argv(const source::translation_unit& tu,
-                                      const artifacts::unit_artifacts& artifacts,
+                                      const artifacts::of_unit& artifacts,
                                       const module_interface_map& interfaces) const
     {
         const auto imports = module_file_flags(tu, interfaces);
@@ -1613,7 +1613,7 @@ private:
     }
 
     string_list compile_bmi_argv(const source::translation_unit& tu,
-                                 const artifacts::unit_artifacts& artifacts,
+                                 const artifacts::of_unit& artifacts,
                                  string_span imports) const
     {
         auto argv = base_compile_argv();
@@ -1638,7 +1638,7 @@ private:
     }
 
     string_list compile_module_object_argv(const source::translation_unit& tu,
-                                           const artifacts::unit_artifacts& artifacts,
+                                           const artifacts::of_unit& artifacts,
                                            string_span imports) const
     {
         auto argv = base_compile_argv();
@@ -1651,7 +1651,7 @@ private:
     }
 
     string_list compile_source_object_argv(const source::translation_unit& tu,
-                                           const artifacts::unit_artifacts& artifacts,
+                                           const artifacts::of_unit& artifacts,
                                            string_span imports) const
     {
         auto argv = base_compile_argv();
@@ -1756,13 +1756,13 @@ private:
     string_list extra_link_flags_{};
 };
 
-// Portable compile/link surface. clang_driver is the only model today; build_system depends on
-// this shape rather than Clang-specific members.
+// Portable compile/link surface. clang_driver is the only model today; checked by static_assert
+// below. A second model means templating build_system on driver — the member is still concrete.
 template<typename T>
 concept driver = requires(
     const T& d,
     const source::translation_unit& tu,
-    const artifacts::unit_artifacts& art,
+    const artifacts::of_unit& art,
     const module_interface_map& interfaces,
     std::string_view executable,
     std::string_view std_bmi,
@@ -1774,7 +1774,7 @@ concept driver = requires(
     { T::artifacts() } -> std::same_as<artifact_conventions>;
     { d.module_phases_name() } -> std::convertible_to<std::string_view>;
     { d.static_linking() } -> std::convertible_to<bool>;
-    { d.state() };
+    { d.state() } -> std::same_as<driver_state>;
     { d.warnings() } -> std::same_as<string_list>;
     { d.version_argv() } -> std::same_as<string_list>;
     { d.compile_database_argv(tu, art, interfaces) } -> std::same_as<string_list>;
@@ -1897,7 +1897,7 @@ namespace output {
 // rest is build state, and cb-observer.h++ stays independent of the scanner. The bmi path is the
 // one derived field, and deriving it here is why compile_start and compile_end cannot disagree.
 compile_unit compile_unit_of(const source::translation_unit& tu,
-                             const artifacts::unit_artifacts& artifacts)
+                             const artifacts::of_unit& artifacts)
 {
     return {.source = tu.full_path,
             .object = artifacts.object,
@@ -2826,13 +2826,13 @@ class analyzer
 public:
     analyzer(std::string source_root,
              std::string bmi_root,
-             const artifacts::artifact_index& unit_artifacts)
+             const artifacts::index& unit_artifacts)
         : source_root_{detail::canonical_path(source_root)},
           bmi_root_{detail::canonical_path(bmi_root)},
           unit_artifacts_{unit_artifacts}
     {}
 
-    const artifacts::unit_artifacts& artifacts_of(const source::translation_unit& tu) const
+    const artifacts::of_unit& artifacts_of(const source::translation_unit& tu) const
     {
         return unit_artifacts_.at(tu.unit);
     }
@@ -3035,7 +3035,7 @@ private:
 
     static output::rebuild_info bmi_rebuild(output::rebuild_kind kind,
                                             const source::translation_unit& tu,
-                                            const artifacts::unit_artifacts& artifacts)
+                                            const artifacts::of_unit& artifacts)
     {
         return {.kind = kind,
                 .module = tu.module,
@@ -3085,7 +3085,7 @@ private:
 
     std::optional<output::rebuild_info> stale_header(
         const source::translation_unit& tu,
-        const artifacts::unit_artifacts& artifacts,
+        const artifacts::of_unit& artifacts,
         fs::file_time_type freshness_timestamp) const
     {
         const auto depfile = build_tree::paths::depfile(artifacts.object);
@@ -3139,7 +3139,7 @@ private:
 
     std::string source_root_;
     std::string bmi_root_;
-    const artifacts::artifact_index& unit_artifacts_;
+    const artifacts::index& unit_artifacts_;
     // Decisions and resolved paths are shared by the compile workers; the analyzer itself
     // stays logically const, so both caches lock rather than serialize the callers.
     mutable std::mutex decisions_mutex_{};
@@ -3660,11 +3660,11 @@ clang_driver clang_driver::make(
 struct scanned_project
 {
     source::translation_unit_list units{};
-    artifacts::artifact_index artifacts{};
+    artifacts::index artifacts{};
     source::unit_index by_unit{};
     toolchain::module_interface_map interfaces{};
 
-    const artifacts::unit_artifacts& artifacts_of(const source::translation_unit& tu) const
+    const artifacts::of_unit& artifacts_of(const source::translation_unit& tu) const
     {
         return artifacts.at(tu.unit);
     }
@@ -3710,7 +3710,9 @@ private:
     const bool include_tests_for_build;
     int max_jobs = 0;
     process::runner process_runner;
-    toolchain::clang_driver driver; // models toolchain::driver
+    // Concrete today; toolchain::driver is checked by static_assert. A second model means
+    // templating build_system — this member is not a concept-constrained placeholder.
+    toolchain::clang_driver driver;
     std::string_view config_name() const
     {
         switch(config)
@@ -3914,7 +3916,7 @@ private:
 
         for(const auto& tu : project_.units)
         {
-            auto artifacts = artifacts::unit_artifacts{};
+            auto artifacts = artifacts::of_unit{};
             const auto& source_label = tu.display_path;
             artifacts.object = artifact_paths.object(tu);
             claim(object_owners, artifacts.object, source_label, "object");
@@ -4166,7 +4168,7 @@ private:
         auto schedule = compile_schedule{project_.units};
         auto rebuilt = std::vector<unsigned char>(schedule.unit_count());
         auto failures = execution::failure_latch{};
-        auto& analyzer = freshness();
+        auto& freshness_of = freshness();
 
         execution::run_workers(
             execution::worker_count(job_limit(), schedule.unit_count()),
@@ -4177,11 +4179,11 @@ private:
                     try
                     {
                         const auto& tu = project_.units[*index];
-                        const auto reason = analyzer.rebuild_reason_for(tu, objects, project_.by_unit);
+                        const auto reason = freshness_of.rebuild_reason_for(tu, objects, project_.by_unit);
                         if(reason)
                         {
                             compile_one(tu, *reason, [&]() { schedule.publish(*index, failures); });
-                            analyzer.artifacts_changed(tu);
+                            freshness_of.artifacts_changed(tu);
                             rebuilt[*index] = 1;
                         }
                         else
@@ -5095,7 +5097,9 @@ private:
         {"--include", false, token_owner::cb},
         {"--link-flags", false, token_owner::cb},
         {"--compile-flags", false, token_owner::cb},
+        {"--compile-flags=", true, token_owner::cb},
         {"--extra-compile-flags", false, token_owner::cb},
+        {"--extra-compile-flags=", true, token_owner::cb},
         {"--modules=", true, token_owner::cb},
         {"--list", false, token_owner::test_runner},
         {"--result", false, token_owner::test_runner},
