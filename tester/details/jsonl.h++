@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -16,6 +17,7 @@
 #include <iostream>
 #include <chrono>
 #include <random>
+#include <ranges>
 #include <type_traits>
 #include <unistd.h>
 
@@ -63,6 +65,13 @@ inline std::size_t utf8_sequence_length(std::string_view sv, std::size_t index)
 // makes the whole line unparseable for every downstream consumer.
 inline std::string escape(std::string_view sv)
 {
+    // Paths, module names, and kinds are almost always clean ASCII — copy once and return.
+    const auto needs_escape = std::ranges::any_of(sv, [](unsigned char ch) {
+        return ch < 0x20 or ch >= 0x80 or ch == '"' or ch == '\\';
+    });
+    if(not needs_escape)
+        return std::string{sv};
+
     constexpr auto replacement_character = "\xef\xbf\xbd";
 
     auto out = std::string{};
@@ -158,7 +167,8 @@ void emit_event_raw(Stream& os,
                     F&& add_fields)
 {
     os << "{\"type\":\"" << type << "\"";
-    os << ",\"schema\":\"" << escape(schema) << "\"";
+    // Callers pass a fixed schema literal (`tester-jsonl`); same trust as `type`.
+    os << ",\"schema\":\"" << schema << "\"";
     os << ",\"version\":" << version;
     os << ",\"pid\":" << pid_value;
     os << ",\"ts_unix_ms\":" << ts_unix_ms.count();

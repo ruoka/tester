@@ -267,22 +267,22 @@ public:
 
 private:
     // Collapse any isspace run to a single space; trim leading/trailing whitespace.
+    // A reserve + push_back loop — not fold_left — so the accumulator is not passed by value.
     static std::string collapse_whitespace(std::string_view text)
     {
-        auto out = std::ranges::fold_left(
-            text,
-            std::string{},
-            [](std::string acc, const char ch) {
-                if(std::isspace(static_cast<unsigned char>(ch)) != 0)
-                {
-                    if(not acc.empty() && acc.back() != ' ')
-                        acc += ' ';
-                }
-                else
-                    acc += ch;
-                return acc;
-            });
-        if(not out.empty() && out.back() == ' ')
+        auto out = std::string{};
+        out.reserve(text.size());
+        for(const char ch : text)
+        {
+            if(std::isspace(static_cast<unsigned char>(ch)) != 0)
+            {
+                if(not out.empty() and out.back() != ' ')
+                    out.push_back(' ');
+            }
+            else
+                out.push_back(ch);
+        }
+        if(not out.empty() and out.back() == ' ')
             out.pop_back();
         return out;
     }
@@ -501,19 +501,24 @@ public:
 
     // Unit keys this consumer waits on: explicit imports plus an implementation unit's primary
     // interface. Unknown imports remain a compiler diagnostic rather than a scanner failure.
-    template<typename KnownUnits, typename Visit>
-    requires std::invocable<Visit&, const std::string&>
+    // `resolve` maps a provider key to its unit index (one lookup); the visitor receives that index.
+    template<typename Resolve, typename Visit>
+    requires std::invocable<Resolve&, std::string_view>
+        and std::convertible_to<std::invoke_result_t<Resolve&, std::string_view>,
+                                std::optional<std::size_t>>
+        and std::invocable<Visit&, std::size_t>
     static void for_each_provider(const translation_unit& tu,
-                                  const KnownUnits& known,
+                                  Resolve&& resolve,
                                   Visit&& visit)
     {
         // Names are owned by the TU; the set only deduplicates for this call.
         auto seen = std::flat_set<std::string_view, std::less<>>{};
         const auto consider = [&](const std::string& key)
         {
-            if(not known.contains(key) or not seen.insert(key).second)
+            if(not seen.insert(key).second)
                 return;
-            visit(key);
+            if(const auto index = resolve(key))
+                visit(*index);
         };
 
         for(const auto& imported : tu.imports)
@@ -781,14 +786,13 @@ private:
         // inside a dead `#if` region or dead `#elif` arm.
         bool is_inactive(std::string_view line)
         {
-            // Directives are a tiny minority of lines; the cheap check keeps the regex off
+            // Directives are a tiny minority of lines; the cheap check keeps the parser off
             // the hot path of a scan that runs on every build, cached or not.
             if(line.contains('#'))
             {
-                auto m = std::cmatch{};
-                if(std::regex_match(line.data(), line.data() + line.size(), m, directive_regex))
+                if(const auto directive = parse_directive(line))
                 {
-                    apply(m[1].str(), m[2].str());
+                    apply(directive->first, directive->second);
                     return true;
                 }
             }
@@ -796,16 +800,79 @@ private:
         }
 
     private:
+        // `\s*#\s*(\w+)\s*(.*)` without std::regex or match-group string copies.
+        static std::optional<std::pair<std::string_view, std::string_view>>
+        parse_directive(std::string_view line)
+        {
+            auto index = std::size_t{0};
+            while(index < line.size()
+                  and std::isspace(static_cast<unsigned char>(line[index])) != 0)
+                ++index;
+            if(index >= line.size() or line[index] != '#')
+                return std::nullopt;
+            ++index;
+            while(index < line.size()
+                  and std::isspace(static_cast<unsigned char>(line[index])) != 0)
+                ++index;
+            const auto name_start = index;
+            while(index < line.size())
+            {
+                const auto ch = static_cast<unsigned char>(line[index]);
+                if(std::isalnum(ch) == 0 and line[index] != '_')
+                    break;
+                ++index;
+            }
+            if(name_start == index)
+                return std::nullopt;
+            const auto name = line.substr(name_start, index - name_start);
+            while(index < line.size()
+                  and std::isspace(static_cast<unsigned char>(line[index])) != 0)
+                ++index;
+            return std::pair{name, line.substr(index)};
+        }
+
         // False without evaluating anything: the constant, in any grouping, optionally
-        // short-circuiting the rest away. Grouping and whitespace carry no meaning here, so they go
-        // first and `(0) && defined(X)` reads as `0&&definedX`. `!0` and `0 || X` stay live.
+        // short-circuiting the rest away. Grouping and whitespace carry no meaning here, so
+        // `(0) && defined(X)` reads as `0&&…`. `!0` and `0 || X` stay live.
         static bool is_never_taken(std::string_view condition)
         {
-            const auto normalized = condition
-                | std::views::filter([](char c) { return c != '(' and c != ')' and not std::isspace(static_cast<unsigned char>(c)); })
-                | std::ranges::to<std::string>();
-            return normalized == "0" or normalized == "false"
-                or normalized.starts_with("0&&") or normalized.starts_with("false&&");
+            auto index = std::size_t{0};
+            const auto next = [&]() -> int
+            {
+                while(index < condition.size())
+                {
+                    const auto ch = condition[index++];
+                    if(ch != '(' and ch != ')'
+                       and std::isspace(static_cast<unsigned char>(ch)) == 0)
+                        return static_cast<unsigned char>(ch);
+                }
+                return -1;
+            };
+            const auto match = [&](std::string_view literal)
+            {
+                const auto saved = index;
+                for(const char expected : literal)
+                {
+                    if(next() != static_cast<unsigned char>(expected))
+                    {
+                        index = saved;
+                        return false;
+                    }
+                }
+                return true;
+            };
+            const auto constant_then_end_or_and = [&](std::string_view constant)
+            {
+                if(not match(constant))
+                    return false;
+                const auto saved = index;
+                const auto ch = next();
+                if(ch < 0)
+                    return true;
+                index = saved;
+                return match("&&");
+            };
+            return constant_then_end_or_and("false") or constant_then_end_or_and("0");
         }
 
         void apply(std::string_view name, std::string_view condition)
@@ -836,11 +903,6 @@ private:
                     m_skip_depth = m_if_depth;
             }
         }
-
-        // Group 2 is the whole condition, so a trailing operand cannot fail the full-line
-        // match: `#if 0 && OLD` used to match nothing, leaving the directive unrecognised,
-        // its body live, and the `#endif` depth bookkeeping off by one.
-        inline static const std::regex directive_regex{R"(\s*#\s*(\w+)\s*(.*))"};
 
         int m_if_depth = 0;
         int m_skip_depth = 0;
@@ -958,13 +1020,14 @@ private:
             return units;
 
         // One sorted index over borrowed keys — O(n log n) — instead of n midpoint inserts
-        // into flat_map (O(n²) string moves).
+        // into flat_map (O(n²) string moves). Sorted by (key, index) so duplicate diagnostics
+        // name the earlier-scanned unit first (unstable sort-by-key alone can swap them).
         auto keys = std::views::iota(std::size_t{0}, units.size())
             | std::views::transform([&](std::size_t i) {
                   return std::pair{std::string_view{units[i].unit}, i};
               })
             | std::ranges::to<std::vector>();
-        std::ranges::sort(keys, {}, &std::pair<std::string_view, std::size_t>::first);
+        std::ranges::sort(keys);
         if(const auto clash = std::ranges::adjacent_find(
                keys, {}, &std::pair<std::string_view, std::size_t>::first);
            clash != keys.end())
@@ -984,19 +1047,14 @@ private:
                 return std::nullopt;
             return found->second;
         };
-        struct known_units
-        {
-            decltype(index_of) const& index_of;
-            bool contains(std::string_view key) const { return index_of(key).has_value(); }
-        } const known{index_of};
 
         auto dependents = std::vector<std::vector<std::uint32_t>>(units.size());
         auto indegree = std::vector<std::uint32_t>(units.size());
         for(auto index = std::size_t{0}; index < units.size(); ++index)
         {
-            for_each_provider(units[index], known, [&](const std::string& provider)
+            for_each_provider(units[index], index_of, [&](std::size_t provider)
             {
-                dependents[*index_of(provider)].push_back(static_cast<std::uint32_t>(index));
+                dependents[provider].push_back(static_cast<std::uint32_t>(index));
                 ++indegree[index];
             });
         }
@@ -1185,15 +1243,17 @@ class runner;
 inline std::string shell_quote(std::string_view arg)
 {
     // POSIX: wrap in single quotes; internal ' becomes '\''.
-    auto out = std::ranges::fold_left(arg, "'"s, [](std::string acc, char c)
+    auto out = std::string{};
+    out.reserve(arg.size() + 2 + static_cast<std::size_t>(std::ranges::count(arg, '\'')) * 3);
+    out.push_back('\'');
+    for(const char c : arg)
     {
         if(c == '\'')
-            acc += "'\\''"sv;
+            out += "'\\''"sv;
         else
-            acc += c;
-        return acc;
-    });
-    out += '\'';
+            out.push_back(c);
+    }
+    out.push_back('\'');
     return out;
 }
 
@@ -3556,13 +3616,19 @@ public:
         if(argv.empty())
             throw std::logic_error{"invoke_shell: empty argv"};
 
-        auto cmd_str = join_argv(argv);
-        auto shell_line = cmd_str;
+        // One quoted line; observers see the unredirected prefix as a view (no second copy).
+        auto shell_line = join_argv(argv);
+        const auto cmd_size = shell_line.size();
         if(not capture_path.empty())
-            shell_line += " > " + shell_quote(capture_path) + " 2>&1";
+        {
+            shell_line += " > ";
+            shell_line += shell_quote(capture_path);
+            shell_line += " 2>&1";
+        }
+        const auto cmd = std::string_view{shell_line}.substr(0, cmd_size);
 
-        notify(&observer::command, cmd_str);
-        notify(&observer::command_start, cmd_str, argv);
+        notify(&observer::command, cmd);
+        notify(&observer::command_start, cmd, argv);
 
         const auto started = std::chrono::steady_clock::now();
         // Apple's libc serializes std::system; posix_spawn does not. Still go through
@@ -3603,7 +3669,7 @@ public:
         if(not spawn_error.empty() and result.diag.head.empty())
             result.diag.head = std::move(spawn_error);
 
-        notify(&observer::command_end, cmd_str, argv, result, output::interval{started, finished});
+        notify(&observer::command_end, cmd, argv, result, output::interval{started, finished});
         return result;
     }
 
@@ -3947,31 +4013,43 @@ private:
         }
 
         // Claim paths via sorted views into the artifact strings — not n flat_map mid-inserts.
-        // Views must be taken after `entries` owns the strings, and checked before `entries` sorts.
+        // Views must be taken after `entries` owns the strings. Sort by (path, claim order) so
+        // duplicate diagnostics name the earlier claimer first.
         struct claim
         {
             std::string_view path;
             std::string_view owner;
             std::string_view kind;
+            std::size_t order = 0;
         };
         const auto std_object = artifact_paths.std_object();
         const auto std_bmi = artifact_paths.std_bmi();
         auto claims = std::vector<claim>{};
         claims.reserve(entries.size() * 2 + 2);
-        claims.push_back({std_object, "reserved std module object", "object"});
-        claims.push_back({std_bmi, "reserved std module BMI", "BMI"});
+        const auto push_claim = [&](std::string_view path,
+                                    std::string_view owner,
+                                    std::string_view kind)
+        {
+            claims.push_back({path, owner, kind, claims.size()});
+        };
+        push_claim(std_object, "reserved std module object", "object");
+        push_claim(std_bmi, "reserved std module BMI", "BMI");
         for(std::size_t i = 0; i < entries.size(); ++i)
         {
             const auto& tu = project_.units[i];
             const auto& art = entries[i].second;
-            claims.push_back({art.object, tu.display_path, "object"});
+            push_claim(art.object, tu.display_path, "object");
             if(not art.bmi.empty())
-                claims.push_back({art.bmi, tu.display_path, "BMI"});
+                push_claim(art.bmi, tu.display_path, "BMI");
             if(not art.executable.empty())
-                claims.push_back({art.executable, tu.display_path, "executable"});
+                push_claim(art.executable, tu.display_path, "executable");
         }
 
-        std::ranges::sort(claims, {}, &claim::path);
+        std::ranges::sort(claims, [](const claim& left, const claim& right) {
+            if(left.path != right.path)
+                return left.path < right.path;
+            return left.order < right.order;
+        });
         if(const auto clash = std::ranges::adjacent_find(claims, {}, &claim::path);
            clash != claims.end())
         {
@@ -3982,7 +4060,7 @@ private:
                 + " (object/module names must stay unique)"};
         }
 
-        std::ranges::sort(entries, {}, &std::pair<std::string_view, artifacts::of_unit>::first);
+        // `ranges::to<flat_map>` sorts by key; no need to pre-sort `entries`.
         project_.artifacts = std::move(entries) | std::ranges::to<artifacts::index>();
     }
 
@@ -4122,7 +4200,7 @@ private:
                       return std::pair{std::string_view{units[i].unit}, i};
                   })
                 | std::ranges::to<std::vector>();
-            std::ranges::sort(keys, {}, &std::pair<std::string_view, std::size_t>::first);
+            std::ranges::sort(keys);
 
             const auto index_of = [&](std::string_view key) -> std::optional<std::size_t>
             {
@@ -4132,18 +4210,13 @@ private:
                     return std::nullopt;
                 return found->second;
             };
-            struct known_units
-            {
-                decltype(index_of) const& index_of;
-                bool contains(std::string_view key) const { return index_of(key).has_value(); }
-            } const known{index_of};
 
             for(auto index = std::size_t{0}; index < unit_count_; ++index)
             {
                 source::scanner::for_each_provider(
-                    units[index], known, [&](const std::string& provider)
+                    units[index], index_of, [&](std::size_t provider)
                 {
-                    dependents_[*index_of(provider)].push_back(index);
+                    dependents_[provider].push_back(index);
                     ++dependencies_remaining_[index];
                 });
             }

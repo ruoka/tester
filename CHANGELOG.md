@@ -16,7 +16,10 @@ tag; cutting a release renames that section.
   `:` becomes `-`; dots stay (`demo.app.pcm`). Compile and `compile_commands.json`
   argv no longer expand a transitive `-fmodule-file=` closure for project modules
   (`std` remains explicit). Existing trees rebuild modular units against the new
-  names on the next build (orphan `*-` dotted BMIs under `bmi/` are harmless).
+  names on the next build; dash-folded BMIs left under `bmi/` are unused orphans
+  (link inputs come from the artifact index, not a directory glob). Run
+  `./tools/CB.sh debug clean` once after upgrading if you want the tree to match
+  the live set.
 - **Two-phase modular rebuilds enqueue `pcm→.o` as a separate ready job** after BMI
   publish, so a worker can claim an importer instead of finishing the provider
   object on the same claim.
