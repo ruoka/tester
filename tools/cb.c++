@@ -539,18 +539,39 @@ private:
     // Parent repos vendor packages under deps/<name>/. Nested checkouts such as
     // deps/net/deps/tester belong to the child package and must not join the parent
     // build — otherwise same-basename smoke fixtures collide across packages.
+    //
+    // Also recognise the same nesting under a vendored tree that is not itself named
+    // deps/ at the repo root (e.g. YarDB/deps/net/deps/tester when YarDB is a submodule).
     static bool is_nested_dependency_path(std::string_view rel_path)
     {
-        if(not rel_path.starts_with(deps_dir_prefix))
-            return false;
+        auto search = rel_path;
+        while(not search.empty())
+        {
+            std::size_t deps_at = std::string_view::npos;
+            if(search.starts_with(deps_dir_prefix))
+                deps_at = 0;
+            else
+            {
+                const auto pos = search.find("/deps/");
+                if(pos == std::string_view::npos)
+                    return false;
+                deps_at = pos + 1; // point at the 'd' of "deps/..."
+            }
 
-        const auto rest = rel_path.substr(deps_dir_prefix.size());
-        const auto slash = rest.find('/');
-        if(slash == std::string_view::npos)
-            return false;
+            const auto from_deps = search.substr(deps_at);
+            const auto rest = from_deps.substr(deps_dir_prefix.size());
+            const auto slash = rest.find('/');
+            if(slash == std::string_view::npos)
+                return false;
 
-        const auto after_pkg = rest.substr(slash + 1);
-        return is_dir_or_under(after_pkg, deps_dir_name);
+            const auto after_pkg = rest.substr(slash + 1);
+            if(is_dir_or_under(after_pkg, deps_dir_name))
+                return true;
+
+            // Advance past this "deps/" and keep looking for a deeper nesting.
+            search = rest;
+        }
+        return false;
     }
 
     // Top-level build-* trees are outputs (CB, Make, CMake), not project sources.
