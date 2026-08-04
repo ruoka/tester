@@ -236,21 +236,79 @@ auto display_classname(std::string_view file, std::uint_least32_t line)
     return std::string{file} + ':' + std::to_string(line);
 }
 
-// "test_case -> description" / "given -> …" → a flat CI title. Suite cases drop the
-// redundant role; BDD steps keep it so given/when/then stay distinguishable.
-auto display_case_name(std::string_view test_name)
+auto role_of(std::string_view test_name)
 {
     constexpr auto arrow = " -> "sv;
     const auto split = test_name.find(arrow);
     if(split == std::string_view::npos)
+        return std::string_view{};
+    return test_name.substr(0, split);
+}
+
+// "test_case -> description" / "given -> …" → a flat CI title. Suite cases drop the
+// redundant role; BDD steps keep it so given/when/then stay distinguishable.
+auto display_case_name(std::string_view test_name)
+{
+    const auto role = role_of(test_name);
+    if(role.empty())
         return std::string{test_name};
 
-    const auto role = test_name.substr(0, split);
-    const auto description = test_name.substr(split + arrow.size());
+    const auto description = test_name.substr(role.size() + " -> "sv.size());
     if(role == "test_case"sv or role == "scenario"sv)
         return std::string{description};
 
     return std::string{role} + ": " + std::string{description};
+}
+
+auto is_suite_role(std::string_view role)
+{
+    return role == "scenario"sv or role == "test_case"sv;
+}
+
+auto is_step_role(std::string_view role)
+{
+    return role == "given"sv or role == "when"sv or role == "then"sv
+        or role == "section"sv or role == "and_given"sv or role == "and_when"sv
+        or role == "and_then"sv;
+}
+
+// Nested given/when/then/section never enter data::test_cases; top-level
+// scheduled cases do. That distinction folds steps under their parent without
+// collapsing the next scenario into the previous one.
+auto catalogued_ids()
+{
+    auto ids = std::flat_set<std::string, std::less<>>{};
+    for(const auto& tc : data::test_cases)
+        ids.insert(tc.test_id);
+    return ids;
+}
+
+struct result_bundle
+{
+    const data::test_result* root = nullptr;
+    std::vector<const data::test_result*> steps{};
+};
+
+auto bundle_results()
+{
+    const auto top_level = catalogued_ids();
+    auto bundles = std::vector<result_bundle>{};
+    for(const auto& result : data::results())
+    {
+        const auto role = role_of(result.test_name);
+        const auto open_suite = not bundles.empty()
+            and is_suite_role(role_of(bundles.back().root->test_name));
+        // Suite cases always start a row. Nested steps (not in the catalogue)
+        // fold into the open suite. Orphan steps that were scheduled top-level
+        // stay their own row because they are in the catalogue.
+        const auto nested_step = is_step_role(role) and open_suite
+            and not top_level.contains(result.test_id);
+        if(is_suite_role(role) or bundles.empty() or not nested_step)
+            bundles.push_back({.root = &result, .steps = {}});
+        else
+            bundles.back().steps.push_back(&result);
+    }
+    return bundles;
 }
 
 auto suite_label(std::string_view tags)
@@ -401,30 +459,61 @@ private:
            << "</" << tag << ">\n";
     }
 
+    const test_events* events_for(const data::test_result& result) const
+    {
+        return by_test.contains(result.test_id) ? &by_test.at(result.test_id) : nullptr;
+    }
+
+    void collect_details(
+        const data::test_result& result,
+        std::vector<const failure_detail*>& failures,
+        std::vector<const failure_detail*>& errors) const
+    {
+        if(const auto* events = events_for(result); events != nullptr)
+        {
+            for(const auto& detail : events->failures)
+                failures.push_back(&detail);
+            for(const auto& detail : events->errors)
+                errors.push_back(&detail);
+        }
+    }
+
+    auto step_status_line(const data::test_result& step) const
+    {
+        const auto* events = events_for(step);
+        const auto failed = test_failed(step)
+            or (events != nullptr and (not events->failures.empty() or not events->errors.empty()));
+        return display_case_name(step.test_name) + (failed ? " — FAIL"s : " — ok"s);
+    }
+
     void write_report_locked(const run_summary& run)
     {
         if(path.empty() || written)
             return;
 
         const auto& stats = run.statistics;
+        const auto bundles = bundle_results();
         auto failures = std::size_t{0};
         auto errors = std::size_t{0};
         auto suite_time = std::chrono::nanoseconds{0};
 
-        // Suite totals count failed *cases* (JUnit / CI convention), not soft
-        // assertion rows — otherwise a case with three check_* failures inflates
-        // the summary badge past the number of red rows.
-        for(const auto& result : data::results())
+        // One JUnit row per top-level case (scenario/test_case); nested BDD steps
+        // fold into that row. Totals follow the bundled rows, not per-step results.
+        for(const auto& bundle : bundles)
         {
-            suite_time += result.duration;
-            const auto* events = by_test.contains(result.test_id)
-                ? &by_test.at(result.test_id)
-                : nullptr;
-            const auto has_failures = events != nullptr and not events->failures.empty();
-            const auto has_errors = events != nullptr and not events->errors.empty();
-            if(has_errors)
+            suite_time += bundle.root->duration;
+            auto bundle_failures = std::vector<const failure_detail*>{};
+            auto bundle_errors = std::vector<const failure_detail*>{};
+            collect_details(*bundle.root, bundle_failures, bundle_errors);
+            for(const auto* step : bundle.steps)
+                collect_details(*step, bundle_failures, bundle_errors);
+            const auto members_failed = test_failed(*bundle.root)
+                or std::ranges::any_of(bundle.steps, [](const data::test_result* step){
+                    return test_failed(*step);
+                });
+            if(not bundle_errors.empty())
                 ++errors;
-            else if(has_failures or test_failed(result))
+            else if(not bundle_failures.empty() or members_failed)
                 ++failures;
         }
 
@@ -434,7 +523,7 @@ private:
         if(empty_filter_failure)
             ++failures;
 
-        const auto tests_attr = empty_filter_failure ? 1uz : tests_total;
+        const auto tests_attr = empty_filter_failure ? 1uz : bundles.size();
         const auto suite_name = suite_label(run_tags);
         auto xml_body = std::ostringstream{};
         xml_body << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
@@ -471,31 +560,53 @@ private:
             xml_body << "    </testcase>\n";
         }
 
-        for(const auto& result : data::results())
+        for(const auto& bundle : bundles)
         {
-            const auto classname = display_path(result.file_name, run_cwd);
+            const auto& result = *bundle.root;
+            const auto root_path = display_path(result.file_name, run_cwd);
             const auto case_name = display_case_name(result.test_name);
-            const auto* events = by_test.contains(result.test_id)
-                ? &by_test.at(result.test_id)
-                : nullptr;
-            const auto has_failures = events != nullptr and not events->failures.empty();
-            const auto has_errors = events != nullptr and not events->errors.empty();
-            const auto failed = test_failed(result) or has_failures or has_errors;
 
-            // classname groups by the suite file; file/line navigate to the first
-            // failing assertion (or error site) when the case failed — CI summaries
-            // link those attributes, not the registration line of test_case(…).
-            auto nav_file = classname;
+            auto failure_details = std::vector<const failure_detail*>{};
+            auto error_details = std::vector<const failure_detail*>{};
+            collect_details(result, failure_details, error_details);
+            for(const auto* step : bundle.steps)
+                collect_details(*step, failure_details, error_details);
+
+            const auto root_failed = test_failed(result);
+            const auto step_failed = std::ranges::any_of(
+                bundle.steps, [&](const data::test_result* step){ return test_failed(*step); });
+            const auto failed = root_failed or step_failed
+                or not failure_details.empty() or not error_details.empty();
+
+            // Navigate to the first failing assertion in the bundle (step or root).
+            auto nav_file = root_path;
             auto nav_line = result.line;
-            if(has_failures)
+            if(not failure_details.empty())
             {
-                nav_file = events->failures.front().file;
-                nav_line = events->failures.front().line;
+                nav_file = failure_details.front()->file;
+                nav_line = failure_details.front()->line;
             }
-            else if(has_errors)
+            else if(not error_details.empty())
             {
-                nav_file = events->errors.front().file;
-                nav_line = events->errors.front().line;
+                nav_file = error_details.front()->file;
+                nav_line = error_details.front()->line;
+            }
+
+            auto system_out = std::string{};
+            if(not bundle.steps.empty())
+            {
+                for(const auto* step : bundle.steps)
+                {
+                    if(not system_out.empty())
+                        system_out += '\n';
+                    system_out += step_status_line(*step);
+                }
+            }
+            if(not result.output.empty())
+            {
+                if(not system_out.empty())
+                    system_out += '\n';
+                system_out += result.output;
             }
 
             const auto classname_with_line = display_classname(nav_file, nav_line);
@@ -506,7 +617,7 @@ private:
                      << " file=\"" << escape(nav_file) << '"'
                      << " line=\"" << nav_line << "\"";
 
-            if(not failed and result.output.empty())
+            if(not failed and system_out.empty())
             {
                 xml_body << "/>\n";
                 continue;
@@ -514,33 +625,30 @@ private:
 
             xml_body << ">\n";
 
-            if(has_failures)
+            if(not failure_details.empty())
             {
-                for(const auto& detail : events->failures)
-                    write_element(xml_body, "failure", detail);
+                for(const auto* detail : failure_details)
+                    write_element(xml_body, "failure", *detail);
             }
-            else if(test_failed(result) and not has_errors)
+            else if(failed and error_details.empty())
             {
                 auto detail = failure_detail{
                     .type = "test_failed"s,
                     .message = result.output.empty() ? "test failed"s : result.output,
                     .body = result.output,
-                    .file = classname,
+                    .file = root_path,
                     .line = result.line,
                     .column = result.column};
                 write_element(xml_body, "failure", detail);
             }
 
-            if(has_errors)
-            {
-                for(const auto& detail : events->errors)
-                    write_element(xml_body, "error", detail);
-            }
+            for(const auto* detail : error_details)
+                write_element(xml_body, "error", *detail);
 
-            if(not result.output.empty())
+            if(not system_out.empty())
             {
                 xml_body << "      <system-out>"
-                         << escape(result.output)
+                         << escape(system_out)
                          << "</system-out>\n";
             }
 

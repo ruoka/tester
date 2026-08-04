@@ -207,9 +207,90 @@ auto register_tests()
         require_true(xml.contains("xunit-xml alias writes the same report"));
     };
 
+    test_case("test_case [self] junit bundles BDD steps under the scenario") = []
+    {
+        const auto report = temp_report_path("tester_junit_bdd");
+        remove_quietly(report);
+
+        const auto result = run_test_runner({
+            "--jsonl=failures",
+            "--junit=" + report.string(),
+            "--tags=[.junit-bdd-probe]"});
+
+        require_eq(result.exit_code, 0);
+        require_true(std::filesystem::exists(report));
+        const auto xml = read_file_text(report);
+        remove_quietly(report);
+
+        // One JUnit row for the scenario — not one per given/when/then.
+        require_true(xml.contains("tests=\"1\""));
+        require_true(xml.contains("failures=\"0\""));
+        require_true(xml.contains("name=\"scenario [.junit-bdd-probe] checkout\""));
+        require_true(xml.contains("given: a cart — ok"));
+        require_true(xml.contains("when: the customer pays — ok"));
+        require_true(xml.contains("then: the order is confirmed — ok"));
+        require_false(xml.contains("name=\"given:"));
+        require_false(xml.contains("name=\"when:"));
+        require_false(xml.contains("name=\"then:"));
+    };
+
+    test_case("test_case [self] junit reports a failing step on the scenario row") = []
+    {
+        const auto report = temp_report_path("tester_junit_bdd_fail");
+        remove_quietly(report);
+
+        const auto result = run_test_runner({
+            "--jsonl=failures",
+            "--junit=" + report.string(),
+            "--tags=[.junit-bdd-fail-probe]"});
+
+        require_neq(result.exit_code, 0);
+        require_true(std::filesystem::exists(report));
+        const auto xml = read_file_text(report);
+        remove_quietly(report);
+
+        require_true(xml.contains("tests=\"1\""));
+        require_true(xml.contains("failures=\"1\""));
+        require_true(xml.contains("name=\"scenario [.junit-bdd-fail-probe] one step fails\""));
+        require_true(xml.contains("then: this one fails — FAIL"));
+        require_true(xml.contains("<failure "));
+        require_false(xml.contains("name=\"then:"));
+    };
+
+    return 0;
+}
+
+auto register_bdd_probes()
+{
+    using namespace tester::behavior_driven_development;
+    using namespace tester::assertions;
+
+    scenario("scenario [.junit-bdd-probe] checkout") = []
+    {
+        given("a cart") = []
+        {
+            when("the customer pays") = []
+            {
+                then("the order is confirmed") = []
+                {
+                    require_true(true);
+                };
+            };
+        };
+    };
+
+    scenario("scenario [.junit-bdd-fail-probe] one step fails") = []
+    {
+        then("this one fails") = []
+        {
+            check_eq(1, 2);
+        };
+    };
+
     return 0;
 }
 
 const auto _ = register_tests();
+const auto _bdd = register_bdd_probes();
 
 } // namespace tester::selftest::junit

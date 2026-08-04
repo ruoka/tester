@@ -23,7 +23,10 @@ tag; cutting a release renames that section.
   registration line; failure bodies use the same relative paths.
   `classname` is `path:line` so GitHub’s `test-summary` (which ignores the `line`
   attribute) still shows the line in the job Summary. Paths stay project-relative
-  even when `test_runner`’s cwd is a build subdirectory (CMake).
+  even when `test_runner`’s cwd is a build subdirectory (CMake). Nested BDD
+  `given` / `when` / `then` / `section` steps fold into their parent
+  `scenario` / `test_case` row (step list in `<system-out>`; a failing step fails
+  the parent row). JSONL is unchanged and still lists every step.
 - **Project BMI filenames match Clang's `-fprebuilt-module-path` lookup** — only
   `:` becomes `-`; dots stay (`demo.app.pcm`). Compile and `compile_commands.json`
   argv no longer expand a transitive `-fmodule-file=` closure for project modules
