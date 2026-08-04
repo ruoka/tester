@@ -3725,24 +3725,6 @@ private:
 
     // Initialization
 
-    void ensure_toolchain_profile()
-    {
-        if(toolchain_profile_probed)
-            return;
-        toolchain_profile_probed = true;
-
-        fs::create_directories(artifact_paths.cache);
-
-        const auto stamp = cache::compiler_stamp_store{artifact_paths.cache.string()};
-        if(process_runner.invoke_shell(driver.version_argv(), stamp.path()).ok())
-        {
-            compiler_version = stamp.read();
-            // Surface the probe's first line in console output.
-            if(not compiler_version.empty())
-                notify(&observer::info, compiler_version);
-        }
-    }
-
     void report_toolchain_configuration() const
     {
         const auto state = driver.state();
@@ -4394,12 +4376,42 @@ public:
         report_toolchain_configuration();
     }
 
-    // Store factories, status/invalidate/clean, and cache-index eviction. Paths and driver are
-    // injected; system_ remains only for profile/probe helpers. Which TUs are tests — and deleting
-    // their artefacts — stays on build_system (see clean_tests).
+    // Mutating toolchain probe (compiler version stamp). Call before cache status so the
+    // inventory's profile text and stamp file agree; object_cache_profile also probes lazily.
+    void ensure_toolchain_profile()
+    {
+        if(toolchain_profile_probed)
+            return;
+        toolchain_profile_probed = true;
+
+        fs::create_directories(artifact_paths.cache);
+
+        const auto stamp = cache::compiler_stamp_store{artifact_paths.cache.string()};
+        if(process_runner.invoke_shell(driver.version_argv(), stamp.path()).ok())
+        {
+            compiler_version = stamp.read();
+            // Surface the probe's first line in console output.
+            if(not compiler_version.empty())
+                notify(&observer::info, compiler_version);
+        }
+    }
+
+    // Store factories, status/invalidate/clean, and cache-index eviction. Constructed from paths,
+    // driver, and an object-cache profile provider (same invocable idiom as hydrate_for /
+    // rebuild_reason_for_standard_module; stored as std::function so caches() has a fixed type).
+    // Which TUs are tests — and deleting their artefacts — stays on build_system (see clean_tests).
     class cache_admin
     {
     public:
+        template<std::invocable ProfileOf>
+        cache_admin(const build_tree::paths& paths,
+                    const toolchain::clang_driver& driver,
+                    ProfileOf&& profile_of)
+            : paths_{paths},
+              driver_{driver},
+              profile_of_{std::forward<ProfileOf>(profile_of)}
+        {}
+
         cache::object_store make_object_store() const
         {
             return cache::object_store{paths_.cache.string()};
@@ -4440,7 +4452,7 @@ public:
             auto objects = make_object_store();
             if(not dropped_sources.empty() and objects.exists())
             {
-                objects.load(system_.object_cache_profile());
+                objects.load(profile_of_());
                 if(objects.missing_profile_header())
                     notify(&observer::info, "Object cache missing profile header; ignoring");
                 if(not objects.profile_change())
@@ -4467,10 +4479,9 @@ public:
 
         void status()
         {
-            system_.ensure_toolchain_profile();
             fs::create_directories(paths_.cache);
 
-            const auto current_profile = system_.object_cache_profile();
+            const auto current_profile = profile_of_();
             const auto objects = make_object_store();
             const auto object_status = objects.status(current_profile);
 
@@ -4514,17 +4525,17 @@ public:
         }
 
     private:
-        friend class build_system;
-        build_system& system_;
         const build_tree::paths& paths_;
         const toolchain::clang_driver& driver_;
-        explicit cache_admin(build_system& system)
-            : system_{system}, paths_{system.artifact_paths}, driver_{system.driver}
-        {}
+        std::function<std::string()> profile_of_;
     };
 
     // Named caches() so it does not collide with the cb::cache namespace at call sites.
-    cache_admin caches() { return cache_admin{*this}; }
+    // Non-const: the profile provider may probe the toolchain (see object_cache_profile).
+    cache_admin caches()
+    {
+        return {artifact_paths, driver, [this] { return object_cache_profile(); }};
+    }
 
     // Drop only test TU artefacts and the test_runner binary — leave library/app objects so the
     // next build recompiles tests without a full cold rebuild. Scans with include_tests on so
@@ -5058,7 +5069,7 @@ public:
             << "  cache invalidate Remove object/link cache indexes (lighter than clean)\n"
             << "  test [filter]  Build and run tests (optional substring filter)\n"
             << "                 Forward test_runner flags (e.g. --tags=, --list, --result);\n"
-            << "                 --help / --jsonl / --jobs= stay with CB (see runner_arguments)\n"
+            << "                 --jsonl / --jobs= apply to CB and are passed on to the runner\n"
             << "  static           Enable static linking (C++ stdlib static)\n"
             << "  --include-examples Include examples directory in build (excluded by default)\n"
             << "  --build-tests    Build tests in release mode (useful for CI to verify compilation)\n"
@@ -5271,6 +5282,7 @@ int main(int argc, char* argv[])
             build_system.list_sources();
         if(opts.do_cache_status)
         {
+            build_system.ensure_toolchain_profile();
             build_system.caches().status();
             return 0;
         }
