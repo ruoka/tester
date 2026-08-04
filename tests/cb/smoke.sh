@@ -2018,8 +2018,9 @@ test_pcm_edge_scheduler() {
     'import slow;' \
     'int main() { return slow_value() == 9 ? 0 : 1; }' > "${work_dir}/main.c++"
 
-  # Hold the provider's pcm→object step open. The importer should start after --precompile,
-  # before the provider's compile_end; a dependency-level barrier cannot satisfy that ordering.
+  # Hold the provider's pcm→object step open. After BMI publish, pcm→.o is a separate ready
+  # job, so even a single worker can claim the importer before finishing the provider object.
+  # A same-claim BMI+object schedule (or a dependency-level barrier) cannot pass with --jobs=1.
   real_cxx="$(cd "$(dirname "${STD_CPPM}")/../../.." && pwd)/bin/clang++"
   wrapper="${work_dir}/slow-clang++"
   cat > "${wrapper}" <<EOF
@@ -2037,7 +2038,7 @@ EOF
   old_llvm_cxx="${LLVM_CXX-}"
   llvm_cxx_was_set="${LLVM_CXX+x}"
   export LLVM_CXX="${wrapper}"
-  run_cb_build "${work_dir}" --jobs=2
+  run_cb_build "${work_dir}" --jobs=1
   if [[ -n "${llvm_cxx_was_set}" ]]; then
     export LLVM_CXX="${old_llvm_cxx}"
   else
@@ -2062,7 +2063,7 @@ PY
   then
     jsonl_emit '{"type":"smoke_assert_passed","matcher":"pcm_edge_releases_importer_early"}'
   else
-    fail "expected importer compile_start before provider compile_end"
+    fail "expected importer compile_start before provider compile_end (--jobs=1)"
   fi
   end_case pcm_edge_scheduler
 }

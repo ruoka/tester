@@ -24,6 +24,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <thread>
+#include <memory>
 #include <mutex>
 #include <chrono>
 #include <iostream>
@@ -1177,6 +1178,17 @@ using module_interface_map = std::flat_map<std::string, module_provider, std::le
 
 enum class compile_output : unsigned char { bmi, object };
 
+// Which clang invocations compile() should emit. `bmi` stops after --precompile so the
+// scheduler can publish and let the worker claim an importer while `object_followup`
+// turns the BMI into an object on a later claim.
+enum class compile_portion : unsigned char
+{
+    all,             // non-modular, one-phase, or two-phase BMI+object on one claim
+    bmi,             // two-phase --precompile only (dependencies_ready)
+    object,          // pcm→.o repair when the BMI is already fresh (dependencies_ready)
+    object_followup, // pcm→.o after a prior bmi portion already published (not ready again)
+};
+
 // Per clang invocation: which artefact the log names, and whether BMI / readiness flips.
 struct compile_step
 {
@@ -1319,7 +1331,7 @@ public:
     void compile(const source::translation_unit& tu,
                  const artifacts::of_unit& artifacts,
                  const module_interface_map& interfaces,
-                 bool object_only,
+                 compile_portion portion,
                  std::invocable<string_list, compile_step> auto&& step) const
     {
         const auto imports = module_file_flags(tu, interfaces);
@@ -1335,10 +1347,16 @@ public:
                  {.writes_bmi = true, .dependencies_ready = true});
             return;
         }
-        if(object_only)
+        if(portion == compile_portion::object or portion == compile_portion::object_followup)
         {
             step(compile_bmi_object_argv(artifacts.bmi, artifacts.object, imports),
-                 {.dependencies_ready = true});
+                 {.dependencies_ready = portion == compile_portion::object});
+            return;
+        }
+        if(portion == compile_portion::bmi)
+        {
+            step(compile_bmi_argv(tu, artifacts, imports),
+                 {.output = compile_output::bmi, .writes_bmi = true, .dependencies_ready = true});
             return;
         }
         step(compile_bmi_argv(tu, artifacts, imports),
@@ -1348,7 +1366,7 @@ public:
 
     void compile_standard_module(std::string_view std_bmi_path,
                                  std::string_view std_object_path,
-                                 bool object_only,
+                                 compile_portion portion,
                                  std::invocable<string_list, compile_step> auto&& step) const
     {
         if(module_phases_ == module_compilation::one_phase)
@@ -1357,9 +1375,15 @@ public:
                  {.writes_bmi = true});
             return;
         }
-        if(object_only)
+        if(portion == compile_portion::object or portion == compile_portion::object_followup)
         {
             step(compile_bmi_object_argv(std_bmi_path, std_object_path), {});
+            return;
+        }
+        if(portion == compile_portion::bmi)
+        {
+            step(compile_std_bmi_argv(std_bmi_path),
+                 {.output = compile_output::bmi, .writes_bmi = true});
             return;
         }
         step(compile_std_bmi_argv(std_bmi_path),
@@ -1769,7 +1793,7 @@ concept driver = requires(
     std::string_view std_object,
     string_span inputs,
     string_span import_flags,
-    bool object_only)
+    compile_portion portion)
 {
     { T::artifacts() } -> std::same_as<artifact_conventions>;
     { d.module_phases_name() } -> std::convertible_to<std::string_view>;
@@ -1779,8 +1803,8 @@ concept driver = requires(
     { d.version_argv() } -> std::same_as<string_list>;
     { d.compile_database_argv(tu, art, interfaces) } -> std::same_as<string_list>;
     { d.link_argv(executable, inputs, import_flags) } -> std::same_as<string_list>;
-    d.compile(tu, art, interfaces, object_only, [](string_list, compile_step) {});
-    d.compile_standard_module(std_bmi, std_object, object_only, [](string_list, compile_step) {});
+    d.compile(tu, art, interfaces, portion, [](string_list, compile_step) {});
+    d.compile_standard_module(std_bmi, std_object, portion, [](string_list, compile_step) {});
 };
 
 static_assert(driver<clang_driver>);
@@ -3982,9 +4006,13 @@ private:
         }
 
         auto compile = output::compile_scope{unit, *reason};
-        const auto object_only = reason->kind == output::rebuild_kind::object_missing or reason->kind == output::rebuild_kind::object_stale;
+        const auto portion =
+            reason->kind == output::rebuild_kind::object_missing
+                    or reason->kind == output::rebuild_kind::object_stale
+                ? toolchain::compile_portion::object
+                : toolchain::compile_portion::all;
         driver.compile_standard_module(
-            bmi, object, object_only,
+            bmi, object, portion,
             [&](string_list argv, toolchain::compile_step step)
             {
                 process_runner.run_step(
@@ -4001,11 +4029,20 @@ private:
 
     // Compilation
 
-    // Edge-driven readiness: a unit is claimable once every provider has published.
-    // Two-phase modular units publish after --precompile; everything else publishes when done.
+    // Edge-driven readiness: a unit job is claimable once every provider has published.
+    // Two-phase modular rebuilds split after --precompile: publish, enqueue an object_followup
+    // job, and let the worker claim an importer while pcm→.o runs on a later claim.
     class compile_schedule
     {
     public:
+        enum class job_kind : unsigned char { unit, object_followup };
+
+        struct job
+        {
+            std::size_t index = 0;
+            job_kind kind = job_kind::unit;
+        };
+
         explicit compile_schedule(const source::translation_unit_list& units)
             : unit_count_{units.size()},
               dependents_(unit_count_),
@@ -4028,12 +4065,12 @@ private:
 
             for(auto index = std::size_t{0}; index < unit_count_; ++index)
                 if(dependencies_remaining_[index] == 0)
-                    ready_.push(index);
+                    ready_.push({index, job_kind::unit});
             if(ready_.empty())
                 throw std::runtime_error{"No dependency-free translation unit"};
         }
 
-        std::optional<std::size_t> claim(const execution::failure_latch& failures)
+        std::optional<job> claim(const execution::failure_latch& failures)
         {
             auto lock = std::unique_lock<std::mutex>{mutex_};
             changed_.wait(lock, [&] {
@@ -4041,9 +4078,9 @@ private:
             });
             if(failures.failed() or completed_ == unit_count_)
                 return std::nullopt;
-            const auto index = ready_.front();
+            const auto next = ready_.front();
             ready_.pop();
-            return index;
+            return next;
         }
 
         void publish(std::size_t provider, const execution::failure_latch& failures)
@@ -4058,8 +4095,17 @@ private:
                 for(const auto dependent : dependents_[provider])
                 {
                     if(--dependencies_remaining_[dependent] == 0)
-                        ready_.push(dependent);
+                        ready_.push({dependent, job_kind::unit});
                 }
+            }
+            changed_.notify_all();
+        }
+
+        void enqueue_object_followup(std::size_t index)
+        {
+            {
+                auto lock = std::lock_guard<std::mutex>{mutex_};
+                ready_.push({index, job_kind::object_followup});
             }
             changed_.notify_all();
         }
@@ -4081,27 +4127,22 @@ private:
         std::size_t unit_count_ = 0;
         std::vector<std::vector<std::size_t>> dependents_{};
         std::vector<std::size_t> dependencies_remaining_{};
-        std::queue<std::size_t> ready_{};
+        std::queue<job> ready_{};
         std::vector<unsigned char> published_{};
         std::size_t completed_ = 0;
         std::mutex mutex_{};
         std::condition_variable changed_{};
     };
 
-    void compile_one(const source::translation_unit& tu,
-                     const output::rebuild_info& rebuild,
-                     std::invocable auto&& on_dependency_ready) {
+    void run_compile_steps(const source::translation_unit& tu,
+                           output::compile_scope& compile,
+                           toolchain::compile_portion portion,
+                           std::invocable auto&& on_dependency_ready)
+    {
         const auto& artifacts = project_.artifacts_of(tu);
         const auto unit = output::compile_unit_of(tu, artifacts);
-        auto compile = output::compile_scope{unit, rebuild};
-        // Two-phase: object_missing / object_stale reuse the BMI that is already there —
-        // same split build_std_module uses. Re-precompiling would bump the BMI mtime and
-        // force every importer through bmi_stale for no interface change.
-        // One-phase: the BMI is a sibling of the object (reduced on Clang 22+), not an
-        // input that can be compiled to an object — always re-read the source, as std does.
-        const auto object_only = rebuild.kind == output::rebuild_kind::object_missing or rebuild.kind == output::rebuild_kind::object_stale;
         driver.compile(
-            tu, artifacts, project_.interfaces, object_only,
+            tu, artifacts, project_.interfaces, portion,
             [&](string_list argv, toolchain::compile_step step)
             {
                 process_runner.run_step(
@@ -4111,7 +4152,6 @@ private:
                 if(step.dependencies_ready)
                     on_dependency_ready();
             });
-        compile.succeeded();
     }
 
     void compile_units() {
@@ -4126,40 +4166,87 @@ private:
 
         auto schedule = compile_schedule{project_.units};
         auto rebuilt = std::vector<unsigned char>(schedule.unit_count());
+        // Open compile_start for a split two-phase unit until its object_followup finishes.
+        auto pending = std::vector<std::unique_ptr<output::compile_scope>>(schedule.unit_count());
         auto failures = execution::failure_latch{};
         auto& freshness_of = freshness();
+        const auto two_phase = driver.module_phases_name() == "two-phase";
 
         execution::run_workers(
             execution::worker_count(job_limit(), schedule.unit_count()),
             [&]()
             {
-                while(auto index = schedule.claim(failures))
+                while(auto claimed = schedule.claim(failures))
                 {
+                    const auto index = claimed->index;
                     try
                     {
-                        const auto& tu = project_.units[*index];
-                        const auto reason = freshness_of.rebuild_reason_for(tu, objects, project_.by_unit);
-                        if(reason)
+                        const auto& tu = project_.units[index];
+                        if(claimed->kind == compile_schedule::job_kind::object_followup)
                         {
-                            compile_one(tu, *reason, [&]() { schedule.publish(*index, failures); });
+                            auto compile = std::move(pending[index]);
+                            run_compile_steps(
+                                tu, *compile, toolchain::compile_portion::object_followup, [] {});
+                            compile->succeeded();
+                            compile.reset();
                             freshness_of.artifacts_changed(tu);
-                            rebuilt[*index] = 1;
+                            rebuilt[index] = 1;
+                            schedule.complete_one();
+                            continue;
                         }
-                        else
+
+                        const auto reason = freshness_of.rebuild_reason_for(tu, objects, project_.by_unit);
+                        if(not reason)
                         {
                             {
                                 const auto hit = output::compile_scope{output::compile_unit_of(tu, project_.artifacts_of(tu))};
                             }
-                            schedule.publish(*index, failures);
+                            schedule.publish(index, failures);
+                            schedule.complete_one();
+                            continue;
                         }
+
+                        // Two-phase: object_missing / object_stale reuse the BMI — same split
+                        // build_std_module uses. Re-precompiling would bump the BMI mtime and
+                        // force every importer through bmi_stale for no interface change.
+                        // One-phase: the BMI is a sibling of the object, not a pcm→.o input.
+                        const auto object_only =
+                            reason->kind == output::rebuild_kind::object_missing
+                            or reason->kind == output::rebuild_kind::object_stale;
+                        const auto split = two_phase and tu.is_modular and not object_only;
+                        const auto unit = output::compile_unit_of(tu, project_.artifacts_of(tu));
+
+                        if(split)
+                        {
+                            auto compile = std::make_unique<output::compile_scope>(unit, *reason);
+                            run_compile_steps(
+                                tu, *compile, toolchain::compile_portion::bmi,
+                                [&]() { schedule.publish(index, failures); });
+                            // Park the open compile_scope before the followup is claimable.
+                            pending[index] = std::move(compile);
+                            schedule.enqueue_object_followup(index);
+                            // Unit completion waits for the object_followup claim.
+                            continue;
+                        }
+
+                        auto compile = output::compile_scope{unit, *reason};
+                        const auto portion = object_only
+                            ? toolchain::compile_portion::object
+                            : toolchain::compile_portion::all;
+                        run_compile_steps(
+                            tu, compile, portion, [&]() { schedule.publish(index, failures); });
+                        compile.succeeded();
+                        freshness_of.artifacts_changed(tu);
+                        rebuilt[index] = 1;
+                        schedule.complete_one();
                     }
                     catch(...)
                     {
+                        pending[index].reset();
                         failures.capture();
                         schedule.wake();
                         return;
                     }
-                    schedule.complete_one();
                 }
             });
         failures.rethrow();
