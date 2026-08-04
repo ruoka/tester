@@ -12,6 +12,21 @@ tag; cutting a release renames that section.
 
 ### Changed
 
+- **JUnit XML names are CI-readable.** `<testcase classname>` is the project-relative
+  source path (not a demangled registering lambda), `<testcase name>` is the case
+  title without a leading `test_case ->` / `scenario ->` (BDD steps keep
+  `given:` / `when:` / `then:`), and the suite is labeled `tester` plus the tag
+  filter when one was set. Suite `failures` / `errors` count failed cases, not
+  soft-assertion rows — so GitHub Actions `test-summary` and similar UIs show what
+  was tested and what failed.   On a failing case, `<testcase file>` / `line` navigate
+  to the first assertion call site (project-relative), not the `test_case(…)`
+  registration line; failure bodies use the same relative paths.
+  `classname` is `path:line` so GitHub’s `test-summary` (which ignores the `line`
+  attribute) still shows the line in the job Summary. Paths stay project-relative
+  even when `test_runner`’s cwd is a build subdirectory (CMake). Nested BDD
+  `given` / `when` / `then` / `section` steps fold into their parent
+  `scenario` / `test_case` row (step list in `<system-out>`; a failing step fails
+  the parent row). JSONL is unchanged and still lists every step.
 - **Project BMI filenames match Clang's `-fprebuilt-module-path` lookup** — only
   `:` becomes `-`; dots stay (`demo.app.pcm`). Compile and `compile_commands.json`
   argv no longer expand a transitive `-fmodule-file=` closure for project modules

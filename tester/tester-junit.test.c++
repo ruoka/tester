@@ -93,6 +93,15 @@ auto register_tests()
         require_true(xml.contains("failures=\"0\""));
         require_true(xml.contains("errors=\"0\""));
         require_true(xml.contains("name=\"tags\""));
+
+        // CI summaries group by classname/name — keep those human-readable, not the
+        // demangled registering lambda / "test_case -> …" display id. test-summary
+        // ignores the line attribute, so classname carries path:line.
+        require_true(xml.contains("classname=\"tester/tester-junit.test.c++:"));
+        require_true(xml.contains("name=\"test_case [self] junit report writes alongside jsonl\""));
+        require_false(xml.contains("classname=\"auto "));
+        require_false(xml.contains("name=\"test_case -&gt;"));
+        require_false(xml.contains("/home/"));
     };
 
     test_case("test_case [self] junit maps assertion failures and errors") = []
@@ -117,6 +126,28 @@ auto register_tests()
         require_true(xml.contains("<error "));
         require_true(xml.contains("std::runtime_error") || xml.contains("runtime_error"));
         require_true(xml.contains("escaped the junit probe"));
+
+        // One failed case with a soft assertion and one errored case — suite totals
+        // count cases, not assertion rows.
+        require_true(xml.contains("failures=\"1\""));
+        require_true(xml.contains("errors=\"1\""));
+        require_true(xml.contains("name=\"test_case [.junit-probe] assertion failure\""));
+        require_true(xml.contains("name=\"test_case [.junit-probe] uncaught exception\""));
+
+        // CI links <testcase file/line> and shows classname as path:line in the
+        // job Summary — those must be the assertion call site (project-relative),
+        // not the test_case(…) registration line and not an absolute runner path.
+        require_true(xml.contains("check_eq at tester/tester-junit.test.c++:"));
+        require_false(xml.contains("/home/"));
+        const auto marker = std::string{"check_eq at tester/tester-junit.test.c++:"};
+        const auto at = xml.find(marker);
+        require_true(at != std::string::npos);
+        const auto line_start = at + marker.size();
+        const auto line_end = xml.find(':', line_start);
+        require_true(line_end != std::string::npos);
+        const auto assert_line = xml.substr(line_start, line_end - line_start);
+        require_true(xml.contains("file=\"tester/tester-junit.test.c++\" line=\"" + assert_line + "\""));
+        require_true(xml.contains("classname=\"tester/tester-junit.test.c++:" + assert_line + "\""));
     };
 
     test_case("test_case [.junit-probe] assertion failure") = []
@@ -148,6 +179,7 @@ auto register_tests()
         require_true(xml.contains("no tests matched filter"));
         require_true(xml.contains("failures=\"1\""));
         require_true(xml.contains("type=\"empty_filter\""));
+        require_true(xml.contains("name=\"tester [.junit-no-such-tag-xyz]\""));
     };
 
     test_case("test_case [self] xunit-xml alias writes the same report") = []
@@ -175,9 +207,90 @@ auto register_tests()
         require_true(xml.contains("xunit-xml alias writes the same report"));
     };
 
+    test_case("test_case [self] junit bundles BDD steps under the scenario") = []
+    {
+        const auto report = temp_report_path("tester_junit_bdd");
+        remove_quietly(report);
+
+        const auto result = run_test_runner({
+            "--jsonl=failures",
+            "--junit=" + report.string(),
+            "--tags=[.junit-bdd-probe]"});
+
+        require_eq(result.exit_code, 0);
+        require_true(std::filesystem::exists(report));
+        const auto xml = read_file_text(report);
+        remove_quietly(report);
+
+        // One JUnit row for the scenario — not one per given/when/then.
+        require_true(xml.contains("tests=\"1\""));
+        require_true(xml.contains("failures=\"0\""));
+        require_true(xml.contains("name=\"scenario [.junit-bdd-probe] checkout\""));
+        require_true(xml.contains("given: a cart — ok"));
+        require_true(xml.contains("when: the customer pays — ok"));
+        require_true(xml.contains("then: the order is confirmed — ok"));
+        require_false(xml.contains("name=\"given:"));
+        require_false(xml.contains("name=\"when:"));
+        require_false(xml.contains("name=\"then:"));
+    };
+
+    test_case("test_case [self] junit reports a failing step on the scenario row") = []
+    {
+        const auto report = temp_report_path("tester_junit_bdd_fail");
+        remove_quietly(report);
+
+        const auto result = run_test_runner({
+            "--jsonl=failures",
+            "--junit=" + report.string(),
+            "--tags=[.junit-bdd-fail-probe]"});
+
+        require_neq(result.exit_code, 0);
+        require_true(std::filesystem::exists(report));
+        const auto xml = read_file_text(report);
+        remove_quietly(report);
+
+        require_true(xml.contains("tests=\"1\""));
+        require_true(xml.contains("failures=\"1\""));
+        require_true(xml.contains("name=\"scenario [.junit-bdd-fail-probe] one step fails\""));
+        require_true(xml.contains("then: this one fails — FAIL"));
+        require_true(xml.contains("<failure "));
+        require_false(xml.contains("name=\"then:"));
+    };
+
+    return 0;
+}
+
+auto register_bdd_probes()
+{
+    using namespace tester::behavior_driven_development;
+    using namespace tester::assertions;
+
+    scenario("scenario [.junit-bdd-probe] checkout") = []
+    {
+        given("a cart") = []
+        {
+            when("the customer pays") = []
+            {
+                then("the order is confirmed") = []
+                {
+                    require_true(true);
+                };
+            };
+        };
+    };
+
+    scenario("scenario [.junit-bdd-fail-probe] one step fails") = []
+    {
+        then("this one fails") = []
+        {
+            check_eq(1, 2);
+        };
+    };
+
     return 0;
 }
 
 const auto _ = register_tests();
+const auto _bdd = register_bdd_probes();
 
 } // namespace tester::selftest::junit
