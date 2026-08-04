@@ -178,6 +178,55 @@ auto test_failed(const data::test_result& r)
     return not r.success || r.assertions_ok < r.assertions_total;
 }
 
+// CI summaries (GitHub Actions test-summary, Jenkins, …) show classname as the
+// suite column and name as the case. Dumping demangled lambdas /
+// "test_case -> …" there is unreadable — map to project-relative path + title.
+auto display_path(std::string_view file_name, const std::filesystem::path& cwd)
+{
+    if(file_name.empty())
+        return "tester"s;
+
+    auto path = std::filesystem::path{std::string{file_name}};
+    if(not cwd.empty() and path.is_absolute())
+    {
+        auto ec = std::error_code{};
+        auto relative = std::filesystem::relative(path, cwd, ec);
+        if(not ec and not relative.empty())
+        {
+            const auto text = relative.generic_string();
+            // Prefer a path still under the project; otherwise keep the original.
+            if(not text.starts_with(".."))
+                path = relative;
+        }
+    }
+
+    return path.generic_string();
+}
+
+// "test_case -> description" / "given -> …" → a flat CI title. Suite cases drop the
+// redundant role; BDD steps keep it so given/when/then stay distinguishable.
+auto display_case_name(std::string_view test_name)
+{
+    constexpr auto arrow = " -> "sv;
+    const auto split = test_name.find(arrow);
+    if(split == std::string_view::npos)
+        return std::string{test_name};
+
+    const auto role = test_name.substr(0, split);
+    const auto description = test_name.substr(split + arrow.size());
+    if(role == "test_case"sv or role == "scenario"sv)
+        return std::string{description};
+
+    return std::string{role} + ": " + std::string{description};
+}
+
+auto suite_label(std::string_view tags)
+{
+    if(tags.empty())
+        return "tester"s;
+    return "tester " + std::string{tags};
+}
+
 } // namespace
 
 // Module-private (not anonymous-namespace / TU-local): exported observer
@@ -201,6 +250,7 @@ export struct observer final : tester::output::observer
     std::mutex mutex{};
     std::flat_map<std::string, test_events, std::less<>> by_test{};
     std::string run_tags{};
+    std::filesystem::path run_cwd{};
     std::chrono::system_clock::time_point started_at{};
     bool written = false;
 
@@ -210,6 +260,7 @@ export struct observer final : tester::output::observer
         path = std::move(report_path);
         by_test.clear();
         run_tags.clear();
+        run_cwd.clear();
         started_at = {};
         written = false;
     }
@@ -219,6 +270,7 @@ export struct observer final : tester::output::observer
         auto lock = std::lock_guard{mutex};
         by_test.clear();
         run_tags.clear();
+        run_cwd.clear();
         started_at = {};
         written = false;
     }
@@ -227,6 +279,7 @@ export struct observer final : tester::output::observer
     {
         auto lock = std::lock_guard{mutex};
         run_tags = std::string{run.tags};
+        run_cwd = std::filesystem::path{run.cwd};
         started_at = run.started_at;
     }
 
@@ -301,21 +354,21 @@ private:
         auto errors = std::size_t{0};
         auto suite_time = std::chrono::nanoseconds{0};
 
+        // Suite totals count failed *cases* (JUnit / CI convention), not soft
+        // assertion rows — otherwise a case with three check_* failures inflates
+        // the summary badge past the number of red rows.
         for(const auto& result : data::results())
         {
             suite_time += result.duration;
             const auto* events = by_test.contains(result.test_id)
                 ? &by_test.at(result.test_id)
                 : nullptr;
-            if(events != nullptr)
-            {
-                failures += events->failures.size();
-                errors += events->errors.size();
-            }
-            else if(test_failed(result))
-            {
+            const auto has_failures = events != nullptr and not events->failures.empty();
+            const auto has_errors = events != nullptr and not events->errors.empty();
+            if(has_errors)
+                ++errors;
+            else if(has_failures or test_failed(result))
                 ++failures;
-            }
         }
 
         // A non-empty filter that matches nothing fails the run; give CI UIs a row.
@@ -325,14 +378,15 @@ private:
             ++failures;
 
         const auto tests_attr = empty_filter_failure ? 1uz : tests_total;
+        const auto suite_name = suite_label(run_tags);
         auto xml_body = std::ostringstream{};
         xml_body << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
-        xml_body << "<testsuites name=\"tester\""
+        xml_body << "<testsuites name=\"" << escape(suite_name) << '"'
                  << " tests=\"" << tests_attr << '"'
                  << " failures=\"" << failures << '"'
                  << " errors=\"" << errors << '"'
                  << " time=\"" << seconds_string(suite_time) << "\">\n";
-        xml_body << "  <testsuite name=\"tester\""
+        xml_body << "  <testsuite name=\"" << escape(suite_name) << '"'
                  << " tests=\"" << tests_attr << '"'
                  << " failures=\"" << failures << '"'
                  << " errors=\"" << errors << '"'
@@ -362,11 +416,13 @@ private:
 
         for(const auto& result : data::results())
         {
+            const auto classname = display_path(result.file_name, run_cwd);
+            const auto case_name = display_case_name(result.test_name);
             xml_body << "    <testcase"
-                     << " classname=\"" << escape(result.test_set_name) << '"'
-                     << " name=\"" << escape(result.test_name) << '"'
+                     << " classname=\"" << escape(classname) << '"'
+                     << " name=\"" << escape(case_name) << '"'
                      << " time=\"" << seconds_string(result.duration) << '"'
-                     << " file=\"" << escape(result.file_name) << '"'
+                     << " file=\"" << escape(classname) << '"'
                      << " line=\"" << result.line << "\"";
 
             const auto* events = by_test.contains(result.test_id)

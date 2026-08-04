@@ -12,6 +12,13 @@ tag; cutting a release renames that section.
 
 ### Changed
 
+- **JUnit XML names are CI-readable.** `<testcase classname>` is the project-relative
+  source path (not a demangled registering lambda), `<testcase name>` is the case
+  title without a leading `test_case ->` / `scenario ->` (BDD steps keep
+  `given:` / `when:` / `then:`), and the suite is labeled `tester` plus the tag
+  filter when one was set. Suite `failures` / `errors` count failed cases, not
+  soft-assertion rows — so GitHub Actions `test-summary` and similar UIs show what
+  was tested and what failed.
 - **Project BMI filenames match Clang's `-fprebuilt-module-path` lookup** — only
   `:` becomes `-`; dots stay (`demo.app.pcm`). Compile and `compile_commands.json`
   argv no longer expand a transitive `-fmodule-file=` closure for project modules

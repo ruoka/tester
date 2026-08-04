@@ -93,6 +93,13 @@ auto register_tests()
         require_true(xml.contains("failures=\"0\""));
         require_true(xml.contains("errors=\"0\""));
         require_true(xml.contains("name=\"tags\""));
+
+        // CI summaries group by classname/name — keep those human-readable, not the
+        // demangled registering lambda / "test_case -> …" display id.
+        require_true(xml.contains("classname=\"") && xml.contains("tester-junit.test.c++"));
+        require_true(xml.contains("name=\"test_case [self] junit report writes alongside jsonl\""));
+        require_false(xml.contains("classname=\"auto "));
+        require_false(xml.contains("name=\"test_case -&gt;"));
     };
 
     test_case("test_case [self] junit maps assertion failures and errors") = []
@@ -117,6 +124,13 @@ auto register_tests()
         require_true(xml.contains("<error "));
         require_true(xml.contains("std::runtime_error") || xml.contains("runtime_error"));
         require_true(xml.contains("escaped the junit probe"));
+
+        // One failed case with a soft assertion and one errored case — suite totals
+        // count cases, not assertion rows.
+        require_true(xml.contains("failures=\"1\""));
+        require_true(xml.contains("errors=\"1\""));
+        require_true(xml.contains("name=\"test_case [.junit-probe] assertion failure\""));
+        require_true(xml.contains("name=\"test_case [.junit-probe] uncaught exception\""));
     };
 
     test_case("test_case [.junit-probe] assertion failure") = []
