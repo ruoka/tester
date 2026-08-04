@@ -10,6 +10,29 @@ tag; cutting a release renames that section.
 
 ## Unreleased
 
+## [3.0.0] — 2026-08-04
+
+### Breaking
+
+- **JSONL BMI field names replace the old `pcm_*` spellings.** Rebuild kinds
+  `own_pcm_missing` / `own_pcm_stale` / `pcm_stale` / `dependency_pcm_stale` are now
+  `own_bmi_missing` / `own_bmi_stale` / `bmi_stale` / `dependency_bmi_stale`. The
+  `pcm_path` field on rebuild info and compile units is `bmi_path`. The envelope
+  `version` is **2** (was 1). Agents and CI that match the old strings must update.
+- **Object-cache profile header is `cb-object-cache-v4`.** Profile keys are
+  `toolchain_root` / `compiler` / `compiler_signature` / `compiler_version` /
+  `std_module` (replacing `llvm` / `cxx` / `cxx_sig` / `clang_ver` / `std_cppm`).
+  Existing caches invalidate once via the usual profile mismatch path.
+- **`cb test --help` shows CB usage** and exits without building. It no longer
+  forwards `--help` to `test_runner`.
+
+### Changed
+
+- **CB warm rediscovery is faster** — no-op incremental builds are closer to Ninja
+  on the same tree (scan/artifact bookkeeping, not the public CLI).
+- **CB internals** — concrete Clang driver, cache stores, table-driven CLI tokens,
+  and a `cache_admin` facade — without further public flag or event additions.
+
 ## [2.2.1] — 2026-08-02
 
 ### Fixed

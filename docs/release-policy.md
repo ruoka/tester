@@ -3,11 +3,15 @@
 What counts as public, how versions are numbered, what breaks a consumer, and what has to
 be true before a release is cut.
 
-## Current status: v2.2.1
+## Current status: v3.0.0
 
-**`v2.2.1`** (2 August 2026) is the current **supported** SemVer release. Two-phase
-modular object-only repairs now validate imported BMIs and textual-header inputs before
-reusing a provider BMI.
+**`v3.0.0`** (4 August 2026) is the current **supported** SemVer release. JSONL rebuild
+and compile fields use `bmi_*` names (`version` 2), the object-cache profile is
+`cb-object-cache-v4`, and `cb test --help` is CB usage rather than a forwarded
+`test_runner` help.
+
+**`v2.2.1`** (2 August 2026) validated imported BMIs and textual-header inputs before
+two-phase modular object-only repairs reused a provider BMI.
 
 **`v2.2.0`** (2 August 2026) added ready-edge compilation scheduling, early two-phase
 BMI publication, bounded worker pools, overlapping source discovery with
@@ -28,7 +32,7 @@ Parents should pin a release tag or an explicit commit:
 
 ```bash
 git submodule add https://github.com/ruoka/tester deps/tester
-git -C deps/tester checkout v2.2.1   # or a later tag / deliberate commit
+git -C deps/tester checkout v3.0.0   # or a later tag / deliberate commit
 ```
 
 How a parent `tools/CB.sh` finds that checkout (`deps/tester` vs sibling `../tester` vs

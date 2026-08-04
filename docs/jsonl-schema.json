@@ -11,7 +11,11 @@
       "description": "Event kind. Consumers should ignore unknown kinds rather than fail: new kinds are added without a version bump."
     },
     "schema": { "const": "tester-jsonl" },
-    "version": { "type": "integer", "minimum": 1 },
+    "version": {
+      "type": "integer",
+      "const": 2,
+      "description": "tester-jsonl contract version. 2 renamed rebuild/compile BMI fields from pcm_* to bmi_*."
+    },
     "pid": {
       "type": "integer",
       "description": "OS process id. CB and the test_runner it spawns differ."

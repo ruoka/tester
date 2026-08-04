@@ -173,7 +173,7 @@ struct jsonl_context
     using stream_type = std::remove_reference_t<Stream>;
 
     static constexpr auto schema = "tester-jsonl";
-    static constexpr int version = 1;
+    static constexpr int version = 2;
 
     stream_type& stream;
     bool enabled = false;

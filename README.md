@@ -298,7 +298,7 @@ Tester ships with **CB** (`tools/cb.c++`), a module-aware build system in a sing
 `--jsonl=failures` (or `--jsonl=summary`) so agents and CI parse stdout; wrapper logs stay
 on stderr.
 
-Artifacts land in `build-<os>-<config>/` (`pcm/`, `obj/`, `bin/`, `cache/`). Object-cache profile format and invalidation: [`docs/cb.md` — Object cache profile](docs/cb.md#object-cache-profile). When embedded as a submodule, examples are excluded from default builds; standalone `./tools/CB.sh debug test` includes them. Use `--include-examples` to build demos explicitly.
+Artifacts land in `build-<os>-<config>/` (`bmi/`, `obj/`, `bin/`, `cache/`). Object-cache profile format and invalidation: [`docs/cb.md` — Object cache profile](docs/cb.md#object-cache-profile). When embedded as a submodule, examples are excluded from default builds; standalone `./tools/CB.sh debug test` includes them. Use `--include-examples` to build demos explicitly.
 
 ### Embedding & tester resolution
 
@@ -439,7 +439,7 @@ Test runner output is configured via CLI options, not environment variables.
 
 ## Versioning & Releases
 
-**Current release: [`v2.2.1`](https://github.com/ruoka/tester/releases/tag/v2.2.1)** — Clang 21 + libc++ modules, JSONL, and CB with edge-driven module scheduling, bounded workers, dependency-scoped BMI mappings, a shared standard-module cache, and validated BMI inputs for two-phase object-only repairs. CMake + Ninja and Make remain supported alternative build paths. Prior supported tags: [`v2.2.0`](https://github.com/ruoka/tester/releases/tag/v2.2.0), [`v2.1.3`](https://github.com/ruoka/tester/releases/tag/v2.1.3), [`v2.1.2`](https://github.com/ruoka/tester/releases/tag/v2.1.2), [`v2.1.1`](https://github.com/ruoka/tester/releases/tag/v2.1.1), [`v2.1.0`](https://github.com/ruoka/tester/releases/tag/v2.1.0), [`v2.0.0`](https://github.com/ruoka/tester/releases/tag/v2.0.0). The November 2025 `v1.0.0` GitHub pre-release is historical and unsupported.
+**Current release: [`v3.0.0`](https://github.com/ruoka/tester/releases/tag/v3.0.0)** — Clang 21 + libc++ modules, JSONL `version` 2 (`bmi_*` rebuild fields), and CB with edge-driven module scheduling, bounded workers, dependency-scoped BMI mappings, a shared standard-module cache, and validated BMI inputs for two-phase object-only repairs. CMake + Ninja and Make remain supported alternative build paths. Prior supported tags: [`v2.2.1`](https://github.com/ruoka/tester/releases/tag/v2.2.1), [`v2.2.0`](https://github.com/ruoka/tester/releases/tag/v2.2.0), [`v2.1.3`](https://github.com/ruoka/tester/releases/tag/v2.1.3), [`v2.1.2`](https://github.com/ruoka/tester/releases/tag/v2.1.2), [`v2.1.1`](https://github.com/ruoka/tester/releases/tag/v2.1.1), [`v2.1.0`](https://github.com/ruoka/tester/releases/tag/v2.1.0), [`v2.0.0`](https://github.com/ruoka/tester/releases/tag/v2.0.0). The November 2025 `v1.0.0` GitHub pre-release is historical and unsupported.
 
 Pin a tag or an explicit commit as a submodule. Between tags, `main` is CI-gated but carries no compatibility promise. Prefer aligning **every** nested `deps/tester` in a parent tree to the same SHA (see [YarDB versioning](https://github.com/ruoka/YarDB/blob/master/docs/versioning.md)).
 
