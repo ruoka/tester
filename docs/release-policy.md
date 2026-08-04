@@ -8,7 +8,8 @@ be true before a release is cut.
 **`v3.0.0`** (4 August 2026) is the current **supported** SemVer release. JSONL rebuild
 and compile fields use `bmi_*` names (`version` 2), the object-cache profile is
 `cb-object-cache-v4`, and `cb test --help` is CB usage rather than a forwarded
-`test_runner` help.
+`test_runner` help. JUnit XML uses CI-readable `classname` / `name` (including
+`path:line` and nested BDD step folding) for GitHub Actions test summaries.
 
 **`v2.2.1`** (2 August 2026) validated imported BMIs and textual-header inputs before
 two-phase modular object-only repairs reused a provider BMI.

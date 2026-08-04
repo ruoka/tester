@@ -10,6 +10,22 @@ tag; cutting a release renames that section.
 
 ## Unreleased
 
+## [3.0.0] — 2026-08-04
+
+### Breaking
+
+- **JSONL BMI field names replace the old `pcm_*` spellings.** Rebuild kinds
+  `own_pcm_missing` / `own_pcm_stale` / `pcm_stale` / `dependency_pcm_stale` are now
+  `own_bmi_missing` / `own_bmi_stale` / `bmi_stale` / `dependency_bmi_stale`. The
+  `pcm_path` field on rebuild info and compile units is `bmi_path`. The envelope
+  `version` is **2** (was 1). Agents and CI that match the old strings must update.
+- **Object-cache profile header is `cb-object-cache-v4`.** Profile keys are
+  `toolchain_root` / `compiler` / `compiler_signature` / `compiler_version` /
+  `std_module` (replacing `llvm` / `cxx` / `cxx_sig` / `clang_ver` / `std_cppm`).
+  Existing caches invalidate once via the usual profile mismatch path.
+- **`cb test --help` shows CB usage** and exits without building. It no longer
+  forwards `--help` to `test_runner`.
+
 ### Changed
 
 - **JUnit XML names are CI-readable.** `<testcase classname>` is the project-relative
@@ -18,7 +34,7 @@ tag; cutting a release renames that section.
   `given:` / `when:` / `then:`), and the suite is labeled `tester` plus the tag
   filter when one was set. Suite `failures` / `errors` count failed cases, not
   soft-assertion rows — so GitHub Actions `test-summary` and similar UIs show what
-  was tested and what failed.   On a failing case, `<testcase file>` / `line` navigate
+  was tested and what failed. On a failing case, `<testcase file>` / `line` navigate
   to the first assertion call site (project-relative), not the `test_case(…)`
   registration line; failure bodies use the same relative paths.
   `classname` is `path:line` so GitHub’s `test-summary` (which ignores the `line`
@@ -38,25 +54,6 @@ tag; cutting a release renames that section.
 - **Two-phase modular rebuilds enqueue `pcm→.o` as a separate ready job** after BMI
   publish, so a worker can claim an importer instead of finishing the provider
   object on the same claim.
-
-## [3.0.0] — 2026-08-04
-
-### Breaking
-
-- **JSONL BMI field names replace the old `pcm_*` spellings.** Rebuild kinds
-  `own_pcm_missing` / `own_pcm_stale` / `pcm_stale` / `dependency_pcm_stale` are now
-  `own_bmi_missing` / `own_bmi_stale` / `bmi_stale` / `dependency_bmi_stale`. The
-  `pcm_path` field on rebuild info and compile units is `bmi_path`. The envelope
-  `version` is **2** (was 1). Agents and CI that match the old strings must update.
-- **Object-cache profile header is `cb-object-cache-v4`.** Profile keys are
-  `toolchain_root` / `compiler` / `compiler_signature` / `compiler_version` /
-  `std_module` (replacing `llvm` / `cxx` / `cxx_sig` / `clang_ver` / `std_cppm`).
-  Existing caches invalidate once via the usual profile mismatch path.
-- **`cb test --help` shows CB usage** and exits without building. It no longer
-  forwards `--help` to `test_runner`.
-
-### Changed
-
 - **CB warm rediscovery is faster** — no-op incremental builds are closer to Ninja
   on the same tree (scan/artifact bookkeeping, not the public CLI).
 - **CB internals** — concrete Clang driver, cache stores, table-driven CLI tokens,
