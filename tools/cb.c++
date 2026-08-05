@@ -595,18 +595,38 @@ private:
     // deps/<pkg>/test and deps/<pkg>/tests are the vendored package's own suites (benchmarks,
     // package-local tests), not the consumer's, so they stay out of the parent build even now that
     // project test/ trees are in the scan (#14). Co-located deps/<pkg>/*.test.c++ still joins.
+    //
+    // Also match the same layout under a vendored tree (e.g. YarDB/deps/cryptic/tests when YarDB
+    // is a submodule of 3xS) — same search pattern as is_nested_dependency_path.
     static bool is_dependency_package_tests_path(std::string_view rel_path)
     {
-        if(not rel_path.starts_with(deps_dir_prefix))
-            return false;
+        auto search = rel_path;
+        while(not search.empty())
+        {
+            std::size_t deps_at = std::string_view::npos;
+            if(search.starts_with(deps_dir_prefix))
+                deps_at = 0;
+            else
+            {
+                const auto pos = search.find("/deps/");
+                if(pos == std::string_view::npos)
+                    return false;
+                deps_at = pos + 1; // point at the 'd' of "deps/..."
+            }
 
-        const auto rest = rel_path.substr(deps_dir_prefix.size());
-        const auto slash = rest.find('/');
-        if(slash == std::string_view::npos)
-            return false;
+            const auto from_deps = search.substr(deps_at);
+            const auto rest = from_deps.substr(deps_dir_prefix.size());
+            const auto slash = rest.find('/');
+            if(slash == std::string_view::npos)
+                return false;
 
-        const auto after_pkg = rest.substr(slash + 1);
-        return is_dir_or_under(after_pkg, test_dir_name) or is_dir_or_under(after_pkg, tests_dir_name);
+            const auto after_pkg = rest.substr(slash + 1);
+            if(is_dir_or_under(after_pkg, test_dir_name) or is_dir_or_under(after_pkg, tests_dir_name))
+                return true;
+
+            search = rest;
+        }
+        return false;
     }
 
     bool is_excluded_source_path(std::string_view rel_path) const
