@@ -3,9 +3,15 @@
 What counts as public, how versions are numbered, what breaks a consumer, and what has to
 be true before a release is cut.
 
-## Current status: v3.0.0
+## Current status: v3.0.1
 
-**`v3.0.0`** (4 August 2026) is the current **supported** SemVer release. JSONL rebuild
+**`v3.0.1`** (23 October 2026) is the current **supported** SemVer release. It is a fix
+release on `v3.0.0`: CB skips `deps/<pkg>/deps/` and `deps/<pkg>/tests/` at any depth, so a
+consumer that vendors a package at its root no longer collides on nested tester copies;
+JUnit names stay `tester/…` when the runner runs from a consumer root; and `CMakeLists.txt`
+compiles with CB's flags.
+
+**`v3.0.0`** (4 August 2026) moved JSONL rebuild
 and compile fields use `bmi_*` names (`version` 2), the object-cache profile is
 `cb-object-cache-v4`, and `cb test --help` is CB usage rather than a forwarded
 `test_runner` help. JUnit XML uses CI-readable `classname` / `name` (including
@@ -33,7 +39,7 @@ Parents should pin a release tag or an explicit commit:
 
 ```bash
 git submodule add https://github.com/ruoka/tester deps/tester
-git -C deps/tester checkout v3.0.0   # or a later tag / deliberate commit
+git -C deps/tester checkout v3.0.1   # or a later tag / deliberate commit
 ```
 
 How a parent `tools/CB.sh` finds that checkout (`deps/tester` vs sibling `../tester` vs

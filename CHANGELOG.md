@@ -10,6 +10,10 @@ tag; cutting a release renames that section.
 
 ## Unreleased
 
+## [3.0.1] — 2026-10-23
+
+Minimum compiler unchanged (Clang 21 with libc++ modules); JSONL `version` 2.
+
 ### Fixed
 
 - **CB skips nested vendored packages wherever they sit.** `deps/<pkg>/deps/…` and
@@ -20,6 +24,8 @@ tag; cutting a release renames that section.
 - **JUnit names stay stable when tester is embedded.** Run from a consumer repo root,
   `classname` / `file` attributes came out as `deps/tester/…`; they are now peeled back to
   `tester/…`, `examples/…` or `tests/…`, matching a standalone run.
+- **`make` is warning-free on macOS again.** The `std.pcm` rule dropped `-isysroot` but kept
+  the SDK path after it, which clang reported as an unused linker input.
 
 ### Changed
 
@@ -27,8 +33,8 @@ tag; cutting a release renames that section.
   Debug is `-O0 -g3` (was `-O0 -g -fno-omit-frame-pointer`, plus `-fno-pie` / `-no-pie` on
   Linux), Release is `-O3 -DNDEBUG` (was `-O3 -g`, no `NDEBUG`), executables link with lld, and
   `test_runner` is no longer linked with `-rdynamic` — on Linux its crash backtraces now show
-  addresses for runner-internal frames rather than names, as CB-built runners already did. On macOS the runner gets an explicit `-Wl,-rpath` to the LLVM
-  `lib` directory, as CB's does. The Makefile is unchanged.
+  addresses for runner-internal frames rather than names, as CB-built runners already did.
+  On macOS the runner gets an explicit `-Wl,-rpath` to the LLVM `lib` directory, as CB's does. The Makefile is unchanged.
 - **`tools/bench-cb-vs-ninja.sh --with-make`** also times `make tests` in each scenario, and
   `tools/run-linux-bench.sh` forwards its options to the script.
 
