@@ -4,7 +4,7 @@
 # See the LICENSE file in the project root for full license text.
 #
 # Regression: Make DEBUG=1 must not pass -fno-pie/-no-pie on Darwin (arm64 rejects
-# both). Linux keeps them for resolvable backtraces — same gate as CMakeLists.txt.
+# both). Linux keeps them for resolvable backtraces.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

@@ -28,7 +28,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # standard library as the build itself, or they configure against libstdc++.
 # add_compile_options() runs too late for those, CMAKE_CXX_FLAGS_INIT does not.
 set(CMAKE_CXX_FLAGS_INIT "-stdlib=libc++ -fexperimental-library")
-if(NOT CMAKE_HOST_APPLE)
+if(CMAKE_HOST_APPLE)
+  # Same header selection as cb: only this LLVM's libc++, never the SDK's.
+  string(APPEND CMAKE_CXX_FLAGS_INIT " -nostdinc++ -isystem ${LLVM_PREFIX}/include/c++/v1")
+else()
   # Debian's clang++-21 does not find libc++-21-dev's headers on its own.
   string(APPEND CMAKE_CXX_FLAGS_INIT " -I${LLVM_PREFIX}/include/c++/v1")
 endif()
@@ -42,26 +45,43 @@ project(tester LANGUAGES CXX)
 
 option(TESTER_STATIC "Link statically (config/compiler.mk STATIC=1)" OFF)
 
-# Config flag sets mirroring config/compiler.mk rather than CMake's defaults:
-# the Makefile never defines NDEBUG, so neither do these.
-set(CMAKE_CXX_FLAGS_RELEASE "-O3")
-set(CMAKE_CXX_FLAGS_DEBUG "-O0 -fno-omit-frame-pointer")
-set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-O3")
-set(CMAKE_EXE_LINKER_FLAGS_DEBUG "-O0")
-if(NOT APPLE)
-  # Non-PIE keeps backtrace addresses resolvable; arm64 macOS rejects both.
-  string(APPEND CMAKE_CXX_FLAGS_DEBUG " -fno-pie")
-  string(APPEND CMAKE_EXE_LINKER_FLAGS_DEBUG " -no-pie")
+# Config flag sets mirror tools/cb.c++ (clang_driver::initialize_flags) rather
+# than CMake's defaults, so CB and Ninja compile the same work and
+# docs/cb-vs-ninja-benchmark.md compares build systems, not flag sets.
+# CMake puts the CXX flags on the link line too, as cb's link_argv does.
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g3")
+if(APPLE)
+  set(CMAKE_EXE_LINKER_FLAGS_RELEASE "")
+  set(CMAKE_EXE_LINKER_FLAGS_DEBUG "")
+else()
+  set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-O3")
+  set(CMAKE_EXE_LINKER_FLAGS_DEBUG "-O3 -g3")
 endif()
 
-add_compile_options(-Wall -Wextra -g -fPIC)
+set(CMAKE_LINKER_TYPE LLD)
+add_compile_options(
+  "-B${LLVM_PREFIX}/bin"
+  -pthread
+  -fPIC
+  -Wall
+  -Wextra
+  -Wno-reserved-module-identifier
+  -Wno-unused-command-line-argument
+  -fno-implicit-modules
+  -fno-implicit-module-maps
+)
+add_link_options("-B${LLVM_PREFIX}/bin" -pthread)
 
 if(APPLE)
   # Link this LLVM's libc++ / libunwind, not the SDK's: -fexperimental-library
   # needs the former, and Apple Silicon exception catching needs the matching
-  # libunwind (see docs/clang-modules-macos.md). -L plus named libs; CMake
-  # adds a single build-tree rpath for the directory it resolves them from.
-  add_link_options("-L${LLVM_PREFIX}/lib")
+  # libunwind (see docs/clang-modules-macos.md).
+  add_link_options("-L${LLVM_PREFIX}/lib" "-Wl,-rpath,${LLVM_PREFIX}/lib" -Wl,-dead_strip)
+  set(_libunwind_reexports "/usr/lib/system/introspection/libunwind.reexported_symbols")
+  if(EXISTS "${_libunwind_reexports}")
+    add_link_options("-Wl,-unexported_symbols_list,${_libunwind_reexports}")
+  endif()
   # -stdlib=libc++ already pulls -lc++; name c++abi and unwind so the link
   # cannot fall back to the SDK unwinder.
   link_libraries(c++abi unwind)
@@ -101,8 +121,6 @@ target_sources(std
     BASE_DIRS ${TESTER_STD_MODULE_DIR}
     FILES "${TESTER_STD_MODULE_DIR}/std.cppm"
 )
-# std is a reserved module name everywhere except in libc++'s own source.
-target_compile_options(std PRIVATE -Wno-reserved-module-identifier)
 
 # --- Library -----------------------------------------------------------------
 file(GLOB MODULE_INTERFACES CONFIGURE_DEPENDS
@@ -147,10 +165,6 @@ target_sources(test_runner
     FILES ${EXAMPLE_MODULE_INTERFACES}
 )
 target_link_libraries(test_runner PRIVATE tester)
-# backtrace_symbols_fd() in the SIGSEGV/SIGABRT handler needs exported symbols.
-# The Makefile only does this under DEBUG=1; the crash handler is compiled in
-# either way, so it is unconditional here.
-target_link_options(test_runner PRIVATE -rdynamic)
 
 # --- Convenience targets -----------------------------------------------------
 # TEST_RUNNER: the self tests re-spawn the runner and otherwise look for
