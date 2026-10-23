@@ -38,9 +38,9 @@ fi
   bash -lc 'set -euo pipefail
     ./tools/CB.sh debug build --jsonl=failures >/dev/null
     file /tmp/cb-linux | grep -q ELF
-    ./tools/bench-cb-vs-ninja.sh --jobs=4 --results=/tmp/cb-vs-ninja-bench-linux.jsonl | tee /work/.bench-ab/cb-vs-ninja-bench-linux.log
+    ./tools/bench-cb-vs-ninja.sh --jobs=4 --results=/tmp/cb-vs-ninja-bench-linux.jsonl "$@" | tee /work/.bench-ab/cb-vs-ninja-bench-linux.log
     cp /tmp/cb-vs-ninja-bench-linux.jsonl /work/.bench-ab/cb-vs-ninja-bench-linux.jsonl
-  '
+  ' bash "$@"
 
 echo "Linux results: .bench-ab/cb-vs-ninja-bench-linux.jsonl"
 echo "Linux log:     .bench-ab/cb-vs-ninja-bench-linux.log"

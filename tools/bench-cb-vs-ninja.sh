@@ -9,17 +9,22 @@
 # --include-examples, SDKROOT, LDFLAGS) so the object-cache profile matches
 # the wrapper path. Ninja is driven via cmake --build; pass --verbose (default)
 # to print full command lines, closer to CB --jsonl command argv noise.
+# CMakeLists.txt mirrors cb's compile and link flags, so both sides compile
+# the same work and the ratios compare build systems rather than flag sets.
 #
 # Usage:
 #   ./tools/bench-cb-vs-ninja.sh
 #   ./tools/bench-cb-vs-ninja.sh --modules=one-phase    # CB single-step modules
 #   ./tools/bench-cb-vs-ninja.sh --cb-only              # compare CB revisions separately
 #   ./tools/bench-cb-vs-ninja.sh --quiet-ninja          # default Ninja progress
+#   ./tools/bench-cb-vs-ninja.sh --with-make            # also time `make tests` (own flags)
 #   ./tools/bench-cb-vs-ninja.sh --jobs=4 --cold=2
 #   ./tools/bench-cb-vs-ninja.sh --results=/tmp/out.jsonl
 #
 # Parses stdout of this script for a human summary; machine rows are JSONL on
-# the results file (and echoed). Exit 0 on success.
+# the results file (and echoed). Exit 0 on success. The Makefile keeps the
+# flags in config/compiler.mk, which parent repos share, so its rows are not
+# flag-for-flag comparable with CB and Ninja.
 
 set -euo pipefail
 
@@ -35,6 +40,7 @@ NOOP_N=5
 TOUCH_N=3
 NINJA_VERBOSE=1
 RUN_NINJA=1
+RUN_MAKE=0
 MODULES=two-phase
 RESULTS="${TMPDIR:-/tmp}/cb-vs-ninja-bench.jsonl"
 CONFIG=debug
@@ -46,7 +52,7 @@ TOUCH_TEST="${TOUCH_TEST:-tester/tester-assertions.test.c++}"
 TOUCH_MOD="${TOUCH_MOD:-tester/tester-assertions.c++m}"
 
 usage() {
-  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -54,6 +60,7 @@ for arg in "$@"; do
   case "$arg" in
     -h|--help) usage 0 ;;
     --cb-only) RUN_NINJA=0 ;;
+    --with-make) RUN_MAKE=1 ;;
     --quiet-ninja) NINJA_VERBOSE=0 ;;
     --verbose-ninja) NINJA_VERBOSE=1 ;;
     --modules=one-phase|--modules=two-phase) MODULES="${arg#*=}" ;;
@@ -72,9 +79,10 @@ done
 
 CB_DIR="build-${HOST}-${CONFIG}"
 CMAKE_DIR="build-cmake-${HOST}-${CONFIG}"
+MAKE_DIR="build-make-${HOST}-${CONFIG}"
 case "$CONFIG" in
-  debug) CMAKE_BUILD_TYPE=Debug ;;
-  release) CMAKE_BUILD_TYPE=Release ;;
+  debug) CMAKE_BUILD_TYPE=Debug; MAKE_DEBUG=1 ;;
+  release) CMAKE_BUILD_TYPE=Release; MAKE_DEBUG=0 ;;
   *)
     echo "Unsupported --config=$CONFIG (use debug|release)" >&2
     exit 2
@@ -100,6 +108,9 @@ fi
 if [[ "$RUN_NINJA" == "1" ]]; then
   command -v cmake >/dev/null
   command -v ninja >/dev/null
+fi
+if [[ "$RUN_MAKE" == "1" ]]; then
+  command -v make >/dev/null
 fi
 command -v python3 >/dev/null
 
@@ -143,6 +154,18 @@ cmake_build() {
     args+=(--verbose)
   fi
   cmake "${args[@]}"
+}
+
+make_build() {
+  make DEBUG="$MAKE_DEBUG" -j"$JOBS" tests
+}
+
+assert_make_ok() {
+  if [[ ! -x "$MAKE_DIR/bin/test_runner" ]]; then
+    echo "Make build failed (no $MAKE_DIR/bin/test_runner):" >&2
+    tail -40 /tmp/bench-cb-vs-ninja.err >&2 || true
+    exit 1
+  fi
 }
 
 run_timed() {
@@ -222,8 +245,10 @@ print(json.dumps({
     "cmake_dir": sys.argv[8],
     "cb_dir": sys.argv[9],
     "ninja_enabled": sys.argv[10] == "1",
+    "make_enabled": sys.argv[11] == "1",
+    "make_dir": sys.argv[12],
 }))
-' "$HOST" "$CONFIG" "$JOBS" "$NINJA_VERBOSE" "$MODULES" "$CB_BIN" "$CXX_COMPILER" "$CMAKE_DIR" "$CB_DIR" "$RUN_NINJA")"
+' "$HOST" "$CONFIG" "$JOBS" "$NINJA_VERBOSE" "$MODULES" "$CB_BIN" "$CXX_COMPILER" "$CMAKE_DIR" "$CB_DIR" "$RUN_NINJA" "$RUN_MAKE" "$MAKE_DIR")"
 
 echo "=== Warm: align CB object-cache profile to --modules=$MODULES (untimed) ===" >&2
 # Do not warm via CB.sh — it defaults to two-phase and would fight --modules=.
@@ -260,6 +285,14 @@ if [[ "$RUN_NINJA" == "1" ]]; then
     assert_cmake_ok
   done
 fi
+if [[ "$RUN_MAKE" == "1" ]]; then
+  for ((i = 1; i <= COLD_N; i++)); do
+    echo "-- Make cold $i" >&2
+    rm -rf "$MAKE_DIR"
+    run_timed "make_cold_$i" make_build
+    assert_make_ok
+  done
+fi
 
 echo "===== NO-OP ($NOOP_N x) =====" >&2
 for ((i = 1; i <= NOOP_N; i++)); do
@@ -270,6 +303,11 @@ done
 if [[ "$RUN_NINJA" == "1" ]]; then
   for ((i = 1; i <= NOOP_N; i++)); do
     run_timed "cmake_noop_$i" cmake_build
+  done
+fi
+if [[ "$RUN_MAKE" == "1" ]]; then
+  for ((i = 1; i <= NOOP_N; i++)); do
+    run_timed "make_noop_$i" make_build
   done
 fi
 
@@ -287,6 +325,13 @@ if [[ "$RUN_NINJA" == "1" ]]; then
     assert_cmake_ok
   done
 fi
+if [[ "$RUN_MAKE" == "1" ]]; then
+  for ((i = 1; i <= TOUCH_N; i++)); do
+    touch "$TOUCH_TEST"
+    run_timed "make_touch_test_$i" make_build
+    assert_make_ok
+  done
+fi
 
 echo "===== TOUCH MODULE INTERFACE ($TOUCH_N x) =====" >&2
 for ((i = 1; i <= TOUCH_N; i++)); do
@@ -300,6 +345,13 @@ if [[ "$RUN_NINJA" == "1" ]]; then
     touch "$TOUCH_MOD"
     run_timed "cmake_touch_module_$i" cmake_build
     assert_cmake_ok
+  done
+fi
+if [[ "$RUN_MAKE" == "1" ]]; then
+  for ((i = 1; i <= TOUCH_N; i++)); do
+    touch "$TOUCH_MOD"
+    run_timed "make_touch_module_$i" make_build
+    assert_make_ok
   done
 fi
 
@@ -356,6 +408,13 @@ if meta.get("ninja_enabled", True):
             print(f"  {a} / {b}: {ratio(a, b):.2f}x")
 else:
     print("CB-only run; Ninja scenarios skipped.")
+
+if meta.get("make_enabled"):
+    print("CB / Make ratios (mean wall-clock; Make keeps config/compiler.mk flags):")
+    for a, b in pairs:
+        b = b.replace("cmake_", "make_")
+        if a in groups and b in groups:
+            print(f"  {a} / {b}: {ratio(a, b):.2f}x")
 
 print(f"\nresults: {path}")
 if meta:
