@@ -207,6 +207,18 @@ auto display_path(std::string_view file_name, const std::filesystem::path& cwd)
     if(file_name.empty())
         return "tester"s;
 
+    auto under_framework_tree = [](std::string_view text)
+    {
+        for(const auto marker : {"/tester/"sv, "/examples/"sv, "/tests/"sv})
+        {
+            if(text.contains(marker))
+                return true;
+        }
+        return text.starts_with("tester/"sv)
+            or text.starts_with("examples/"sv)
+            or text.starts_with("tests/"sv);
+    };
+
     auto path = std::filesystem::path{std::string{file_name}};
     if(not cwd.empty() and path.is_absolute())
     {
@@ -216,13 +228,19 @@ auto display_path(std::string_view file_name, const std::filesystem::path& cwd)
         {
             const auto text = relative.generic_string();
             if(not text.starts_with(".."))
+            {
+                // Consumer repos nest this tree under deps/tester/… — peel to the
+                // stable tester/…|examples/…|tests/… leaf for CI classnames.
+                if(under_framework_tree(text))
+                    return project_tree_path(relative);
                 return text;
+            }
         }
         return project_tree_path(path);
     }
 
     const auto text = path.generic_string();
-    if(text.starts_with(".."))
+    if(text.starts_with("..") or under_framework_tree(text))
         return project_tree_path(path);
     return text;
 }
