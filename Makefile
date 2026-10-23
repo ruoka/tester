@@ -151,7 +151,7 @@ BUILTIN_STD_OBJECT = $(objectdir)/std.o
 
 # Filter out include paths, sysroot, and stdlib flags (not needed with -nostdinc++ and explicit isystem)
 # -stdlib=libc++ is unused when using -nostdinc++ with explicit -isystem
-STD_MODULE_FLAGS = $(filter-out -I% -isysroot% -stdlib=libc++%,$(CXXFLAGS)) -Wno-reserved-module-identifier -fno-implicit-modules -fno-implicit-module-maps
+STD_MODULE_FLAGS = $(filter-out -I% -isysroot% $(SDKROOT) -stdlib=libc++%,$(CXXFLAGS)) -Wno-reserved-module-identifier -fno-implicit-modules -fno-implicit-module-maps
 
 # Get the full path to the actual compiler binary (resolve symlinks) to detect when it changes
 # STD_LLVM_PREFIX is now defined in config/compiler.mk
