@@ -40,7 +40,7 @@ The **test runner** is separate: crash **stack traces** in `test_runner.c++` use
 Condensed from the original project pitch — why teams pick CB over wiring CMake + CTest for ruoka-style repos:
 
 - **Pure C++** — build orchestration lives in `cb.c++`; no CMake scripting, Makefile generation, YAML/TOML, or helper languages
-- **Single-file transparency** — the ~3,300-line orchestrator remains in one place, with presentation split into focused console/JSONL observers
+- **Single-file transparency** — the ~5,600-line orchestrator (`cb.c++`) remains in one place, with presentation split into three observer headers (~1,400 lines together)
 - **Zero config** — conventions (`*.c++m`, `import` lines, co-located `*.test.c++`) replace `CMakeLists.txt`
 - **Fast incremental loops** — object timestamp cache, link signature cache, transitive BMI staleness; suited to Docker/CI where rebuild time matters
 - **No extra learning curve** — if you know C++ modules and can read `cb.c++`, you understand the build; no second DSL
@@ -96,7 +96,7 @@ Honest positioning — each tool has a sweet spot.
 
 | Concern | **CB** | **CMake** | **Make** (this repo's alternative) | **Ninja** | **Bazel** |
 |---------|--------|-----------|------------------------|-----------|-----------|
-| **C++23 module BMI ordering** | Built-in topological sort | Possible; manual or generator-dependent | Generated rules — `clang-scan-deps` p1689 here | Backend only; needs generator | Rules + toolchains |
+| **C++23 module BMI ordering** | Built-in topological sort over a regex scan of each preamble | Automatic with the Ninja generator (`clang-scan-deps` per source, CMake 3.28+) | Generated rules — `clang-scan-deps` p1689 here | Backend only; needs generator | Rules + toolchains |
 | **Zero config for this layout** | Yes — convention over configuration | No — `CMakeLists.txt` required | Partial — existing `Makefile` | No — needs build file | No — `BUILD` files |
 | **Standalone clone → build → test** | One command | Several steps + generator | `make` targets vary | Via CMake/etc. | `bazel test` setup |
 | **Submodule embed** | `CB.sh.core` wrapper pattern | Per-parent project | Per-parent project | Via parent generator | Workspace rules |
@@ -104,12 +104,12 @@ Honest positioning — each tool has a sweet spot.
 | **Parallel compilation** | Yes | Yes (with generator) | `-j` | Yes | Yes |
 | **Test runner integration** | First-class `CB.sh test` | CTest adapter | Separate `make tests` | Via CTest | `bazel test` |
 | **Agent/CI JSONL telemetry** | `compile_end`, `list --jsonl` | Adapters / custom | None | None | Event protocol |
-| **Read/modify entire build logic** | ~single file (`cb.c++`) | Scattered CMake + scripts | Makefiles + rules | Build graph file | Starlark + rules |
+| **Read/modify entire build logic** | ~single file (`cb.c++`), but ~5,600 lines to own | Scattered CMake + scripts (this repo: one ~190-line file) | Makefiles + rules | Build graph file | Starlark + rules |
 | **Ecosystem & maturity** | Young, focused | Very mature | Mature, low-level | Mature backend | Mature at scale |
 
 ### Make (an alternative in this repo)
 
-The `Makefile` is a supported second path, not a leftover: it orders modules with `clang-scan-deps` (p1689 output parsed by [`scripts/parse_module_deps.py`](../scripts/parse_module_deps.py)), builds the same library and runner, and works standalone or invoked from a parent `make`. What it lacks is CB's object cache and build telemetry. CI gates `make tests` / `make run_tests` with `[self]` for both `debug` (`DEBUG=1`) and `release` on every push (`makefile-build-and-test`); [release-policy.md](release-policy.md) still requires a clean Make rebuild before a release.
+The `Makefile` is a supported second path, not a leftover: it orders modules with `clang-scan-deps` (p1689 output parsed by [`scripts/parse_module_deps.py`](../scripts/parse_module_deps.py)), builds the same library and runner, and works standalone or invoked from a parent `make`. What it lacks is CB's object cache and build telemetry, and it is not incremental for modules: every BMI and object depends on the single `modules.dep`, which is rescanned and rewritten whenever any source changes, so touching one file recompiles the project (19.5 s vs CB's 2.9 s on macOS — see [cb-vs-ninja-benchmark.md](cb-vs-ninja-benchmark.md#why-make-is-slow-here)). CI gates `make tests` / `make run_tests` with `[self]` for both `debug` (`DEBUG=1`) and `release` on every push (`makefile-build-and-test`); [release-policy.md](release-policy.md) still requires a clean Make rebuild before a release.
 
 | Target | Purpose |
 |--------|---------|
@@ -156,15 +156,16 @@ cmake --build build-cmake-darwin-debug --target run_all_tests  # examples includ
 | CMake 4.x | One supported line, pinned to 4.1.2 in CI and the dev container; older releases are untested |
 | Ninja generator | Module dependency scanning; Make generators do not do it |
 | `std` built from libc++ source | `${LLVM_PREFIX}/share/libc++/v1/std.cppm` is compiled as an ordinary module target, the way `STD_LLVM_PREFIX` is used in `config/compiler.mk`. CMake can supply `std` itself, but it finds the source via `clang++ -print-file-name=libc++.modules.json`, and apt.llvm.org installs a second copy of that manifest under `/usr/lib/<triple>` whose relative `source-path` only resolves from `${LLVM_PREFIX}/lib` — clang answers with the broken copy and the configure dies on a missing `/lib/share/libc++/v1/std.cppm` |
-| Module set is hand-maintained | The globs pick up files, but the `FILE_SET` wiring is not derived from `import` lines the way CB's graph is |
+| Source directories are listed by hand | `CONFIGURE_DEPENDS` globs over `tester/` and `examples/` pick up new files in those directories; import order is derived by CMake's scanner (`clang-scan-deps`), not written down. A new source directory needs a new glob, where CB discovers it under its include roots |
+| Flags mirror CB | Compile and link flags follow `clang_driver::initialize_flags` (`-O0 -g3` / `-O3 -DNDEBUG`, lld), so build times compare like for like; change both together |
 
-Like Make, it has no object cache and no build telemetry, and it has no `list`-equivalent inventory. CI gates it warning-free for `Debug` and `Release` with `[self]` and the standalone suite (`cmake-ninja-build-and-test`); the dev container ships the pinned CMake and Ninja.
+Ninja rebuilds incrementally from file timestamps and recorded command lines, but it does not explain why a target is dirty in a structured form (`ninja -d explain` is free text), it carries no compiler diagnostics in a machine-readable stream, and there is no `list`-equivalent inventory. CI gates this path warning-free for `Debug` and `Release` with `[self]` and the standalone suite (`cmake-ninja-build-and-test`); the dev container ships the pinned CMake and Ninja.
 
-Wall-clock comparison of `tools/cb` against this CMake + Ninja path (including `--modules=one-phase`): [`docs/cb-vs-ninja-benchmark.md`](cb-vs-ninja-benchmark.md). Reproduce with `./tools/bench-cb-vs-ninja.sh`.
+Wall-clock comparison of `tools/cb` against this CMake + Ninja path (including `--modules=one-phase`) and the Makefile: [`docs/cb-vs-ninja-benchmark.md`](cb-vs-ninja-benchmark.md). Reproduce with `./tools/bench-cb-vs-ninja.sh --with-make`.
 
 ### Ninja / Meson / Bazel
 
-- **Ninja** — a fast backend, not a project descriptor. CB invokes the compiler directly; there is no separate "generate then ninja" step. The bundled `CMakeLists.txt` above is where Ninja does get used, as CMake's backend.
+- **Ninja** — a fast backend, not a project descriptor. CB invokes the compiler directly; there is no separate "generate then ninja" step. The bundled `CMakeLists.txt` above is where Ninja does get used, as CMake's backend. On this tree the two are close to even on wall-clock time, and Ninja's no-op is faster because it re-reads a saved graph instead of rescanning sources. CB's case rests on other things: no configure step, structured rebuild reasons, compiler diagnostics and test results on one correlated JSONL stream, early BMI publication in two-phase mode, and a shared `std` cache across `clean`. Ninja's rests on compiler-accurate scanning, scale and ecosystem. The measured detail and the full trade-off are in [cb-vs-ninja-benchmark.md](cb-vs-ninja-benchmark.md#what-cb-offers-beyond-wall-clock).
 - **Meson** — similar role to CMake with a different DSL; same trade-offs for module-native zero-config repos.
 - **Bazel** — strong for hermetic multi-language monorepos at scale; heavy for a single-file test framework submodule.
 
@@ -418,7 +419,7 @@ CB uses C++23 range pipelines instead of hand-written accumulation loops where t
 - [README — Built-in Builder](../README.md#built-in-builder-cb) — quick start and commands
 - [README — Makefile runner](../README.md#makefile-runner-alternative-to-cb) — a non-CB path
 - [README — CMake + Ninja build](../README.md#cmake--ninja-build-alternative-to-cb) — the other one
-- [cb-vs-ninja-benchmark.md](cb-vs-ninja-benchmark.md) — measured build times (`tools/bench-cb-vs-ninja.sh`)
+- [cb-vs-ninja-benchmark.md](cb-vs-ninja-benchmark.md) — measured build times for CB, CMake + Ninja and Make (`tools/bench-cb-vs-ninja.sh`)
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — all three build paths and the checks a change has to pass
 - [YarDB](https://github.com/ruoka/YarDB) — public reference project (`deps/tester` + parent `tools/CB.sh`)
 - [AGENTS.md](../AGENTS.md) — JSONL events, triage, correlation

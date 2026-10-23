@@ -242,7 +242,7 @@ make DEBUG=1 tests                               # build-make-<os>-debug/…
 make run_tests TEST_TAGS='--tags=[self]'         # build and run in one step
 ```
 
-It also works embedded: invoked from a parent `make`, it picks up `../../config/compiler.mk` and the parent's `PREFIX`. What it does not have is CB's object cache or JSONL build telemetry. CI gates `make tests` / `make run_tests` with `[self]` on every push (`makefile-build-and-test`); CB remains the primary path and also surfaces compiler warnings from units it compiles.
+It also works embedded: invoked from a parent `make`, it picks up `../../config/compiler.mk` and the parent's `PREFIX`. What it does not have is CB's object cache or JSONL build telemetry, and an edit to any one source recompiles the whole project, because every unit depends on a single regenerated module depfile ([measured](docs/cb-vs-ninja-benchmark.md#why-make-is-slow-here)). CI gates `make tests` / `make run_tests` with `[self]` on every push (`makefile-build-and-test`); CB remains the primary path and also surfaces compiler warnings from units it compiles.
 
 ### CMake + Ninja build (alternative to CB)
 
@@ -267,8 +267,10 @@ scanning needs the Ninja generator. `std` is compiled from libc++'s own
 [`config/compiler.mk`](config/compiler.mk) does it, rather than through CMake's own
 `import std` support; that keeps the toolchain assumptions identical across all three build
 paths. Point `-DLLVM_PREFIX=` at your LLVM if it is not `/usr/local/llvm` (macOS) or
-`/usr/lib/llvm-21` (Linux). Build type maps the way `config/compiler.mk` does (`Release`
-optimizes, `Debug` drops to `-O0`); `-DTESTER_STATIC=ON` mirrors `STATIC=1`.
+`/usr/lib/llvm-21` (Linux). Compile and link flags mirror CB's (`Debug` is `-O0 -g3`,
+`Release` is `-O3 -DNDEBUG`, lld links both), so the two paths compile the same work and the
+[build-time comparison](docs/cb-vs-ninja-benchmark.md) measures the build systems rather than
+their flags; `-DTESTER_STATIC=ON` mirrors the Makefile's `STATIC=1`.
 
 CI gates this path for `Debug` and `Release` on every push (`cmake-ninja-build-and-test`),
 warning-free, with `[self]` and the standalone suite. What it does not have, like make, is
@@ -276,7 +278,7 @@ CB's object cache or JSONL build telemetry.
 
 ## Built-in Builder (CB)
 
-Tester ships with **CB** (`tools/cb.c++`), a module-aware build system in a single file. CB discovers translation units, topologically sorts module imports, compiles in parallel, and caches object files incrementally. **CB is the default path for standalone clones**; parent repos embed tester under `deps/tester` and build through their own `tools/CB.sh` wrapper — [YarDB](https://github.com/ruoka/YarDB) is the public reference layout. For design rationale and comparison with CMake, Make, and other tools, see [`docs/cb.md`](docs/cb.md). Implementation prefers **standard C++**; subprocesses go through `posix_spawn` (Apple's libc serializes `std::system`), and crash stack traces in `test_runner` are the POSIX `<execinfo.h>` exception — see [AGENTS.md — Implementation policy](AGENTS.md#implementation-policy-standard-c-only).
+Tester ships with **CB** (`tools/cb.c++`), a module-aware build system in a single file. CB discovers translation units, topologically sorts module imports, compiles in parallel, and caches object files incrementally. **CB is the default path for standalone clones**; parent repos embed tester under `deps/tester` and build through their own `tools/CB.sh` wrapper — [YarDB](https://github.com/ruoka/YarDB) is the public reference layout. For design rationale and comparison with CMake, Make, and other tools, see [`docs/cb.md`](docs/cb.md). With identical flags, CB and CMake + Ninja are at about the same build speed on this tree; CB's advantage is that it needs no configure step, explains every rebuild, and reports compiler diagnostics and test results on one JSONL stream ([measurements and trade-offs](docs/cb-vs-ninja-benchmark.md#what-cb-offers-beyond-wall-clock)). Implementation prefers **standard C++**; subprocesses go through `posix_spawn` (Apple's libc serializes `std::system`), and crash stack traces in `test_runner` are the POSIX `<execinfo.h>` exception — see [AGENTS.md — Implementation policy](AGENTS.md#implementation-policy-standard-c-only).
 
 ```bash
 ./tools/CB.sh debug build          # compile project + tests

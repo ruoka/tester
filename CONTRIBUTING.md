@@ -95,8 +95,10 @@ CMake lane below is gated the same way.
 
 [`CMakeLists.txt`](CMakeLists.txt) is the third supported path, for consumers who already
 build with CMake and as the worked example of wiring C++23 modules (`FILE_SET CXX_MODULES`
-plus `import std`) into a CMake project. Run it when you change the module set, since the
-file sets there are maintained by hand rather than discovered:
+plus `import std`) into a CMake project. Run it when you add a module directory or change
+the module set: the file sets are globs over `tester/` and `examples/`, so a new file in
+those directories is picked up, but a new directory has to be added by hand. Import order
+itself is never hand-written — CMake scans each source with `clang-scan-deps`:
 
 ```bash
 cmake -S . -B build-cmake-darwin-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
@@ -105,8 +107,10 @@ cmake --build build-cmake-darwin-debug --target run_tests      # [self]
 cmake --build build-cmake-darwin-debug --target run_all_tests  # everything, examples included
 ```
 
-`-DTESTER_STATIC=ON` mirrors the Makefile's `STATIC=1`, and the build type maps to the same
-flags `config/compiler.mk` uses. The generator has to be Ninja — module scanning needs it —
+`-DTESTER_STATIC=ON` mirrors the Makefile's `STATIC=1`. The build type maps to the same
+compile and link flags CB uses (`clang_driver::initialize_flags` in `tools/cb.c++`); keep the
+two in step when either changes, or the CB-vs-Ninja benchmark compares flag sets instead of
+build systems. The generator has to be Ninja — module scanning needs it —
 and adding compiler flags is the one rough edge:
 
 | Attempt | Result |
