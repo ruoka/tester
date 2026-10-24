@@ -213,8 +213,9 @@ void crash_handler(int signal_number)
 class timeout_watchdog final : public tester::data::case_watch
 {
 public:
-    explicit timeout_watchdog(std::chrono::milliseconds limit)
+    timeout_watchdog(std::chrono::milliseconds limit, std::chrono::milliseconds grace)
         : m_limit{limit}
+        , m_grace{grace}
     {
         g_timeout_report.timeout_ms = static_cast<std::uint64_t>(limit.count());
         std::signal(SIGALRM, crash_handler);
@@ -244,7 +245,6 @@ public:
 
 private:
     using clock = std::chrono::steady_clock;
-    static constexpr auto grace = 5s;
 
     struct running_case
     {
@@ -282,12 +282,13 @@ private:
         ::pthread_kill(hung.thread, SIGALRM);
         lock.unlock();
 
-        std::this_thread::sleep_for(grace);
+        std::this_thread::sleep_for(m_grace);
         report(SIGALRM, std::string_view{g_timeout_report.test_id.data()});
         std::_Exit(124);
     }
 
     std::chrono::milliseconds m_limit;
+    std::chrono::milliseconds m_grace;
     std::mutex m_mutex{};
     std::condition_variable_any m_changed{};
     std::map<std::thread::id, running_case> m_running{};
@@ -370,6 +371,12 @@ int main(int argc, char** argv)
             return 1;
         }
     }
+    // How long a signalled hung thread gets to report before the watchdog does it and exits 124.
+    // Undocumented: it exists so the self tests can reach that path without waiting 5 s.
+    auto timeout_grace = std::chrono::milliseconds{5s};
+    if(const auto* env = std::getenv("TESTER_TIMEOUT_GRACE_MS"); env != nullptr)
+        if(auto parsed = parse_usize(env); parsed.has_value())
+            timeout_grace = std::chrono::milliseconds{*parsed};
 
     for(std::string_view option : arguments)
     {
@@ -530,7 +537,7 @@ int main(int argc, char** argv)
         {
             auto watchdog = std::optional<timeout_watchdog>{};
             if(timeout_seconds > 0)
-                watchdog.emplace(std::chrono::seconds{timeout_seconds});
+                watchdog.emplace(std::chrono::seconds{timeout_seconds}, timeout_grace);
             tr.run_tests();
         }
         tr.report_results();

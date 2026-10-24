@@ -1486,6 +1486,45 @@ test_test_lifecycle() {
   end_case test_lifecycle
 }
 
+test_test_timeout() {
+  should_run test_timeout || return 0
+  begin_case test_timeout
+  local work_dir
+  prepare_work_dir
+  work_dir="${LAST_WORK_DIR}"
+  rm -f "${work_dir}/hello.c++"
+
+  # Stands in for the real runner: dies the way test_runner --timeout does (SIGALRM), but only
+  # when CB forwarded the flag, so a dropped --timeout= fails the case too.
+  printf '%s\n' \
+    '#include <csignal>' \
+    '#include <string_view>' \
+    'int main(int argc, char** argv)' \
+    '{' \
+    '    for(int i = 1; i < argc; ++i)' \
+    '        if(std::string_view{argv[i]} == "--timeout=7")' \
+    '            std::raise(SIGALRM);' \
+    '    return 0;' \
+    '}' > "${work_dir}/test_runner.c++"
+
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if run_cb_test "${work_dir}" --timeout=7; then
+    fail "test_runner killed by SIGALRM reported success"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"timeout_run_fails"}'
+  fi
+  assert_jsonl_event_value test_end signaled true "timeout_test_end_signaled"
+  assert_jsonl_event_value test_end signal 14 "timeout_test_end_sigalrm"
+  assert_jsonl_contains 'Test runner timed out' "timeout_cb_error_message"
+
+  # The watchdog's fallback exits 124 when the hung thread cannot report.
+  printf '%s\n' 'int main() { return 124; }' > "${work_dir}/test_runner.c++"
+  run_cb_test "${work_dir}" || true
+  assert_jsonl_event_value test_end exit_code 124 "timeout_fallback_exit_code"
+  assert_jsonl_contains 'Test runner timed out' "timeout_fallback_cb_error_message"
+  end_case test_timeout
+}
+
 test_test_runner_exact_name() {
   should_run test_runner_exact_name || return 0
   begin_case test_runner_exact_name
@@ -2169,6 +2208,7 @@ main() {
   test_deps_package_tests_skipped
   test_rebuild_summary
   test_test_lifecycle
+  test_test_timeout
   test_test_runner_exact_name
   test_cache_invalidate
   test_profile_change
