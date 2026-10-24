@@ -139,23 +139,39 @@ void write_failed_test_ids(std::ostream& os, const std::vector<std::string>& ids
     os << ']';
 }
 
-void write_first_failure(std::ostream& os, const data::test_result& r)
-{
-    const auto message = failure_message_for(r);
-    os << ",\"first_failure\":{";
-    os << "\"test_id\":\"" << ::jsonl::escape(r.test_id) << '"';
-    os << ",\"file\":\"" << ::jsonl::escape(r.file_name) << '"';
-    os << ",\"line\":" << r.line;
-    os << ",\"message\":\"" << ::jsonl::escape(message) << '"';
-    os << '}';
-}
-
 void write_observed_value(std::ostream& os, const observed_value& value)
 {
     if(value.kind == value_kind::text)
         os << '"' << ::jsonl::escape(value.value) << '"';
     else
         os << value.value;
+}
+
+// With the test's first failed assertion, the location is that assertion's and the matcher with
+// its operands comes along; a test that failed by throwing has none, so it points at the test.
+void write_first_failure(std::ostream& os, const data::test_result& r, const assertion_event* failed)
+{
+    os << ",\"first_failure\":{";
+    os << "\"test_id\":\"" << ::jsonl::escape(r.test_id) << '"';
+    if(failed != nullptr)
+    {
+        os << ",\"file\":\"" << ::jsonl::escape(failed->file) << '"';
+        os << ",\"line\":" << failed->line;
+        os << ",\"column\":" << failed->column;
+        os << ",\"message\":\"" << ::jsonl::escape(failed->message.empty() ? failure_message_for(r) : failed->message) << '"';
+        os << ",\"matcher\":\"" << ::jsonl::escape(failed->matcher) << '"';
+        os << ",\"actual\":";
+        write_observed_value(os, failed->actual);
+        os << ",\"expected\":";
+        write_observed_value(os, failed->expected);
+    }
+    else
+    {
+        os << ",\"file\":\"" << ::jsonl::escape(r.file_name) << '"';
+        os << ",\"line\":" << r.line;
+        os << ",\"message\":\"" << ::jsonl::escape(failure_message_for(r)) << '"';
+    }
+    os << '}';
 }
 
 } // namespace
@@ -179,12 +195,15 @@ export auto collect_failures(const std::list<data::test_result>& results)
 
 namespace {
 
-void write_failure_index(std::ostream& os, const failure_index& failures)
+void write_failure_index(std::ostream& os, const failure_index& failures, const std::flat_map<std::string, assertion_event, std::less<>>& first_failed)
 {
     write_failed_test_ids(os, failures.failed_test_ids);
     write_string_array(os, "rerun_ids", failures.rerun_ids);
     if(failures.first != nullptr)
-        write_first_failure(os, *failures.first);
+    {
+        const auto& id = failures.first->test_id;
+        write_first_failure(os, *failures.first, first_failed.contains(id) ? &first_failed.at(id) : nullptr);
+    }
 }
 
 } // namespace
@@ -199,6 +218,8 @@ export struct observer final : tester::output::observer
         std::mutex mutex{};
         jsonl_mode mode;
         std::size_t output_max_bytes;
+        // Each test's first failed assertion, kept in every mode for summary.first_failure.
+        std::flat_map<std::string, assertion_event, std::less<>> first_failed{};
 
         state(std::ostream& json_stream, std::ostream& result_stream, jsonl_mode output_mode, std::size_t max_output_bytes)
             : json{json_stream}, result{result_stream}, jsonl{json_stream}, mode{output_mode}, output_max_bytes{max_output_bytes}
@@ -255,6 +276,7 @@ export struct observer final : tester::output::observer
     void run_start(const run_info& run) override
     {
         auto lock = std::lock_guard<std::mutex>{m.mutex};
+        m.first_failed.clear();
         m.json << m.jsonl("run_start", run.started_at) << [&](std::ostream& os){
             os << ",\"mode\":\"" << ::jsonl::escape(run.mode) << "\"";
             os << ",\"tags\":\"" << ::jsonl::escape(run.tags) << "\"";
@@ -281,7 +303,7 @@ export struct observer final : tester::output::observer
             os << ",\"tags\":\"" << ::jsonl::escape(run.tags) << "\"";
             os << ",\"passed\":" << (run.passed ? "true" : "false");
             os << ",\"duration_ms\":" << duration.count();
-            write_failure_index(os, failures);
+            write_failure_index(os, failures, m.first_failed);
         };
     }
 
@@ -378,6 +400,12 @@ export struct observer final : tester::output::observer
 
     void assertion(const output::assertion_event& event) override
     {
+        if(not event.ok)
+        {
+            auto lock = std::lock_guard<std::mutex>{m.mutex};
+            m.first_failed.try_emplace(event.test_id, event);
+        }
+
         if(output_mode() == jsonl_mode::summary
             || (output_mode() == jsonl_mode::failures && event.ok))
             return;
@@ -470,7 +498,7 @@ export struct observer final : tester::output::observer
             os << ",\"assertions_ok\":" << assertions_ok;
             os << ",\"assertions_total\":" << assertions_total;
             os << ",\"passed\":" << (run.passed ? "true" : "false");
-            write_failure_index(os, failures);
+            write_failure_index(os, failures, m.first_failed);
             if(output_mode() == jsonl_mode::trace && !run.slowest.empty())
             {
                 os << ",\"slowest\":[";

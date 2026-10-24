@@ -234,6 +234,15 @@ ok(f"--test-id={scenario_id}" in (rerun.get("argv") or []), "cb_test_forwards_te
 ok(not any(a.startswith("--tags=") for a in rerun.get("argv") or []), "cb_test_ids_drop_default_tags", str(rerun.get("argv")))
 ok(rerun.get("ok") is False and rerun.get("rerun_ids") == [scenario_id], "cb_test_returns_rerun_ids", str(rerun.get("rerun_ids")))
 
+# cb_test puts the filter after the options, and test names have spaces.
+by_name = tool("cb_test", {"filter": "declares a 5 s limit", "jsonl": "failures"})
+by_name_summary = by_name.get("summary") or {}
+ok(
+    by_name.get("ok") is True and by_name_summary.get("tests_total") == 1,
+    "cb_test_filter_with_spaces",
+    str(by_name.get("error") or by_name.get("stderr_tail") or by_name_summary)[:400],
+)
+
 cache = tool("cb_cache_status", {"jsonl": "failures"})
 ok(cache.get("exit_code") == 0 or cache.get("summary") is not None, "cb_cache_status")
 

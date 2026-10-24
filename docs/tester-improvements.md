@@ -136,7 +136,7 @@ Machine-parseable test and build output for CI and automation. Human output rema
 - ✅ `summary` includes `tests_ok`, `tests_total`, `assertions_ok`, `assertions_total`, `passed`.
 - ✅ `tests_ok` derived from per-test assertion outcomes, so a non-fatal `check_*` failure cannot leave `tests_ok == tests_total` alongside a non-empty `failed_test_ids`.
 - ✅ `failed_test_ids: [...]` in `summary` / `run_end`.
-- ✅ `first_failure: { test_id, file, line, message }` for direct navigation.
+- ✅ `first_failure: { test_id, file, line, message }` for direct navigation, plus `column`, `matcher`, `actual`, `expected` (and the assertion's location) when the test failed an assertion — recorded in every JSONL mode.
 - ✅ `slowest` JSON array in `summary` when `--slowest=N` is set.
 - ✅ Compact summary/failures modes suppress case events, passing test rollups, duplicate `run_end`, and trace-only fields.
 

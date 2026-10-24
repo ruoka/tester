@@ -21,6 +21,15 @@ tag; cutting a release renames that section.
   `signaled:false` and the run ended on "Some tests or assertions failed!". The handler now
   re-raises the signal with its default action, and CB reports "Test runner was killed by
   signal 6!".
+- **`first_failure` carries the failed assertion.** `AGENTS.md` promised the matcher with
+  `actual` / `expected`, but the summary only had the test's location and "assertion failure".
+  It now adds `column`, `matcher`, `actual` and `expected` and points at the assertion itself,
+  in every JSONL mode (summary mode has no `assertion_failed` events to fall back on).
+- **A test-name filter works after the options.** `CB.sh debug test --jsonl=failures "name"`
+  exited 2 with "Unknown argument", and MCP `cb_test`'s `filter` built exactly that command.
+- **`--tags` and a name filter no longer silently drop one another.** They set one filter and
+  the last won, so `cb_test` with its default `[self]` scope ignored `filter`. CB and
+  `test_runner` now reject both together; `cb_test` drops its default tags when given a filter.
 
 ### Added
 

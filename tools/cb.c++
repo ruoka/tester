@@ -5146,6 +5146,8 @@ public:
     {
         if(clean_tests_only and not do_clean)
             return "--tests requires clean"s;
+        if(not test_filter.empty() and std::ranges::any_of(test_runner_args, [](std::string_view arg) { return arg.starts_with("--tags="); }))
+            return "--tags and a test filter are the same filter; pass one"s;
         return std::nullopt;
     }
 
@@ -5381,6 +5383,14 @@ public:
                         .disposition = parse_success::disposition::help,
                         .parsed = std::move(parsed)};
                 }
+            }
+
+            // The filter may follow the options too (`test --jsonl=failures "name"`), but only once:
+            // a second bare word is more likely a typo than a filter.
+            if(parsed.do_run_tests and parsed.test_filter.empty() and not argument.empty() and not argument.starts_with("-"))
+            {
+                parsed.test_filter = std::string{argument};
+                continue;
             }
 
             auto message = "Unknown argument: "s + std::string{argument};

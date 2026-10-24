@@ -109,6 +109,46 @@ auto register_tests()
         require_eq(field(find_event(result.stdout_text, "test_list_summary"), "matched_total"), std::string{"1"});
     };
 
+    test_case("test_case [.first-failure-throw-probe] throws without asserting") = []
+    {
+        throw std::runtime_error{"probe threw"};
+    };
+
+    test_case("test_case [self] first_failure carries the failed assertion") = [summary_of]
+    {
+        // Recorded in every mode: summary mode writes no assertion_failed events, so first_failure
+        // is the only place the matcher and operands appear there.
+        for(const auto* mode : {"--jsonl=failures", "--jsonl=summary"})
+        {
+            const auto result = run_test_runner({mode, std::string{"--test-id="} + fails_id});
+            const auto first = field(summary_of(result), "first_failure");
+            require_true(first.contains(R"("matcher":"check_eq","actual":1,"expected":2)"));
+            require_true(first.contains("tester-rerun.test.c++"));
+            require_true(first.contains(R"("column":)"));
+        }
+
+        // A test that threw has no failed assertion, so first_failure points at the test itself.
+        const auto threw = run_test_runner({"--jsonl=failures", "--tags=[.first-failure-throw-probe]"});
+        const auto first = field(summary_of(threw), "first_failure");
+        require_true(first.contains("throws without asserting"));
+        require_false(first.contains(R"("matcher":)"));
+    };
+
+    test_case("test_case [self] --tags and a filter argument cannot both be given") = []
+    {
+        // They fill one filter, so taking the last one would silently drop the other.
+        for(const auto& args : std::vector<std::vector<std::string>>{
+                {"--jsonl=failures", "--tags=[self]", "some filter"},
+                {"--jsonl=failures", "some filter", "--tags=[self]"},
+                {"--jsonl=failures", "one", "two"}})
+        {
+            const auto result = run_test_runner(args);
+            require_eq(result.exit_code, 1);
+            require_true(result.stderr_text.contains("same filter"));
+            require_true(find_event(result.stdout_text, "run_start").empty());
+        }
+    };
+
     test_case("test_case [self] --test-id rejects an id no case has") = []
     {
         // A step id is not selectable either: steps are registered only while their case runs.

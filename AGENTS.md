@@ -28,7 +28,7 @@ Use **`--jsonl=failures`**. Parse **stdout only** (one JSON object per line, `sc
 ./tools/CB.sh debug build --jsonl=trace
 ```
 
-**Tag syntax:** bracket tags must be escaped in shell: `--tags='\[self\]'`. Substring/regex filters also work: `--tags='Test case 3'`.
+**Tag syntax:** bracket tags must be escaped in shell: `--tags='\[self\]'`. Substring/regex filters also work: `--tags='Test case 3'`, or as a bare argument anywhere after `test` (`test --jsonl=failures "Test case 3"`). `--tags` and a bare filter are the same filter, so giving both is an error (exit 2).
 
 **Toolchain:** Clang **21 or newer** with libc++ modules. CI and the dev container pin Clang 21 on Linux; macOS development uses a locally built LLVM that is often newer (e.g. trunk / 23). Do not treat “Clang 21” as a fixed required version — it is the minimum.
 
@@ -56,7 +56,7 @@ Use **`--jsonl=failures`**. Parse **stdout only** (one JSON object per line, `sc
 2. Check the result:
  - If `passed` is `true` → this scoped run succeeded. You're done.
  - If `false`:
- - Read `first_failure` — `file`, `line`, `message`, and usually the failing `matcher` with `actual` / `expected`. Open the source at that location.
+ - Read `first_failure` — `file`, `line`, `message`; when the test failed an assertion (in every JSONL mode) also `column` and the failing `matcher` with `actual` / `expected`, and `file`/`line` are that assertion's. A test that failed by throwing has no matcher and points at the test. Open the source at that location.
  - Read `failed_test_ids` for the full failure set.
  - To rerun only what failed, pass each id in `rerun_ids` as `--test-id=<id>` (repeatable, exact match, hidden tests included, ANDed with `--tags` if you give one). `rerun_ids` lists the failed top-level `test_case` / `scenario` ids; a failed step shows up as its scenario, because a step runs only inside it. An id that names no registered case aborts the run with `Unhandled exception: Unknown test id "…" in --test-id`.
 

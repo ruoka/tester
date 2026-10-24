@@ -475,6 +475,46 @@ test_strict_arguments() {
     jsonl_emit '{"type":"smoke_assert_passed","matcher":"test_bare_word_is_filter"}'
   fi
 
+  # The filter may follow the options, and test names have spaces.
+  status=0
+  output="$(cd "${work_dir}" && "${CB_BIN}" "${STD_CPPM}" debug test --jsonl=failures "smoke filter with spaces" 2>&1)" || status=$?
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ "${status}" -eq 2 ]] || printf '%s' "${output}" | grep -Fq "Unknown argument: smoke filter with spaces"; then
+    fail "filter after options should be accepted (status=${status}): ${output}"
+  else
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"test_filter_after_options"}'
+  fi
+
+  # Only one filter: a second bare word is still an error.
+  status=0
+  output="$(cd "${work_dir}" && "${CB_BIN}" "${STD_CPPM}" debug test first_filter second_word 2>&1)" || status=$?
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ "${status}" -eq 2 ]] && printf '%s' "${output}" | grep -Fq "Unknown argument: second_word"; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"test_second_bare_word_rejected"}'
+  else
+    fail "expected exit 2 for a second bare word (status=${status}): ${output}"
+  fi
+
+  # --tags and a filter fill the same runner filter; giving both is an error, not a silent drop.
+  status=0
+  output="$(cd "${work_dir}" && "${CB_BIN}" "${STD_CPPM}" debug test --tags=x "a filter" 2>&1)" || status=$?
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ "${status}" -eq 2 ]] && printf '%s' "${output}" | grep -Fq "same filter"; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"tags_and_filter_rejected"}'
+  else
+    fail "expected exit 2 for --tags with a filter (status=${status}): ${output}"
+  fi
+
+  # Without `test` a bare word is no filter.
+  status=0
+  output="$(cd "${work_dir}" && "${CB_BIN}" "${STD_CPPM}" debug build stray_word 2>&1)" || status=$?
+  TESTS_RUN=$((TESTS_RUN + 1))
+  if [[ "${status}" -eq 2 ]] && printf '%s' "${output}" | grep -Fq "Unknown argument: stray_word"; then
+    jsonl_emit '{"type":"smoke_assert_passed","matcher":"bare_word_without_test_rejected"}'
+  else
+    fail "expected exit 2 for a bare word without test (status=${status}): ${output}"
+  fi
+
   # CB-owned flags after test are consumed, not forwarded-as-unknown.
   status=0
   output="$(cd "${work_dir}" && "${CB_BIN}" "${STD_CPPM}" debug test --compile-flags=-O2 2>&1)" || status=$?

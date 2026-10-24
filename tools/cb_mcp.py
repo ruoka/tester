@@ -208,10 +208,13 @@ def tool_cb_test(args: dict[str, Any]) -> dict[str, Any]:
     test_ids = args.get("test_ids") or []
     if not isinstance(test_ids, list) or not all(isinstance(i, str) and i for i in test_ids):
         raise ValueError("test_ids must be a list of non-empty test id strings")
-    # Ids already pick the tests; the default tag scope would AND away hidden or untagged ones.
-    default_tags = "" if test_ids else DEFAULT_TAGS
-    tags = str(args.get("tags") if args.get("tags") is not None else default_tags).strip()
     filt = str(args.get("filter") or "").strip()
+    # Ids already pick the tests; the default tag scope would AND away hidden or untagged ones.
+    # A filter and tags are one test_runner filter, so a filter replaces the default scope.
+    default_tags = "" if test_ids or filt else DEFAULT_TAGS
+    tags = str(args.get("tags") if args.get("tags") is not None else default_tags).strip()
+    if tags and filt:
+        raise ValueError("tags and filter are the same test_runner filter; pass one")
     timeout = int(args["timeout"]) if args.get("timeout") is not None else TEST_TIMEOUT_SEC
     if timeout < 0:
         raise ValueError("timeout must be a non-negative number of seconds")
@@ -339,7 +342,8 @@ TOOLS: dict[str, tuple[dict[str, Any], Callable[[dict[str, Any]], dict[str, Any]
                     },
                     "filter": {
                         "type": "string",
-                        "description": "Optional test-name substring filter",
+                        "description": "Optional test-name filter (regex, else substring). Replaces "
+                        "the default tag scope; it cannot be combined with tags",
                         "default": "",
                     },
                 },

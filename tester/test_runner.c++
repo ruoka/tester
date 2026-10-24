@@ -363,6 +363,7 @@ int main(int argc, char** argv)
 
     auto list_only = false;
     auto tags = std::string_view{};
+    auto filter_given = false;
     auto test_ids = std::vector<std::string>{};
     auto output_name = std::string_view{"console"};
     auto result_line = false;
@@ -407,7 +408,13 @@ int main(int argc, char** argv)
 
         if(option.starts_with("--tags="))
         {
+            if(filter_given)
+            {
+                std::clog << "--tags and a filter argument are the same filter; pass one" << std::endl;
+                return 1;
+            }
             tags = option.substr(std::string_view{"--tags="}.size());
+            filter_given = true;
             continue;
         }
 
@@ -515,7 +522,13 @@ int main(int argc, char** argv)
             return 1;
         }
 
+        if(filter_given)
+        {
+            std::clog << "--tags and a filter argument are the same filter; pass one" << std::endl;
+            return 1;
+        }
         tags = option;
+        filter_given = true;
     }
 
     try
