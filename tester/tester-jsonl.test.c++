@@ -224,6 +224,38 @@ auto register_tests()
         check_eq(0.5, 1.0);
     };
 
+    test_case("test_case [self] jsonl crash event names the crashing test") = []
+    {
+        constexpr auto parent = std::string_view{"0123456789abcdef0123456789abcdef"};
+        const auto result = run_test_runner({
+            "--jsonl=failures",
+            "--tags=[.jsonl-crash-probe]"},
+            "TESTER_PARENT_RUN_ID=" + std::string{parent});
+
+        // The runner must die by the signal, not exit with its number: exit 6 is
+        // indistinguishable from a test runner that chose to return 6. A shell that does not
+        // exec its last command reports the signal as 128 + n instead.
+        constexpr auto sigabrt = 6;
+        require_true((result.signaled and result.signal == sigabrt) or result.exit_code == 128 + sigabrt);
+
+        const auto crash = tester_selftest::find_event(result.stdout_text, "crash");
+        require_false(crash.empty());
+        require_eq(tester_selftest::field(crash, "schema"), std::string{"\"tester-jsonl\""});
+        require_eq(tester_selftest::field(crash, "version"), std::string{"2"});
+        require_false(tester_selftest::field(crash, "ts_unix_ms").empty());
+        require_eq(tester_selftest::field(crash, "signal"), std::to_string(sigabrt));
+        require_eq(tester_selftest::field(crash, "parent_run_id"), "\"" + std::string{parent} + "\"");
+        require_eq(
+            tester_selftest::field(crash, "run_id"),
+            tester_selftest::field(tester_selftest::find_event(result.stdout_text, "run_start"), "run_id"));
+        require_true(tester_selftest::field(crash, "test_id").contains(R"(crash \"probe\")"));
+    };
+
+    test_case(R"(test_case [.jsonl-crash-probe] crash "probe")") = []
+    {
+        std::abort();
+    };
+
     return 0;
 }
 

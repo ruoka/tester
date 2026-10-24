@@ -7,6 +7,7 @@
 #include <csignal>
 #pragma clang diagnostic pop
 #include <execinfo.h>
+#include <time.h>
 #include <unistd.h>
 
 import std;
@@ -16,68 +17,154 @@ using namespace std::literals;
 
 namespace {
 
-auto append_cstr(char* buffer, std::size_t size, std::size_t capacity, const char* text)
+using jsonl_observer = tester::output::jsonl::observer;
+
+// The crash line is composed in a signal handler: no allocation, no locks, no streams.
+class crash_line
 {
-    while(*text && size < capacity)
-        buffer[size++] = *text++;
-    return size;
+public:
+    void put(char ch)
+    {
+        if(m_size < m_buffer.size())
+            m_buffer[m_size++] = ch;
+    }
+
+    void raw(std::string_view text)
+    {
+        const auto count = std::min(text.size(), m_buffer.size() - m_size);
+        std::ranges::copy(text.substr(0, count), m_buffer.begin() + m_size);
+        m_size += count;
+    }
+
+    void number(std::uint64_t value)
+    {
+        const auto [end, error] = std::to_chars(m_buffer.data() + m_size, m_buffer.data() + m_buffer.size(), value);
+        if(error == std::errc{})
+            m_size = static_cast<std::size_t>(end - m_buffer.data());
+    }
+
+    void string(std::string_view text)
+    {
+        // Escaping can grow a byte to six, and the fields after this one still need room. A cut
+        // backs off to a UTF-8 lead byte so a truncated id stays valid UTF-8.
+        const auto budget = (m_buffer.size() - m_size - tail_reserve) / 6;
+        if(text.size() > budget)
+        {
+            auto cut = budget;
+            while(cut > 0 and (static_cast<unsigned char>(text[cut]) & 0xC0) == 0x80)
+                --cut;
+            text = text.substr(0, cut);
+        }
+
+        constexpr auto hex = "0123456789abcdef"sv;
+        put('"');
+        for(const auto ch : text)
+        {
+            const auto byte = static_cast<unsigned char>(ch);
+            if(ch == '"' or ch == '\\')
+            {
+                put('\\');
+                put(ch);
+            }
+            else if(byte < 0x20)
+            {
+                raw("\\u00");
+                put(hex[byte >> 4]);
+                put(hex[byte & 0xF]);
+            }
+            else
+                put(ch);
+        }
+        put('"');
+    }
+
+    void write(int fd) const
+    {
+        (void)::write(fd, m_buffer.data(), m_size);
+    }
+
+private:
+    static constexpr std::size_t tail_reserve = 128;
+    std::array<char, 4096> m_buffer{};
+    std::size_t m_size = 0;
+};
+
+// Copied out of the JSONL observer once it is active, so the handler reads fixed storage rather
+// than a std::string another thread may be reassigning.
+struct crash_report
+{
+    std::array<char, 72> run_id{};
+    std::array<char, 72> parent_run_id{};
+
+    static void copy(std::array<char, 72>& target, std::string_view value)
+    {
+        const auto count = std::min(value.size(), target.size() - 1);
+        std::ranges::copy(value.substr(0, count), target.begin());
+        target[count] = '\0';
+    }
+};
+
+auto g_crash_report = crash_report{};
+volatile std::sig_atomic_t g_jsonl_crash_output = 0;
+
+void emit_crash_event(int signal_number)
+{
+    auto line = crash_line{};
+    line.raw("{\"type\":\"crash\",\"schema\":");
+    line.string(jsonl_observer::schema);
+    line.raw(",\"version\":");
+    line.number(static_cast<std::uint64_t>(jsonl_observer::version));
+    line.raw(",\"pid\":");
+    line.number(static_cast<std::uint64_t>(::getpid()));
+    // clock_gettime is async-signal-safe; std::chrono clocks are not guaranteed to be.
+    auto now = ::timespec{};
+    if(::clock_gettime(CLOCK_REALTIME, &now) == 0)
+    {
+        line.raw(",\"ts_unix_ms\":");
+        line.number(static_cast<std::uint64_t>(now.tv_sec) * 1000u + static_cast<std::uint64_t>(now.tv_nsec) / 1'000'000u);
+    }
+    if(const auto run_id = std::string_view{g_crash_report.run_id.data()}; not run_id.empty())
+    {
+        line.raw(",\"run_id\":");
+        line.string(run_id);
+    }
+    if(const auto parent = std::string_view{g_crash_report.parent_run_id.data()}; not parent.empty())
+    {
+        line.raw(",\"parent_run_id\":");
+        line.string(parent);
+    }
+    line.raw(",\"signal\":");
+    line.number(static_cast<std::uint64_t>(signal_number));
+    // Synchronous faults and abort() are delivered on the thread that raised them, so this is the
+    // test (or step) that crashed, also under --jobs.
+    if(const auto test_id = tester::data::current_test_id(); not test_id.empty())
+    {
+        line.raw(",\"test_id\":");
+        line.string(test_id);
+    }
+    line.raw("}\n");
+    line.write(STDOUT_FILENO);
+
+    constexpr auto result = "RESULT: passed=false crashed=true\n"sv;
+    (void)::write(STDERR_FILENO, result.data(), result.size());
 }
 
-auto append_unsigned(char* buffer, std::size_t size, std::size_t capacity, unsigned value)
+void crash_handler(int signal_number)
 {
-    auto temporary = std::array<char, 32>{};
-    auto count = std::size_t{};
-    do
-    {
-        temporary[count++] = static_cast<char>('0' + value % 10);
-        value /= 10;
-    }
-    while(value);
+    if(g_jsonl_crash_output)
+        emit_crash_event(signal_number);
 
-    while(count > 0 && size < capacity)
-        buffer[size++] = temporary[--count];
-    return size;
-}
+    void* frames[64];
+    const auto count = ::backtrace(frames, 64);
+    ::backtrace_symbols_fd(frames, count, STDERR_FILENO);
 
-void emit_crash_event(
-    int stdout_fd,
-    int stderr_fd,
-    unsigned signal_number,
-    const char* schema,
-    std::size_t schema_length,
-    int version,
-    bool emit_result_line)
-{
-    auto buffer = std::array<char, 256>{};
-    auto size = std::size_t{};
-
-    size = append_cstr(buffer.data(), size, buffer.size(), "{\"type\":\"crash\",\"schema\":\"");
-    for(auto index = std::size_t{}; index < schema_length && size < buffer.size(); ++index)
-        buffer[size++] = schema[index];
-    size = append_cstr(buffer.data(), size, buffer.size(), "\",\"version\":");
-    size = append_unsigned(buffer.data(), size, buffer.size(), static_cast<unsigned>(version));
-    size = append_cstr(buffer.data(), size, buffer.size(), ",\"pid\":");
-    size = append_unsigned(buffer.data(), size, buffer.size(), static_cast<unsigned>(::getpid()));
-    size = append_cstr(buffer.data(), size, buffer.size(), ",\"signal\":");
-    size = append_unsigned(buffer.data(), size, buffer.size(), signal_number);
-    size = append_cstr(buffer.data(), size, buffer.size(), "}\n");
-
-    (void)::write(stdout_fd, buffer.data(), size);
-
-    if(emit_result_line)
-    {
-        constexpr char result[] = "RESULT: passed=false crashed=true\n";
-        (void)::write(stderr_fd, result, sizeof(result) - 1);
-    }
+    // Die by the signal itself so the parent's waitpid reports signaled=true. The signal stays
+    // blocked while this handler runs; it is delivered with the default action on return.
+    std::signal(signal_number, SIG_DFL);
+    std::raise(signal_number);
 }
 
 } // namespace
-
-// Schema is defined in jsonl.h++ as jsonl::jsonl_context<std::ostream>::schema
-// We duplicate it here as a string literal to avoid header inclusion conflicts with the std module
-static constexpr auto g_schema = "tester-jsonl"sv;
-static auto g_schema_buf = std::array<char, 64>{};
-static auto g_schema_len = std::size_t{0};
 
 constexpr auto usage =
 R"(test_runner [--help] [--list] [--tags=<tag>]
@@ -115,32 +202,6 @@ static std::optional<std::size_t> parse_usize(std::string_view sv)
 
 int main(int argc, char** argv)
 {
-    // Initialize schema used by crash handler (kept in a fixed buffer so the handler stays async-signal-safe).
-    g_schema_len = std::min(g_schema.size(), g_schema_buf.size() - 1);
-    std::copy_n(g_schema.begin(), g_schema_len, g_schema_buf.begin());
-    g_schema_buf[g_schema_len] = '\0';
-
-    static volatile std::sig_atomic_t jsonl_crash_output{};
-
-    auto crash_handler = [](int signal)
-    {
-        if(jsonl_crash_output)
-        {
-            emit_crash_event(
-                STDOUT_FILENO,
-                STDERR_FILENO,
-                static_cast<unsigned>(signal),
-                g_schema_buf.data(),
-                g_schema_len,
-                /*version=*/1,
-                /*emit_result_line=*/true);
-        }
-
-        void* frames[64];
-        auto count = ::backtrace(frames, 64);
-        ::backtrace_symbols_fd(frames, count, STDERR_FILENO);
-        std::_Exit(signal);
-    };
     std::signal(SIGSEGV, crash_handler);
     std::signal(SIGABRT, crash_handler);
 
@@ -269,9 +330,8 @@ int main(int argc, char** argv)
         tester::set_slowest(slowest);
         if(jobs.has_value())
             tester::set_jobs(*jobs);
-        tester::output::register_observer(
-            "jsonl",
-            tester::output::jsonl::observer_instance(std::cout, std::clog, jsonl_mode, output_max_bytes));
+        auto& jsonl = tester::output::jsonl::observer_instance(std::cout, std::clog, jsonl_mode, output_max_bytes);
+        tester::output::register_observer("jsonl", jsonl);
         tester::output::register_observer(
             "console",
             tester::output::console::observer_instance(std::clog, std::clog, result_line));
@@ -288,7 +348,12 @@ int main(int argc, char** argv)
             junit.configure(junit_path);
             tester::output::observe(junit);
         }
-        jsonl_crash_output = output_name == "jsonl";
+        if(output_name == "jsonl")
+        {
+            crash_report::copy(g_crash_report.run_id, jsonl.run_id());
+            crash_report::copy(g_crash_report.parent_run_id, jsonl.parent_run_id());
+            g_jsonl_crash_output = 1;
+        }
 
         auto tr = tester::runner{tags};
 

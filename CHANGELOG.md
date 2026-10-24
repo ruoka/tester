@@ -10,6 +10,25 @@ tag; cutting a release renames that section.
 
 ## Unreleased
 
+### Fixed
+
+- **`test_runner` crash events match the JSONL contract.** The `crash` line written on
+  `SIGSEGV` / `SIGABRT` still said `"version":1` and had no `ts_unix_ms`; it now carries
+  `version` 2 and a timestamp like every other event. `docs/jsonl-schema.json` describes it,
+  and `tests/jsonl/validate.py` checks a real one.
+- **A crashed runner reports `signaled:true`.** The crash handler ended with `_Exit(signal)`,
+  so a runner killed by `SIGABRT` looked like one that exited 6: CB's `test_end` said
+  `signaled:false` and the run ended on "Some tests or assertions failed!". The handler now
+  re-raises the signal with its default action, and CB reports "Test runner was killed by
+  signal 6!".
+
+### Added
+
+- **`crash` names the test that crashed.** The event carries `test_id` (the test or step
+  running on the crashing thread, as in `failed_test_ids`, also under `--jobs`) plus `run_id`
+  and `parent_run_id` for correlation, so an agent no longer has to read the stack trace on
+  stderr to find the culprit.
+
 ## [3.0.1] — 2026-10-23
 
 Minimum compiler unchanged (Clang 21 with libc++ modules); JSONL `version` 2.

@@ -58,7 +58,7 @@ REQUIRED_FIELDS = {
     "list_summary": ("units_total", "main_count", "test_count", "max_level"),
     "unit": ("path", "kind", "imports", "level", "has_main", "is_test", "is_modular"),
     "cache_status": ("object_cache_path", "profile_match", "current_profile"),
-    "crash": ("pid", "signal"),
+    "crash": ("pid", "signal", "run_id", "test_id"),
 }
 
 # (label, argv tail). Non-zero exit is expected for the probe cases.
@@ -78,6 +78,8 @@ COMMANDS = [
     ("test_utf8_probe", ["debug", "test", "--jsonl=failures", "--tags=[.jsonl-utf8-probe]"]),
     # Deliberately emits infinity and NaN operands.
     ("test_nonfinite_probe", ["debug", "test", "--jsonl=failures", "--tags=[.jsonl-nonfinite-probe]"]),
+    # Aborts inside a test: the crash line is written from a signal handler, not the observer.
+    ("test_crash_probe", ["debug", "test", "--jsonl=failures", "--tags=[.jsonl-crash-probe]"]),
 ]
 
 

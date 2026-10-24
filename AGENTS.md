@@ -51,7 +51,7 @@ Use **`--jsonl=failures`**. Parse **stdout only** (one JSON object per line, `sc
 
 1. Find the last `summary` on stdout (`run_end` is trace-only).
 
- **No `summary` and no `eof`?** The run aborted before the first test. Ordering metadata is validated up front, and a duplicate `test_order.id`, a `depends_on` id nothing registered, or a dependency cycle throws: stdout ends after `run_start`, the runner exits `1`, and the reason is the one line on stderr — `Unhandled exception: Duplicate test id "…" used by "…" and "…"`, `Unknown test id "…" in depends_on of "…"`, or `Cyclic test dependency involving "…"`. A missing `summary` always means the run did not finish, so treat it as failure; this is the one case where the explanation is on stderr rather than in an event. Fix the metadata the message names, then re-run. If the stream instead breaks off partway through the tests, the runner died on a signal — stderr carries its stack trace, and no `summary` is written for that either.
+ **No `summary` and no `eof`?** The run aborted before the first test. Ordering metadata is validated up front, and a duplicate `test_order.id`, a `depends_on` id nothing registered, or a dependency cycle throws: stdout ends after `run_start`, the runner exits `1`, and the reason is the one line on stderr — `Unhandled exception: Duplicate test id "…" used by "…" and "…"`, `Unknown test id "…" in depends_on of "…"`, or `Cyclic test dependency involving "…"`. A missing `summary` always means the run did not finish, so treat it as failure; this is the one case where the explanation is on stderr rather than in an event. Fix the metadata the message names, then re-run. If the stream instead breaks off partway through the tests, the runner died on a signal — the last stdout line is a `crash` event whose `test_id` names the test (or step) running on the crashing thread, and CB's `test_end` reports `signaled:true` with the signal. No `summary` is written for that either; stderr carries the stack trace.
 
 2. Check the result:
  - If `passed` is `true` → this scoped run succeeded. You're done.
@@ -110,6 +110,7 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 | `test` | Failed tests in failures mode; every test in trace mode |
 | `summary` | `tests_ok`/`tests_total`, `assertions_ok`/`assertions_total`, `passed`, `failed_test_ids`, `first_failure` |
 | `exception` | Uncaught exceptions (`exception_type`, `message`, `file`, `line`) |
+| `crash` | `SIGSEGV` / `SIGABRT` in `test_runner` (`signal`, `test_id`, `run_id`); last line of the stream — no `summary` or `eof` follows |
 | `eof` | End of JSONL stream |
 
 **Event ordering (run mode):** `assertion_failed` / `assertion_passed` (and `exception`) stream **during** each case as it executes — after that case’s `case` event when the mode emits `case`. The per-case `test` rollups are **not** interleaved with those assertions; they are emitted in one batch at finalize time (`report_results`, after every selected case has finished), then `summary`, then `run_end` (trace), then `eof`. Do not assume a `test` line appears immediately after that case’s last assertion.

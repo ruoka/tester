@@ -96,6 +96,10 @@
     {
       "if": { "properties": { "type": { "const": "cache_invalidate_end" } }, "required": ["type"] },
       "then": { "$ref": "#/$defs/cache_invalidate_end" }
+    },
+    {
+      "if": { "properties": { "type": { "const": "crash" } }, "required": ["type"] },
+      "then": { "$ref": "#/$defs/crash" }
     }
   ],
   "$defs": {
@@ -393,6 +397,17 @@
         "main_count": { "type": "integer" },
         "test_count": { "type": "integer" },
         "max_level": { "type": "integer" }
+      }
+    },
+    "crash": {
+      "description": "test_runner received SIGSEGV or SIGABRT. Written from the signal handler, so it is the last line on stdout: no test, summary or eof follows. The runner then dies by the same signal, so CB's test_end reports signaled:true.",
+      "required": ["signal"],
+      "properties": {
+        "signal": { "type": "integer" },
+        "test_id": {
+          "type": "string",
+          "description": "The test or step running on the crashing thread, as in failed_test_ids. Absent when the crash happened outside any test."
+        }
       }
     }
   }
