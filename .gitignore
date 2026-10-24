@@ -7,6 +7,9 @@ lib/
 bin/
 cache/
 
+# Benchmark scratch: A/B cb binaries and results (tools/run-linux-bench.sh)
+.bench-ab/
+
 # Compiled binaries
 tools/cb
 tools/builder
