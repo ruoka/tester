@@ -21,6 +21,13 @@ tag; cutting a release renames that section.
   `signaled:false` and the run ended on "Some tests or assertions failed!". The handler now
   re-raises the signal with its default action, and CB reports "Test runner was killed by
   signal 6!".
+- **A crashed or timed-out runner reads as signaled on Linux too.** CB ran children through
+  `/bin/sh -c`, and a shell that forks instead of exec'ing reports a signal death as exit
+  128+n, so CB said `signaled:false` and "Some tests or assertions failed!". CB now `exec`s the
+  child from the shell.
+- **`test_order{.timeout = …}` compiles without warnings.** `depends_on` and `id` had no
+  default member initializers, so Clang's `-Wextra` warned on any designated initializer that
+  skipped them.
 - **`first_failure` carries the failed assertion.** `AGENTS.md` promised the matcher with
   `actual` / `expected`, but the summary only had the test's location and "assertion failure".
   It now adds `column`, `matcher`, `actual` and `expected` and points at the assertion itself,

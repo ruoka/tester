@@ -3721,14 +3721,17 @@ public:
 
         const auto started = std::chrono::steady_clock::now();
         // Apple's libc serializes std::system; posix_spawn does not. Still go through
-        // /bin/sh -c so capture_path's `> … 2>&1` redirect keeps working.
+        // /bin/sh -c so capture_path's `> … 2>&1` redirect keeps working. `exec` replaces the
+        // shell with the child: dash (Linux /bin/sh) otherwise forks it and turns a signal death
+        // into exit 128+n, so a crashed or timed-out test_runner would not read as signaled.
+        const auto spawned_line = "exec " + shell_line;
         auto raw = -1;
         auto spawn_error = std::string{};
         auto pid = pid_t{};
         char* const sh_argv[] = {
             const_cast<char*>("/bin/sh"),
             const_cast<char*>("-c"),
-            const_cast<char*>(shell_line.c_str()),
+            const_cast<char*>(spawned_line.c_str()),
             nullptr,
         };
         if(const auto spawn_rc = posix_spawn(&pid, "/bin/sh", nullptr, nullptr, sh_argv, environ);
