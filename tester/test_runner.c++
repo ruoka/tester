@@ -217,7 +217,6 @@ public:
         : m_limit{limit}
         , m_grace{grace}
     {
-        g_timeout_report.timeout_ms = static_cast<std::uint64_t>(limit.count());
         std::signal(SIGALRM, crash_handler);
         tester::data::set_case_watch(this);
     }
@@ -230,10 +229,13 @@ public:
     timeout_watchdog(const timeout_watchdog&) = delete;
     timeout_watchdog& operator=(const timeout_watchdog&) = delete;
 
-    void started(std::string_view test_id) override
+    void started(std::string_view test_id, std::chrono::milliseconds timeout) override
     {
+        const auto limit = timeout > std::chrono::milliseconds::zero() ? timeout : m_limit;
+        const auto now = clock::now();
         auto lock = std::lock_guard{m_mutex};
-        m_running.insert_or_assign(std::this_thread::get_id(), running_case{::pthread_self(), clock::now(), std::string{test_id}});
+        m_running.insert_or_assign(std::this_thread::get_id(), running_case{::pthread_self(), now, now + limit, limit, std::string{test_id}});
+        ++m_starts;
         m_changed.notify_all();
     }
 
@@ -250,6 +252,8 @@ private:
     {
         ::pthread_t thread;
         clock::time_point started;
+        clock::time_point deadline;
+        std::chrono::milliseconds limit;
         std::string test_id;
     };
 
@@ -258,19 +262,20 @@ private:
         auto lock = std::unique_lock{m_mutex};
         while(not stop.stop_requested())
         {
-            // The longest-running case expires first; one that starts later has a later deadline.
-            const auto oldest = std::ranges::min_element(m_running, {}, [](const auto& entry) { return entry.second.started; });
-            if(oldest == m_running.end())
+            // Cases carry their own limits, so a later start can still be the first to expire: each
+            // start ends the wait so its deadline is considered.
+            const auto next = std::ranges::min_element(m_running, {}, [](const auto& entry) { return entry.second.deadline; });
+            if(next == m_running.end())
             {
                 m_changed.wait(lock, stop, [&] { return not m_running.empty(); });
                 continue;
             }
-            if(const auto deadline = oldest->second.started + m_limit; clock::now() < deadline)
+            if(const auto deadline = next->second.deadline; clock::now() < deadline)
             {
-                m_changed.wait_until(lock, stop, deadline, [] { return false; });
+                m_changed.wait_until(lock, stop, deadline, [&, seen = m_starts] { return m_starts != seen; });
                 continue;
             }
-            expire(oldest->second, lock);
+            expire(next->second, lock);
         }
     }
 
@@ -278,6 +283,7 @@ private:
     {
         const auto count = std::min(hung.test_id.size(), g_timeout_report.test_id.size() - 1);
         std::ranges::copy(hung.test_id.substr(0, count), g_timeout_report.test_id.begin());
+        g_timeout_report.timeout_ms = static_cast<std::uint64_t>(hung.limit.count());
         g_timeout_report.elapsed_ms = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - hung.started).count());
         ::pthread_kill(hung.thread, SIGALRM);
         lock.unlock();
@@ -292,6 +298,7 @@ private:
     std::mutex m_mutex{};
     std::condition_variable_any m_changed{};
     std::map<std::thread::id, running_case> m_running{};
+    std::uint64_t m_starts = 0;
     // Last, so it is joined before the state it watches is destroyed.
     std::jthread m_thread{[this](std::stop_token stop) { watch(stop); }};
 };
@@ -305,7 +312,8 @@ R"(test_runner [--help] [--list] [--tags=<tag>]
             [--junit=<path>] [--xunit-xml=<path>] [--timeout=<seconds>]
             [--test-id=<id>]... [<tags>]
   --timeout=<seconds>  End the run if one top-level test runs longer (0 = off,
-                       the default; TESTER_TIMEOUT sets it too)
+                       the default; TESTER_TIMEOUT sets it too). A test's own
+                       test_order{.timeout} replaces it for that test
   --test-id=<id>       Run the test_case or scenario with exactly this id
                        (repeatable; hidden tests included; ANDed with --tags).
                        Feed it summary.rerun_ids to rerun what failed

@@ -395,6 +395,52 @@ auto register_tests()
         require_eq(tester_selftest::event_field(result.stdout_text, "summary", "passed"), std::string{"true"});
     };
 
+    test_case("test_case [self] jsonl a case's own timeout replaces --timeout") = [died_by]
+    {
+        // Shorter: the 200 ms case ends a run whose limit is a minute, and is reported with its own.
+        const auto shorter = run_test_runner({"--jsonl=failures", "--timeout=60", "--tags=[.jsonl-timeout-own-probe]"});
+        require_true(died_by(shorter, SIGALRM));
+        const auto timeout = tester_selftest::find_event(shorter.stdout_text, "timeout");
+        require_eq(tester_selftest::field(timeout, "timeout_ms"), std::string{"200"});
+        require_true(tester_selftest::field(timeout, "test_id").contains("declares a 200 ms limit"));
+
+        // Longer: a case meant to run 1.5 s opts out of a one-second run limit.
+        const auto longer = run_test_runner({"--jsonl=failures", "--timeout=1", "--tags=[.jsonl-timeout-long-probe]"});
+        require_eq(longer.exit_code, 0);
+        require_eq(tester_selftest::event_field(longer.stdout_text, "summary", "passed"), std::string{"true"});
+    };
+
+    test_case("test_case [self] jsonl a later case with a shorter limit expires on time") = [died_by]
+    {
+        // The case before it leaves the watchdog waiting on a deadline a minute out; the 200 ms
+        // case that starts next must still be caught on time, not when that minute is up.
+        const auto started = std::chrono::steady_clock::now();
+        const auto result = run_test_runner({"--jsonl=failures", "--timeout=60", "--tags=[.jsonl-timeout-mixed-probe]"});
+        require_true(std::chrono::steady_clock::now() - started < std::chrono::seconds{10});
+        require_true(died_by(result, SIGALRM));
+        const auto timeout = tester_selftest::find_event(result.stdout_text, "timeout");
+        require_eq(tester_selftest::field(timeout, "timeout_ms"), std::string{"200"});
+        require_true(tester_selftest::field(timeout, "test_id").contains("declares a 200 ms limit"));
+    };
+
+    test_case("test_case [self] jsonl a case's own timeout is off while --timeout is") = []
+    {
+        // --timeout=0 is the debugger's escape hatch, so it lifts declared limits too.
+        const auto result = run_test_runner({"--jsonl=failures", "--timeout=0", "--tags=[.jsonl-timeout-own-probe]"}, "TESTER_TIMEOUT=60");
+        require_eq(result.exit_code, 0);
+        require_eq(tester_selftest::event_field(result.stdout_text, "summary", "passed"), std::string{"true"});
+    };
+
+    test_case("test_case [self] jsonl catalogue lists a declared timeout") = []
+    {
+        const auto own = run_test_runner({"--jsonl=failures", "--list", "--tags=[.jsonl-timeout-own-probe]"});
+        require_eq(tester_selftest::event_field(own.stdout_text, "registered_test", "timeout_ms"), std::string{"200"});
+
+        const auto none = run_test_runner({"--jsonl=failures", "--list", "--tags=[.jsonl-timeout-pass-probe]"});
+        require_false(tester_selftest::find_event(none.stdout_text, "registered_test").empty());
+        require_false(none.stdout_text.contains("timeout_ms"));
+    };
+
     test_case("test_case [self] jsonl rejects a malformed timeout") = []
     {
         const auto flag = run_test_runner({"--jsonl=failures", "--timeout=soon", "--tags=[.jsonl-timeout-pass-probe]"});
@@ -427,6 +473,21 @@ auto register_tests()
     };
 
     test_case("test_case [.jsonl-timeout-slow-probe] outlives one second") = []
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds{1500});
+    };
+
+    test_case("test_case [.jsonl-timeout-mixed-probe] runs first under the run's limit") = []
+    {
+        require_eq(1, 1);
+    };
+
+    test_case("test_case [.jsonl-timeout-own-probe][.jsonl-timeout-mixed-probe] declares a 200 ms limit", {.timeout = std::chrono::milliseconds{200}}) = []
+    {
+        std::this_thread::sleep_for(std::chrono::seconds{1});
+    };
+
+    test_case("test_case [.jsonl-timeout-long-probe] declares a 5 s limit", {.timeout = std::chrono::seconds{5}}) = []
     {
         std::this_thread::sleep_for(std::chrono::milliseconds{1500});
     };

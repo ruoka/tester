@@ -326,6 +326,8 @@ export struct observer final : tester::output::observer
             os << ",\"priority\":" << tc.priority;
             write_string_array(os, "tags", tc.tags);
             write_string_array(os, "depends_on", tc.depends_on);
+            if(tc.timeout > std::chrono::milliseconds::zero())
+                os << ",\"timeout_ms\":" << tc.timeout.count();
         };
     }
 

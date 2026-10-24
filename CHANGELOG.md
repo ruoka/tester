@@ -40,6 +40,10 @@ tag; cutting a release renames that section.
   repeatable, matches ids exactly, selects hidden tests, and is ANDed with `--tags`; an id no
   registered case has aborts the run with `Unknown test id "…" in --test-id`. CB forwards the
   flag, and MCP `cb_test` takes `test_ids` and returns `rerun_ids`.
+- **Per-test timeouts: `test_order::timeout`.** `test_case("…", {.timeout = 5min})` (and the
+  `scenario` equivalent) replaces `--timeout` for that case, longer or shorter, while timeouts
+  are on; `--timeout=0` still turns every limit off. The catalogue's `registered_test` shows it
+  as `timeout_ms`, and a `timeout` event reports the limit that expired.
 - **`build_end.up_to_date`.** `true` when a successful build compiled and linked nothing, so
   an agent can tell a no-op build from a real one without adding up the counters.
 

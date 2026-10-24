@@ -344,7 +344,7 @@ Every line is valid UTF-8 and valid JSON regardless of what the test data contai
 - `--jsonl=summary` — lifecycle and final aggregates only
 - `--jsonl=trace` — every build/test event, including passing assertions
 - `--jsonl-output-max-bytes=N` — cap captured failed-test output
-- `--timeout=<seconds>` (or `TESTER_TIMEOUT`) — end the run when one top-level test runs longer; the last line is a `timeout` event naming the hung test, and stderr shows where it was stuck. Off by default
+- `--timeout=<seconds>` (or `TESTER_TIMEOUT`) — end the run when one top-level test runs longer; the last line is a `timeout` event naming the hung test, and stderr shows where it was stuck. Off by default. A case can set its own limit, `test_case("…", {.timeout = 5min})`, which replaces `--timeout` for it while timeouts are on
 - `--test-id=<id>` (repeatable) — run exactly the `test_case` / `scenario` with this id, hidden ones included; feed it `summary.rerun_ids` to rerun only what failed
 
 Escape bracket tags in shell: `--tags='\[self\]'`.

@@ -37,6 +37,9 @@ struct test_case : public test_metadata
     // Bracket tags, parsed once from the description at registration. Filtering and the
     // catalogue read these rather than re-parsing the rendered display name.
     std::vector<std::string> tags;
+    // Replaces the run's --timeout for this case; zero means the run's limit applies. Only
+    // effective while --timeout is on, so a run with timeouts off has no deadlines at all.
+    std::chrono::milliseconds timeout{0};
 };
 
 // Registration catalogue only — written at static init (and when a nested scenario /
@@ -266,7 +269,8 @@ export class case_watch
 {
 public:
     virtual ~case_watch() = default;
-    virtual void started(std::string_view test_id) = 0;
+    // timeout is the case's own limit (test_order::timeout), zero when it declares none.
+    virtual void started(std::string_view test_id, std::chrono::milliseconds timeout) = 0;
     virtual void finished() = 0;
 };
 

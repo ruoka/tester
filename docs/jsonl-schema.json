@@ -266,7 +266,12 @@
         "column": { "type": "integer" },
         "tags": { "type": "array", "items": { "type": "string" } },
         "depends_on": { "type": "array", "items": { "type": "string" } },
-        "priority": { "type": "integer" }
+        "priority": { "type": "integer" },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The case's own limit (test_order::timeout), used in place of --timeout while timeouts are on. Absent when the case declares none."
+        }
       }
     },
     "test_list_summary": {
