@@ -303,9 +303,12 @@ R"(test_runner [--help] [--list] [--tags=<tag>]
             [--jsonl[=<summary|failures|trace>]] [--slowest=<N>]
             [--jobs=<N>] [--jsonl-output-max-bytes=<N>] [--result]
             [--junit=<path>] [--xunit-xml=<path>] [--timeout=<seconds>]
-            [<tags>]
+            [--test-id=<id>]... [<tags>]
   --timeout=<seconds>  End the run if one top-level test runs longer (0 = off,
                        the default; TESTER_TIMEOUT sets it too)
+  --test-id=<id>       Run the test_case or scenario with exactly this id
+                       (repeatable; hidden tests included; ANDed with --tags).
+                       Feed it summary.rerun_ids to rerun what failed
 Examples:
   test_runner
   test_runner --list
@@ -315,6 +318,7 @@ Examples:
   test_runner --jsonl=trace --slowest=10
   test_runner --jobs=4 --tags=[self]
   test_runner --timeout=60 --jsonl=failures
+  test_runner --jsonl=failures --test-id="test_case -> test_case [self] parses"
   test_runner --tags=scenario("My test")
   test_runner --tags=[self][order]
   test_runner --tags="scenario.*Happy"
@@ -351,6 +355,7 @@ int main(int argc, char** argv)
 
     auto list_only = false;
     auto tags = std::string_view{};
+    auto test_ids = std::vector<std::string>{};
     auto output_name = std::string_view{"console"};
     auto result_line = false;
     auto slowest = std::size_t{0};
@@ -395,6 +400,18 @@ int main(int argc, char** argv)
         if(option.starts_with("--tags="))
         {
             tags = option.substr(std::string_view{"--tags="}.size());
+            continue;
+        }
+
+        if(option.starts_with("--test-id="))
+        {
+            const auto id = option.substr(std::string_view{"--test-id="}.size());
+            if(id.empty())
+            {
+                std::clog << "--test-id expects a test id" << std::endl;
+                return 1;
+            }
+            test_ids.emplace_back(id);
             continue;
         }
 
@@ -527,6 +544,7 @@ int main(int argc, char** argv)
         }
 
         auto tr = tester::runner{tags};
+        tr.select_ids(std::move(test_ids));
 
         if(list_only)
         {

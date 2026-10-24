@@ -162,6 +162,9 @@ def _run_cb(argv_tail: list[str], *, timeout: int | None = None) -> dict[str, An
         "first_failure": (summary or {}).get("first_failure")
         if isinstance(summary, dict)
         else None,
+        "rerun_ids": (summary or {}).get("rerun_ids")
+        if isinstance(summary, dict)
+        else None,
         "fatal": _fatal_event(events),
         "stderr_tail": (proc.stderr or "")[-4000:],
     }
@@ -202,7 +205,12 @@ def tool_cb_build(args: dict[str, Any]) -> dict[str, Any]:
 def tool_cb_test(args: dict[str, Any]) -> dict[str, Any]:
     config = _config(args)
     jsonl = _jsonl_mode(args)
-    tags = str(args.get("tags") if args.get("tags") is not None else DEFAULT_TAGS).strip()
+    test_ids = args.get("test_ids") or []
+    if not isinstance(test_ids, list) or not all(isinstance(i, str) and i for i in test_ids):
+        raise ValueError("test_ids must be a list of non-empty test id strings")
+    # Ids already pick the tests; the default tag scope would AND away hidden or untagged ones.
+    default_tags = "" if test_ids else DEFAULT_TAGS
+    tags = str(args.get("tags") if args.get("tags") is not None else default_tags).strip()
     filt = str(args.get("filter") or "").strip()
     timeout = int(args["timeout"]) if args.get("timeout") is not None else TEST_TIMEOUT_SEC
     if timeout < 0:
@@ -213,6 +221,7 @@ def tool_cb_test(args: dict[str, Any]) -> dict[str, Any]:
         argv.append(f"--tags={tags}")
     if timeout:
         argv.append(f"--timeout={timeout}")
+    argv.extend(f"--test-id={test_id}" for test_id in test_ids)
     if filt:
         # Substring filter as a trailing positional (CB forwards after test).
         argv.append(filt)
@@ -298,7 +307,8 @@ TOOLS: dict[str, tuple[dict[str, Any], Callable[[dict[str, Any]], dict[str, Any]
                 "Default tags are [self] (standalone tester). In parent repos set "
                 "CB_MCP_DEFAULT_TAGS or pass tags=[yardb] / [fixer] / etc. "
                 "Returns summary.passed and first_failure when present; fatal holds the "
-                "crash or timeout event (with test_id) when test_runner died."
+                "crash or timeout event (with test_id) when test_runner died. rerun_ids lists "
+                "the failed top-level tests; pass it back as test_ids to rerun only those."
             ),
             "inputSchema": {
                 "type": "object",
@@ -314,6 +324,13 @@ TOOLS: dict[str, tuple[dict[str, Any], Callable[[dict[str, Any]], dict[str, Any]
                         "minimum": 0,
                         "description": "test_runner --timeout: seconds one top-level test may run "
                         "before the run is ended (0 disables; default CB_MCP_TEST_TIMEOUT_SEC or 60)",
+                    },
+                    "test_ids": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                        "description": "Run exactly these test_case/scenario ids (test_runner --test-id). "
+                        "Pass a previous result's rerun_ids to rerun what failed. When set, tags "
+                        "default to none instead of the default scope",
                     },
                     "tags": {
                         "type": "string",

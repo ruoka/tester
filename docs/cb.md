@@ -229,7 +229,7 @@ The mode is a profile field, so switching it recompiles every unit rather than m
 
 **`--jobs=N`** bounds concurrent compile and link processes. Without it CB uses `hardware_concurrency()`; the cap exists because each `clang++` invocation on a module-heavy TU can peak at hundreds of megabytes. CB uses a bounded worker pool rather than creating one thread per translation unit. When `--jobs=` is set on a `test` invocation, CB also forwards it to `test_runner` (runner default remains `1` = sequential).
 
-CB forwards common `test_runner` flags without `--`: `--tags=`, `--list`, `--jsonl[=summary|failures|trace]`, `--jsonl-output-max-bytes=…`, `--slowest=…`, `--jobs=…`, `--timeout=<seconds>`, `--junit=<path>`, and `--xunit-xml=<path>`.
+CB forwards common `test_runner` flags without `--`: `--tags=`, `--list`, `--jsonl[=summary|failures|trace]`, `--jsonl-output-max-bytes=…`, `--slowest=…`, `--jobs=…`, `--timeout=<seconds>`, `--test-id=<id>` (repeatable), `--junit=<path>`, and `--xunit-xml=<path>`.
 
 Environment variables for **bootstrap** (not test output): `LLVM_PATH`, `CXX`, `CB_INCLUDE_FLAGS`. See [Requirements](../README.md#requirements) in the README. macOS toolchain: [clang-modules-macos.md](clang-modules-macos.md) ([LLVM build docs](https://llvm.org/docs/GettingStarted.html)).
 

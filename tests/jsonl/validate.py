@@ -41,9 +41,9 @@ ENVELOPE_FIELDS = ("type", "schema", "version", "pid", "ts_unix_ms")
 # checked for the envelope.
 REQUIRED_FIELDS = {
     "summary": ("tests_ok", "tests_total", "assertions_ok", "assertions_total",
-                "passed", "failed_test_ids"),
+                "passed", "failed_test_ids", "rerun_ids"),
     "run_start": ("mode", "tags", "cwd"),
-    "run_end": ("mode", "passed", "duration_ms", "failed_test_ids"),
+    "run_end": ("mode", "passed", "duration_ms", "failed_test_ids", "rerun_ids"),
     "test": ("id", "name", "file", "line", "success", "assertions_ok", "assertions_total"),
     "assertion_failed": ("matcher", "actual", "expected", "file", "line", "column"),
     "assertion_passed": ("matcher", "actual", "expected", "file", "line", "column"),
@@ -51,7 +51,7 @@ REQUIRED_FIELDS = {
     "registered_test": ("id", "name", "file", "line", "tags", "depends_on", "priority"),
     "test_list_summary": ("registered_total", "matched_total", "tags_filter"),
     "build_start": ("config", "include_tests", "include_examples"),
-    "build_end": ("ok", "duration_ms"),
+    "build_end": ("ok", "duration_ms", "up_to_date"),
     "compile_end": ("source_path", "object_path", "ok", "cache_hit"),
     "link_end": ("executable_path", "ok", "cache_hit"),
     "command_end": ("ok", "exit_code", "duration_ms"),

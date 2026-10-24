@@ -227,6 +227,13 @@ ok(
     "cb_list_events",
 )
 
+# Rerun by id: the hidden probe scenario fails in a step, and rerun_ids names the scenario.
+scenario_id = "scenario -> scenario [.rerun-probe] a scenario whose step fails"
+rerun = tool("cb_test", {"test_ids": [scenario_id], "jsonl": "failures"})
+ok(f"--test-id={scenario_id}" in (rerun.get("argv") or []), "cb_test_forwards_test_ids", str(rerun.get("argv")))
+ok(not any(a.startswith("--tags=") for a in rerun.get("argv") or []), "cb_test_ids_drop_default_tags", str(rerun.get("argv")))
+ok(rerun.get("ok") is False and rerun.get("rerun_ids") == [scenario_id], "cb_test_returns_rerun_ids", str(rerun.get("rerun_ids")))
+
 cache = tool("cb_cache_status", {"jsonl": "failures"})
 ok(cache.get("exit_code") == 0 or cache.get("summary") is not None, "cb_cache_status")
 

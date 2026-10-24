@@ -345,6 +345,7 @@ Every line is valid UTF-8 and valid JSON regardless of what the test data contai
 - `--jsonl=trace` — every build/test event, including passing assertions
 - `--jsonl-output-max-bytes=N` — cap captured failed-test output
 - `--timeout=<seconds>` (or `TESTER_TIMEOUT`) — end the run when one top-level test runs longer; the last line is a `timeout` event naming the hung test, and stderr shows where it was stuck. Off by default
+- `--test-id=<id>` (repeatable) — run exactly the `test_case` / `scenario` with this id, hidden ones included; feed it `summary.rerun_ids` to rerun only what failed
 
 Escape bracket tags in shell: `--tags='\[self\]'`.
 
@@ -373,7 +374,7 @@ Trace mode emits all test events: `run_start`, `run_end`, `case`, `test`, `messa
 
 - `run_start` — `cwd`, structured `argv`, `config` (via `TESTER_CONFIG` when CB spawns the child), `env` for curated vars when set
 - `exception` — demangled `exception_type`, `message`, `file`, `line`
-- `summary` / `run_end` — `failed_test_ids`, `first_failure`
+- `summary` / `run_end` — `failed_test_ids`, `rerun_ids` (the failed top-level cases, a failed step counted as its scenario), `first_failure`
 
 **Correlation:** filter `run_id=<cb>` or `parent_run_id=<cb>` to tie `list` → `build` → `test` from one JSONL invocation.
 
@@ -381,7 +382,7 @@ Trace mode emits all test events: `run_start`, `run_end`, `case`, `test`, `messa
 
 | Event | Purpose |
 |-------|---------|
-| `build_start` / `build_end` | Whole build; compact modes add compile/link/cache/failure totals |
+| `build_start` / `build_end` | Whole build; `build_end.up_to_date` says nothing needed compiling or linking; compact modes add compile/link/cache/failure totals |
 | `command_start` / `command_end` | Every subprocess in trace; failed commands only in failures |
 | `profile_changed` | Object-cache profile mismatch (`reason: "profile_change"`, `profile_diff`) — see [object cache profile](docs/cb.md#object-cache-profile) |
 | `cache_status` | `cache status` inspection |

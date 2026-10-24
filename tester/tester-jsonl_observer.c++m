@@ -172,9 +172,7 @@ export auto collect_failures(const std::list<data::test_result>& results)
     {
         if(!test_failed(r))
             continue;
-        index.failed_test_ids.push_back(r.test_id);
-        if(index.first == nullptr)
-            index.first = &r;
+        index.add(r);
     }
     return index;
 }
@@ -184,6 +182,7 @@ namespace {
 void write_failure_index(std::ostream& os, const failure_index& failures)
 {
     write_failed_test_ids(os, failures.failed_test_ids);
+    write_string_array(os, "rerun_ids", failures.rerun_ids);
     if(failures.first != nullptr)
         write_first_failure(os, *failures.first);
 }

@@ -290,6 +290,9 @@ struct observer final : cb::output::observer
         m.json << m.jsonl("build_end") << [&](std::ostream& os){
             os << ",\"ok\":" << (ok ? "true" : "false");
             os << ",\"duration_ms\":" << timing.elapsed_ms();
+            // Every compile and link was a cache hit: nothing on disk changed.
+            const auto up_to_date = ok and m.compile_rebuilt == 0 and m.link_cache_hits == m.links_total;
+            os << ",\"up_to_date\":" << (up_to_date ? "true" : "false");
             if(m.mode != jsonl_mode::trace)
             {
                 os << ",\"compile_total\":" << m.compile_total;

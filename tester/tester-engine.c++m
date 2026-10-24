@@ -236,6 +236,9 @@ void execute_test_case(execution_context& ctx, test_case& tc)
     // step where it is written gets it from the call stack, and test_metadata is const, so the
     // fields the run fills are written in place rather than assigned.
     auto& result = *ctx.results.insert(ctx.results.end(), test_result{tc});
+    if(ctx.current_output == nullptr)
+        ctx.current_root_id = tc.test_id;
+    result.root_id = ctx.current_root_id;
 
     // One capture buffer serves every case, so the enclosing case's text comes off it before this
     // case resets it, and the buffer is handed back empty when this case is done.

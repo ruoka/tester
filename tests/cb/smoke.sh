@@ -75,10 +75,17 @@ test_cache_hit() {
   run_cb_build "${work_dir}"
   first_jsonl="${LAST_JSONL}"
   assert_text_contains "${first_jsonl}" '"cache_hit":false' "first_build_compiles"
+  assert_jsonl_event_value build_end up_to_date false "first_build_not_up_to_date"
 
   run_cb_build "${work_dir}"
   assert_compile_cache_hits 2 "second_build_cache_hit"
   assert_jsonl_not_contains '"rebuild_reason":"profile_change"' "no_profile_change"
+  assert_jsonl_event_value build_end up_to_date true "second_build_up_to_date"
+
+  # A relink alone is a change: the object is a cache hit but the executable is not.
+  rm -f "${work_dir}/${BUILD_DIR}/bin/hello"
+  run_cb_build "${work_dir}"
+  assert_jsonl_event_value build_end up_to_date false "relink_not_up_to_date"
   end_case cache_hit
 }
 

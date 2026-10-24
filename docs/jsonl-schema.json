@@ -179,7 +179,7 @@
       "description": "Authoritative verdict for a test run. Read passed; never infer pass/fail from the exit code alone. tests_ok counts only tests whose assertions all passed, so tests_ok == tests_total cannot disagree with a non-empty failed_test_ids.",
       "required": [
         "tests_ok", "tests_total", "assertions_ok", "assertions_total",
-        "passed", "failed_test_ids"
+        "passed", "failed_test_ids", "rerun_ids"
       ],
       "properties": {
         "tests_ok": { "type": "integer", "minimum": 0 },
@@ -189,6 +189,11 @@
         "passed": { "type": "boolean" },
         "duration_ms": { "type": "integer" },
         "failed_test_ids": { "type": "array", "items": { "type": "string" } },
+        "rerun_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "The top-level test_case/scenario ids with any failure, once each in run order; a failed step appears as its enclosing case. Pass each as --test-id=<id> to rerun only what failed."
+        },
         "first_failure": {
           "type": "object",
           "description": "The first failure, for triage without scanning the stream.",
@@ -282,10 +287,14 @@
       }
     },
     "build_end": {
-      "required": ["ok", "duration_ms"],
+      "required": ["ok", "duration_ms", "up_to_date"],
       "properties": {
         "ok": { "type": "boolean" },
         "duration_ms": { "type": "integer" },
+        "up_to_date": {
+          "type": "boolean",
+          "description": "true when the build succeeded and every compile and link was a cache hit, so nothing on disk changed. Emitted in every mode."
+        },
         "compile_total": { "type": "integer" },
         "compile_rebuilt": { "type": "integer" },
         "compile_cache_hits": { "type": "integer" },

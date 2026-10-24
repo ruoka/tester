@@ -47,6 +47,9 @@ inline std::mutex test_cases_mutex{};
 
 export struct test_result : public test_metadata
 {
+    // The top-level case this ran under: its own id for a scenario or test_case, the enclosing
+    // case's for a step. Steps only run inside that case, so it is what a rerun has to select.
+    std::string root_id = "";
     bool success = true;
     std::string output = "";
     std::chrono::nanoseconds duration = std::chrono::nanoseconds{0};
@@ -168,6 +171,7 @@ export struct execution_context
 {
     std::function<bool(const test_case&)> excluded{};
     std::string current_test_id{};
+    std::string current_root_id{};
     // Non-null while a case (or step) is collecting console text; nesting means the
     // case being started is a step of that one.
     std::string* current_output = nullptr;

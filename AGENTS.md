@@ -58,6 +58,7 @@ Use **`--jsonl=failures`**. Parse **stdout only** (one JSON object per line, `sc
  - If `false`:
  - Read `first_failure` — `file`, `line`, `message`, and usually the failing `matcher` with `actual` / `expected`. Open the source at that location.
  - Read `failed_test_ids` for the full failure set.
+ - To rerun only what failed, pass each id in `rerun_ids` as `--test-id=<id>` (repeatable, exact match, hidden tests included, ANDed with `--tags` if you give one). `rerun_ids` lists the failed top-level `test_case` / `scenario` ids; a failed step shows up as its scenario, because a step runs only inside it. An id that names no registered case aborts the run with `Unhandled exception: Unknown test id "…" in --test-id`.
 
 `tests_ok` counts only tests whose assertions all passed, including non-fatal `check_*` failures, so `tests_ok == tests_total` never contradicts a non-empty `failed_test_ids`. Assertion operands are always valid UTF-8 (invalid bytes in test data become U+FFFD) and strings are reported verbatim; only exception matchers report type names, and those are demangled (`std::runtime_error`, not `St13runtime_error`). A floating-point infinity or NaN arrives as the string `"inf"` / `"-inf"` / `"nan"` — JSON has no numeric form for them — while every finite number arrives as a number.
 
@@ -108,7 +109,7 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 | `assertion_failed` | Failures and trace modes (`matcher`, `actual`, `expected`, optional `message`) |
 | `assertion_passed` | Trace mode |
 | `test` | Failed tests in failures mode; every test in trace mode |
-| `summary` | `tests_ok`/`tests_total`, `assertions_ok`/`assertions_total`, `passed`, `failed_test_ids`, `first_failure` |
+| `summary` | `tests_ok`/`tests_total`, `assertions_ok`/`assertions_total`, `passed`, `failed_test_ids`, `rerun_ids`, `first_failure` |
 | `exception` | Uncaught exceptions (`exception_type`, `message`, `file`, `line`) |
 | `crash` | `SIGSEGV` / `SIGABRT` in `test_runner` (`signal`, `test_id`, `run_id`); last line of the stream — no `summary` or `eof` follows |
 | `timeout` | A top-level test outlived `--timeout` (`test_id`, `timeout_ms`, `elapsed_ms`, `signal` 14); last line of the stream — the run ends there |
@@ -123,7 +124,7 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 | `list_start` | TU inventory start (`config`, `include_tests`, `include_examples`, `source_dir`) |
 | `unit` | Per translation unit (`path`, `module`, `kind`, `imports[]`, `level`, `has_main`, `is_test`, `is_modular`) |
 | `list_summary` | Inventory totals (`units_total`, `main_count`, `test_count`, `max_level`). Side effect of `list`: writes `compile_commands.json` (clangd) and `graph.json` (same unit graph as the `unit` events) at the project root |
-| `build_start` / `build_end` | Whole build; compact modes add aggregate compile/link/cache/failure counts; `rebuild_summary` lists compile rebuilds by `kind` plus `top_modules` |
+| `build_start` / `build_end` | Whole build; `build_end.up_to_date` is `true` when the build succeeded without compiling or linking anything; compact modes add aggregate compile/link/cache/failure counts; `rebuild_summary` lists compile rebuilds by `kind` plus `top_modules` |
 | `command_start` / `command_end` | Every command in trace; failed commands and successes that printed warnings in failures. `command_end` carries decoded `exit_code` / `wait_status` / `signaled` and `diagnostics` when the child printed anything (or failed) |
 | `profile_changed` | Once per build when object-cache profile mismatches (`reason`, `profile_diff`) |
 | `cache_status` | `cache status` subcommand — all four files under `cache/`: object cache (`object_cache_path`, `profile_match`, entry counts), executable cache, `std_module_profile_*` (`_match` says `std.pcm` matches the current profile), `compiler_stamp_*`, plus `current_profile` |
@@ -264,7 +265,7 @@ Cursor config: [`.cursor/mcp.json`](.cursor/mcp.json) (`tester-cb`).
 | `cb_test_list` | `./tools/CB.sh <config> test --list --jsonl=…` |
 | `cb_cache_status` | `./tools/CB.sh <config> cache status --jsonl=…` |
 
-Tools return **parsed stdout JSONL** (prefer `summary` / `build_end` / `list_summary` / `test_list_summary`), not raw logs. `cb_test` passes `--timeout=60` unless given `timeout` (`0` disables; `CB_MCP_TEST_TIMEOUT_SEC` changes the default), and returns the `crash` / `timeout` event as `fatal` when the runner died. Default tags for `cb_test` are `[self]` (`CB_MCP_DEFAULT_TAGS`); in parent repos set `CB_PROJECT_ROOT` / `CB_SH` / `CB_MCP_DEFAULT_TAGS` (e.g. `[yardb]`).
+Tools return **parsed stdout JSONL** (prefer `summary` / `build_end` / `list_summary` / `test_list_summary`), not raw logs. `cb_test` passes `--timeout=60` unless given `timeout` (`0` disables; `CB_MCP_TEST_TIMEOUT_SEC` changes the default), and returns the `crash` / `timeout` event as `fatal` when the runner died. It also returns `rerun_ids`; pass them back as `test_ids` to rerun only those cases (with `test_ids`, tags default to none rather than the default scope). Default tags for `cb_test` are `[self]` (`CB_MCP_DEFAULT_TAGS`); in parent repos set `CB_PROJECT_ROOT` / `CB_SH` / `CB_MCP_DEFAULT_TAGS` (e.g. `[yardb]`).
 
 Smoke: `./tests/mcp/smoke.sh --jsonl`.
 

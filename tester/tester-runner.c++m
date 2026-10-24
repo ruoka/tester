@@ -53,6 +53,13 @@ public:
         }
     }
 
+    // Selects top-level cases by exact id, on top of any tag filter. Naming a case is an explicit
+    // choice, so hidden cases are selectable this way; their steps run with them as usual.
+    void select_ids(std::vector<std::string> ids)
+    {
+        m_ids = std::move(ids);
+    }
+
     void begin_run(std::string_view mode)
     {
         m_run_has_started = true;
@@ -96,6 +103,7 @@ public:
     // The whole of list mode: the catalogue is the stream, so this closes it.
     void list_tests()
     {
+        require_known_ids();
         auto matched = std::vector<const test_case*>{};
         for(const auto& tc : data::test_cases)
             if(included(tc))
@@ -118,6 +126,7 @@ public:
         m_execution_scope = std::make_unique<data::execution_scope>(*m_execution);
 
         begin_run("run");
+        require_known_ids();
 
         engine::init_statistics(
             *m_execution, m_run_started_monotonic, m_run_started_unix_ms, m_tags);
@@ -176,6 +185,8 @@ public:
 
     bool included(const test_case& tc) const
     {
+        if(not m_ids.empty() and is_runnable_test_name(tc.test_name))
+            return std::ranges::contains(m_ids, tc.test_id) and (m_tags.empty() or included(tc.test_name, tc.tags));
         return included(tc.test_name, tc.tags);
     }
 
@@ -194,6 +205,7 @@ private:
     bool m_use_regex = false;
     bool m_use_literal_tags = false;
     std::vector<std::string> m_literal_tags;
+    std::vector<std::string> m_ids;
 
     // Run state
     std::chrono::system_clock::time_point m_run_started_unix_ms{};
@@ -206,6 +218,19 @@ private:
     bool m_last_run_passed = false;
     std::optional<bool> m_pending_run_end_passed;
     bool m_run_end_emitted = false;
+
+    // A stale or mistyped id would otherwise select nothing, and with no tag filter an empty run
+    // passes — so it is rejected the way an unknown depends_on id is.
+    void require_known_ids() const
+    {
+        for(const auto& id : m_ids)
+        {
+            if(not std::ranges::contains(data::test_cases, id, &test_case::test_id))
+                throw std::invalid_argument{std::format(
+                    "Unknown test id \"{}\" in --test-id (it names a test_case or scenario; "
+                    "a failed step is rerun through the case in summary.rerun_ids)", id)};
+        }
+    }
 
     // Whichever mode ran, its last event is the end of the stream.
     void close_output()
@@ -256,9 +281,7 @@ private:
         {
             if(result.success and result.assertions_ok == result.assertions_total)
                 continue;
-            index.failed_test_ids.push_back(result.test_id);
-            if(index.first == nullptr)
-                index.first = &result;
+            index.add(result);
         }
         return index;
     }

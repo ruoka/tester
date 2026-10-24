@@ -12,7 +12,19 @@ namespace tester::output
 export struct failure_index
 {
     std::vector<std::string> failed_test_ids;
+    // The top-level cases that had any failure, once each, in run order: what --test-id needs to
+    // rerun them. A failed step appears here as the case it belongs to.
+    std::vector<std::string> rerun_ids;
     const data::test_result* first = nullptr;
+
+    void add(const data::test_result& result)
+    {
+        failed_test_ids.push_back(result.test_id);
+        if(not result.root_id.empty() and not std::ranges::contains(rerun_ids, result.root_id))
+            rerun_ids.push_back(result.root_id);
+        if(first == nullptr)
+            first = &result;
+    }
 };
 
 export enum class value_kind

@@ -34,6 +34,14 @@ tag; cutting a release renames that section.
   line is a `timeout` event (`test_id`, `timeout_ms`, `elapsed_ms`), stderr shows the hung
   thread's stack, and the runner dies by `SIGALRM`, which CB reports as "Test runner timed
   out". Works under `--jobs`. The run ends at the first timeout: C++ cannot stop one thread.
+- **Rerun only what failed: `summary.rerun_ids` and `test_runner --test-id=<id>`.** `rerun_ids`
+  (also on `run_end`) lists the failed top-level `test_case` / `scenario` ids once each; a
+  failed step appears as its scenario, since a step cannot run on its own. `--test-id` is
+  repeatable, matches ids exactly, selects hidden tests, and is ANDed with `--tags`; an id no
+  registered case has aborts the run with `Unknown test id "…" in --test-id`. CB forwards the
+  flag, and MCP `cb_test` takes `test_ids` and returns `rerun_ids`.
+- **`build_end.up_to_date`.** `true` when a successful build compiled and linked nothing, so
+  an agent can tell a no-op build from a real one without adding up the counters.
 
 ## [3.0.1] — 2026-10-23
 
