@@ -7,6 +7,7 @@
 #include <csignal>
 #pragma clang diagnostic pop
 #include <execinfo.h>
+#include <pthread.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -107,10 +108,24 @@ struct crash_report
 auto g_crash_report = crash_report{};
 volatile std::sig_atomic_t g_jsonl_crash_output = 0;
 
-void emit_crash_event(int signal_number)
+// Filled by the watchdog before it signals the hung thread, read by whichever of the two writes
+// the timeout event. g_reported makes that exactly one of them: atomic_flag is lock-free, so it
+// is usable from a signal handler.
+struct timeout_report
 {
+    std::array<char, 4096> test_id{};
+    std::uint64_t timeout_ms = 0;
+    std::uint64_t elapsed_ms = 0;
+};
+
+auto g_timeout_report = timeout_report{};
+auto g_reported = std::atomic_flag{};
+
+void emit_event(int signal_number, std::string_view test_id)
+{
+    const auto timed_out = signal_number == SIGALRM;
     auto line = crash_line{};
-    line.raw("{\"type\":\"crash\",\"schema\":");
+    line.raw(timed_out ? "{\"type\":\"timeout\",\"schema\":" : "{\"type\":\"crash\",\"schema\":");
     line.string(jsonl_observer::schema);
     line.raw(",\"version\":");
     line.number(static_cast<std::uint64_t>(jsonl_observer::version));
@@ -135,24 +150,51 @@ void emit_crash_event(int signal_number)
     }
     line.raw(",\"signal\":");
     line.number(static_cast<std::uint64_t>(signal_number));
-    // Synchronous faults and abort() are delivered on the thread that raised them, so this is the
-    // test (or step) that crashed, also under --jobs.
-    if(const auto test_id = tester::data::current_test_id(); not test_id.empty())
+    if(not test_id.empty())
     {
         line.raw(",\"test_id\":");
         line.string(test_id);
     }
+    if(timed_out)
+    {
+        line.raw(",\"timeout_ms\":");
+        line.number(g_timeout_report.timeout_ms);
+        line.raw(",\"elapsed_ms\":");
+        line.number(g_timeout_report.elapsed_ms);
+    }
     line.raw("}\n");
     line.write(STDOUT_FILENO);
 
-    constexpr auto result = "RESULT: passed=false crashed=true\n"sv;
+    const auto result = timed_out ? "RESULT: passed=false timed_out=true\n"sv : "RESULT: passed=false crashed=true\n"sv;
     (void)::write(STDERR_FILENO, result.data(), result.size());
+}
+
+void report(int signal_number, std::string_view test_id)
+{
+    if(g_reported.test_and_set())
+        return;
+
+    if(g_jsonl_crash_output)
+        emit_event(signal_number, test_id);
+
+    if(signal_number == SIGALRM)
+    {
+        auto line = crash_line{};
+        line.raw("TIMEOUT: ");
+        line.raw(test_id.empty() ? "<no test running>"sv : test_id);
+        line.raw(" did not finish within ");
+        line.number(g_timeout_report.timeout_ms);
+        line.raw(" ms (--timeout)\n");
+        line.write(STDERR_FILENO);
+    }
 }
 
 void crash_handler(int signal_number)
 {
-    if(g_jsonl_crash_output)
-        emit_crash_event(signal_number);
+    // Synchronous faults and abort() are delivered on the thread that raised them, and the
+    // watchdog sends SIGALRM to the thread running the hung case, so this is the test (or step)
+    // that crashed or hung, also under --jobs.
+    report(signal_number, tester::data::current_test_id());
 
     void* frames[64];
     const auto count = ::backtrace(frames, 64);
@@ -164,14 +206,105 @@ void crash_handler(int signal_number)
     std::raise(signal_number);
 }
 
+// --timeout: a thread that watches every running top-level case. C++ cannot stop one thread, so
+// an expired case ends the whole run: the watchdog sends SIGALRM to the thread running it, whose
+// handler reports the case and prints that thread's stack — where it hangs — before dying by the
+// signal. If the handler cannot finish (a wedged stdout, say), the watchdog reports and exits 124.
+class timeout_watchdog final : public tester::data::case_watch
+{
+public:
+    explicit timeout_watchdog(std::chrono::milliseconds limit)
+        : m_limit{limit}
+    {
+        g_timeout_report.timeout_ms = static_cast<std::uint64_t>(limit.count());
+        std::signal(SIGALRM, crash_handler);
+        tester::data::set_case_watch(this);
+    }
+
+    ~timeout_watchdog() override
+    {
+        tester::data::set_case_watch(nullptr);
+    }
+
+    timeout_watchdog(const timeout_watchdog&) = delete;
+    timeout_watchdog& operator=(const timeout_watchdog&) = delete;
+
+    void started(std::string_view test_id) override
+    {
+        auto lock = std::lock_guard{m_mutex};
+        m_running.insert_or_assign(std::this_thread::get_id(), running_case{::pthread_self(), clock::now(), std::string{test_id}});
+        m_changed.notify_all();
+    }
+
+    void finished() override
+    {
+        auto lock = std::lock_guard{m_mutex};
+        m_running.erase(std::this_thread::get_id());
+    }
+
+private:
+    using clock = std::chrono::steady_clock;
+    static constexpr auto grace = 5s;
+
+    struct running_case
+    {
+        ::pthread_t thread;
+        clock::time_point started;
+        std::string test_id;
+    };
+
+    void watch(std::stop_token stop)
+    {
+        auto lock = std::unique_lock{m_mutex};
+        while(not stop.stop_requested())
+        {
+            // The longest-running case expires first; one that starts later has a later deadline.
+            const auto oldest = std::ranges::min_element(m_running, {}, [](const auto& entry) { return entry.second.started; });
+            if(oldest == m_running.end())
+            {
+                m_changed.wait(lock, stop, [&] { return not m_running.empty(); });
+                continue;
+            }
+            if(const auto deadline = oldest->second.started + m_limit; clock::now() < deadline)
+            {
+                m_changed.wait_until(lock, stop, deadline, [] { return false; });
+                continue;
+            }
+            expire(oldest->second, lock);
+        }
+    }
+
+    [[noreturn]] void expire(const running_case& hung, std::unique_lock<std::mutex>& lock)
+    {
+        const auto count = std::min(hung.test_id.size(), g_timeout_report.test_id.size() - 1);
+        std::ranges::copy(hung.test_id.substr(0, count), g_timeout_report.test_id.begin());
+        g_timeout_report.elapsed_ms = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - hung.started).count());
+        ::pthread_kill(hung.thread, SIGALRM);
+        lock.unlock();
+
+        std::this_thread::sleep_for(grace);
+        report(SIGALRM, std::string_view{g_timeout_report.test_id.data()});
+        std::_Exit(124);
+    }
+
+    std::chrono::milliseconds m_limit;
+    std::mutex m_mutex{};
+    std::condition_variable_any m_changed{};
+    std::map<std::thread::id, running_case> m_running{};
+    // Last, so it is joined before the state it watches is destroyed.
+    std::jthread m_thread{[this](std::stop_token stop) { watch(stop); }};
+};
+
 } // namespace
 
 constexpr auto usage =
 R"(test_runner [--help] [--list] [--tags=<tag>]
             [--jsonl[=<summary|failures|trace>]] [--slowest=<N>]
             [--jobs=<N>] [--jsonl-output-max-bytes=<N>] [--result]
-            [--junit=<path>] [--xunit-xml=<path>]
+            [--junit=<path>] [--xunit-xml=<path>] [--timeout=<seconds>]
             [<tags>]
+  --timeout=<seconds>  End the run if one top-level test runs longer (0 = off,
+                       the default; TESTER_TIMEOUT sets it too)
 Examples:
   test_runner
   test_runner --list
@@ -180,6 +313,7 @@ Examples:
   test_runner --jsonl=failures --junit=report.xml --tags=[self]
   test_runner --jsonl=trace --slowest=10
   test_runner --jobs=4 --tags=[self]
+  test_runner --timeout=60 --jsonl=failures
   test_runner --tags=scenario("My test")
   test_runner --tags=[self][order]
   test_runner --tags="scenario.*Happy"
@@ -204,6 +338,12 @@ int main(int argc, char** argv)
 {
     std::signal(SIGSEGV, crash_handler);
     std::signal(SIGABRT, crash_handler);
+    // The first backtrace() can load the unwinder and allocate; do that now rather than in a
+    // handler that may have interrupted malloc.
+    {
+        void* frame[1];
+        (void)::backtrace(frame, 1);
+    }
 
     auto command_line = std::span(argv, argc);
     auto arguments = command_line.subspan(1);
@@ -218,6 +358,18 @@ int main(int argc, char** argv)
     auto jsonl_mode = tester::output::jsonl::jsonl_mode::failures;
     auto output_max_bytes = std::size_t{16384};
     auto junit_path = std::filesystem::path{};
+    // --timeout wins over TESTER_TIMEOUT, so a command line can lift a limit the environment sets.
+    auto timeout_seconds = std::size_t{0};
+    if(const auto* env = std::getenv("TESTER_TIMEOUT"); env != nullptr and env[0] != '\0')
+    {
+        if(auto parsed = parse_usize(env); parsed.has_value())
+            timeout_seconds = *parsed;
+        else
+        {
+            std::clog << "TESTER_TIMEOUT expects a non-negative integer (seconds), got: " << env << std::endl;
+            return 1;
+        }
+    }
 
     for(std::string_view option : arguments)
     {
@@ -286,6 +438,18 @@ int main(int argc, char** argv)
                 continue;
             }
             std::clog << "--jobs expects a non-negative integer, got: " << value << std::endl;
+            return 1;
+        }
+
+        if(option.starts_with("--timeout="))
+        {
+            auto value = option.substr(std::string_view{"--timeout="}.size());
+            if(auto parsed = parse_usize(value); parsed.has_value())
+            {
+                timeout_seconds = *parsed;
+                continue;
+            }
+            std::clog << "--timeout expects a non-negative integer (seconds), got: " << value << std::endl;
             return 1;
         }
 
@@ -363,7 +527,12 @@ int main(int argc, char** argv)
             return 0;
         }
 
-        tr.run_tests();
+        {
+            auto watchdog = std::optional<timeout_watchdog>{};
+            if(timeout_seconds > 0)
+                watchdog.emplace(std::chrono::seconds{timeout_seconds});
+            tr.run_tests();
+        }
         tr.report_results();
         tr.report_failures();
         tr.report_summary();

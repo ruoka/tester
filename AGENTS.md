@@ -32,7 +32,7 @@ Use **`--jsonl=failures`**. Parse **stdout only** (one JSON object per line, `sc
 
 **Toolchain:** Clang **21 or newer** with libc++ modules. CI and the dev container pin Clang 21 on Linux; macOS development uses a locally built LLVM that is often newer (e.g. trunk / 23). Do not treat “Clang 21” as a fixed required version — it is the minimum.
 
-**Unknown arguments are fatal.** CB exits `2` on an argument it does not recognise, so a typo such as `--tag=` (for `--tags=`) fails loudly instead of silently running the whole suite. Add `--jobs=N` to cap concurrent compile/link processes (default: CPU count); when set, CB also forwards `--jobs=N` to `test_runner` (runner default remains `1` = sequential).
+**Unknown arguments are fatal.** CB exits `2` on an argument it does not recognise, so a typo such as `--tag=` (for `--tags=`) fails loudly instead of silently running the whole suite. Add `--jobs=N` to cap concurrent compile/link processes (default: CPU count); when set, CB also forwards `--jobs=N` to `test_runner` (runner default remains `1` = sequential). Add `--timeout=<seconds>` (or set `TESTER_TIMEOUT`) so a hung test ends the run with a `timeout` event instead of blocking your command; it is off by default.
 
 **Module compilation:** `--modules=two-phase` (default) precompiles a `.pcm` and then compiles it to a `.o` — after publish, `pcm→.o` is a separate ready job so a worker can claim an importer instead of finishing the provider object on the same claim; `--modules=one-phase` emits both from one `-c -fmodule-output=` step (one parse, reduced BMIs on Clang 22+). Project BMIs keep dots in the filename (only `:` → `-`) so Clang finds them under `-fprebuilt-module-path` without a per-TU `-fmodule-file=` map. The mode is part of the object-cache profile, so switching it triggers `profile_change` on every unit. See [docs/cb.md](docs/cb.md).
 
@@ -51,7 +51,7 @@ Use **`--jsonl=failures`**. Parse **stdout only** (one JSON object per line, `sc
 
 1. Find the last `summary` on stdout (`run_end` is trace-only).
 
- **No `summary` and no `eof`?** The run aborted before the first test. Ordering metadata is validated up front, and a duplicate `test_order.id`, a `depends_on` id nothing registered, or a dependency cycle throws: stdout ends after `run_start`, the runner exits `1`, and the reason is the one line on stderr — `Unhandled exception: Duplicate test id "…" used by "…" and "…"`, `Unknown test id "…" in depends_on of "…"`, or `Cyclic test dependency involving "…"`. A missing `summary` always means the run did not finish, so treat it as failure; this is the one case where the explanation is on stderr rather than in an event. Fix the metadata the message names, then re-run. If the stream instead breaks off partway through the tests, the runner died on a signal — the last stdout line is a `crash` event whose `test_id` names the test (or step) running on the crashing thread, and CB's `test_end` reports `signaled:true` with the signal. No `summary` is written for that either; stderr carries the stack trace.
+ **No `summary` and no `eof`?** The run aborted before the first test. Ordering metadata is validated up front, and a duplicate `test_order.id`, a `depends_on` id nothing registered, or a dependency cycle throws: stdout ends after `run_start`, the runner exits `1`, and the reason is the one line on stderr — `Unhandled exception: Duplicate test id "…" used by "…" and "…"`, `Unknown test id "…" in depends_on of "…"`, or `Cyclic test dependency involving "…"`. A missing `summary` always means the run did not finish, so treat it as failure; this is the one case where the explanation is on stderr rather than in an event. Fix the metadata the message names, then re-run. If the stream instead breaks off partway through the tests, the runner died on a signal — the last stdout line is a `crash` event whose `test_id` names the test (or step) running on the crashing thread, and CB's `test_end` reports `signaled:true` with the signal. No `summary` is written for that either; stderr carries the stack trace. A `timeout` event instead means a top-level test outlived `--timeout`: its `test_id` is the hung test, `test_end` reports `signaled:true` with signal 14 (or exit code 124 if the hung thread could not report), and the stderr stack trace shows where it was stuck.
 
 2. Check the result:
  - If `passed` is `true` → this scoped run succeeded. You're done.
@@ -111,6 +111,7 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 | `summary` | `tests_ok`/`tests_total`, `assertions_ok`/`assertions_total`, `passed`, `failed_test_ids`, `first_failure` |
 | `exception` | Uncaught exceptions (`exception_type`, `message`, `file`, `line`) |
 | `crash` | `SIGSEGV` / `SIGABRT` in `test_runner` (`signal`, `test_id`, `run_id`); last line of the stream — no `summary` or `eof` follows |
+| `timeout` | A top-level test outlived `--timeout` (`test_id`, `timeout_ms`, `elapsed_ms`, `signal` 14); last line of the stream — the run ends there |
 | `eof` | End of JSONL stream |
 
 **Event ordering (run mode):** `assertion_failed` / `assertion_passed` (and `exception`) stream **during** each case as it executes — after that case’s `case` event when the mode emits `case`. The per-case `test` rollups are **not** interleaved with those assertions; they are emitted in one batch at finalize time (`report_results`, after every selected case has finished), then `summary`, then `run_end` (trace), then `eof`. Do not assume a `test` line appears immediately after that case’s last assertion.
@@ -162,7 +163,8 @@ Code under `tools/` (CB) and `tester/` must use **ISO C++ and the standard libra
 | **Subprocesses** | **`posix_spawn` + `waitpid`** via **`cb::process::runner::invoke_shell(argv)`** — the sole process boundary (compile, link, test_runner). Still go through `/bin/sh -c` so capture redirects stay shell syntax. Apple's libc serializes `std::system`, which caps parallel compiles on macOS; `posix_spawn` does not. No `popen`, and no ad-hoc `fork` / `execve` outside that class. |
 | **Child output** | Shell redirect to a stamp/temp file, then `std::ifstream` / `std::getline` (e.g. `cache/compiler-version.txt`, `details/selftest_spawn.h++`). |
 | **External toolchain** | CB invokes installed `clang++` / `lld` as external programs; that is not a deviation — the constraint applies to **our** source, not which compiler you install. |
-| **Stack traces (exception)** | `test_runner.c++` uses `<execinfo.h>` (`backtrace`, `backtrace_symbols_fd`) on `SIGSEGV` / `SIGABRT`. glibc / macOS only — not portable ISO C++. No standard equivalent today. |
+| **Stack traces (exception)** | `test_runner.c++` uses `<execinfo.h>` (`backtrace`, `backtrace_symbols_fd`) on `SIGSEGV` / `SIGABRT` / `SIGALRM`. glibc / macOS only — not portable ISO C++. No standard equivalent today. |
+| **Test timeouts (exception)** | `test_runner.c++`'s `--timeout` watchdog sends `SIGALRM` to the hung case's thread with `pthread_kill` (`pthread_self` recorded when the case starts), and the handler stamps the event with `clock_gettime`. ISO C++ can neither signal one thread nor stop it. The engine stays standard: it only reports case start/finish through `data::case_watch`. |
 
 Do not add new POSIX-only paths when `process::runner` + file-read or pure stdlib code suffices.
 
@@ -262,7 +264,7 @@ Cursor config: [`.cursor/mcp.json`](.cursor/mcp.json) (`tester-cb`).
 | `cb_test_list` | `./tools/CB.sh <config> test --list --jsonl=…` |
 | `cb_cache_status` | `./tools/CB.sh <config> cache status --jsonl=…` |
 
-Tools return **parsed stdout JSONL** (prefer `summary` / `build_end` / `list_summary` / `test_list_summary`), not raw logs. Default tags for `cb_test` are `[self]` (`CB_MCP_DEFAULT_TAGS`); in parent repos set `CB_PROJECT_ROOT` / `CB_SH` / `CB_MCP_DEFAULT_TAGS` (e.g. `[yardb]`).
+Tools return **parsed stdout JSONL** (prefer `summary` / `build_end` / `list_summary` / `test_list_summary`), not raw logs. `cb_test` passes `--timeout=60` unless given `timeout` (`0` disables; `CB_MCP_TEST_TIMEOUT_SEC` changes the default), and returns the `crash` / `timeout` event as `fatal` when the runner died. Default tags for `cb_test` are `[self]` (`CB_MCP_DEFAULT_TAGS`); in parent repos set `CB_PROJECT_ROOT` / `CB_SH` / `CB_MCP_DEFAULT_TAGS` (e.g. `[yardb]`).
 
 Smoke: `./tests/mcp/smoke.sh --jsonl`.
 

@@ -256,6 +256,53 @@ auto register_tests()
         std::abort();
     };
 
+    // SIGALRM is 14 on Linux and macOS; a shell that does not exec its last command reports
+    // 128 + 14 instead.
+    constexpr auto sigalrm = 14;
+    const auto check_timeout = [](const tester_selftest::spawn_result& result)
+    {
+        require_true((result.signaled and result.signal == sigalrm) or result.exit_code == 128 + sigalrm);
+
+        const auto timeout = tester_selftest::find_event(result.stdout_text, "timeout");
+        require_false(timeout.empty());
+        require_eq(tester_selftest::field(timeout, "version"), std::string{"2"});
+        require_eq(tester_selftest::field(timeout, "signal"), std::to_string(sigalrm));
+        require_eq(tester_selftest::field(timeout, "timeout_ms"), std::string{"1000"});
+        require_true(std::stoull(tester_selftest::field(timeout, "elapsed_ms")) >= 1000);
+        require_true(tester_selftest::field(timeout, "test_id").contains("timeout probe hangs"));
+        require_false(tester_selftest::field(timeout, "run_id").empty());
+        require_true(tester_selftest::find_event(result.stdout_text, "summary").empty());
+        require_true(result.stderr_text.contains("TIMEOUT: "));
+    };
+
+    test_case("test_case [self] jsonl timeout names the hung test under --jobs") = [check_timeout]
+    {
+        // The quick case runs beside the hung one and must not be blamed.
+        check_timeout(run_test_runner({
+            "--jsonl=failures",
+            "--jobs=2",
+            "--timeout=1",
+            "--tags=[.jsonl-timeout-probe]"}));
+    };
+
+    test_case("test_case [self] jsonl timeout from TESTER_TIMEOUT, sequential") = [check_timeout]
+    {
+        check_timeout(run_test_runner({
+            "--jsonl=failures",
+            "--tags=[.jsonl-timeout-probe]"},
+            "TESTER_TIMEOUT=1"));
+    };
+
+    test_case("test_case [.jsonl-timeout-probe] timeout probe finishes") = []
+    {
+        require_eq(1, 1);
+    };
+
+    test_case("test_case [.jsonl-timeout-probe] timeout probe hangs") = []
+    {
+        std::this_thread::sleep_for(std::chrono::seconds{60});
+    };
+
     return 0;
 }
 

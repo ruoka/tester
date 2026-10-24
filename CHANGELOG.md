@@ -28,6 +28,12 @@ tag; cutting a release renames that section.
   running on the crashing thread, as in `failed_test_ids`, also under `--jobs`) plus `run_id`
   and `parent_run_id` for correlation, so an agent no longer has to read the stack trace on
   stderr to find the culprit.
+- **`test_runner --timeout=<seconds>` ends a hung run and names the test.** Off by default;
+  `TESTER_TIMEOUT` sets it too, CB forwards the flag, and the MCP bridge's `cb_test` passes
+  `--timeout=60` unless told otherwise. When one top-level test runs longer, the last stdout
+  line is a `timeout` event (`test_id`, `timeout_ms`, `elapsed_ms`), stderr shows the hung
+  thread's stack, and the runner dies by `SIGALRM`, which CB reports as "Test runner timed
+  out". Works under `--jobs`. The run ends at the first timeout: C++ cannot stop one thread.
 
 ## [3.0.1] — 2026-10-23
 

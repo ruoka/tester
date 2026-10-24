@@ -255,6 +255,25 @@ export std::string_view current_test_id()
     return tls_execution->current_test_id;
 }
 
+// Told when a top-level case starts and finishes, on the thread that runs it. Steps run inside
+// their case and count against its deadline, so they are not reported. test_runner installs one
+// for --timeout; the engine itself has no notion of time limits.
+export class case_watch
+{
+public:
+    virtual ~case_watch() = default;
+    virtual void started(std::string_view test_id) = 0;
+    virtual void finished() = 0;
+};
+
+inline case_watch* g_case_watch = nullptr;
+
+// Set before the run starts and cleared after it ends; not synchronized with running cases.
+export void set_case_watch(case_watch* watch) noexcept
+{
+    g_case_watch = watch;
+}
+
 // Process-wide configuration written before a run starts (CLI), not per-case state.
 inline output_config g_config{};
 inline std::vector<std::string> g_run_argv{};

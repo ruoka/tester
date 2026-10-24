@@ -14,6 +14,8 @@ Environment:
   CB_MCP_DEFAULT_CONFIG   Default build config (default: debug)
   CB_MCP_DEFAULT_TAGS     Default --tags for cb_test (default: [self])
   CB_MCP_TIMEOUT_SEC      Subprocess timeout seconds (default: 600)
+  CB_MCP_TEST_TIMEOUT_SEC Default test_runner --timeout for cb_test, per top-level
+                          test (default: 60; 0 disables)
 
 Wire: JSON-RPC 2.0 over stdio with newline-delimited messages (MCP transport spec:
 one JSON object per line, no Content-Length headers). Log only on stderr — never
@@ -39,6 +41,7 @@ CB_SH = Path(os.environ.get("CB_SH") or str(PROJECT_ROOT / "tools" / "CB.sh")).r
 DEFAULT_CONFIG = (os.environ.get("CB_MCP_DEFAULT_CONFIG") or "debug").strip() or "debug"
 DEFAULT_TAGS = (os.environ.get("CB_MCP_DEFAULT_TAGS") or "[self]").strip()
 TIMEOUT_SEC = int(os.environ.get("CB_MCP_TIMEOUT_SEC") or "600")
+TEST_TIMEOUT_SEC = int(os.environ.get("CB_MCP_TEST_TIMEOUT_SEC") or "60")
 
 
 def _log(message: str) -> None:
@@ -80,9 +83,18 @@ def _pick_summary(events: list[dict[str, Any]]) -> dict[str, Any] | None:
     return events[-1] if events else None
 
 
+def _fatal_event(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    # test_runner writes one of these from a signal handler and then dies; test_id names the
+    # test that crashed or hung.
+    for event in reversed(events):
+        if event.get("type") in ("crash", "timeout"):
+            return event
+    return None
+
+
 def _outcome_ok(summary: dict[str, Any] | None, returncode: int, events: list[dict[str, Any]]) -> bool:
     """Derive tool ok from JSONL + exit status (never mask a failed exit with build_end.ok)."""
-    if any(event.get("type") == "crash" for event in events):
+    if _fatal_event(events) is not None:
         return False
 
     ok = returncode == 0
@@ -150,6 +162,7 @@ def _run_cb(argv_tail: list[str], *, timeout: int | None = None) -> dict[str, An
         "first_failure": (summary or {}).get("first_failure")
         if isinstance(summary, dict)
         else None,
+        "fatal": _fatal_event(events),
         "stderr_tail": (proc.stderr or "")[-4000:],
     }
 
@@ -191,10 +204,15 @@ def tool_cb_test(args: dict[str, Any]) -> dict[str, Any]:
     jsonl = _jsonl_mode(args)
     tags = str(args.get("tags") if args.get("tags") is not None else DEFAULT_TAGS).strip()
     filt = str(args.get("filter") or "").strip()
+    timeout = int(args["timeout"]) if args.get("timeout") is not None else TEST_TIMEOUT_SEC
+    if timeout < 0:
+        raise ValueError("timeout must be a non-negative number of seconds")
     argv = [config, "test", f"--jsonl={jsonl}"]
     if tags:
         # argv list — no shell globbing; pass [self] literally (not \[self\]).
         argv.append(f"--tags={tags}")
+    if timeout:
+        argv.append(f"--timeout={timeout}")
     if filt:
         # Substring filter as a trailing positional (CB forwards after test).
         argv.append(filt)
@@ -279,7 +297,8 @@ TOOLS: dict[str, tuple[dict[str, Any], Callable[[dict[str, Any]], dict[str, Any]
                 "Run tests via ./tools/CB.sh <config> test --jsonl=… [--tags=…] [filter]. "
                 "Default tags are [self] (standalone tester). In parent repos set "
                 "CB_MCP_DEFAULT_TAGS or pass tags=[yardb] / [fixer] / etc. "
-                "Returns summary.passed and first_failure when present."
+                "Returns summary.passed and first_failure when present; fatal holds the "
+                "crash or timeout event (with test_id) when test_runner died."
             ),
             "inputSchema": {
                 "type": "object",
@@ -289,6 +308,12 @@ TOOLS: dict[str, tuple[dict[str, Any], Callable[[dict[str, Any]], dict[str, Any]
                         "type": "string",
                         "enum": ["failures", "summary", "trace"],
                         "default": "failures",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "test_runner --timeout: seconds one top-level test may run "
+                        "before the run is ended (0 disables; default CB_MCP_TEST_TIMEOUT_SEC or 60)",
                     },
                     "tags": {
                         "type": "string",

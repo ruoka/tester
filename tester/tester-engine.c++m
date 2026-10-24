@@ -251,6 +251,10 @@ void execute_test_case(execution_context& ctx, test_case& tc)
 
     ctx.set_test_id(tc.test_id);
 
+    auto* const watch = outer_output == nullptr ? g_case_watch : nullptr;
+    if(watch)
+        watch->started(tc.test_id);
+
     auto& stats = ctx.statistics;
     const auto assertions_total_before = stats.total_assertions.load(std::memory_order_relaxed);
     const auto assertions_ok_before = stats.successful_assertions.load(std::memory_order_relaxed);
@@ -283,6 +287,8 @@ void execute_test_case(execution_context& ctx, test_case& tc)
         failure_message = "Unknown exception";
         notify([&](observer& target){ target.exception(tc, std::runtime_error{"Unknown exception"}); });
     }
+    if(watch)
+        watch->finished();
     const auto finished = std::chrono::steady_clock::now();
     const auto finished_sys = std::chrono::system_clock::now();
 

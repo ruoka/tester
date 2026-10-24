@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <csignal>
 #include <concepts>
 #include <format>
 #include <functional>
@@ -342,6 +343,10 @@ inline std::string link_rebuild_message(std::string_view executable_path, const 
 // report prose in the producer.
 inline std::string test_failure_message(const process_result& result)
 {
+    // test_runner --timeout ends a hung run by sending SIGALRM to the stuck test's thread, or
+    // exits 124 (timeout(1)'s code) when that thread cannot finish reporting.
+    if((result.status.signaled and result.status.signal == SIGALRM) or (not result.status.signaled and result.status.exit_code == 124))
+        return "Test runner timed out (a test exceeded --timeout)!";
     if(result.status.signaled)
         return "Test runner was killed by signal " + std::to_string(result.status.signal) + '!';
     return "Some tests or assertions failed!";

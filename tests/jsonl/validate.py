@@ -59,6 +59,7 @@ REQUIRED_FIELDS = {
     "unit": ("path", "kind", "imports", "level", "has_main", "is_test", "is_modular"),
     "cache_status": ("object_cache_path", "profile_match", "current_profile"),
     "crash": ("pid", "signal", "run_id", "test_id"),
+    "timeout": ("pid", "signal", "run_id", "test_id", "timeout_ms", "elapsed_ms"),
 }
 
 # (label, argv tail). Non-zero exit is expected for the probe cases.
@@ -80,6 +81,8 @@ COMMANDS = [
     ("test_nonfinite_probe", ["debug", "test", "--jsonl=failures", "--tags=[.jsonl-nonfinite-probe]"]),
     # Aborts inside a test: the crash line is written from a signal handler, not the observer.
     ("test_crash_probe", ["debug", "test", "--jsonl=failures", "--tags=[.jsonl-crash-probe]"]),
+    # A test sleeps past --timeout=1 while another finishes beside it.
+    ("test_timeout_probe", ["debug", "test", "--jsonl=failures", "--jobs=2", "--timeout=1", "--tags=[.jsonl-timeout-probe]"]),
 ]
 
 

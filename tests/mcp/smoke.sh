@@ -183,6 +183,21 @@ ok(
     "build_end_ok_does_not_mask_crash_exit",
 )
 
+# A --timeout kill is a failure too, and the hung test is surfaced as `fatal`.
+timeout_events = cb_mcp._parse_jsonl("\n".join(
+    [
+        '{"schema":"tester-jsonl","type":"build_end","ok":true}',
+        '{"schema":"tester-jsonl","type":"timeout","signal":14,"test_id":"hangs"}',
+        '{"schema":"tester-jsonl","type":"test_end","ok":false,"signaled":true,"signal":14}',
+    ]
+))
+ok(
+    cb_mcp._outcome_ok(cb_mcp._pick_summary(timeout_events), -1, timeout_events) is False,
+    "timeout_outcome_not_ok",
+)
+fatal = cb_mcp._fatal_event(timeout_events)
+ok(fatal is not None and fatal.get("test_id") == "hangs", "timeout_fatal_names_test", str(fatal))
+
 
 def tool(name: str, arguments: dict | None = None) -> dict:
     reply = call("tools/call", {"name": name, "arguments": arguments or {}})

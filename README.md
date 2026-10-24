@@ -344,6 +344,7 @@ Every line is valid UTF-8 and valid JSON regardless of what the test data contai
 - `--jsonl=summary` — lifecycle and final aggregates only
 - `--jsonl=trace` — every build/test event, including passing assertions
 - `--jsonl-output-max-bytes=N` — cap captured failed-test output
+- `--timeout=<seconds>` (or `TESTER_TIMEOUT`) — end the run when one top-level test runs longer; the last line is a `timeout` event naming the hung test, and stderr shows where it was stuck. Off by default
 
 Escape bracket tags in shell: `--tags='\[self\]'`.
 

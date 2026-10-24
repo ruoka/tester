@@ -105,7 +105,9 @@ Reviewed against `tester/tester-assertions.c++m` and common C++ test frameworks.
 - ✅ `make_test_case` no longer calls `std::terminate()` when the registering wrapper lives outside `tester::basic` / `tester::behavior_driven_development`; it falls back to the wrapper's unqualified name. Unreachable today (`make_test_case` is not exported and both wrappers match a prefix), so this removed a trap rather than fixing a live defect.
 - ✅ Registration kind is explicit: wrappers pass `registration_kind::suite_case` (`test_case` / `scenario`) or `::step` (`section` / `given` / `when` / `then` / `and_*`) plus a role string for display names. Classification no longer searches `function_name()` for `"scenario"` / `"test_case"`. Public API unchanged; a step with no active run still degrades to a scheduled case for compatibility.
 - ✅ `runner` owns its tag filter as a `std::string` (not a view into argv / a temporary). Console and JSONL `observer_instance(...)` reconfigure on each call instead of latching the first streams/mode; JUnit already reconfigured via `configure()`.
-- 📋 `--shuffle` / `--seed` / `--repeat` flags, and per-test timeouts.
+- 📋 `--shuffle` / `--seed` / `--repeat` flags.
+- ✅ Per-test timeouts: `test_runner --timeout=<seconds>` (or `TESTER_TIMEOUT`; CB forwards the flag; the MCP bridge defaults to 60 s). A watchdog `std::jthread` tracks each running top-level case through the engine's `data::case_watch` hook; on expiry it sends `SIGALRM` to that case's thread, whose handler writes a `timeout` event (`test_id`, `timeout_ms`, `elapsed_ms`) and prints the hung thread's stack before dying by the signal. C++ cannot stop one thread, so a timeout ends the run; running on past a hang would need a process per test. If the handler cannot report within 5 s the watchdog writes the event and exits 124.
+- 📋 Per-test timeout overrides (a test that is meant to run long opting into a longer limit).
 - ✅ Run/execution state lives on `data::execution_context` (current id, capture nesting, step counters, results, statistics), activated per thread via `execution_scope`. The registration catalogue stays process-wide; process-wide mutable “active case” globals are gone — the prerequisite for parallel top-level runs.
 - ✅ Parallel top-level tests via `test_runner --jobs=N` (default 1). Ready cases (all `depends_on` completed) run as a wave behind a `counting_semaphore`; each worker merges into the run context. Console capture is `thread_local`. CB `--jobs=N` forwards to the runner when set.
 
@@ -458,7 +460,7 @@ Ordered by consequence, not by effort. Items marked **verified** were reproduced
 | Low | Death tests, regex / predicate matchers, container prefix-suffix (§1.2–1.5) | Framework parity. Death tests are cheaper than they look — the spawn and signal-decode helpers already exist |
 | Low | Index-loop joins in tester's observer (§3.9) | Violates the project's own `AGENTS.md` rule; no behavioural impact |
 | Low | Decompose `cb.c++` (§4.1) | Large refactor with no user-visible change; the smoke suite is strong enough to support it when desired |
-| Low | `--shuffle` / `--seed` / `--repeat`, timeouts (§2.5) | Nice-to-have; flushes out inter-test coupling |
+| Low | `--shuffle` / `--seed` / `--repeat`, per-test timeout overrides (§2.5) | Nice-to-have; flushes out inter-test coupling |
 | Low | `cache prune` (§4.4) | Only if disk bloat or orphaned artifacts show up in practice |
 
 ---

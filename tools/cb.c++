@@ -5439,6 +5439,7 @@ public:
             << "  " << program << " test --jsonl=failures --junit=report.xml --tags=[module]\n"
             << "  " << program << " debug build --jsonl=summary\n"
             << "  " << program << " test --jsonl=trace --slowest=10\n"
+            << "  " << program << " test --jsonl=failures --timeout=60 --tags=[module]\n"
             << "  " << program << " clean\n";
     }
 
@@ -5517,6 +5518,7 @@ private:
         {"--result", false, token_owner::test_runner, token_action::classify_only},
         {"--tags=", true, token_owner::test_runner, token_action::classify_only},
         {"--slowest=", true, token_owner::test_runner, token_action::classify_only},
+        {"--timeout=", true, token_owner::test_runner, token_action::classify_only},
         {"--junit=", true, token_owner::test_runner, token_action::classify_only},
         {"--xunit-xml=", true, token_owner::test_runner, token_action::classify_only},
         {"--jsonl", false, token_owner::cb, token_action::set_jsonl},

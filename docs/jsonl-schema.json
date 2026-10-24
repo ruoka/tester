@@ -100,6 +100,10 @@
     {
       "if": { "properties": { "type": { "const": "crash" } }, "required": ["type"] },
       "then": { "$ref": "#/$defs/crash" }
+    },
+    {
+      "if": { "properties": { "type": { "const": "timeout" } }, "required": ["type"] },
+      "then": { "$ref": "#/$defs/timeout" }
     }
   ],
   "$defs": {
@@ -408,6 +412,19 @@
           "type": "string",
           "description": "The test or step running on the crashing thread, as in failed_test_ids. Absent when the crash happened outside any test."
         }
+      }
+    },
+    "timeout": {
+      "description": "A top-level test ran longer than test_runner --timeout (or TESTER_TIMEOUT). The run ends here: written from the hung thread's signal handler, so it is the last line on stdout and no test, summary or eof follows. The runner dies by SIGALRM (CB's test_end: signaled:true, signal 14), or exits 124 when the hung thread could not report and the watchdog wrote this line itself. stderr carries the hung thread's stack trace.",
+      "required": ["signal", "test_id", "timeout_ms", "elapsed_ms"],
+      "properties": {
+        "signal": { "const": 14 },
+        "test_id": {
+          "type": "string",
+          "description": "The test or step that was running on the hung thread, as in failed_test_ids. Steps share their top-level test's deadline."
+        },
+        "timeout_ms": { "type": "integer" },
+        "elapsed_ms": { "type": "integer" }
       }
     }
   }
