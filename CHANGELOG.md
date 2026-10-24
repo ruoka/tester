@@ -8,7 +8,14 @@ Internal refactoring is not listed — roughly half the commits since `v1.0.0` r
 Versions follow the rules in the release policy. `Unreleased` accumulates until the next
 tag; cutting a release renames that section.
 
-## Unreleased
+## [3.1.0] — 2026-10-24
+
+Minimum compiler unchanged (Clang 21 with libc++ modules); JSONL `version` 2.
+
+Two fixes change behaviour that never matched the documentation, so they ship as fixes rather
+than a MAJOR: a command that gives both `--tags` and a name filter is now rejected instead of
+silently dropping one, and `first_failure.file` / `line` point at the failing assertion rather
+than the test's declaration.
 
 ### Fixed
 
