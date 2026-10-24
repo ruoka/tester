@@ -31,7 +31,7 @@ On first run, **`CB.sh.core` bootstraps CB itself** — it compiles `tools/cb.c+
 - **Invoked toolchain:** `clang++` and `lld` are external programs; calling them through `process::runner` is expected.
 - **Algorithms:** prefer `std::views::join_with`, `std::ranges::to`, `std::views::split`, `std::ranges::set_difference`, etc. over index loops and one-off helpers — see [AGENTS.md — C++ style](../AGENTS.md).
 
-The **test runner** is separate: crash **stack traces** in `test_runner.c++` use `<execinfo.h>` (`backtrace`, `backtrace_symbols_fd`) — POSIX/glibc/macOS only, not ISO C++. That is the deliberate exception; see [AGENTS.md — Implementation policy](../AGENTS.md#implementation-policy-standard-c-only).
+The **test runner** is separate: crash **stack traces** in `test_runner.c++` use `<execinfo.h>` (`backtrace`, `backtrace_symbols_fd`) — POSIX/glibc/macOS only, not ISO C++ — and its `--timeout` watchdog signals the hung test's thread with `pthread_kill`, which ISO C++ cannot do either. Those are the deliberate exceptions; see [AGENTS.md — Implementation policy](../AGENTS.md#implementation-policy-standard-c-only).
 
 ---
 

@@ -51,7 +51,7 @@ Use **`--jsonl=failures`**. Parse **stdout only** (one JSON object per line, `sc
 
 1. Find the last `summary` on stdout (`run_end` is trace-only).
 
- **No `summary` and no `eof`?** The run aborted before the first test. Ordering metadata is validated up front, and a duplicate `test_order.id`, a `depends_on` id nothing registered, or a dependency cycle throws: stdout ends after `run_start`, the runner exits `1`, and the reason is the one line on stderr — `Unhandled exception: Duplicate test id "…" used by "…" and "…"`, `Unknown test id "…" in depends_on of "…"`, or `Cyclic test dependency involving "…"`. A missing `summary` always means the run did not finish, so treat it as failure; this is the one case where the explanation is on stderr rather than in an event. Fix the metadata the message names, then re-run. If the stream instead breaks off partway through the tests, the runner died on a signal — the last stdout line is a `crash` event whose `test_id` names the test (or step) running on the crashing thread, and CB's `test_end` reports `signaled:true` with the signal. No `summary` is written for that either; stderr carries the stack trace. A `timeout` event instead means a top-level test outlived `--timeout`: its `test_id` is the hung test, `test_end` reports `signaled:true` with signal 14 (or exit code 124 if the hung thread could not report), and the stderr stack trace shows where it was stuck.
+ **No `summary` and no `eof`?** The run aborted before the first test. Ordering metadata is validated up front, and a duplicate `test_order.id`, a `depends_on` id nothing registered, or a dependency cycle throws: stdout ends after `run_start`, the runner exits `1`, and the reason is the one line on stderr — `Unhandled exception: Duplicate test id "…" used by "…" and "…"`, `Unknown test id "…" in depends_on of "…"`, or `Cyclic test dependency involving "…"` — or, for a `--test-id` no registered case has, `Unknown test id "…" in --test-id`. A missing `summary` always means the run did not finish, so treat it as failure; this is the one case where the explanation is on stderr rather than in an event. Fix the metadata the message names, then re-run. If the stream instead breaks off partway through the tests, the runner died on a signal — the last stdout line is a `crash` event whose `test_id` names the test (or step) running on the crashing thread, and CB's `test_end` reports `signaled:true` with the signal. No `summary` is written for that either; stderr carries the stack trace. A `timeout` event instead means a top-level test outlived `--timeout`: its `test_id` is the hung test, `test_end` reports `signaled:true` with signal 14 (or exit code 124 if the hung thread could not report), and the stderr stack trace shows where it was stuck.
 
 2. Check the result:
  - If `passed` is `true` → this scoped run succeeded. You're done.
@@ -98,7 +98,7 @@ Filter `run_id=<cb>` or `parent_run_id=<cb>` to correlate `list` → `build` →
 | Event | Use |
 |-------|-----|
 | `test_list_start` | Catalogue start (`tags_filter`) |
-| `registered_test` | Per test: `id`, `name`, `file`, `line`, `column`, `tags[]`, `depends_on[]`, `priority` |
+| `registered_test` | Per test: `id`, `name`, `file`, `line`, `column`, `tags[]`, `depends_on[]`, `priority`, and `timeout_ms` when the case declares `test_order{.timeout}` |
 | `test_list_summary` | `registered_total`, `matched_total`, `tags_filter` |
 
 ### Test phase
@@ -261,7 +261,7 @@ Cursor config: [`.cursor/mcp.json`](.cursor/mcp.json) (`tester-cb`).
 |------|------------|
 | `cb_list` | `./tools/CB.sh <config> list --jsonl=…` |
 | `cb_build` | `./tools/CB.sh <config> build --jsonl=…` |
-| `cb_test` | `./tools/CB.sh <config> test --jsonl=… [--tags=…] [filter]` |
+| `cb_test` | `./tools/CB.sh <config> test --jsonl=… [--tags=…] [--timeout=…] [--test-id=…]… [filter]` |
 | `cb_test_list` | `./tools/CB.sh <config> test --list --jsonl=…` |
 | `cb_cache_status` | `./tools/CB.sh <config> cache status --jsonl=…` |
 

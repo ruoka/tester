@@ -278,7 +278,7 @@ CB's object cache or JSONL build telemetry.
 
 ## Built-in Builder (CB)
 
-Tester ships with **CB** (`tools/cb.c++`), a module-aware build system in a single file. CB discovers translation units, topologically sorts module imports, compiles in parallel, and caches object files incrementally. **CB is the default path for standalone clones**; parent repos embed tester under `deps/tester` and build through their own `tools/CB.sh` wrapper — [YarDB](https://github.com/ruoka/YarDB) is the public reference layout. For design rationale and comparison with CMake, Make, and other tools, see [`docs/cb.md`](docs/cb.md). With identical flags, CB and CMake + Ninja are at about the same build speed on this tree; CB's advantage is that it needs no configure step, explains every rebuild, and reports compiler diagnostics and test results on one JSONL stream ([measurements and trade-offs](docs/cb-vs-ninja-benchmark.md#what-cb-offers-beyond-wall-clock)). Implementation prefers **standard C++**; subprocesses go through `posix_spawn` (Apple's libc serializes `std::system`), and crash stack traces in `test_runner` are the POSIX `<execinfo.h>` exception — see [AGENTS.md — Implementation policy](AGENTS.md#implementation-policy-standard-c-only).
+Tester ships with **CB** (`tools/cb.c++`), a module-aware build system in a single file. CB discovers translation units, topologically sorts module imports, compiles in parallel, and caches object files incrementally. **CB is the default path for standalone clones**; parent repos embed tester under `deps/tester` and build through their own `tools/CB.sh` wrapper — [YarDB](https://github.com/ruoka/YarDB) is the public reference layout. For design rationale and comparison with CMake, Make, and other tools, see [`docs/cb.md`](docs/cb.md). With identical flags, CB and CMake + Ninja are at about the same build speed on this tree; CB's advantage is that it needs no configure step, explains every rebuild, and reports compiler diagnostics and test results on one JSONL stream ([measurements and trade-offs](docs/cb-vs-ninja-benchmark.md#what-cb-offers-beyond-wall-clock)). Implementation prefers **standard C++**; subprocesses go through `posix_spawn` (Apple's libc serializes `std::system`), and `test_runner`'s crash stack traces (`<execinfo.h>`) and `--timeout` watchdog (`pthread_kill`) are the POSIX exceptions — see [AGENTS.md — Implementation policy](AGENTS.md#implementation-policy-standard-c-only).
 
 ```bash
 ./tools/CB.sh debug build          # compile project + tests
@@ -354,7 +354,7 @@ Escape bracket tags in shell: `--tags='\[self\]'`.
 | Event | Purpose |
 |-------|---------|
 | `test_list_start` | Catalogue start (`tags_filter`) |
-| `registered_test` | Per test: `id`, `name`, `file`, `line`, `column`, `tags[]`, `depends_on[]`, `priority` |
+| `registered_test` | Per test: `id`, `name`, `file`, `line`, `column`, `tags[]`, `depends_on[]`, `priority`, and `timeout_ms` when the case declares its own limit |
 | `test_list_summary` | `registered_total`, `matched_total`, `tags_filter` |
 
 ### Assertion events
@@ -374,6 +374,8 @@ Trace mode emits all test events: `run_start`, `run_end`, `case`, `test`, `messa
 
 - `run_start` — `cwd`, structured `argv`, `config` (via `TESTER_CONFIG` when CB spawns the child), `env` for curated vars when set
 - `exception` — demangled `exception_type`, `message`, `file`, `line`
+- `crash` — written from the signal handler on `SIGSEGV` / `SIGABRT`: `signal`, `test_id` of the test running on the crashing thread; the last line of the stream (no `summary` or `eof`)
+- `timeout` — a top-level test outlived its limit: `test_id`, `timeout_ms`, `elapsed_ms`, `signal` 14; also the last line
 - `summary` / `run_end` — `failed_test_ids`, `rerun_ids` (the failed top-level cases, a failed step counted as its scenario), `first_failure`
 
 **Correlation:** filter `run_id=<cb>` or `parent_run_id=<cb>` to tie `list` → `build` → `test` from one JSONL invocation.

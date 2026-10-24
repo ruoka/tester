@@ -63,8 +63,9 @@ For a successful run, read the last `summary`. For a failed run:
 1. Read `first_failure` and `failed_test_ids`.
 2. Inspect matching `assertion_failed` or `exception` events.
 3. For build failures, find `command_end` with `"ok":false`.
-4. Fix the source and rerun the same scope.
+4. Fix the source and rerun the same scope, or only what failed: pass each id in `summary.rerun_ids` as `--test-id=<id>`.
 5. Rebuild test translation units when matcher metadata appears stale.
+6. If stdout ends in a `crash` or `timeout` event instead of a `summary`, its `test_id` names the test that died or hung. Add `--timeout=<seconds>` to routine runs so a hang ends the command instead of blocking it.
 
 ## Token and Output Guidance
 
